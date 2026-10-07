@@ -27,6 +27,9 @@ export BUNDLE_LOCKFILE_CDX_DIR=$CDX
 MEASURE="--require $REPO/test/bigproject/measure.cjs"
 TOOL="--require $REPO/src/register.cjs"
 COMPARE="--require $REPO/test/compare/inject-cyclonedx.cjs" # loads bundle-lockfile too
+cold() { rm -rf "$FE/.temp_cache"; }   # webpack persistent cache (cache.cacheDirectory in webpack.config.js)
+lock_stats() { node -e 'const l = require(process.argv[1]); const e = Object.entries(l.packages).filter(([k]) => k);
+  console.log(`${e.length} entries, ${new Set(e.map(([, p]) => p.name + "@" + p.version)).size} unique name@version`)' "$1"; }
 # what superset's "build" script runs, but without cross-env replacing NODE_OPTIONS
 webpack_build() { # name extra-node-options
   rm -rf "$OUT"
@@ -43,14 +46,26 @@ webpack_build() { # name extra-node-options
   echo
   echo "## Build cost (main webpack process)"
   echo
+  echo "Cold = webpack's persistent cache (.temp_cache) removed before the build; warm = cache from the previous build."
+  echo
   echo '```'
-  webpack_build baseline ""
-  webpack_build bundle-lockfile "$TOOL"
+  for round in 1 2; do
+    cold; webpack_build "baseline-cold-$round" ""
+    cold; webpack_build "bundle-lockfile-cold-$round" "$TOOL"
+  done
+  cp "$OUT/bundle-lockfile/package-lock.json" "$R/lockfile-cold.json"
+  webpack_build baseline-warm ""
+  webpack_build bundle-lockfile-warm "$TOOL"
+  cp "$OUT/bundle-lockfile/package-lock.json" "$R/lockfile-warm.json"
   echo '```'
   echo
   locks=$(find "$OUT" -path '*bundle-lockfile/package-lock.json' | wc -l)
-  pkgs=$(cat $(find "$OUT" -path '*bundle-lockfile/package-lock.json') | grep -c '"version"' || true)
-  echo "bundle-lockfile: $locks lockfile(s), $pkgs package entries"
+  echo "bundle-lockfile: $locks lockfile(s), $(lock_stats "$R/lockfile-cold.json")"
+  if cmp -s "$R/lockfile-cold.json" "$R/lockfile-warm.json"; then
+    echo "lockfile from the warm (cached) build is identical to the cold one"
+  else
+    echo "**lockfile from the warm (cached) build DIFFERS from the cold one** (see lockfile-cold.json / lockfile-warm.json)"
+  fi
   echo
   echo "## syft"
   echo
@@ -65,8 +80,9 @@ webpack_build() { # name extra-node-options
   ' "$R/syft-output.json" "$R/syft-project-lockfile.json"
   echo
   echo '```'
-  webpack_build compare "$COMPARE"
+  cold; webpack_build compare "$COMPARE"
   echo '```'
+  mkdir -p "$R/compare" && cp "$OUT/cyclonedx/bom.json" "$OUT/bundle-lockfile-compare/diag.json" "$R/compare/" 
   echo
   node "$REPO/test/compare/report.cjs" "$OUT" "bundle-lockfile vs. CycloneDX webpack plugin"
   echo "## npm run build (the project's own script)"

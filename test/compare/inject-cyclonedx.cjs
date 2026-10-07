@@ -21,11 +21,13 @@ const { CycloneDxWebpackPlugin } = Module.createRequire(path.join(path.resolve(c
 
 const fileOf = (m) => m.resource || (typeof m.nameForCondition === 'function' ? m.nameForCondition() : null);
 const ids = (files) => packagesForFiles(files).map(p => `${p.name}@${p.version}`).sort();
-// like ids(), but also counts packages outside node_modules (to explain first-party packages CycloneDX lists)
+// packages of files OUTSIDE node_modules (first-party, e.g. workspace packages), by nearest package.json -
+// to explain first-party packages CycloneDX lists
 const fs = require('fs');
-function idsAll(files) {
+function idsFirstParty(files) {
   const out = new Set();
   for (const f of files) {
+    if (f.split(path.sep).includes('node_modules')) continue;
     for (let d = path.dirname(f.split('?')[0]); d !== path.dirname(d); d = path.dirname(d)) {
       let j; try { j = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch { continue; }
       if (j.name && j.version) { out.add(`${j.name}@${j.version}`); break; }
@@ -44,7 +46,7 @@ class DiagnosticsPlugin {
         for (const m of compilation.modules) walk(all)(m);
         for (const c of compilation.chunks) for (const m of compilation.chunkGraph.getChunkModulesIterable(c)) walk(inChunks)(m);
         compilation.emitAsset('bundle-lockfile-compare/diag.json', new sources.RawSource(JSON.stringify({
-          compiler: compiler.name || null, processed: ids(all), inChunks: ids(inChunks), processedAll: idsAll(all),
+          compiler: compiler.name || null, processed: ids(all), inChunks: ids(inChunks), firstParty: idsFirstParty(all),
         }, null, 2)));
       });
     });

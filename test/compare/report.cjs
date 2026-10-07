@@ -18,7 +18,7 @@ const at = (d) => (outputs[path.relative(root, d).split(path.sep).join('/') || '
     const p = path.join(d, e.name);
     if (e.isDirectory()) { walk(p); continue; }
     const parent = path.basename(d), out = path.dirname(d);
-    if (parent === 'bundle-lockfile' && e.name === 'package-lock.json') at(out).ours = readLockfile(p);
+    if (parent === 'bundle-lockfile' && e.name === 'package-lock.json') at(out).ours = [...new Set(readLockfile(p))]; // unique name@version
     if (parent === 'cyclonedx' && e.name === 'bom.json') {
       const bom = JSON.parse(fs.readFileSync(p, 'utf8'));
       at(out).cdx = [...new Set((bom.components || []).map(c => `${c.group ? c.group + '/' : ''}${c.name}@${c.version}`))].sort();
@@ -29,7 +29,7 @@ const at = (d) => (outputs[path.relative(root, d).split(path.sep).join('/') || '
 
 function explain(pkg, side, diag) {
   if (!diag) return 'no diagnostics';
-  if (side === 'cdx' && diag.processedAll.includes(pkg) && !diag.processed.includes(pkg)) return 'first-party package outside node_modules (e.g. a workspace package) - bundle-lockfile leaves those out by design';
+  if (side === 'cdx' && diag.firstParty.includes(pkg) && !diag.processed.includes(pkg)) return 'first-party package outside node_modules (e.g. a workspace package) - bundle-lockfile leaves those out by design';
   const processed = diag.processed.includes(pkg), inChunks = diag.inChunks.includes(pkg);
   if (side === 'cdx' && processed && !inChunks) return 'processed by webpack but in no emitted chunk (e.g. tree-shaken, or only executed at build time like css-loader)';
   if (side === 'ours' && inChunks) return 'in an emitted chunk';
