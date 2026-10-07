@@ -58,7 +58,14 @@ export NODE_OPTIONS="--max-old-space-size=16384 --require /opt/bundle-lockfile/s
 
 Scripts that set `NODE_OPTIONS` themselves keep it only if they pass it on — a default-if-unset
 script like `NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" webpack` does, a plain
-`NODE_OPTIONS=--max-old-space-size=10240 webpack` would drop the `--require`.
+`NODE_OPTIONS=--max-old-space-size=10240 webpack` (or `cross-env NODE_OPTIONS=... webpack`) drops
+the `--require`. For such projects, run the bundler directly with the script's settings instead.
+
+**Next.js 15: use a single `--require`.** Next 15 rewrites `NODE_OPTIONS` for its build workers and
+merges repeated flags: `--require a.cjs --require b.cjs` reaches the workers as the single path
+`"a.cjs b.cjs"` and the build fails; with `--require=a.cjs --require=b.cjs` only the last one reaches
+the workers. Next 12–14 and 16 are not affected. If you need several preloads, require the others
+from one file.
 
 ### Check the result with syft
 
@@ -219,6 +226,21 @@ exactly the expected npm packages with name, version, purl, declared license and
 with only the build output, and once with the project's own `package-lock.json` shipped alongside.
 
 The matrix runs on Node.js 24 (Wolfi `nodejs-24`); other Node.js versions are not tested yet.
+
+### Comparison with the CycloneDX webpack plugin
+
+`test/compare/` attaches [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin)
+to any webpack 5 build the same way (no config changes) and reports, per compiler output, the packages
+only one of the two lists — each explained by what webpack processed vs. what is in the emitted chunks:
+
+```sh
+sh test/compare/fixtures.sh /tmp/fixtures     # all webpack 5 / Next.js fixtures
+```
+
+On the fixtures, every difference is a package CycloneDX lists but that is in no emitted chunk
+(tree-shaken `uuid`; `css-loader`, which only runs at build time), plus workspace packages, which
+bundle-lockfile leaves out as first-party. `test/bigproject/superset.sh` runs the same comparison,
+build cost and syft checks on Apache Superset's frontend.
 
 ## License
 
