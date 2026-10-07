@@ -61,11 +61,12 @@ script like `NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" webpack`
 `NODE_OPTIONS=--max-old-space-size=10240 webpack` (or `cross-env NODE_OPTIONS=... webpack`) drops
 the `--require`. For such projects, run the bundler directly with the script's settings instead.
 
-**Next.js 15: use a single `--require`.** Next 15 rewrites `NODE_OPTIONS` for its build workers and
-merges repeated flags: `--require a.cjs --require b.cjs` reaches the workers as the single path
-`"a.cjs b.cjs"` and the build fails; with `--require=a.cjs --require=b.cjs` only the last one reaches
-the workers. Next 12–14 and 16 are not affected. If you need several preloads, require the others
-from one file.
+**Next.js 15.0 – 16.3: use a single `--require`.** These versions rewrite `NODE_OPTIONS` for their
+build workers and merge repeated flags: `--require a.cjs --require b.cjs` reaches the workers as the
+single path `"a.cjs b.cjs"` and the build fails; with `--require=a.cjs --require=b.cjs` only the last
+one reaches the workers ([vercel/next.js#96571](https://github.com/vercel/next.js/issues/96571),
+fixed in 16.4.0 by [#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15).
+Next 12–14 are not affected. If you need several preloads, require the others from one file.
 
 ### Check the result with syft
 
