@@ -343,10 +343,10 @@ test('webpack adapter: compilers writing to the same output dir share one lockfi
   const rebuilt = one('c');
   rebuilt.compiler = ca.compiler; // same compiler, next compilation
   assert.deepEqual(lockedNames(p.lockfile(rebuilt)), ['b', 'c']);
-  // output.clean removes the other compilers' files from the directory, and their packages from the lockfile
+  // output.clean options alone drop nothing: only files that are really gone do (see the prune tests)
   const cleaned = one('a', { clean: true });
   cleaned.compiler = ca.compiler;
-  assert.deepEqual(lockedNames(p.lockfile(cleaned)), ['a']);
+  assert.deepEqual(lockedNames(p.lockfile(cleaned)), ['a', 'b']);
 });
 
 test('webpack adapter: a new compiler for the same config replaces the previous one in a shared lockfile', () => {
@@ -366,6 +366,73 @@ test('webpack adapter: a new compiler for the same config replaces the previous 
   // dynamic entries cannot be compared: every such compiler is a writer of its own
   const fn = { ...app, entry: () => ({}) };
   assert.deepEqual(lockedNames(build('a', fn)), ['a', 'b', 'c']);
+});
+
+test('outputs: prune drops other writers whose files are all gone, once their build has landed', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), 'dist/b.js': '', 'dist/c2.js': '' });
+  const target = J(root, 'dist/bundle-lockfile/package-lock.json');
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const exists = (f, cb) => setImmediate(cb, fs.existsSync(f));
+  const prune = (writer) => new Promise(resolve => outputs.prune(target, writer, exists, resolve));
+  outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')]);              // the one pruning: never dropped by itself
+  outputs.record(target, 'b', [b], root, [J(root, 'dist/b.js')]);              // its file is there
+  outputs.record(target, 'c', [c], root, [J(root, 'dist/c1.js'), J(root, 'dist/c2.js')]); // one of its files is left
+  outputs.record(target, 'd', [d], root, [J(root, 'dist/d.js')]);              // its file is gone ...
+  for (const w of ['a', 'b', 'c']) outputs.emitted(target, w);
+  await prune('a');
+  // ... but its build has not landed yet: it has not written its file
+  assert.deepEqual(lockedNames(outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')])), ['a', 'b', 'c', 'd']);
+  outputs.emitted(target, 'a');
+  outputs.emitted(target, 'd');
+  await prune('a');
+  assert.deepEqual(lockedNames(outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')])), ['a', 'b', 'c']);
+  // nothing to check: done at once
+  let done = false;
+  outputs.prune(J(root, 'other/package-lock.json'), 'a', exists, () => (done = true));
+  assert.equal(done, true);
+});
+
+test('webpack adapter: a compiler whose output.clean deleted another compiler\'s files drops its packages', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b') });
+  const outputPath = J(root, 'dist');
+  const lock = J(outputPath, 'bundle-lockfile/package-lock.json');
+  fs.mkdirSync(outputPath);
+  // two compilers writing to dist/, through the plugin's real hooks; each "emits" by writing its asset files
+  const make = (name) => {
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    compiler.name = name;
+    compiler.outputFileSystem.stat = fs.stat;
+    compiler.options = { entry: { main: { import: [`./src/${name}.js`] } } };
+    new webpack.BundleLockfilePlugin('bundle-lockfile/package-lock.json').apply(compiler);
+    const build = async () => {
+      const comp = compilation({ context: root, outputPath, chunks: [{ files: [`${name}.js`], modules: [{ resource: J(root, 'node_modules', name, 'i.js') }] }],
+        assets: { [`${name}.js`]: {} } });
+      comp.compiler = compiler;
+      comp.emitAsset = () => {};
+      comp.hooks = { processAssets: { tap: (o, fn) => (comp.stage = fn) } };
+      taps.thisCompilation(comp);
+      comp.stage();
+      fs.writeFileSync(J(outputPath, `${name}.js`), '');
+      await new Promise(resolve => taps.afterEmit(comp, resolve));
+    };
+    return build;
+  };
+  const buildA = make('a'), buildB = make('b');
+  await buildB();
+  await buildA();
+  assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
+  // a watch rebuild of a, which with output.clean deletes only its own stale files: b stays
+  await buildA();
+  assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
+  // a new build of a whose output.clean deleted b's file (as on a first build): b is dropped
+  fs.rmSync(J(outputPath, 'b.js'));
+  await buildA();
+  assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a']);
+  // b builds again: listed again
+  await buildB();
+  assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
 });
 
 test('outputs: writes of a shared lockfile run in order, each with the latest content', async () => {
