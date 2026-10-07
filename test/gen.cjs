@@ -1,14 +1,16 @@
 'use strict';
 // Creates the fixtures from matrix.cjs (needs network). Afterwards run.cjs works offline.
-// usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex]
+// usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex] [--shard=<i>/<n>]   (see lib/shard.cjs)
 // Needs node, npm, yarn (1.x), bun on PATH; yarn berry and pnpm releases are vendored into <dir>/.tools.
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { fixtures } = require('./matrix.cjs');
+const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
-const [out, filter] = process.argv.slice(2);
-if (!out) { console.error('usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex]'); process.exit(2); }
+const { shard, rest: [out, filter] } = parseArgs(process.argv.slice(2));
+if (!out) { console.error('usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex] [--shard=<i>/<n>]'); process.exit(2); }
+const inShard = fixturesOf(shard);
 const OUT = path.resolve(out);
 const TOOLS = path.join(OUT, '.tools');
 // Fixtures are created from scratch, so lockfiles must be writable even when CI=true
@@ -65,7 +67,7 @@ const installers = {
 };
 
 for (const [name, fx] of Object.entries(fixtures)) {
-  if (filter && !new RegExp(filter).test(name)) continue;
+  if (!inShard.has(name) || (filter && !new RegExp(filter).test(name))) continue;
   const dir = path.join(OUT, name);
   console.log(`== ${name}`);
   fs.mkdirSync(dir, { recursive: true });

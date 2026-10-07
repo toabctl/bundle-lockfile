@@ -277,6 +277,9 @@ node test/gen.cjs /tmp/fixtures      # installs fixtures (network)
 node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd arg: case-name regex
 ```
 
+CI splits the matrix into shards that run as parallel jobs: `--shard=<i>/<n>` (for both scripts) selects
+the fixtures of shard `i` of `n` and their cases ([`test/lib/shard.cjs`](test/lib/shard.cjs)).
+
 Every case that expects a lockfile checks that it is valid for syft and lists the expected packages
 (exactly, or including / excluding given ones), that it agrees exactly with the
 oracle, and — if `syft` is on `PATH` — that syft reads exactly those packages. The other cases check that
