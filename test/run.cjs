@@ -16,13 +16,19 @@ if (!fxDir) { console.error('usage: node test/run.cjs <fixtures-dir> [case-name-
 const FX = path.resolve(fxDir);
 const REGISTER = path.resolve(__dirname, '../src/register.cjs');
 const hasSyft = spawnSync('syft', ['version'], { stdio: 'ignore' }).status === 0;
+const TIMEOUT = 15 * 60 * 1000; // per command: a hanging build (e.g. an installer retrying the registry offline) fails its case
 
 function run(cmd, cwd, env) {
-  const r = spawnSync('sh', ['-c', cmd], { cwd, env, encoding: 'utf8', maxBuffer: 64 << 20 });
-  if (r.status !== 0) throw new Error(`"${cmd}" exited ${r.status}\n${(r.stdout + r.stderr).split('\n').slice(-15).join('\n')}`);
+  const r = spawnSync('sh', ['-c', cmd], { cwd, env, encoding: 'utf8', maxBuffer: 64 << 20, timeout: TIMEOUT });
+  const tail = () => `${r.stdout || ''}${r.stderr || ''}`.split('\n').slice(-15).join('\n');
+  if (r.error) throw new Error(`"${cmd}" failed: ${r.error.code === 'ETIMEDOUT' ? `timed out after ${TIMEOUT / 60000} min` : r.error.message}\n${tail()}`);
+  if (r.status !== 0) throw new Error(`"${cmd}" exited ${r.status === null ? `on ${r.signal}` : r.status}\n${tail()}`);
   return r;
 }
 const sh = (cmd, cwd, env) => run(cmd, cwd, env).stdout;
+// unique, sorted name@version of syft JSON artifacts
+const syftIds = (doc) => [...new Set((doc.artifacts || []).map(a => `${a.name}@${a.version}`))].sort();
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 function runCase(c) {
   const fx = fixtures[c.fixture];
@@ -68,9 +74,9 @@ function runCase(c) {
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectKeys) {
     const lock = JSON.parse(fs.readFileSync(path.join(outDir, c.lockfile || LOCKFILE), 'utf8'));
-    const keys = Object.fromEntries(Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => [k, `${p.name}@${p.version}`]));
-    if (!sameMap(Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, [v]])), Object.fromEntries(Object.entries(c.expectKeys).map(([k, v]) => [k, [v]]))))
-      throw new Error(`lockfile keys ${JSON.stringify(keys)}, expected ${JSON.stringify(c.expectKeys)}`);
+    const keys = Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
+    const want = Object.entries(c.expectKeys).map(([k, v]) => `${k} = ${v}`).sort(cmp);
+    if (JSON.stringify(keys) !== JSON.stringify(want)) throw new Error(`lockfile keys\n    got:  ${keys.join(', ')}\n    want: ${want.join(', ')}`);
     notes.push('keys as expected');
   }
   if (c.watchBuilds) {
@@ -92,18 +98,16 @@ function runCase(c) {
 
   if (hasSyft) {
     const s = JSON.parse(sh(`syft scan dir:${outDir} -q -o json`, dir, base));
-    const arts = s.artifacts || [];
-    const names = [...new Set(arts.map(p => `${p.name}@${p.version}`))];
-    if (!same(names, all)) throw new Error(`syft read ${names.sort().join(' ')}\n  want ${all.join(' ')}`);
-    const bad = arts.filter(p => p.foundBy !== 'javascript-lock-cataloger' || !p.purl.startsWith('pkg:npm/') || !(p.licenses || []).length);
+    const names = syftIds(s);
+    if (!same(names, all)) throw new Error(`syft read ${names.join(' ')}\n  want ${all.join(' ')}`);
+    const bad = (s.artifacts || []).filter(p => p.foundBy !== 'javascript-lock-cataloger' || !p.purl.startsWith('pkg:npm/') || !(p.licenses || []).length);
     if (bad.length) throw new Error(`syft: unexpected cataloger/purl/license for ${bad.map(p => p.name).join(', ')}`);
     notes.push('syft agrees');
 
     for (const sc of c.sbom || []) notes.push(sbomScenario(c, sc, dir, base));
 
     if (c.projectLockfile) {
-      const p = JSON.parse(sh('syft scan file:package-lock.json -q -o json', dir, base));
-      const proj = [...new Set((p.artifacts || []).map(a => `${a.name}@${a.version}`))].sort();
+      const proj = syftIds(JSON.parse(sh('syft scan file:package-lock.json -q -o json', dir, base)));
       const miss = c.projectLockfile.includes.filter(x => !proj.includes(x));
       const extra = c.projectLockfile.excludes.filter(x => proj.includes(x));
       if (miss.length || extra.length) throw new Error(`syft on the project lockfile: missing ${miss.join(' ') || '-'}, unexpected ${extra.join(' ') || '-'}\n  read: ${proj.join(' ')}`);
@@ -127,10 +131,12 @@ function sbomScenario(c, sc, dir, env) {
   sh(`syft scan dir:${root} -q -o spdx-json=${spdxFile}`, dir, env);
   const doc = JSON.parse(fs.readFileSync(spdxFile, 'utf8'));
   const purlOf = (p) => ((p.externalRefs || []).find(r => r.referenceType === 'purl') || {}).referenceLocator;
+  // the same name@version can come from several files: sort by the file too, whatever order syft writes
+  const order = (a, b) => cmp(a.name, b.name) || cmp(a.version, b.version) || cmp(a.from, b.from);
   const got = (doc.packages || []).filter(p => (purlOf(p) || '').startsWith('pkg:npm/'))
     .map(p => ({ name: p.name, version: p.versionInfo, purl: purlOf(p), license: p.licenseDeclared, from: (p.sourceInfo || '').split(': ').pop() }))
-    .sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
-  const want = [...sc.expect].sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
+    .sort(order);
+  const want = [...sc.expect].sort(order);
   const fmt = (l) => l.map(p => `\n      ${p.name}@${p.version} ${p.purl} ${p.license} <- ${p.from}`).join('');
   if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`SBOM "${sc.name}" mismatch\n    got:${fmt(got)}\n    want:${fmt(want)}`);
   return `SBOM "${sc.name}": ${got.map(p => `${p.name}@${p.version}`).join(' ')}`;

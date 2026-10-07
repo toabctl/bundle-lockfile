@@ -18,33 +18,45 @@ const at = (d) => (outputs[path.relative(root, d).split(path.sep).join('/') || '
     const p = path.join(d, e.name);
     if (e.isDirectory()) { walk(p); continue; }
     const parent = path.basename(d), out = path.dirname(d);
-    if (parent === 'bundle-lockfile' && e.name === 'package-lock.json') at(out).ours = [...new Set(readLockfile(p))]; // unique name@version
+    if (parent === 'bundle-lockfile' && e.name === 'package-lock.json') at(out).ours = readLockfile(p);
     if (parent === 'cyclonedx' && e.name === 'bom.json') {
       const bom = JSON.parse(fs.readFileSync(p, 'utf8'));
       at(out).cdx = [...new Set((bom.components || []).map(c => `${c.group ? c.group + '/' : ''}${c.name}@${c.version}`))].sort();
     }
-    if (parent === 'bundle-lockfile-compare' && e.name === 'diag.json') at(out).diag = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (parent === 'bundle-lockfile-compare' && /^diag-.*\.json$/.test(e.name)) (at(out).diags ||= []).push(JSON.parse(fs.readFileSync(p, 'utf8')));
   }
 })(root);
 
+// one diagnostics file per compiler writing to the output directory: merged
+function merge(diags) {
+  if (!diags) return null;
+  const union = (k) => [...new Set(diags.flatMap(d => d[k] || []))].sort();
+  return { compilers: diags.map(d => d.compiler || '(unnamed)').sort(), processed: union('processed'), bundled: union('bundled'),
+    firstParty: union('firstParty'), vendored: union('vendored') };
+}
+
 function explain(pkg, side, diag) {
   if (!diag) return 'no diagnostics';
+  if (side === 'ours' && diag.compilers.length > 1 && diag.bundled.includes(pkg))
+    return `in the emitted output of one of the ${diag.compilers.length} compilers writing to this directory (${diag.compilers.join(', ')}); CycloneDX writes one bom.json per compiler there, the last one wins`;
   if (side === 'cdx' && diag.firstParty.includes(pkg) && !diag.processed.includes(pkg)) return 'first-party package outside node_modules (e.g. a workspace package) - bundle-lockfile leaves those out by design';
   if (side === 'cdx' && (diag.vendored || []).includes(pkg) && !diag.processed.includes(pkg)) return 'vendored inside another package (a nested package.json such as next/dist/compiled/...) - bundle-lockfile lists the package that contains it';
-  const processed = diag.processed.includes(pkg), inChunks = diag.inChunks.includes(pkg);
-  if (side === 'cdx' && processed && !inChunks) return 'processed by webpack but in no emitted chunk (e.g. tree-shaken, or only executed at build time like css-loader)';
-  if (side === 'ours' && inChunks) return 'in an emitted chunk';
-  return `unexplained (processed=${processed}, inChunks=${inChunks})`;
+  const processed = diag.processed.includes(pkg), bundled = diag.bundled.includes(pkg);
+  if (side === 'cdx' && processed && !bundled) return 'processed by webpack but not in the emitted output (e.g. tree-shaken, or only executed at build time like css-loader)';
+  if (side === 'ours' && bundled && !processed) return 'in the emitted output but not processed by the main compilation: from a child compilation (e.g. a worker) or copied verbatim';
+  if (side === 'ours' && bundled) return 'in the emitted output';
+  return `unexplained (processed=${processed}, bundled=${bundled})`;
 }
 
 let totalDiff = 0, unexplained = 0;
 const lines = [`## ${label || outDir}`, ''];
 for (const [out, o] of Object.entries(outputs).sort()) {
+  o.diag = merge(o.diags);
   if (!o.cdx) { lines.push(`### output \`${out}\``, '', 'CycloneDX did not run (it needs webpack >= 5 with compiler.webpack); not compared', ''); continue; }
   const ours = o.ours || [], cdx = o.cdx || [];
   const onlyOurs = ours.filter(p => !cdx.includes(p)), onlyCdx = cdx.filter(p => !ours.includes(p));
   const both = ours.filter(p => cdx.includes(p)).length;
-  lines.push(`### output \`${out}\`${o.diag && o.diag.compiler ? ` (compiler ${o.diag.compiler})` : ''}`, '',
+  lines.push(`### output \`${out}\`${o.diag ? ` (compiler${o.diag.compilers.length > 1 ? 's' : ''} ${o.diag.compilers.join(', ')})` : ''}`, '',
     `| | packages |`, `|---|---|`,
     `| bundle-lockfile | ${o.ours ? ours.length : 'no lockfile'} |`, `| CycloneDX | ${o.cdx ? cdx.length : 'no bom'} |`,
     `| in both | ${both} |`, `| only bundle-lockfile | ${onlyOurs.length} |`, `| only CycloneDX | ${onlyCdx.length} |`, '');

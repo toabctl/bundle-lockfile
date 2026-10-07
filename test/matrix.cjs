@@ -5,11 +5,11 @@ const path = require('path');
 
 const APP_DEPS = { 'lodash-es': '4.18.1', uuid: '9.0.1', yallist: '5.0.0', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20' };
 // yallist 5 uses class fields, which webpack 4's parser (acorn 6) cannot handle
-const APP4_DEPS = { 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20' };
+const { yallist, ...APP4_DEPS } = APP_DEPS;
 const HTML = { 'html-webpack-plugin': '5.6.6' }; // adds a child compiler, which must not produce a second lockfile
 
 const wp5 = (webpack, cli, extra = {}) => ({ app: 'webpack5', deps: { webpack, 'webpack-cli': cli, ...APP_DEPS, ...extra } });
-const wp4 = (webpack, cli) => ({ app: 'webpack4', deps: { webpack, 'webpack-cli': cli, ...APP4_DEPS } });
+const wp4 = (webpack, cli, extra = {}) => ({ app: 'webpack4', deps: { webpack, 'webpack-cli': cli, ...APP4_DEPS, ...extra } });
 const latest = wp5('5.111.1', '7.2.3', HTML);
 // Next.js vendors its own webpack; pages router so one app works for every version
 const next = (version, react) => ({
@@ -28,18 +28,23 @@ const devdeps = (installer) => ({
 // edge cases, all webpack 5 + npm
 const WEBPACK = { webpack: '5.111.1', 'webpack-cli': '7.2.3' };
 const edge = (app, deps, extra = {}) => ({ app, installer: { type: 'npm' }, deps: { ...WEBPACK, ...deps }, ...extra });
+const WEBPACK4 = { webpack: '4.47.0', 'webpack-cli': '4.10.0' };
+const WORKER = { 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9', 'is-number': '7.0.0' };
 const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/plugin-transform-runtime': '7.29.7', '@babel/runtime': '7.29.10', 'core-js': '3.50.0' };
 
 // installer: npm | yarn1 | bun (the tools in the test image) or a pinned, vendored yarn berry / pnpm release
 const fixtures = {
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
-  'wp4.47-npm': { ...wp4('4.47.0', '4.10.0'), installer: { type: 'npm' } },
+  // html-webpack-plugin 4 takes its template's output out of the parent compilation but keeps it in its child
+  'wp4.47-npm': { ...wp4('4.47.0', '4.10.0', { 'html-webpack-plugin': '4.5.2' }), installer: { type: 'npm' } },
   'wp5.0-npm': { ...wp5('5.0.0', '4.10.0'), installer: { type: 'npm' } }, // html-webpack-plugin 5 needs webpack >= 5.20
   'wp5.60-npm': { ...wp5('5.60.0', '4.10.0', HTML), installer: { type: 'npm' } },
   'wp5-npm': { ...latest, installer: { type: 'npm' } },
   'wp5-yarn1': { ...latest, installer: { type: 'yarn1' } },
   'wp5-yarn3-pnp': { ...latest, installer: { type: 'yarn-berry', version: '3.8.7', linker: 'pnp' } },
   'wp5-yarn4-pnp': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' } },
+  // yarn 4's default: packages in the global cache, outside the project
+  'wp5-yarn4-pnp-global-cache': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp', globalCache: true } },
   'wp5-yarn4-node-modules': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' } },
   'wp5-npm8': { ...latest, installer: { type: 'npm', version: '8.19.4' } },
   'wp5-npm9': { ...latest, installer: { type: 'npm', version: '9.9.4' } },
@@ -54,18 +59,22 @@ const fixtures = {
   'wp5-devdeps-npm': devdeps({ type: 'npm' }),
   'wp5-devdeps-yarn1': devdeps({ type: 'yarn1' }),
   'wp5-devdeps-pnpm11': devdeps({ type: 'pnpm', version: '11.28.5' }),
-  'edge-alias': edge('edge-alias', { ms: '2.1.3', 'ms-old': 'npm:ms@2.0.0' }),
+  'edge-alias': edge('edge-alias', { ms: '2.1.3', 'ms-old': 'npm:ms@2.0.0', debug: '2.6.9', 'debug-old': 'npm:debug@2.6.8' }),
   'edge-babel': edge('edge-babel', BABEL7),
   'edge-css': edge('edge-css', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
   'edge-asset': edge('edge-asset', { 'bootstrap-icons': '1.13.1' }),
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
-  'edge-worker': edge('edge-worker', { 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9' }),
-  'edge-worker-wp4': { app: 'edge-worker', installer: { type: 'npm' },
-    deps: { webpack: '4.47.0', 'webpack-cli': '4.10.0', 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9' } },
+  'edge-worker': edge('edge-worker', WORKER),
+  'edge-worker-wp4': { app: 'edge-worker', installer: { type: 'npm' }, deps: { ...WEBPACK4, ...WORKER } },
   'edge-workbox': edge('edge-workbox', { 'workbox-webpack-plugin': '7.4.1', 'workbox-precaching': '7.4.1', 'lodash-es': '4.18.1', ...HTML }),
   'edge-copy': edge('edge-copy', { 'copy-webpack-plugin': '14.0.0', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
+  // copy-webpack-plugin 6 adds its files in webpack 4's additionalAssets hook
+  'edge-copy-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.4.1', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' } },
+  'edge-shared-output': edge('edge-shared-output', { debug: '2.6.9', ms: '2.1.3' }),
+  'edge-vanilla': edge('edge-vanilla', { '@vanilla-extract/css': '1.21.2', '@vanilla-extract/webpack-plugin': '2.3.27',
+    'mini-css-extract-plugin': '2.10.2', 'css-loader': '7.1.5', 'lodash-es': '4.18.1' }),
   'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
@@ -88,6 +97,11 @@ const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
+// cold build, then a build that restores every module from webpack's persistent cache: identical lockfiles
+const WARM = 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/package-lock.json .cold.json && rm -rf dist && npm run -s build && cmp .cold.json dist/bundle-lockfile/package-lock.json';
+// worker-loader workers: lodash-es in main.js, ms@2.1.3 in a worker, debug + its ms@2.0.0 in a worker inside it,
+// is-number in a worker inlined into main.js - with worker-loader's runtime that starts it from a Blob
+const WORKERS = ['debug@2.6.9', 'is-number@7.0.0', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'worker-loader@3.0.8'];
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle
 function nextCase(fixture, version, react, flags = '') {
@@ -124,12 +138,12 @@ const cases = [
     lockfile: 'sbom/package-lock.json', expect: W5 },
   // build modes
   { name: 'watch mode: every rebuild emits the lockfile', fixture: 'wp5-npm', cmd: WATCH, expect: W5, watchBuilds: 2 },
-  // cold build, then a build that restores every module from webpack's persistent cache: identical lockfiles
-  { name: 'persistent cache: warm build = cold build', fixture: 'wp5-npm', env: { EDGE_CACHE: '1' }, expect: W5,
-    cmd: 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/package-lock.json .cold.json && rm -rf dist && npm run -s build && cmp .cold.json dist/bundle-lockfile/package-lock.json' },
+  { name: 'persistent cache: warm build = cold build', fixture: 'wp5-npm', env: { EDGE_CACHE: '1' }, expect: W5, cmd: WARM },
+  // modules restored from the cache do not rerun their loaders, and worker-loader runs its child compilers in one
+  { name: 'persistent cache with child compilers (worker-loader): warm build = cold build', fixture: 'edge-worker', env: { EDGE_CACHE: '1' }, expect: WORKERS, cmd: WARM },
   // webpack versions
   { name: 'webpack 4.0.0', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.0.0') },
-  { name: 'webpack 4.47.0', fixture: 'wp4.47-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
+  { name: 'webpack 4.47.0 (child compiler: html-webpack-plugin 4)', fixture: 'wp4.47-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
   { name: 'webpack 4.47.0, default-if-unset NODE_OPTIONS script via yarn 1', fixture: 'wp4.47-npm', cmd: 'yarn -s webpack-prod', nodeOptions: `${LEGACY_SSL} --max_old_space_size=4096`, expect: W4('4.47.0') },
   { name: 'webpack 5.0.0', fixture: 'wp5.0-npm', cmd: 'npm run -s build', expect: W5 },
   { name: 'webpack 5.60.0 (child compiler)', fixture: 'wp5.60-npm', cmd: 'npm run -s build', expect: W5 },
@@ -140,6 +154,10 @@ const cases = [
   { name: 'yarn 1.22 (yarn.lock)', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build', expect: W5 },
   { name: "yarn 3.8.7 Plug'n'Play", fixture: 'wp5-yarn3-pnp', cmd: 'yarn build', expect: W5 },
   { name: "yarn 4.18.1 Plug'n'Play", fixture: 'wp5-yarn4-pnp', cmd: 'yarn build', expect: W5 },
+  // keys must not carry the path to the cache, which differs between machines
+  { name: "yarn 4.18.1 Plug'n'Play, global cache", fixture: 'wp5-yarn4-pnp-global-cache', cmd: 'yarn build', expect: W5,
+    expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/ms': 'ms@2.0.0',
+      'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/nanoid': 'nanoid@3.3.20', 'node_modules/yallist': 'yallist@5.0.0' } },
   { name: 'yarn 4.18.1 node-modules linker', fixture: 'wp5-yarn4-node-modules', cmd: 'yarn build', expect: W5 },
   // older npm releases (installed and run with that npm); the default fixtures use the npm on PATH
   { name: 'npm 8.19.4', fixture: 'wp5-npm8', cmd: '$NPM run -s build', expect: W5 },
@@ -173,9 +191,12 @@ const cases = [
   { name: 'devDependencies: yarn 1', fixture: 'wp5-devdeps-yarn1', cmd: 'yarn --offline -s build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED },
   { name: 'devDependencies: pnpm 11', fixture: 'wp5-devdeps-pnpm11', cmd: '$PNPM run build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED },
   // edge cases
-  // keys are the install paths (like npm's own lockfile); the name field carries the real name
-  { name: 'edge: npm alias (ms-old = npm:ms@2.0.0)', fixture: 'edge-alias', cmd: 'npm run -s build', expect: ['ms@2.0.0', 'ms@2.1.3'],
-    expectKeys: { 'node_modules/ms': 'ms@2.1.3', 'node_modules/ms-old': 'ms@2.0.0' } },
+  // keys are the install paths (like npm's own lockfile); the name field carries the real name.
+  // ms@2.0.0 at three paths: three lockfile entries, one package for syft and the oracle
+  { name: 'edge: npm aliases (ms-old = npm:ms@2.0.0), one version at several paths', fixture: 'edge-alias', cmd: 'npm run -s build',
+    expect: ['debug@2.6.8', 'debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'],
+    expectKeys: { 'node_modules/ms': 'ms@2.1.3', 'node_modules/ms-old': 'ms@2.0.0', 'node_modules/debug': 'debug@2.6.9', 'node_modules/debug-old': 'debug@2.6.8',
+      'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/debug-old/node_modules/ms': 'ms@2.0.0' } },
   { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'] },
   { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
   { name: 'edge: asset/resource from a package', fixture: 'edge-asset', cmd: 'npm run -s build', expectIncludes: ['bootstrap-icons@1.13.1'] },
@@ -187,15 +208,26 @@ const cases = [
   { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'] },
   // workspace packages count as first-party also when webpack keeps the node_modules/@acme/ui symlink path
   { name: 'edge: npm workspace package, resolve.symlinks=false', fixture: 'edge-workspace', cmd: 'npm run -s build', env: { EDGE_RESOLVE_SYMLINKS: 'false' }, expect: ['ms@2.1.3'] },
-  // child compilers whose output is shipped: worker-loader (a worker inside a worker), workbox's service worker.
-  // html-webpack-plugin's child compiler only renders the template at build time and is not counted.
-  { name: 'edge: worker-loader workers, nested (child compilers)', fixture: 'edge-worker', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3'] },
-  { name: 'edge: worker-loader workers, webpack 4', fixture: 'edge-worker-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
-    expectIncludes: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3'] },
+  // child compilers whose output is shipped: worker-loader (a worker inside a worker, a worker inlined into
+  // main.js), workbox's service worker. html-webpack-plugin's child compiler only renders the template at build
+  // time and is not counted.
+  { name: 'edge: worker-loader workers, nested and inlined (child compilers)', fixture: 'edge-worker', cmd: 'npm run -s build', expect: WORKERS },
+  { name: 'edge: worker-loader workers, nested and inlined, webpack 4', fixture: 'edge-worker-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: WORKERS },
   { name: 'edge: workbox InjectManifest service worker', fixture: 'edge-workbox', cmd: 'npm run -s build',
     expectIncludes: ['workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'lodash-es@4.18.1'], expectExcludes: ['html-webpack-plugin@5.6.6', 'workbox-webpack-plugin@7.4.1'] },
   // copy-webpack-plugin: a package file copied verbatim into the output is shipped; copied first-party files are not packages
   { name: 'edge: package file copied by copy-webpack-plugin', fixture: 'edge-copy', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
+  { name: 'edge: package file copied by copy-webpack-plugin 6, webpack 4', fixture: 'edge-copy-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
+  // two compilers write to dist/ in parallel: one lockfile with the packages of both
+  { name: 'edge: two compilers, one output dir', fixture: 'edge-shared-output', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // the virtual CSS module reads a placeholder file in @vanilla-extract/webpack-plugin, a build tool;
+  // @vanilla-extract/css only runs at build time
+  { name: 'edge: vanilla-extract virtual CSS (match resource)', fixture: 'edge-vanilla', cmd: 'npm run -s build',
+    expectIncludes: ['lodash-es@4.18.1'], expectExcludes: ['@vanilla-extract/webpack-plugin@2.3.27', '@vanilla-extract/css@1.21.2'] },
+  { name: 'edge: externals are not listed', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_EXTERNALS: '1' },
+    expect: W5.filter(p => !p.startsWith('lodash-es@')) },
   // webpack's context is a subdirectory: keys are relative to it, syft still reads every entry by its name field
   { name: 'edge: context below the project root', fixture: 'edge-context', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'],
     expectKeys: { '../node_modules/debug': 'debug@2.6.9', '../node_modules/debug/node_modules/ms': 'ms@2.0.0', '../node_modules/ms': 'ms@2.1.3' } },

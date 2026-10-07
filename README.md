@@ -14,16 +14,25 @@ tree-shaking proves unused, and writes the rest into output chunks. A package is
 its files ends up in the output:
 
 - in an emitted chunk
-- in a chunk of a child compiler whose files are emitted too: workers built by `worker-loader`,
-  workbox's `InjectManifest` service worker. Child compilers that only run at build time
-  (html-webpack-plugin's template, mini-css-extract-plugin's loader) are not counted
+- in a chunk of a child compiler whose output is shipped: emitted next to the bundle (workers built by
+  `worker-loader`, workbox's `InjectManifest` service worker) or inlined into a bundled module
+  (`worker-loader`'s `inline: 'no-fallback'`). Child compilers that only run at build time
+  (html-webpack-plugin's template, mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted
 - copied verbatim into the output, e.g. by `copy-webpack-plugin`
+
+A module counts as the file webpack itself names it by (its `nameForCondition`, also used for
+`module.rules` and `splitChunks`): its resource, or the match resource of a `<name>!=!<loaders>!<file>`
+request. Loaders that generate a module from a placeholder file name it that way: vanilla-extract's CSS
+reads a placeholder in `@vanilla-extract/webpack-plugin`, which is therefore not listed. A package file
+pulled in under a first-party match resource is not listed either.
 
 That is *shipped* code, not necessarily *executed* code:
 lazy-loaded chunks that are never opened, branches that never run, or a package of which only one
 function is used are all listed. Packages the bundler leaves out (externals, CDN scripts,
 unresolvable dynamic `require(variable)`) are not. Neither are files that other build steps put into
-the output without going through the bundler (e.g. a `cp node_modules/x/dist/x.js dist/` in a script).
+the output without going through the bundler (e.g. a `cp node_modules/x/dist/x.js dist/` in a script),
+nor a package whose only shipped trace is a constant webpack inlined at the use site, leaving the
+package's module in no chunk.
 
 What gets shipped depends on the import graph, not on whether a package is declared under
 `dependencies` or `devDependencies`. With this project (from the tests):
@@ -146,9 +155,18 @@ module.exports = {
 };
 ```
 
+A compiler that has the plugin in its config is not patched a second time when `NODE_OPTIONS` is set too.
+
 ## Output
 
-Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`:
+Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`. Compilers that share
+an output directory (e.g. a config array whose app and service worker both go to `dist/`) share that
+lockfile: it lists the packages of all of them, also when they build in parallel or rebuild in watch
+mode. A compiler with `output.clean` removes the others' files, and so their packages from the lockfile;
+a new compiler for the same config (same name, entry, target and file names, e.g. a build restarted in the
+same process) replaces the previous one's packages.
+This works for compilers in the same process; separate processes writing to one directory (e.g. two
+`webpack` commands run by `concurrently`) overwrite each other's lockfile.
 
 ```json
 {
@@ -165,10 +183,17 @@ Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`:
 - keys are the packages' real locations (symlinks resolved) relative to webpack's `context`, so nested
   duplicate versions and pnpm / Yarn Plug'n'Play layouts stay distinct. With a `context` below the
   project root they start with `../node_modules/`
-- a package whose real location is outside `node_modules` — a workspace package, `file:` / `link:`
-  dependencies — is first-party and not listed, also with `resolve.symlinks: false`
+- a package outside the project — outside the `context` and not in an ancestor directory's
+  `node_modules`, e.g. in Yarn's global cache (Yarn 4's default) or a shared store — is keyed
+  `node_modules/<name>` (`node_modules/<name>@<version>` if that is taken), because its real path differs
+  between machines
+- a package whose real location is outside `node_modules` — a workspace package, a `link:` or `portal:`
+  dependency, a `file:` directory dependency installed by npm as a symlink — is first-party and not
+  listed, also with `resolve.symlinks: false`. Its dependencies are listed. Yarn 2+ and pnpm copy a
+  `file:` directory dependency into `node_modules` instead, which makes it a listed package
 - `name`, `version` and `license` come from each package's own `package.json` (legacy `license: {type}`
-  and `licenses: [...]` forms included)
+  and `licenses: [...]` forms included). A directory in `node_modules` whose `package.json` has no name
+  or version cannot be listed; a warning names it
 - entries are sorted by name, version and path in code-unit order, so the same build writes the same
   bytes on every machine, whatever its locale
 - the root entry has no name, so syft does not report the application itself as a package
@@ -179,8 +204,8 @@ Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`:
 | Variable | Default | |
 |---|---|---|
 | `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json` — syft only reads files with exactly that name |
-| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr |
-| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated adapter names to skip, or `all` |
+| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (`0` and `false` also mean off) |
+| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated adapter names to skip, or `all` (case-insensitive) |
 
 ## Supported
 
@@ -212,7 +237,8 @@ Next does not bundle many packages into the **server** output; the server loads 
 ```
 src/register.cjs     NODE_OPTIONS entry point: registers the adapters and installs the hooks
 src/hooks.cjs        module-load hooks shared by all adapters
-src/core/            bundler-agnostic: source files -> packages -> package-lock.json
+src/core/            bundler-agnostic: source files -> packages -> package-lock.json, merged for
+                     compilers that write the same lockfile (outputs.cjs)
 src/adapters/        one per bundler: answers "which source files are in the emitted output?"
 test/unit.cjs        unit tests of the core and the adapter's detection logic (no network, no fixtures)
 test/matrix.cjs      fixtures (app x bundler x installer) and cases, as data
@@ -222,8 +248,8 @@ test/oracles/        per bundler, an independent build that derives the expected
 
 Adapters must never break a build: failures are reported on stderr and the build continues.
 
-To add a bundler: write `src/adapters/<name>.cjs` (an `onCjsLoad(exports, request, resolve)` that
-recognizes and patches it), add it to `src/register.cjs`, add an app under `test/apps/`, an oracle
+To add a bundler: write `src/adapters/<name>.cjs` (a `name` and an `onCjsLoad(exports, request, resolve)`
+that recognizes and patches it; emit through `core/outputs.cjs` so shared output directories work), add it to `src/register.cjs`, add an app under `test/apps/`, an oracle
 under `test/oracles/` and rows to `test/matrix.cjs`.
 
 ## Tests
@@ -244,10 +270,12 @@ node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd ar
 Every case checks the lockfile is valid for syft and lists exactly the expected packages, that
 it agrees with the oracle, and — if `syft` is on `PATH` — that syft reads exactly those packages.
 Besides installers and bundler versions, the cases cover watch-mode rebuilds, warm builds from webpack's
-persistent cache, `BUNDLE_LOCKFILE_FILE`, a failing adapter, and edge cases: npm aliases, Babel-injected
-helpers, CSS and asset modules from packages, a DLL, workspace packages (also with `resolve.symlinks:
-false`), subpath manifests, nested worker-loader workers (webpack 4 and 5), a workbox service worker,
-files copied by copy-webpack-plugin and a `context` below the project root.
+persistent cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, and edge cases:
+npm aliases and one version at several paths, Yarn's global cache, Babel-injected helpers, CSS and asset
+modules from packages, a DLL, two compilers sharing an output directory, workspace packages (also with
+`resolve.symlinks: false`), subpath manifests, nested and inlined worker-loader workers (webpack 4 and 5),
+a workbox service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin
+(webpack 4 and 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root.
 
 The devDependencies case also runs a functional SBOM check: it stages the build output like a package
 would install it (`usr/share/app/dist/`), runs `syft scan dir:` with SPDX JSON output, and requires
@@ -259,18 +287,25 @@ The matrix runs on Node.js 24 (Wolfi `nodejs-24`); other Node.js versions are no
 ### Comparison with the CycloneDX webpack plugin
 
 `test/compare/` attaches [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin)
-to any webpack 5 build the same way (no config changes) and reports, per compiler output, the packages
-only one of the two lists — each explained by what webpack processed vs. what is in the emitted chunks:
+to every webpack 5 compiler bundle-lockfile attaches to (no config changes) and reports, per compiler
+output, the packages only one of the two lists — each explained by what webpack processed vs. what is in
+the emitted output (the same files bundle-lockfile counts):
 
 ```sh
 sh test/compare/fixtures.sh /tmp/fixtures     # all webpack 5 / Next.js fixtures
 ```
 
-On the fixtures, every difference is a package CycloneDX lists but that is in no emitted chunk
-(tree-shaken `uuid`; `css-loader`, which only runs at build time), plus workspace packages, which
-bundle-lockfile leaves out as first-party, and copies vendored inside another package
-(`next/dist/compiled/@edge-runtime/cookies`), which bundle-lockfile lists as the containing package
-(`next`). `test/bigproject/superset.sh` runs the same comparison,
+On the fixtures, every difference is explained:
+- CycloneDX lists packages that are not in the emitted output: tree-shaken `uuid`; `css-loader` and
+  vanilla-extract's plugin, which only run at build time
+- CycloneDX lists workspace packages, which bundle-lockfile leaves out as first-party, and manifests
+  nested inside a package (`preact/hooks` as `preact-hooks`, `next/dist/compiled/@edge-runtime/cookies`),
+  which bundle-lockfile lists as the containing package
+- bundle-lockfile lists packages the main compilation never processed but that are shipped: those in
+  workers (worker-loader, workbox's service worker) and files copied by copy-webpack-plugin
+- with two compilers writing to one directory, CycloneDX's `bom.json` holds only the last one's packages
+
+`test/bigproject/superset.sh` runs the same comparison,
 build cost and syft checks on Apache Superset's frontend.
 
 ## License

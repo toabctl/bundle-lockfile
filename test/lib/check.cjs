@@ -5,7 +5,8 @@ const path = require('path');
 
 const LOCKFILE = 'bundle-lockfile/package-lock.json';
 
-// Sorted name@version list of one lockfile. Throws if it is malformed.
+// Sorted, unique name@version list of one lockfile (the same name@version can sit at several paths, e.g. nested
+// duplicates; keys are checked by expectKeys). Throws if it is malformed.
 function readLockfile(f) {
   const lock = JSON.parse(fs.readFileSync(f, 'utf8'));
   if (lock.lockfileVersion !== 3 || typeof lock.packages !== 'object') throw new Error(`${f}: not a lockfileVersion 3 package-lock`);
@@ -18,7 +19,7 @@ function readLockfile(f) {
     if (!p.version) throw new Error(`${f}: no version for ${key}`);
     list.push(`${p.name}@${p.version}`);
   }
-  return list.sort();
+  return [...new Set(list)].sort();
 }
 
 // All lockfiles below outDir: { "<compiler output dir relative to outDir>": [name@version, ...] }.

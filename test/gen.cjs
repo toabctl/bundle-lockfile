@@ -24,11 +24,16 @@ const sh = (cmd, cwd) => {
 };
 
 // vendored tool release: npm tarball unpacked into .tools/<dir>
+// (unpacked next to it and renamed when complete: a failed download must not leave a directory that a later
+// run takes for the tool)
 function tool(spec, dir) {
   const d = path.join(TOOLS, dir);
   if (!fs.existsSync(d)) {
-    fs.mkdirSync(d, { recursive: true });
-    sh(`npm pack -q ${spec} && tar xzf *.tgz --strip-components=1 && rm -f *.tgz`, d);
+    const tmp = `${d}.tmp`;
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(tmp, { recursive: true });
+    sh(`npm pack -q ${spec} && tar xzf *.tgz --strip-components=1 && rm -f *.tgz`, tmp);
+    fs.renameSync(tmp, d);
   }
   return d;
 }
@@ -45,12 +50,14 @@ const installers = {
   npm: (dir, { version }) => sh(`${version ? `node ${npmBin(version)}` : 'npm'} install -q --no-audit --no-fund`, dir),
   yarn1: (dir) => sh('yarn install -s --non-interactive --no-progress', dir),
   bun: (dir) => sh('bun install --silent', dir),
-  'yarn-berry': (dir, { version, linker }) => {
+  'yarn-berry': (dir, { version, linker, globalCache = false }) => {
     const rel = `.yarn/releases/yarn-${version}.cjs`;
     fs.mkdirSync(path.join(dir, '.yarn/releases'), { recursive: true });
     fs.copyFileSync(path.join(tool(`@yarnpkg/cli-dist@${version}`, `yarn-${version}`), 'bin/yarn.js'), path.join(dir, rel));
-    // project-local cache so installs work offline later; yarn 1 on PATH delegates to yarnPath
-    fs.writeFileSync(path.join(dir, '.yarnrc.yml'), `yarnPath: ${rel}\nnodeLinker: ${linker}\nenableGlobalCache: false\nenableTelemetry: false\n`);
+    // a cache that stays, so installs work offline later: project-local, or - like yarn 4's default - the
+    // global cache, kept in <dir>/.tools; yarn 1 on PATH delegates to yarnPath
+    const cache = globalCache ? `enableGlobalCache: true\nglobalFolder: ${path.join(TOOLS, 'yarn-global')}` : 'enableGlobalCache: false';
+    fs.writeFileSync(path.join(dir, '.yarnrc.yml'), `yarnPath: ${rel}\nnodeLinker: ${linker}\n${cache}\nenableTelemetry: false\n`);
     fs.writeFileSync(path.join(dir, 'yarn.lock'), '');
     sh(`node ${rel} install`, dir);
   },

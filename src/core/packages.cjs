@@ -29,9 +29,21 @@ function licenseOf(j) {
 
 function readPackage(dir) {
   let j;
-  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { return null; }
-  if (!j || typeof j.name !== 'string' || typeof j.version !== 'string') return null;
+  // a leading byte order mark is valid UTF-8 that JSON.parse rejects; npm strips it too
+  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^﻿/, '')); } catch { return null; }
+  if (!j || typeof j.name !== 'string' || !j.name || typeof j.version !== 'string' || !j.version) return null;
   return { name: j.name, version: j.version, path: dir, license: licenseOf(j) };
+}
+
+// Bundled code from a package the lockfile cannot list must not go unnoticed. Directories such as
+// node_modules/.cache are no packages: tools generate files there, so they are skipped quietly.
+const warned = new Set();
+function unlisted(root) {
+  const msg = `no package.json with name and version in ${root} - its bundled files are not listed`;
+  if (path.basename(root).startsWith('.')) { config.debug(msg); return; }
+  if (warned.has(root)) return; // once per process, not on every watch rebuild
+  warned.add(root);
+  config.warn(msg);
 }
 
 // The real location of a package directory. Bundlers resolve symlinks by default; with
@@ -39,7 +51,19 @@ function readPackage(dir) {
 // package (-> packages/ui) or node_modules/foo for pnpm (-> node_modules/.pnpm/foo@1/node_modules/foo).
 // Paths fs cannot resolve (e.g. Yarn PnP zip paths without the PnP fs patch) stay as they are.
 function realRoot(root) {
-  try { return fs.realpathSync(root); } catch { return root; }
+  let real = root;
+  try { real = fs.realpathSync(root); } catch { /* keep root */ }
+  return unvirtual(real);
+}
+
+// Yarn PnP gives packages with peer dependencies one virtual path per dependent set, and its fs keeps them as
+// real paths: <dir>/__virtual__/<name>-virtual-<hash>/<depth>/<subpath> is <dir>/(../ x depth)<subpath>
+// (yarn's VirtualFS.resolveVirtual). Resolved, every instance is the one package in the cache.
+const VIRTUAL = /^(.*?[\\/](?:__virtual__|\$\$virtual))[\\/][^\\/]+[\\/](\d+)(?:[\\/](.*))?$/;
+function unvirtual(p) {
+  const m = p.match(VIRTUAL);
+  if (!m) return p;
+  return unvirtual(path.join(path.dirname(m[1]), '../'.repeat(Number(m[2])), m[3] || '.'));
 }
 
 // files: absolute paths of source files that ended up in the bundle (query strings allowed).
@@ -62,9 +86,9 @@ function packagesForFiles(files) {
     if (pkgs.has(root)) continue;
     const p = readPackage(root);
     if (p) pkgs.set(root, p);
-    else config.debug('no name/version in', path.join(root, 'package.json'), '- skipped');
+    else unlisted(root);
   }
   return [...pkgs.values()];
 }
 
-module.exports = { packageRoot, packagesForFiles };
+module.exports = { packageRoot, packagesForFiles, unvirtual };

@@ -82,7 +82,7 @@ webpack_build() { # name extra-node-options
   echo '```'
   cold; webpack_build compare "$COMPARE"
   echo '```'
-  mkdir -p "$R/compare" && cp "$OUT/cyclonedx/bom.json" "$OUT/bundle-lockfile-compare/diag.json" "$R/compare/" 
+  mkdir -p "$R/compare" && cp "$OUT/cyclonedx/bom.json" "$OUT"/bundle-lockfile-compare/diag-*.json "$R/compare/" 
   echo
   node "$REPO/test/compare/report.cjs" "$OUT" "bundle-lockfile vs. CycloneDX webpack plugin"
   echo "## npm run build (the project's own script)"

@@ -28,5 +28,12 @@ run edge-css dist npm run -s build
 run edge-asset dist npm run -s build
 run edge-dll dist npm run -s build
 run edge-workspace dist npm run -s build
+run edge-subpkg dist npm run -s build
+run edge-worker dist npm run -s build
+run edge-workbox dist npm run -s build
+run edge-copy dist npm run -s build
+run edge-context dist npm run -s build
+run edge-shared-output dist npm run -s build
+run edge-vanilla dist npm run -s build
 run next15 .next ./node_modules/.bin/next build
 run next16 .next ./node_modules/.bin/next build --webpack

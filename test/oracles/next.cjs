@@ -22,6 +22,6 @@ if (r.status !== 0) { console.error(`oracle: next build exited ${r.status}`); pr
 const result = {};
 for (const f of fs.existsSync(out) ? fs.readdirSync(out) : []) {
   const { output, packages } = JSON.parse(fs.readFileSync(path.join(out, f), 'utf8'));
-  result[output] = packages;
+  result[output] = [...new Set([...(result[output] || []), ...packages])].sort(); // compilers sharing an output dir
 }
 console.log(JSON.stringify(result));
