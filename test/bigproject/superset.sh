@@ -1,5 +1,5 @@
 #!/bin/sh
-# Real-world run on Apache Superset's frontend (webpack 5, ~260 direct dependencies).
+# Real-world run on Apache Superset's frontend (webpack 5, ~280 direct dependencies and devDependencies).
 # Run in a Wolfi container with network, e.g. on a workstation:
 #   docker run --rm -v "$PWD":/repo:ro -v /var/tmp/superset:/work cgr.dev/chainguard/wolfi-base \
 #     sh /repo/test/bigproject/superset.sh /work [tag]

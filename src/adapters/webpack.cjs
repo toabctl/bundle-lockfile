@@ -16,12 +16,12 @@ const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
 const NEXT_WEBPACK = /[\\/]next[\\/]dist[\\/]compiled[\\/]webpack[\\/]webpack(\.js)?$/;
 let writers = 0;
 
-// Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (used for
-// module.rules, splitChunks and stats). For a NormalModule it is the resource without query - or the match
+// Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (the path
+// module.rules match it against; also used for splitChunks tests, rules' issuer condition and webpack 5's stats). For a NormalModule it is the resource without query - or the match
 // resource of a "<name>!=!<loaders>!<resource>" request: loaders that generate a module from a placeholder
 // file name it that way (vanilla-extract's CSS reads @vanilla-extract/webpack-plugin/extracted.js), so the
 // placeholder's package does not count. Modules such as mini-css-extract's CssModule implement it without
-// having a resource; externals and webpack's runtime modules return null (webpack 4's base Module has
+// having a resource (CssModule: the resource of the CSS module it came from, never its match resource); externals and webpack's runtime modules return null (webpack 4's base Module has
 // nameForCondition = null).
 // A module without a resource that names its issuer's resource was generated from the issuer - mini-css-extract's
 // CssModule for the CSS a module produced - and is the file webpack names the issuer by. That carries a match
@@ -43,7 +43,7 @@ const hasAsset = (compilation, name) => (compilation.getAsset ? compilation.getA
 const issuers = (compilation) => (m) => (compilation.moduleGraph ? compilation.moduleGraph.getIssuer(m) : m.issuer); // webpack 5 : 4
 
 // Source files of modules, including the inner modules of scope-hoisted ConcatenatedModules (.modules),
-// which are not in any chunk themselves.
+// which webpack takes out of the root's chunks (for their JavaScript).
 function sourcesOf(compilation, modules, into = new Set()) {
   const issuerOf = issuers(compilation);
   const walk = (list) => {
@@ -67,7 +67,7 @@ function sourcesOf(compilation, modules, into = new Set()) {
 //   delete their own output (html-webpack-plugin 5, mini-css-extract-plugin, vanilla-extract) or compile a
 //   file that is no module of the parent (html-webpack-plugin 4's template).
 // - files copied into the output verbatim (copy-webpack-plugin): asset info.sourceFilename, relative to the
-//   context. webpack's asset modules set it too; those are in a chunk anyway.
+//   compiler's context (webpack >= 4.40 has asset info). webpack's asset modules set it too; those are in a chunk anyway.
 function bundledFiles(compilation) {
   const files = new Set();
   const ship = (c, chunks) => {
@@ -107,8 +107,9 @@ function writerOf(compiler) {
   return (compiler[WRITER] = id);
 }
 
-// webpack's output.clean removes everything else in the output directory, including what other compilers
-// wrote there; dry runs and kept files do not.
+// webpack's output.clean (>= 5.20) deletes, on a compiler's first build, every file in the output directory that
+// is not its own asset, including what other compilers already wrote there. Approximation: with keep, webpack
+// still deletes everything not matching it, and watch rebuilds delete only the compiler's own stale files.
 function cleans(compilation) {
   const clean = compilation.outputOptions && compilation.outputOptions.clean;
   return clean === true || (!!clean && typeof clean === 'object' && !clean.dry && !clean.keep);
@@ -132,14 +133,14 @@ class BundleLockfilePlugin {
 
   apply(compiler) {
     compiler[APPLIED] = true;
-    if (compiler.webpack) { // webpack 5
+    if (compiler.webpack) { // webpack >= 5.1
       const { Compilation, sources } = compiler.webpack;
       compiler.hooks.thisCompilation.tap(NAME, (compilation) => {
         compilation.hooks.processAssets.tap({ name: NAME, stage: Compilation.PROCESS_ASSETS_STAGE_REPORT }, () => {
           this.emit(compilation, (json) => compilation.emitAsset(this.file, new sources.RawSource(json)));
         });
       });
-    } else { // webpack 4
+    } else { // webpack 4 and 5.0 (where afterOptimizeAssets is the deprecated alias of afterProcessAssets)
       let RawSource;
       try { RawSource = createRequire(this.compilerFile || __filename)('webpack-sources').RawSource; } catch { /* fallback below */ }
       compiler.hooks.thisCompilation.tap(NAME, (compilation) => {
@@ -193,9 +194,9 @@ function patchCompiler(Compiler, where) {
   config.debug('webpack: patched Compiler from', where);
 }
 
-// next/dist/compiled/webpack/webpack.js only exports init() when it is loaded; init() then fills in
-// exports.webpack (Object.assign(exports, require('./bundle5')())). Patch right after init(), and also
-// when an already initialized copy is required.
+// In Next 12-15, next/dist/compiled/webpack/webpack.js only exports init() when it is loaded; init() then fills
+// in exports.webpack (Object.assign(exports, require('./bundle5')())). Next 16 fills the exports when the module
+// is loaded (no init()). Patch an already filled copy right away, and otherwise right after init().
 function patchNext(exp, where) {
   if (exp.webpack && exp.webpack.Compiler) patchCompiler(exp.webpack.Compiler, where);
   if (typeof exp.init !== 'function' || exp.init[PATCHED]) return;

@@ -1,7 +1,7 @@
 'use strict';
 // Comparison tooling (not used by the tests): attaches @cyclonedx/webpack-plugin and a diagnostics
 // plugin to every top-level webpack 5 compiler, without config changes - through bundle-lockfile's own
-// compiler hook (onCompiler), so both see the same compilers. It loads bundle-lockfile too, so one --require is enough (Next.js 15 mangles several:
+// compiler hook (onCompiler), so both see the same compilers. It loads bundle-lockfile too, so one --require is enough (Next.js 15.0-16.3 mangle several:
 // "--require A --require B" reaches its build workers as the single path "A B"):
 //   NODE_OPTIONS="--require <repo>/test/compare/inject-cyclonedx.cjs"
 //   BUNDLE_LOCKFILE_CDX_DIR=<dir whose node_modules contains @cyclonedx/webpack-plugin>

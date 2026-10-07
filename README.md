@@ -9,8 +9,9 @@ whose code is in the emitted bundle, so SBOM tools such as [syft](https://github
 report what is really shipped.
 
 "In the bundle" is decided at build time, the way the bundler decides it: starting from the entry
-points it follows static `import` / `require()` / `import()` statements, drops modules that
-tree-shaking proves unused, and writes the rest into output chunks. A package is listed if any of
+points it follows static `import` / `require()` / `import()` statements, skips ES modules whose exports
+are unused and that are free of side effects (`sideEffects` in `package.json`, or proven by webpack 5),
+and writes the rest into output chunks. A package is listed if any of
 its files ends up in the output:
 
 - in an emitted chunk
@@ -20,8 +21,8 @@ its files ends up in the output:
   (html-webpack-plugin's template, mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted
 - copied verbatim into the output, e.g. by `copy-webpack-plugin`
 
-A module counts as the file webpack itself names it by (its `nameForCondition`, also used for
-`module.rules` and `splitChunks`): its resource, or the match resource of a `<name>!=!<loaders>!<file>`
+A module counts as the file webpack itself names it by (its `nameForCondition`: the path `module.rules`
+match it against, also used by `splitChunks` cache-group tests): its resource, or the match resource of a `<name>!=!<loaders>!<file>`
 request. Loaders that generate a module from a placeholder file name it that way: vanilla-extract's CSS
 reads a placeholder in `@vanilla-extract/webpack-plugin`, which is therefore not listed. A package file
 pulled in under a first-party match resource is not listed either.
@@ -31,8 +32,8 @@ lazy-loaded chunks that are never opened, branches that never run, or a package 
 function is used are all listed. Packages the bundler leaves out (externals, CDN scripts,
 unresolvable dynamic `require(variable)`) are not. Neither are files that other build steps put into
 the output without going through the bundler (e.g. a `cp node_modules/x/dist/x.js dist/` in a script),
-nor a package whose only shipped trace is a constant webpack inlined at the use site, leaving the
-package's module in no chunk.
+nor a package whose only use is an ES module constant that webpack (>= 5.108, `optimization.inlineExports`)
+inlined at the use site, leaving its side-effect-free module in no chunk.
 
 What gets shipped depends on the import graph, not on whether a package is declared under
 `dependencies` or `devDependencies`. With this project (from the tests):
@@ -46,7 +47,7 @@ where the source code imports only `lodash-es` and `classnames`:
 
 | | reports |
 |---|---|
-| syft on the project's `package-lock.json` | `lodash-es`, `is-number` (not shipped) — but not `classnames` (shipped; skipped as a devDependency) |
+| syft on the project's `package-lock.json` | `lodash-es`, `is-number` (not shipped) and the project itself — but not `classnames` (shipped; skipped as a devDependency) |
 | syft on `bundle-lockfile`'s output | `lodash-es`, `classnames` |
 
 ## Usage
@@ -82,7 +83,7 @@ the `--require`. For such projects, run the bundler directly with the script's s
 **Next.js 15.0 – 16.3: use a single `--require`.** These versions rewrite `NODE_OPTIONS` for their
 build workers and merge repeated flags: `--require a.cjs --require b.cjs` reaches the workers as the
 single path `"a.cjs b.cjs"` and the build fails; with `--require=a.cjs --require=b.cjs` only the last
-one reaches the workers ([vercel/next.js#96571](https://github.com/vercel/next.js/issues/96571),
+one reaches the workers ([vercel/next.js#96582](https://github.com/vercel/next.js/issues/96582),
 fixed in 16.4.0 by [#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15).
 Next 12–14 are not affected. If you need several preloads, require the others from one file.
 
@@ -109,8 +110,8 @@ $ BUNDLE_LOCKFILE_DEBUG=1 npm run build
 asset bundle-lockfile/package-lock.json 754 bytes [emitted]
 ```
 
-(A second `patched Compiler` line can come from worker threads, e.g. terser's; they inherit
-`NODE_OPTIONS` but never compile, so nothing is written for them.)
+(More `patched Compiler` lines come from other processes that inherit `NODE_OPTIONS` and load webpack,
+e.g. Next.js's build workers; a process that loads webpack but never compiles writes nothing.)
 
 ### In a melange package build
 
@@ -118,7 +119,7 @@ asset bundle-lockfile/package-lock.json 754 bytes [emitted]
 environment:
   contents:
     packages:
-      - bundle-lockfile          # installs src/ to /usr/lib/bundle-lockfile/
+      - bundle-lockfile          # a package that installs src/ to /usr/lib/bundle-lockfile/ (not in Wolfi yet)
   environment:
     NODE_OPTIONS: "--max-old-space-size=16384 --require /usr/lib/bundle-lockfile/register.cjs"
 
@@ -134,7 +135,8 @@ pipeline:
 An SBOM tool scanning the package contents (e.g. `syft scan dir:`) then finds the bundled npm
 packages in `usr/share/myapp/dist/bundle-lockfile/package-lock.json`. If the package also ships the
 project's own full lockfile (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), it reports the
-packages from both.
+packages from both. syft does not read lockfiles in image scans by default: scanning the resulting
+container image needs `--select-catalogers +javascript-lock-cataloger`.
 
 Note that the lockfile is part of the build output: if that output is served by a web server
 (e.g. a `public/assets` directory), the lockfile is publicly readable too.
@@ -155,16 +157,20 @@ module.exports = {
 };
 ```
 
-A compiler that has the plugin in its config is not patched a second time when `NODE_OPTIONS` is set too.
+A compiler that has the plugin in its config does not get it a second time when `NODE_OPTIONS` is set too.
 
 ## Output
 
 Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`. Compilers that share
 an output directory (e.g. a config array whose app and service worker both go to `dist/`) share that
 lockfile: it lists the packages of all of them, also when they build in parallel or rebuild in watch
-mode. A compiler with `output.clean` removes the others' files, and so their packages from the lockfile;
-a new compiler for the same config (same name, entry, target and file names, e.g. a build restarted in the
-same process) replaces the previous one's packages.
+mode. A new compiler for the same config (same name, entry, target and file names, e.g. a build restarted
+in the same process) replaces the previous one's packages.
+A compiler with `output.clean` (neither `dry` nor `keep`) replaces the others' packages in the lockfile with
+its own on every build, because webpack deletes the files the others have already written. This is an
+approximation: webpack deletes them only on the compiler's first build (watch rebuilds delete only its own
+stale files), files the others write afterwards survive, and with `keep` it still deletes all non-matching
+files while bundle-lockfile keeps the others' packages.
 This works for compilers in the same process; separate processes writing to one directory (e.g. two
 `webpack` commands run by `concurrently`) overwrite each other's lockfile.
 
@@ -189,15 +195,18 @@ This works for compilers in the same process; separate processes writing to one 
   between machines
 - a package whose real location is outside `node_modules` — a workspace package, a `link:` or `portal:`
   dependency, a `file:` directory dependency installed by npm as a symlink — is first-party and not
-  listed, also with `resolve.symlinks: false`. Its dependencies are listed. Yarn 2+ and pnpm copy a
-  `file:` directory dependency into `node_modules` instead, which makes it a listed package
+  listed, also with `resolve.symlinks: false`. Its dependencies are listed. Yarn 2+ (packs it into its
+  cache) and pnpm (hard-links it into `node_modules/.pnpm`) put a `file:` directory dependency inside
+  `node_modules` instead, which makes it a listed package
 - `name`, `version` and `license` come from each package's own `package.json` (legacy `license: {type}`
   and `licenses: [...]` forms included). A directory in `node_modules` whose `package.json` has no name
-  or version cannot be listed; a warning names it
+  or version cannot be listed; a warning names it (only a debug message for directories starting with a
+  dot, such as `node_modules/.cache`, where tools generate files)
 - entries are sorted by name, version and path in code-unit order, so the same build writes the same
   bytes on every machine, whatever its locale
 - the root entry has no name, so syft does not report the application itself as a package
-- syft's `javascript-lock-cataloger` reads it (directory scans by default)
+- syft's `javascript-lock-cataloger` reads it (by default in directory and file scans, not in image scans),
+  unless its path is below a `node_modules` directory, which syft skips
 
 ## Settings
 
@@ -214,19 +223,21 @@ This works for compilers in the same process; separate processes writing to one 
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
 
-Tested with npm 8/9/10/11/12, npx, direct `node_modules/.bin` calls, yarn 1, yarn 3/4 (Plug'n'Play
-and node-modules linker), pnpm 8/9/10/11/12 and bun — see [`test/matrix.cjs`](test/matrix.cjs).
-yarn 2 is not tested: it does not run on Node.js >= 23 (it calls the removed `util.isDate`).
+Tested with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
+calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules
+linker), pnpm 8/9/10/11/12 and bun — see [`test/matrix.cjs`](test/matrix.cjs).
+yarn 2 is not tested: when it writes zip archives it calls `util.isDate`, which Node.js 23 removed.
 
 Not yet: rspack, Vite / Rollup / Rolldown, esbuild, Turbopack.
 
 ### Next.js
 
-Next runs several compilers, so a build writes one lockfile per compiler output:
-`.next/bundle-lockfile/` (client), `.next/server/chunks/bundle-lockfile/` (server) and
+Next runs several compilers, so a build writes one lockfile per compiler output (below `distDir`,
+`.next` by default): `.next/bundle-lockfile/` (client), `.next/server/chunks/bundle-lockfile/` (server) and
 `.next/server/bundle-lockfile/` (edge-server; empty if there are no edge routes).
 
-Next does not bundle many packages into the **server** output; the server loads them from
+Next does not bundle many packages into the **server** output (Pages Router dependencies, packages in
+`serverExternalPackages`); the server loads them from
 `node_modules` at runtime. Next records those runtime files in `.next/server/**/*.nft.json`
 (in the tests: `ms` is only in the client lockfile, and `index.js.nft.json` lists `ms`, `uuid`,
 `react`, `react-dom`, … from `node_modules`). Such packages are not in any bundle-lockfile; if
@@ -267,8 +278,10 @@ node test/gen.cjs /tmp/fixtures      # installs fixtures (network)
 node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd arg: case-name regex
 ```
 
-Every case checks the lockfile is valid for syft and lists exactly the expected packages, that
-it agrees with the oracle, and — if `syft` is on `PATH` — that syft reads exactly those packages.
+Every case that expects a lockfile checks that it is valid for syft and lists the expected packages
+(exactly, or including / excluding given ones), that it agrees exactly with the
+oracle, and — if `syft` is on `PATH` — that syft reads exactly those packages. The other cases check that
+no lockfile is written.
 Besides installers and bundler versions, the cases cover watch-mode rebuilds, warm builds from webpack's
 persistent cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, and edge cases:
 npm aliases and one version at several paths, Yarn's global cache, Babel-injected helpers, CSS and asset
