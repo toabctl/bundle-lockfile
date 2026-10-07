@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fixtures, cases } = require('./matrix.cjs');
-const { readLockfiles, sameMap, same, show } = require('./lib/check.cjs');
+const { LOCKFILE, readLockfiles, sameMap, same, show } = require('./lib/check.cjs');
 
 const [fxDir, filter] = process.argv.slice(2);
 if (!fxDir) { console.error('usage: node test/run.cjs <fixtures-dir> [case-name-regex]'); process.exit(2); }
@@ -17,11 +17,12 @@ const FX = path.resolve(fxDir);
 const REGISTER = path.resolve(__dirname, '../src/register.cjs');
 const hasSyft = spawnSync('syft', ['version'], { stdio: 'ignore' }).status === 0;
 
-function sh(cmd, cwd, env) {
+function run(cmd, cwd, env) {
   const r = spawnSync('sh', ['-c', cmd], { cwd, env, encoding: 'utf8', maxBuffer: 64 << 20 });
   if (r.status !== 0) throw new Error(`"${cmd}" exited ${r.status}\n${(r.stdout + r.stderr).split('\n').slice(-15).join('\n')}`);
-  return r.stdout;
+  return r;
 }
+const sh = (cmd, cwd, env) => run(cmd, cwd, env).stdout;
 
 function runCase(c) {
   const fx = fixtures[c.fixture];
@@ -51,16 +52,24 @@ function runCase(c) {
   }
   if (c.installed) notes.push(`${c.installed.length} packages installed`);
 
-  sh(c.cmd, dir, env);
+  const build = run(c.cmd, dir, env);
+  if (c.expectOutput && !c.expectOutput.test(build.stdout + build.stderr)) throw new Error(`build output does not match ${c.expectOutput}`);
   const got = readLockfiles(outDir);
   const all = [...new Set(Object.values(got).flat())].sort();
 
   if (c.expect === null) {
     if (Object.keys(got).length) throw new Error(`expected no lockfile, got${show(got)}`);
-    return 'no lockfile, as expected';
+    return `no lockfile, as expected${c.expectOutput ? `; output matches ${c.expectOutput}` : ''}`;
   }
   if (!Object.keys(got).length) throw new Error('no lockfile written');
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
+  if (c.expectKeys) {
+    const lock = JSON.parse(fs.readFileSync(path.join(outDir, LOCKFILE), 'utf8'));
+    const keys = Object.fromEntries(Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => [k, `${p.name}@${p.version}`]));
+    if (!sameMap(Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, [v]])), Object.fromEntries(Object.entries(c.expectKeys).map(([k, v]) => [k, [v]]))))
+      throw new Error(`lockfile keys ${JSON.stringify(keys)}, expected ${JSON.stringify(c.expectKeys)}`);
+    notes.push('keys as expected');
+  }
   const missing = (c.expectIncludes || []).filter(p => !all.includes(p));
   if (missing.length) throw new Error(`missing ${missing.join(' ')} in${show(got)}`);
   const unwanted = (c.expectExcludes || []).filter(p => all.includes(p));

@@ -11,6 +11,8 @@ const disabled = new Set((env.BUNDLE_LOCKFILE_DISABLE || '').split(',').map(s =>
 module.exports = {
   file: env.BUNDLE_LOCKFILE_FILE || 'bundle-lockfile/package-lock.json',
   isDisabled: (name) => disabled.has('all') || disabled.has(name),
+  // test-only fault injection (BUNDLE_LOCKFILE_TEST_FAULT=collect) to prove a failing adapter does not break the build
+  fault: env.BUNDLE_LOCKFILE_TEST_FAULT || '',
   debug: (...a) => { if (env.BUNDLE_LOCKFILE_DEBUG) console.error('[bundle-lockfile]', ...a); },
   // always printed: a failing adapter must not break the build, but the missing lockfile must not go unnoticed
   warn: (...a) => console.error('[bundle-lockfile] WARNING:', ...a),

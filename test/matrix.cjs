@@ -24,6 +24,11 @@ const devdeps = (installer) => ({
   devDeps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', classnames: '2.5.1', 'left-pad': '1.3.0' }, // classnames: imported
 });
 
+// edge cases, all webpack 5 + npm
+const WEBPACK = { webpack: '5.111.1', 'webpack-cli': '7.2.3' };
+const edge = (app, deps, extra = {}) => ({ app, installer: { type: 'npm' }, deps: { ...WEBPACK, ...deps }, ...extra });
+const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/plugin-transform-runtime': '7.29.7', '@babel/runtime': '7.29.10', 'core-js': '3.50.0' };
+
 // installer: npm | yarn1 | bun (the tools in the test image) or a pinned, vendored yarn berry / pnpm release
 const fixtures = {
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
@@ -42,6 +47,12 @@ const fixtures = {
   'wp5-devdeps-npm': devdeps({ type: 'npm' }),
   'wp5-devdeps-yarn1': devdeps({ type: 'yarn1' }),
   'wp5-devdeps-pnpm11': devdeps({ type: 'pnpm', version: '11.28.5' }),
+  'edge-alias': edge('edge-alias', { ms: '2.1.3', 'ms-old': 'npm:ms@2.0.0' }),
+  'edge-babel': edge('edge-babel', BABEL7),
+  'edge-css': edge('edge-css', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
+  'edge-asset': edge('edge-asset', { 'bootstrap-icons': '1.13.1' }),
+  'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
+  'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
@@ -84,6 +95,7 @@ function nextCase(fixture, version, react, flags = '') {
 //   sbom       functional checks: stage files into a package-like root, `syft scan dir:` it as SPDX JSON and
 //              require exactly these npm packages (name, version, purl, declared license, source file)
 //   heapMB     assert the configured --max-old-space-size reached node
+//   expectOutput  RegExp the build's stdout+stderr must match
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
@@ -126,6 +138,19 @@ const cases = [
     ] },
   { name: 'devDependencies: yarn 1', fixture: 'wp5-devdeps-yarn1', cmd: 'yarn --offline -s build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED },
   { name: 'devDependencies: pnpm 11', fixture: 'wp5-devdeps-pnpm11', cmd: '$PNPM run build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED },
+  // edge cases
+  // keys are the install paths (like npm's own lockfile); the name field carries the real name
+  { name: 'edge: npm alias (ms-old = npm:ms@2.0.0)', fixture: 'edge-alias', cmd: 'npm run -s build', expect: ['ms@2.0.0', 'ms@2.1.3'],
+    expectKeys: { 'node_modules/ms': 'ms@2.1.3', 'node_modules/ms-old': 'ms@2.0.0' } },
+  { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'] },
+  { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
+  { name: 'edge: asset/resource from a package', fixture: 'edge-asset', cmd: 'npm run -s build', expectIncludes: ['bootstrap-icons@1.13.1'] },
+  // two compilers: dist/vendor (the DLL) and dist/main, which only references what is in the DLL
+  { name: 'edge: DllPlugin + multi-config array', fixture: 'edge-dll', cmd: 'npm run -s build', expectIncludes: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3', 'lodash-es@4.18.1'] },
+  // workspace packages resolve to their real path outside node_modules and count as first-party; their dependencies are listed
+  { name: 'edge: npm workspace package', fixture: 'edge-workspace', cmd: 'npm run -s build', expect: ['ms@2.1.3'] },
+  { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_TEST_FAULT: 'collect' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
   // Next.js
   { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1') },
   { name: 'Next.js 13.5.11', ...nextCase('next13', '13.5.11', '18.3.1') },

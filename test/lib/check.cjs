@@ -14,7 +14,8 @@ function readLockfile(f) {
   const list = [];
   for (const [key, p] of Object.entries(lock.packages)) {
     if (key === '') continue;
-    if (key.split('node_modules/').pop() !== p.name) throw new Error(`${f}: key ${key} does not end in node_modules/${p.name} (syft derives names that way)`);
+    if (!key.includes('node_modules/')) throw new Error(`${f}: key ${key} is not a node_modules path`);
+    if (typeof p.name !== 'string' || !p.name) throw new Error(`${f}: no name for ${key} (syft needs it for aliased packages)`);
     if (!p.version) throw new Error(`${f}: no version for ${key}`);
     list.push(`${p.name}@${p.version}`);
   }

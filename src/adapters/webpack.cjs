@@ -11,11 +11,19 @@ const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
 const APPLIED = Symbol.for('bundle-lockfile.webpack.applied');
 const NEXT_WEBPACK = /[\\/]next[\\/]dist[\\/]compiled[\\/]webpack[\\/]webpack(\.js)?$/;
 
+// Source file of a module: NormalModule.resource, else nameForCondition() - webpack's API for "which
+// file is this module from" (used by splitChunks), which modules such as mini-css-extract's CssModule
+// implement without having a resource. In webpack 4 the base Module has nameForCondition = null.
+function sourceFile(m) {
+  if (m.resource) return m.resource;
+  return typeof m.nameForCondition === 'function' ? m.nameForCondition() : null;
+}
+
 // Source files of all modules in emitted chunks. Scope-hoisted ConcatenatedModules carry their
 // inner modules in .modules; those inner modules are not in any chunk themselves.
 function bundledFiles(compilation) {
   const files = new Set();
-  const walk = (m) => { if (m.resource) files.add(m.resource); for (const im of m.modules || []) walk(im); };
+  const walk = (m) => { const f = sourceFile(m); if (f) files.add(f); for (const im of m.modules || []) walk(im); };
   for (const chunk of compilation.chunks) {
     const mods = compilation.chunkGraph ? compilation.chunkGraph.getChunkModulesIterable(chunk) : chunk.modulesIterable; // webpack 5 : 4
     for (const m of mods) walk(m);
@@ -28,6 +36,7 @@ class BundleLockfilePlugin {
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
 
   lockfile(compilation) {
+    if (config.fault === 'collect') throw new Error('injected fault (BUNDLE_LOCKFILE_TEST_FAULT=collect)');
     return lockfileForFiles(bundledFiles(compilation), compilation.compiler.context);
   }
 
