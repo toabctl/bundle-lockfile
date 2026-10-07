@@ -11,6 +11,7 @@ R=$W/results; mkdir -p "$R"
 apk add -q nodejs-22 npm git syft >/dev/null
 # superset's engines want npm ^10.8.1; npm 12 rejects its lockfile as out of sync ("npm ci ... not in sync")
 npm install -q -g npm@10 >/dev/null
+hash -r   # the shell still has /usr/bin/npm (12) cached; npm 10 is in /usr/local/bin
 
 [ -d "$W/superset" ] || git clone -q --depth 1 --branch "$TAG" https://github.com/apache/superset "$W/superset"
 FE=$W/superset/superset-frontend
