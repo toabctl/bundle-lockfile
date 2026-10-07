@@ -59,6 +59,7 @@ const fixtures = {
   'edge-asset': edge('edge-asset', { 'bootstrap-icons': '1.13.1' }),
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
+  'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
@@ -163,6 +164,8 @@ const cases = [
   { name: 'edge: DllPlugin + multi-config array', fixture: 'edge-dll', cmd: 'npm run -s build', expectIncludes: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3', 'lodash-es@4.18.1'] },
   // workspace packages resolve to their real path outside node_modules and count as first-party; their dependencies are listed
   { name: 'edge: npm workspace package', fixture: 'edge-workspace', cmd: 'npm run -s build', expect: ['ms@2.1.3'] },
+  // a nested package.json with its own name/version (preact/hooks -> "preact-hooks@0.1.0") is not a package
+  { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'] },
   { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_TEST_FAULT: 'collect' },
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
   // Next.js

@@ -2,43 +2,48 @@
 // Maps bundled source files to the npm packages they belong to.
 const fs = require('fs');
 const path = require('path');
+const config = require('./config.cjs');
 
-// Nearest package.json with name+version, walking up from dir.
-// Skips nested manifests like dist/esm/package.json = {"type":"module"}.
-function findPackage(dir, cache) {
-  const seen = [];
-  for (let d = dir; d && d !== path.dirname(d); d = path.dirname(d)) {
-    if (cache.has(d)) { const r = cache.get(d); seen.forEach(s => cache.set(s, r)); return r; }
-    seen.push(d);
-    const f = path.join(d, 'package.json');
-    if (fs.existsSync(f)) {
-      let j;
-      try { j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { continue; }
-      if (typeof j.name === 'string' && typeof j.version === 'string') {
-        const license = typeof j.license === 'string' ? j.license
-          : Array.isArray(j.licenses) ? j.licenses.map(l => (l && l.type) || l).filter(x => typeof x === 'string') : undefined;
-        const r = { name: j.name, version: j.version, path: d, license };
-        seen.forEach(s => cache.set(s, r));
-        return r;
-      }
-    }
-  }
-  seen.forEach(s => cache.set(s, null));
-  return null;
+// The package a file belongs to is the directory directly below its LAST node_modules segment:
+// node_modules/<name> or node_modules/@scope/<name>. That is how npm, yarn (incl. PnP zip paths
+// .../x.zip/node_modules/<name>) and pnpm (.pnpm/<id>/node_modules/<name>) lay packages out, and it
+// ignores package.json files inside a package - e.g. dist/esm/package.json = {"type":"module"} or
+// preact/hooks/package.json = {"name": "preact-hooks", ...}, which are not packages.
+function packageRoot(file) {
+  const parts = file.split(path.sep);
+  const i = parts.lastIndexOf('node_modules');
+  if (i < 0) return null;
+  const n = parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1;
+  if (i + n >= parts.length - 1) return null; // the file must be inside the package directory
+  return parts.slice(0, i + 1 + n).join(path.sep);
+}
+
+function readPackage(dir) {
+  let j;
+  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { return null; }
+  if (typeof j.name !== 'string' || typeof j.version !== 'string') return null;
+  const license = typeof j.license === 'string' ? j.license
+    : Array.isArray(j.licenses) ? j.licenses.map(l => (l && l.type) || l).filter(x => typeof x === 'string') : undefined;
+  return { name: j.name, version: j.version, path: dir, license };
 }
 
 // files: absolute paths of source files that ended up in the bundle (query strings allowed).
-// Returns one entry per package directory; files outside node_modules (the project itself) are ignored.
+// Returns one entry per package directory; files outside node_modules (the project itself,
+// workspace packages) are ignored.
 function packagesForFiles(files) {
-  const cache = new Map();
   const pkgs = new Map();
+  const seen = new Set();
   for (const f of files) {
     const file = f.split('?')[0];
-    if (!path.isAbsolute(file) || !file.split(path.sep).includes('node_modules')) continue;
-    const p = findPackage(path.dirname(file), cache);
-    if (p) pkgs.set(p.path, p);
+    if (!path.isAbsolute(file)) continue;
+    const root = packageRoot(file);
+    if (!root || seen.has(root)) continue;
+    seen.add(root);
+    const p = readPackage(root);
+    if (p) pkgs.set(root, p);
+    else config.debug('no name/version in', path.join(root, 'package.json'), '- skipped');
   }
   return [...pkgs.values()];
 }
 
-module.exports = { findPackage, packagesForFiles };
+module.exports = { packageRoot, packagesForFiles };

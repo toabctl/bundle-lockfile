@@ -16,14 +16,17 @@ function packagesFromStats(json) {
     (m.modules || []).forEach(add);
   };
   (json.modules || []).filter(m => (m.chunks || []).length > 0).forEach(add);
+  // package = directory directly below the last node_modules segment (npm's layout rule); written
+  // out here rather than imported, so the oracle shares no code with the tool
   const pkgs = new Set();
   for (const f of files) {
-    if (!f.split(path.sep).includes('node_modules')) continue;
-    for (let d = path.dirname(f); d !== path.dirname(d); d = path.dirname(d)) {
-      let p;
-      try { p = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch { continue; }
-      if (p.name && p.version) { pkgs.add(`${p.name}@${p.version}`); break; }
-    }
+    const parts = f.split(path.sep);
+    const i = parts.lastIndexOf('node_modules');
+    if (i < 0) continue;
+    const root = parts.slice(0, i + 1 + (parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1)).join(path.sep);
+    let p;
+    try { p = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); } catch { continue; }
+    if (p.name && p.version) pkgs.add(`${p.name}@${p.version}`);
   }
   return [...pkgs].sort();
 }
