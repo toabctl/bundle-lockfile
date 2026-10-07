@@ -5,10 +5,11 @@
 #     sh /repo/test/bigproject/superset.sh /work [tag]
 # Writes /work/results/*.md and logs; the build runs several times, so expect a long run.
 set -eu
+set -o pipefail   # a failing build inside the tee'd block must fail the run
 W=$1; TAG=${2:-6.1.0}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 R=$W/results; mkdir -p "$R"
-apk add -q nodejs-22 npm git syft >/dev/null
+apk add -q nodejs-22 npm git syft zstd >/dev/null   # zstd: superset's webpack config uses simple-zstd
 # superset's engines want npm ^10.8.1; npm 12 rejects its lockfile as out of sync ("npm ci ... not in sync")
 npm install -q -g npm@10 >/dev/null
 hash -r   # the shell still has /usr/bin/npm (12) cached; npm 10 is in /usr/local/bin
@@ -31,14 +32,14 @@ webpack_build() { # name extra-node-options
   rm -rf "$OUT"
   echo "== $1"
   NODE_ENV=production BABEL_ENV=production NODE_OPTIONS="--max_old_space_size=8192 $MEASURE $2" \
-    ./node_modules/.bin/webpack --mode production > "$R/$1.log" 2>&1 || { echo "build $1 FAILED, see $R/$1.log"; return 1; }
+    ./node_modules/.bin/webpack --mode production > "$R/$1.log" 2>&1 || { echo "build $1 FAILED, see $R/$1.log"; exit 1; }
   grep '\[measure\].*script=webpack' "$R/$1.log" | tail -1
 }
 
 {
   echo "# Superset $TAG frontend"
   echo
-  echo "node $(node -v), npm $(npm -v), $(./node_modules/.bin/webpack --version | tr '\n' ' ')"
+  echo "node $(node -v), npm $(npm -v), webpack $(node -p 'require("webpack/package.json").version'), $(nproc) CPUs"
   echo
   echo "## Build cost (main webpack process)"
   echo
