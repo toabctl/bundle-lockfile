@@ -6,7 +6,7 @@
 const { cmp, toPackageLock } = require('./lockfile.cjs');
 
 const KEY = Symbol.for('bundle-lockfile.outputs');
-// lockfile path -> Map(writer id -> { pkgs, context }); a writer is one compiler, across its (re)builds
+// lockfile path -> Map(writer id -> { pkgs, context, files, emitted }); a writer is one compiler, across its (re)builds
 const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map() });
 
 function render(target) {
@@ -19,16 +19,46 @@ function render(target) {
 }
 
 // Records the packages `writer` puts into the output directory of `target` and returns the content for
-// `target`. replace: the writer cleans its output directory first (webpack's output.clean), which removes the
-// other writers' files too.
-function record(target, writer, pkgs, context, { replace = false } = {}) {
+// `target`. files: absolute paths of the other files the writer emits there, to tell later whether they are
+// still there (see prune).
+function record(target, writer, pkgs, context, files = []) {
   let writers = outputs.files.get(target);
-  if (!writers || replace) outputs.files.set(target, (writers = new Map()));
-  writers.set(writer, { pkgs, context });
+  if (!writers) outputs.files.set(target, (writers = new Map()));
+  writers.set(writer, { pkgs, context, files, emitted: false });
   return render(target);
 }
 
+// The writer's files of its latest build have landed.
+function emitted(target, writer) {
+  const w = (outputs.files.get(target) || new Map()).get(writer);
+  if (w) w.emitted = true;
+}
+
 const isShared = (target) => (outputs.files.get(target) || new Map()).size > 1;
+
+// Drops the other writers whose files are all gone from the output directory, e.g. deleted by webpack's
+// output.clean of `writer`, which removes what the others had written before it (except paths matching
+// clean.keep; on watch rebuilds it removes only its own stale files). Only writers whose latest build has
+// landed are checked: one still building has not written its files yet. If some of a writer's files are
+// left, all its packages stay - listing a package too many is safer than missing one.
+// exists(file, callback(boolean)); done() is called when every check has finished.
+function prune(target, writer, exists, done) {
+  const writers = outputs.files.get(target);
+  const others = writers ? [...writers].filter(([id, w]) => id !== writer && w.emitted && w.files.length) : [];
+  let pending = others.length;
+  if (!pending) return done();
+  for (const [id, w] of others) {
+    const next = (i) => {
+      if (i === w.files.length) {
+        if (writers.get(id) === w) writers.delete(id); // unless it recorded a new build meanwhile
+        return finish();
+      }
+      exists(w.files[i], (found) => (found ? finish() : next(i + 1)));
+    };
+    next(0);
+  }
+  function finish() { if (--pending === 0) done(); }
+}
 
 // Parallel compilers can finish writing in any order, so one that wrote before another recorded its packages
 // may land last. Each writer calls this after its own write has landed: writes of the same file run one after
@@ -44,4 +74,4 @@ function rewrite(target, writeFile, done) {
   next.then((err) => setImmediate(done, err)); // outside the promise: done() continues the build
 }
 
-module.exports = { record, isShared, rewrite };
+module.exports = { record, emitted, isShared, prune, rewrite };

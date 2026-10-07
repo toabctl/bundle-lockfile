@@ -166,11 +166,10 @@ an output directory (e.g. a config array whose app and service worker both go to
 lockfile: it lists the packages of all of them, also when they build in parallel or rebuild in watch
 mode. A new compiler for the same config (same name, entry, target and file names, e.g. a build restarted
 in the same process) replaces the previous one's packages.
-A compiler with `output.clean` (neither `dry` nor `keep`) replaces the others' packages in the lockfile with
-its own on every build, because webpack deletes the files the others have already written. This is an
-approximation: webpack deletes them only on the compiler's first build (watch rebuilds delete only its own
-stale files), files the others write afterwards survive, and with `keep` it still deletes all non-matching
-files while bundle-lockfile keeps the others' packages.
+When a compiler's `output.clean` deletes what the others have already written (on its first build, except
+paths matching `clean.keep`), their packages are dropped from the lockfile too: after each compiler's emit,
+compilers whose emitted files are all gone are left out. If some of a compiler's files are left, all its
+packages stay.
 This works for compilers in the same process; separate processes writing to one directory (e.g. two
 `webpack` commands run by `concurrently`) overwrite each other's lockfile.
 

@@ -107,14 +107,6 @@ function writerOf(compiler) {
   return (compiler[WRITER] = id);
 }
 
-// webpack's output.clean (>= 5.20) deletes, on a compiler's first build, every file in the output directory that
-// is not its own asset, including what other compilers already wrote there. Approximation: with keep, webpack
-// still deletes everything not matching it, and watch rebuilds delete only the compiler's own stale files.
-function cleans(compilation) {
-  const clean = compilation.outputOptions && compilation.outputOptions.clean;
-  return clean === true || (!!clean && typeof clean === 'object' && !clean.dry && !clean.keep);
-}
-
 class BundleLockfilePlugin {
   // compilerFile: path of the Compiler module, used to find webpack-sources for webpack 4
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
@@ -123,8 +115,10 @@ class BundleLockfilePlugin {
   // the same lockfile (see core/outputs.cjs).
   lockfile(compilation) {
     const compiler = compilation.compiler;
+    const names = compilation.getAssets ? compilation.getAssets().map(a => a.name) : Object.keys(compilation.assets || {});
+    const files = names.filter(n => n !== this.file).map(n => path.join(compiler.outputPath, n));
     return outputs.record(path.join(compiler.outputPath, this.file), writerOf(compiler),
-      packages.packagesForFiles(bundledFiles(compilation)), compiler.context, { replace: cleans(compilation) });
+      packages.packagesForFiles(bundledFiles(compilation)), compiler.context, files);
   }
 
   emit(compilation, write) {
@@ -153,13 +147,25 @@ class BundleLockfilePlugin {
         });
       });
     }
-    // a lockfile shared with other compilers: write it again once this compiler's output has landed
+    // a lockfile shared with other compilers: write it again once this compiler's output has landed, without
+    // the compilers whose files are gone (deleted by this one's output.clean, which ran before its emit)
     compiler.hooks.afterEmit.tapAsync(NAME, (compilation, callback) => {
       const file = path.join(compiler.outputPath, this.file);
+      const writer = writerOf(compiler);
+      outputs.emitted(file, writer);
       if (!outputs.isShared(file)) return callback();
-      outputs.rewrite(file, (json, done) => compiler.outputFileSystem.writeFile(file, json, done), (err) => {
-        if (err) config.warn('webpack: could not write lockfile:', err);
-        callback();
+      const fsys = compiler.outputFileSystem;
+      // webpack 4's output file system has no stat (nor output.clean). Anything but "not found" counts as
+      // there: when in doubt, keep the packages
+      const exists = (f, cb) => {
+        if (typeof fsys.stat !== 'function') return cb(true);
+        try { fsys.stat(f, (err) => cb(!err || err.code !== 'ENOENT')); } catch { cb(true); }
+      };
+      outputs.prune(file, writer, exists, () => {
+        outputs.rewrite(file, (json, done) => fsys.writeFile(file, json, done), (err) => {
+          if (err) config.warn('webpack: could not write lockfile:', err);
+          callback();
+        });
       });
     });
   }
