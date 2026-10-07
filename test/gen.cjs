@@ -11,14 +11,24 @@ const [out, filter] = process.argv.slice(2);
 if (!out) { console.error('usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex]'); process.exit(2); }
 const OUT = path.resolve(out);
 const TOOLS = path.join(OUT, '.tools');
-const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: ['ignore', 'ignore', 'inherit'] });
+// Fixtures are created from scratch, so lockfiles must be writable even when CI=true
+// (yarn >= 2 and pnpm switch to immutable / frozen lockfiles in CI).
+const ENV = { ...process.env, YARN_ENABLE_IMMUTABLE_INSTALLS: 'false' };
+const sh = (cmd, cwd) => {
+  try {
+    execSync(cmd, { cwd, env: ENV, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 });
+  } catch (e) {
+    process.stderr.write(`${cmd} failed in ${cwd}:\n${String(e.stdout || '').split('\n').slice(-30).join('\n')}${e.stderr || ''}\n`);
+    throw e;
+  }
+};
 
 // vendored tool release: npm tarball unpacked into .tools/<dir>
 function tool(spec, dir) {
   const d = path.join(TOOLS, dir);
   if (!fs.existsSync(d)) {
     fs.mkdirSync(d, { recursive: true });
-    sh(`npm pack -q ${spec} >/dev/null && tar xzf *.tgz --strip-components=1 && rm -f *.tgz`, d);
+    sh(`npm pack -q ${spec} && tar xzf *.tgz --strip-components=1 && rm -f *.tgz`, d);
   }
   return d;
 }
@@ -39,9 +49,9 @@ const installers = {
     // project-local cache so installs work offline later; yarn 1 on PATH delegates to yarnPath
     fs.writeFileSync(path.join(dir, '.yarnrc.yml'), `yarnPath: ${rel}\nnodeLinker: ${linker}\nenableGlobalCache: false\nenableTelemetry: false\n`);
     fs.writeFileSync(path.join(dir, 'yarn.lock'), '');
-    sh(`node ${rel} install >/dev/null`, dir);
+    sh(`node ${rel} install`, dir);
   },
-  pnpm: (dir, { version }) => sh(`node ${pnpmBin(version)} install --config.confirmModulesPurge=false >/dev/null`, dir),
+  pnpm: (dir, { version }) => sh(`node ${pnpmBin(version)} install --no-frozen-lockfile --config.confirmModulesPurge=false`, dir),
 };
 
 for (const [name, fx] of Object.entries(fixtures)) {
