@@ -174,8 +174,9 @@ Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`:
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
 
-Tested with npm, npx, direct `node_modules/.bin` calls, yarn 1, yarn 3/4 (Plug'n'Play and
-node-modules linker), pnpm 10/11/12 and bun — see [`test/matrix.cjs`](test/matrix.cjs).
+Tested with npm 8/9/10/11/12, npx, direct `node_modules/.bin` calls, yarn 1, yarn 3/4 (Plug'n'Play
+and node-modules linker), pnpm 8/9/10/11/12 and bun — see [`test/matrix.cjs`](test/matrix.cjs).
+yarn 2 is not tested: it does not run on Node.js >= 23 (it calls the removed `util.isDate`).
 
 Not yet: rspack, Vite / Rollup / Rolldown, esbuild, Turbopack.
 

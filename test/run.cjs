@@ -32,7 +32,10 @@ function runCase(c) {
   for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
-  if (fs.existsSync(path.join(dir, '.pnpm-bin'))) base.PNPM = `node ${path.join(dir, fs.readFileSync(path.join(dir, '.pnpm-bin'), 'utf8').trim())}`;
+  // vendored package manager releases of the fixture: $PNPM / $NPM in the case's cmd
+  for (const [file, name] of [['.pnpm-bin', 'PNPM'], ['.npm-bin', 'NPM']]) {
+    if (fs.existsSync(path.join(dir, file))) base[name] = `node ${path.join(dir, fs.readFileSync(path.join(dir, file), 'utf8').trim())}`;
+  }
   const nodeOptions = [c.nodeOptions, c.inject === false ? '' : `--require ${REGISTER}`].filter(Boolean).join(' ');
   const env = { ...base, NODE_OPTIONS: nodeOptions };
   const notes = [];

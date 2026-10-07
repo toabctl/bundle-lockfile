@@ -38,8 +38,11 @@ const pnpmBin = (version) => {
   return ['bin/pnpm.cjs', 'bin/pnpm.mjs'].map(b => path.join(d, b)).find(fs.existsSync); // pnpm 12 ships pnpm.mjs
 };
 
+const npmBin = (version) => path.join(tool(`npm@${version}`, `npm-${version}`), 'bin/npm-cli.js');
+
 const installers = {
-  npm: (dir) => sh('npm install -q --no-audit --no-fund', dir),
+  // without a version: the npm on PATH; with one: a vendored release
+  npm: (dir, { version }) => sh(`${version ? `node ${npmBin(version)}` : 'npm'} install -q --no-audit --no-fund`, dir),
   yarn1: (dir) => sh('yarn install -s --non-interactive --no-progress', dir),
   bun: (dir) => sh('bun install --silent', dir),
   'yarn-berry': (dir, { version, linker }) => {
@@ -73,4 +76,5 @@ for (const [name, fx] of Object.entries(fixtures)) {
   }, null, 2) + '\n');
   installers[fx.installer.type](dir, fx.installer);
   if (fx.installer.type === 'pnpm') fs.writeFileSync(path.join(dir, '.pnpm-bin'), path.relative(dir, pnpmBin(fx.installer.version)) + '\n');
+  if (fx.installer.type === 'npm' && fx.installer.version) fs.writeFileSync(path.join(dir, '.npm-bin'), path.relative(dir, npmBin(fx.installer.version)) + '\n');
 }
