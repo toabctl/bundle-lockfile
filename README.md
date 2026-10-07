@@ -213,6 +213,11 @@ node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd ar
 Every case checks the lockfile is valid for syft and lists exactly the expected packages, that
 it agrees with the oracle, and — if `syft` is on `PATH` — that syft reads exactly those packages.
 
+The devDependencies case also runs a functional SBOM check: it stages the build output like a package
+would install it (`usr/share/app/dist/`), runs `syft scan dir:` with SPDX JSON output, and requires
+exactly the expected npm packages with name, version, purl, declared license and source file — once
+with only the build output, and once with the project's own `package-lock.json` shipped alongside.
+
 The matrix runs on Node.js 24 (Wolfi `nodejs-24`); other Node.js versions are not tested yet.
 
 ## License

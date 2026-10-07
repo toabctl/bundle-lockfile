@@ -55,6 +55,10 @@ const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'n
 const DEVDEPS = ['classnames@2.5.1', 'lodash-es@4.18.1'];
 // installed in node_modules but not imported: proves the absence above is not an install artefact
 const DEVDEPS_INSTALLED = ['classnames@2.5.1', 'left-pad@1.3.0', 'is-number@7.0.0', 'lodash-es@4.18.1'];
+// expected SPDX package in a functional SBOM check (from = file syft says it found the package in)
+const npmPkg = (name, version, license, from) => ({ name, version, purl: `pkg:npm/${name}@${version}`, license, from });
+const DIST_LOCK = '/usr/share/app/dist/bundle-lockfile/package-lock.json'; // syft dir scans report absolute paths
+const PROJECT_LOCK = '/usr/share/app/package-lock.json';
 const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 
@@ -77,6 +81,8 @@ function nextCase(fixture, version, react, flags = '') {
 //   oracleArgs extra arguments for the oracle (e.g. next build flags)
 //   installed  name@version that must be installed in the fixture's node_modules (checked before the build)
 //   projectLockfile  syft on the project's own lockfile (not ours) must include / exclude these - documents the difference
+//   sbom       functional checks: stage files into a package-like root, `syft scan dir:` it as SPDX JSON and
+//              require exactly these npm packages (name, version, purl, declared license, source file)
 //   heapMB     assert the configured --max-old-space-size reached node
 const cases = [
   // activation
@@ -106,7 +112,18 @@ const cases = [
   { name: 'devDependencies: npm', fixture: 'wp5-devdeps-npm', cmd: 'npm run -s build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED,
     // syft on the project's own package-lock.json goes by section, not by what is shipped: it reports the
     // unused dependency is-number and skips all devDependencies (dev: true) - including the shipped classnames
-    projectLockfile: { includes: ['is-number@7.0.0', 'lodash-es@4.18.1'], excludes: ['classnames@2.5.1', 'left-pad@1.3.0', 'webpack@5.111.1'] } },
+    projectLockfile: { includes: ['is-number@7.0.0', 'lodash-es@4.18.1'], excludes: ['classnames@2.5.1', 'left-pad@1.3.0', 'webpack@5.111.1'] },
+    sbom: [
+      // the package ships only the build output: the SBOM lists exactly what is in the bundle
+      { name: 'build output', stage: { 'usr/share/app/dist': 'dist' },
+        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK)] },
+      // the package also ships the project's own lockfile: the SBOM gets the union, incl. the never-bundled
+      // is-number and the project itself (see README)
+      { name: 'build output + project lockfile', stage: { 'usr/share/app/dist': 'dist', 'usr/share/app/package-lock.json': 'package-lock.json' },
+        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK),
+          npmPkg('lodash-es', '4.18.1', 'MIT', PROJECT_LOCK), npmPkg('is-number', '7.0.0', 'MIT', PROJECT_LOCK),
+          npmPkg('fixture-wp5-devdeps-npm', '1.0.0', 'NOASSERTION', PROJECT_LOCK)] },
+    ] },
   { name: 'devDependencies: yarn 1', fixture: 'wp5-devdeps-yarn1', cmd: 'yarn --offline -s build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED },
   { name: 'devDependencies: pnpm 11', fixture: 'wp5-devdeps-pnpm11', cmd: '$PNPM run build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED },
   // Next.js

@@ -28,7 +28,7 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
   if (fs.existsSync(path.join(dir, '.pnpm-bin'))) base.PNPM = `node ${path.join(dir, fs.readFileSync(path.join(dir, '.pnpm-bin'), 'utf8').trim())}`;
@@ -82,6 +82,8 @@ function runCase(c) {
     if (bad.length) throw new Error(`syft: unexpected cataloger/purl/license for ${bad.map(p => p.name).join(', ')}`);
     notes.push('syft agrees');
 
+    for (const sc of c.sbom || []) notes.push(sbomScenario(c, sc, dir, base));
+
     if (c.projectLockfile) {
       const p = JSON.parse(sh('syft scan file:package-lock.json -q -o json', dir, base));
       const proj = [...new Set((p.artifacts || []).map(a => `${a.name}@${a.version}`))].sort();
@@ -92,6 +94,29 @@ function runCase(c) {
     }
   }
   return `${Object.keys(got).length > 1 ? show(got) + '\n   ' : all.join(' ')} (${notes.join(', ')})`;
+}
+
+// Functional SBOM check: stage files like a package would install them, run `syft scan dir:` on that
+// root with SPDX JSON output, and require exactly the expected npm packages (name, version, purl,
+// declared license) - each one found in the expected file.
+function sbomScenario(c, sc, dir, env) {
+  const root = path.join(dir, '.sbom-root');
+  fs.rmSync(root, { recursive: true, force: true });
+  for (const [to, from] of Object.entries(sc.stage)) {
+    fs.mkdirSync(path.dirname(path.join(root, to)), { recursive: true });
+    fs.cpSync(path.join(dir, from), path.join(root, to), { recursive: true });
+  }
+  const spdxFile = path.join(dir, '.sbom.spdx.json');
+  sh(`syft scan dir:${root} -q -o spdx-json=${spdxFile}`, dir, env);
+  const doc = JSON.parse(fs.readFileSync(spdxFile, 'utf8'));
+  const purlOf = (p) => ((p.externalRefs || []).find(r => r.referenceType === 'purl') || {}).referenceLocator;
+  const got = (doc.packages || []).filter(p => (purlOf(p) || '').startsWith('pkg:npm/'))
+    .map(p => ({ name: p.name, version: p.versionInfo, purl: purlOf(p), license: p.licenseDeclared, from: (p.sourceInfo || '').split(': ').pop() }))
+    .sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
+  const want = [...sc.expect].sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
+  const fmt = (l) => l.map(p => `\n      ${p.name}@${p.version} ${p.purl} ${p.license} <- ${p.from}`).join('');
+  if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`SBOM "${sc.name}" mismatch\n    got:${fmt(got)}\n    want:${fmt(want)}`);
+  return `SBOM "${sc.name}": ${got.map(p => `${p.name}@${p.version}`).join(' ')}`;
 }
 
 let failed = 0;
