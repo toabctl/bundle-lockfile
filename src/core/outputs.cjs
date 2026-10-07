@@ -5,55 +5,67 @@
 // Process-wide (also across copies of this module): compilers in other processes are not seen.
 const { cmp, toPackageLock } = require('./lockfile.cjs');
 
-const KEY = Symbol.for('bundle-lockfile.outputs');
-// lockfile path -> Map(writer id -> { pkgs, context, files, emitted }); a writer is one compiler, across its (re)builds
+const KEY = Symbol.for('bundle-lockfile.outputs.v2'); // v2: shape below; copies of another shape keep their own
+// lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
+// building: { pkgs, context, files } of its build in progress, recorded before that build is written;
+// landed: the same of its latest build whose output was written. A build that fails is never written
+// (webpack's emitOnErrors: false): its packages must not replace those of the output still in the directory.
 const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map() });
 
-function render(target) {
-  const writers = [...outputs.files.get(target).values()];
+// The packages in the output directory: every writer's landed build; for `own`, the build it is about to write.
+function render(target, own) {
+  const builds = [];
+  for (const [id, w] of outputs.files.get(target) || []) {
+    const b = id === own && w.building ? w.building : w.landed;
+    if (b) builds.push(b);
+  }
   const byPath = new Map();
-  for (const w of writers) for (const p of w.pkgs) byPath.set(p.path, p);
+  for (const b of builds) for (const p of b.pkgs) byPath.set(p.path, p);
   // keys are relative to one context; pick it independently of which writer finished last
-  const context = writers.map(w => w.context).sort(cmp)[0];
+  const context = builds.map(b => b.context).sort(cmp)[0];
   return toPackageLock([...byPath.values()], context);
 }
 
-// Records the packages `writer` puts into the output directory of `target` and returns the content for
-// `target`. files: absolute paths of the other files the writer emits there, to tell later whether they are
-// still there (see prune).
+// Records the packages `writer` puts into the output directory of `target` with the build it is about to
+// write, and returns the content for `target`. files: absolute paths of the other files the writer emits
+// there, to tell later whether they are still there (see prune).
 function record(target, writer, pkgs, context, files = []) {
   let writers = outputs.files.get(target);
   if (!writers) outputs.files.set(target, (writers = new Map()));
-  writers.set(writer, { pkgs, context, files, emitted: false });
-  return render(target);
+  const w = writers.get(writer) || { building: null, landed: null };
+  w.building = { pkgs, context, files };
+  writers.set(writer, w);
+  return render(target, writer);
 }
 
 // The writer's files of its latest build have landed.
 function emitted(target, writer) {
   const w = (outputs.files.get(target) || new Map()).get(writer);
-  if (w) w.emitted = true;
+  if (w && w.building) { w.landed = w.building; w.building = null; }
 }
 
 const isShared = (target) => (outputs.files.get(target) || new Map()).size > 1;
 
 // Drops the other writers whose files are all gone from the output directory, e.g. deleted by webpack's
 // output.clean of `writer`, which removes what the others had written before it (except paths matching
-// clean.keep; on watch rebuilds it removes only its own stale files). Only writers whose latest build has
-// landed are checked: one still building has not written its files yet. If some of a writer's files are
-// left, all its packages stay - listing a package too many is safer than missing one.
+// clean.keep; on watch rebuilds it removes only its own stale files). Only builds that have landed are
+// checked: one still building has not written its files yet. If some of a writer's files are left, all its
+// packages stay - listing a package too many is safer than missing one.
 // exists(file, callback(boolean)); done() is called when every check has finished.
 function prune(target, writer, exists, done) {
   const writers = outputs.files.get(target);
-  const others = writers ? [...writers].filter(([id, w]) => id !== writer && w.emitted && w.files.length) : [];
+  const others = writers ? [...writers].filter(([id, w]) => id !== writer && w.landed && w.landed.files.length) : [];
   let pending = others.length;
   if (!pending) return done();
   for (const [id, w] of others) {
+    const landed = w.landed;
     const next = (i) => {
-      if (i === w.files.length) {
-        if (writers.get(id) === w) writers.delete(id); // unless it recorded a new build meanwhile
+      if (i === landed.files.length) {
+        if (w.landed === landed) w.landed = null; // unless a newer build landed meanwhile
+        if (!w.landed && !w.building && writers.get(id) === w) writers.delete(id);
         return finish();
       }
-      exists(w.files[i], (found) => (found ? finish() : next(i + 1)));
+      exists(landed.files[i], (found) => (found ? finish() : next(i + 1)));
     };
     next(0);
   }

@@ -255,7 +255,9 @@ function compilation4({ context, chunks, children = [], assets = {} }) {
     assets: Object.fromEntries(Object.keys(assets).map(n => [n, {}])),
   };
 }
-const plugin = () => new webpack.BundleLockfilePlugin('bundle-lockfile/package-lock.json');
+const LOCK = 'bundle-lockfile/package-lock.json';
+const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
+const plugin = () => new webpack.BundleLockfilePlugin(LOCK);
 const lockedNames = (json) => entries(json).map(([k]) => k.replace(/^node_modules\//, '')).sort();
 
 test('webpack adapter: chunks, concatenated modules, shipped child compilations and copied files', () => {
@@ -337,26 +339,47 @@ test('webpack adapter: compilers writing to the same output dir share one lockfi
   const one = (name, opts = {}) => compilation({ context: root, outputPath, chunks: [{ files: [`${name}.js`], modules: [m(name)] }], ...opts });
   const ca = one('a'), cb = one('b');
   const p = plugin();
-  assert.deepEqual(lockedNames(p.lockfile(ca)), ['a']);
-  assert.deepEqual(lockedNames(p.lockfile(cb)), ['a', 'b']);
+  const build = (c) => { const json = p.lockfile(c); outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]); return json; }; // and lands
+  assert.deepEqual(lockedNames(build(ca)), ['a']);
+  assert.deepEqual(lockedNames(build(cb)), ['a', 'b']);
   // a rebuild of one compiler (watch mode) replaces only its own packages
   const rebuilt = one('c');
   rebuilt.compiler = ca.compiler; // same compiler, next compilation
-  assert.deepEqual(lockedNames(p.lockfile(rebuilt)), ['b', 'c']);
+  assert.deepEqual(lockedNames(build(rebuilt)), ['b', 'c']);
   // output.clean options alone drop nothing: only files that are really gone do (see the prune tests)
   const cleaned = one('a', { clean: true });
   cleaned.compiler = ca.compiler;
-  assert.deepEqual(lockedNames(p.lockfile(cleaned)), ['a', 'b']);
+  assert.deepEqual(lockedNames(build(cleaned)), ['a', 'b']);
+});
+
+test('webpack adapter: output.path placeholders are resolved: compilers whose paths resolve to different directories share nothing', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b') });
+  const outputPath = J(root, 'dist/[fullhash]');
+  const one = (name) => {
+    const c = compilation({ context: root, outputPath, chunks: [{ files: [`${name}.js`], modules: [{ resource: J(root, 'node_modules', name, 'i.js') }] }] });
+    c.getPath = (p, data) => (assert.deepEqual(data, {}), p.replace('[fullhash]', `hash-${name}`)); // webpack 4 and 5: compilation.getPath
+    return c;
+  };
+  const p = plugin();
+  for (const name of ['a', 'b']) {
+    const c = one(name);
+    assert.deepEqual(lockedNames(p.lockfile(c)), [name]);
+    outputs.emitted(J(root, `dist/hash-${name}`, LOCK), c.compiler[WRITER]);
+    assert.equal(outputs.isShared(J(root, `dist/hash-${name}`, LOCK)), false);
+  }
 });
 
 test('webpack adapter: a new compiler for the same config replaces the previous one in a shared lockfile', () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
-  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d') });
   const outputPath = J(root, 'dist');
   const build = (dep, options) => {
     const c = compilation({ context: root, outputPath, chunks: [{ files: ['x.js'], modules: [{ resource: J(root, 'node_modules', dep, 'i.js') }] }] });
     c.compiler.options = options;
-    return plugin().lockfile(c);
+    const json = plugin().lockfile(c);
+    outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]);
+    return json;
   };
   const app = { entry: { main: { import: ['./src/app.js'] } }, output: { filename: '[name].js' } };
   const sw = { entry: { sw: { import: ['./src/sw.js'] } }, target: 'webworker', output: { filename: '[name].js' } };
@@ -366,60 +389,95 @@ test('webpack adapter: a new compiler for the same config replaces the previous 
   // dynamic entries cannot be compared: every such compiler is a writer of its own
   const fn = { ...app, entry: () => ({}) };
   assert.deepEqual(lockedNames(build('a', fn)), ['a', 'b', 'c']);
+  // so are entries that cannot be serialized
+  assert.deepEqual(lockedNames(build('d', { ...app, entry: { main: { import: ['./src/app.js'], n: 1n } } })), ['a', 'b', 'c', 'd']);
+});
+
+test('webpack adapter: a compiler for the same config that is still running is another writer, e.g. of a config array', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  // two configs differing only in resolve.alias, writing [contenthash] names to one directory
+  const options = { entry: { main: { import: ['./src/app.js'] } }, output: { filename: '[name].[contenthash].js' } };
+  const shutdownHook = () => { const fns = []; return { tap: (o, fn) => fns.push(fn), call: () => fns.forEach(fn => fn()) }; };
+  for (const version of ['webpack >= 5.20', 'webpack < 5.20']) {
+    const outputPath = J(root, version.includes('>=') ? 'dist-closed' : 'dist-running');
+    const build = (dep) => {
+      const c = compilation({ context: root, outputPath, chunks: [{ files: [`${dep}.js`], modules: [{ resource: J(root, 'node_modules', dep, 'i.js') }] }] });
+      Object.assign(c.compiler, { options, running: true }, version === 'webpack >= 5.20' && { hooks: { shutdown: shutdownHook() } });
+      const json = plugin().lockfile(c);
+      outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]);
+      return { compiler: c.compiler, names: lockedNames(json) };
+    };
+    const first = build('a');
+    assert.deepEqual(first.names, ['a'], version);
+    assert.deepEqual(build('b').names, ['a', 'b'], version); // the first one has not finished: both are in the directory
+    // the first compiler is done (closed; webpack < 5.20: not running): a new compiler for the same config replaces it
+    first.compiler.running = false;
+    if (version === 'webpack >= 5.20') {
+      // finished but not closed, e.g. a config array built one after another (dependencies, parallelism: 1)
+      assert.deepEqual(build('c').names, ['a', 'b', 'c'], `${version}: finished, not closed`);
+      first.compiler.hooks.shutdown.call();
+    }
+    assert.deepEqual(build('c').names, ['b', 'c'], version);
+  }
 });
 
 test('outputs: prune drops other writers whose files are all gone, once their build has landed', async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
-  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), 'dist/b.js': '', 'dist/c2.js': '' });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), ...pj('e'), 'dist/b.js': '', 'dist/c2.js': '' });
   const target = J(root, 'dist/bundle-lockfile/package-lock.json');
-  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
   const exists = (f, cb) => setImmediate(cb, fs.existsSync(f));
   const prune = (writer) => new Promise(resolve => outputs.prune(target, writer, exists, resolve));
+  const listed = () => lockedNames(outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')]));
   outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')]);              // the one pruning: never dropped by itself
   outputs.record(target, 'b', [b], root, [J(root, 'dist/b.js')]);              // its file is there
   outputs.record(target, 'c', [c], root, [J(root, 'dist/c1.js'), J(root, 'dist/c2.js')]); // one of its files is left
-  outputs.record(target, 'd', [d], root, [J(root, 'dist/d.js')]);              // its file is gone ...
-  for (const w of ['a', 'b', 'c']) outputs.emitted(target, w);
+  outputs.record(target, 'd', [d], root, [J(root, 'dist/d.js')]);              // its file is gone
+  outputs.record(target, 'e', [e], root, [J(root, 'dist/e.js')]);              // its file is gone too, but ...
+  for (const w of ['a', 'b', 'c', 'd']) outputs.emitted(target, w);
   await prune('a');
-  // ... but its build has not landed yet: it has not written its file
-  assert.deepEqual(lockedNames(outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')])), ['a', 'b', 'c', 'd']);
+  // ... its build has not landed yet: it has not written its file. Not listed until it has, nor dropped
+  assert.deepEqual(listed(), ['a', 'b', 'c']);
+  outputs.emitted(target, 'e');
+  assert.deepEqual(listed(), ['a', 'b', 'c', 'e']);
   outputs.emitted(target, 'a');
-  outputs.emitted(target, 'd');
   await prune('a');
-  assert.deepEqual(lockedNames(outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')])), ['a', 'b', 'c']);
+  assert.deepEqual(listed(), ['a', 'b', 'c']);
+  assert.equal(outputs.isShared(target), true);
   // nothing to check: done at once
   let done = false;
   outputs.prune(J(root, 'other/package-lock.json'), 'a', exists, () => (done = true));
   assert.equal(done, true);
 });
 
+test('outputs: a build that is never written (it failed) does not replace the packages of the output in the directory', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  const target = J(root, 'dist/bundle-lockfile/package-lock.json');
+  const [a, b, c] = ['a', 'b', 'c'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const rewrite = () => new Promise(resolve => outputs.rewrite(target, (json, cb) => { resolve(lockedNames(json)); cb(); }, () => {}));
+  outputs.record(target, 'app', [a], root); outputs.emitted(target, 'app');
+  outputs.record(target, 'sw', [b], root); outputs.emitted(target, 'sw');
+  // app's next build fails: recorded, never written (webpack's emitOnErrors: false). The lockfile it would
+  // have written has its new packages ...
+  assert.deepEqual(lockedNames(outputs.record(target, 'app', [c], root)), ['b', 'c']);
+  // ... but sw's rebuild writes what is in the directory: app's previous output
+  assert.deepEqual(lockedNames(outputs.record(target, 'sw', [b], root)), ['a', 'b']);
+  outputs.emitted(target, 'sw');
+  assert.deepEqual(await rewrite(), ['a', 'b']);
+  // app's next build lands
+  outputs.record(target, 'app', [c], root); outputs.emitted(target, 'app');
+  assert.deepEqual(await rewrite(), ['b', 'c']);
+});
+
 test('webpack adapter: a compiler whose output.clean deleted another compiler\'s files drops its packages', async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b') });
   const outputPath = J(root, 'dist');
-  const lock = J(outputPath, 'bundle-lockfile/package-lock.json');
+  const lock = J(outputPath, LOCK);
   fs.mkdirSync(outputPath);
-  // two compilers writing to dist/, through the plugin's real hooks; each "emits" by writing its asset files
-  const make = (name) => {
-    const { compiler, taps } = fakeCompiler5({ outputPath });
-    compiler.name = name;
-    compiler.outputFileSystem.stat = fs.stat;
-    compiler.options = { entry: { main: { import: [`./src/${name}.js`] } } };
-    new webpack.BundleLockfilePlugin('bundle-lockfile/package-lock.json').apply(compiler);
-    const build = async () => {
-      const comp = compilation({ context: root, outputPath, chunks: [{ files: [`${name}.js`], modules: [{ resource: J(root, 'node_modules', name, 'i.js') }] }],
-        assets: { [`${name}.js`]: {} } });
-      comp.compiler = compiler;
-      comp.emitAsset = () => {};
-      comp.hooks = { processAssets: { tap: (o, fn) => (comp.stage = fn) } };
-      taps.thisCompilation(comp);
-      comp.stage();
-      fs.writeFileSync(J(outputPath, `${name}.js`), '');
-      await new Promise(resolve => taps.afterEmit(comp, resolve));
-    };
-    return build;
-  };
-  const buildA = make('a'), buildB = make('b');
+  const buildA = sharedCompiler(root, outputPath, 'a'), buildB = sharedCompiler(root, outputPath, 'b');
   await buildB();
   await buildA();
   assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
@@ -435,13 +493,30 @@ test('webpack adapter: a compiler whose output.clean deleted another compiler\'s
   assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
 });
 
+test('webpack adapter: a compiler\'s files are those webpack writes: asset names without query or fragment, symbolic links', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('query'), ...pj('hash'), ...pj('oldhash'), ...pj('link'), ...pj('last') });
+  const outputPath = J(root, 'dist');
+  const lock = J(outputPath, LOCK);
+  fs.mkdirSync(outputPath);
+  // asset name -> file webpack writes (null: written below)
+  await sharedCompiler(root, outputPath, 'query')({ 'query.js?v=1a2b': 'query.js' });          // output.filename: '[name].js?v=[contenthash]'
+  await sharedCompiler(root, outputPath, 'hash')({ 'hash.js#x?v=1': 'hash.js' });              // webpack >= 5.105 cuts at "#" too
+  await sharedCompiler(root, outputPath, 'oldhash')({ 'oldhash.js#x?v=1': 'oldhash.js#x' });   // older versions keep it
+  fs.symlinkSync('../not-built-yet.js', J(outputPath, 'link.js'));                             // a symbolic link asset whose target is missing
+  await sharedCompiler(root, outputPath, 'link')({ 'link.js': null });
+  await sharedCompiler(root, outputPath, 'last')();
+  assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['hash', 'last', 'link', 'oldhash', 'query']);
+});
+
 test('outputs: writes of a shared lockfile run in order, each with the latest content', async () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/b/package.json': { name: 'b', version: '1.0.0' } });
   const target = J(root, 'dist/bundle-lockfile/package-lock.json');
   const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]), [b] = packagesForFiles([J(root, 'node_modules/b/i.js')]);
-  outputs.record(target, 'w1', [a], root);
+  outputs.record(target, 'w1', [a], root); outputs.emitted(target, 'w1');
   assert.equal(outputs.isShared(target), false);
   outputs.record(target, 'w2', [b], J(root, 'sub')); // another context: the smallest one is used, whoever writes last
+  outputs.emitted(target, 'w2');
   assert.equal(outputs.isShared(target), true);
   const written = [];
   // the first write is slow and fails: the second still runs after it, and the build continues
@@ -449,7 +524,7 @@ test('outputs: writes of a shared lockfile run in order, each with the latest co
   const fast = (json, cb) => { written.push(json); cb(); };
   const errors = await Promise.all([
     new Promise(resolve => outputs.rewrite(target, slow, resolve)),
-    new Promise(resolve => { outputs.record(target, 'w2', [a, b], J(root, 'sub')); outputs.rewrite(target, fast, resolve); }),
+    new Promise(resolve => { outputs.record(target, 'w2', [a, b], J(root, 'sub')); outputs.emitted(target, 'w2'); outputs.rewrite(target, fast, resolve); }),
     new Promise(resolve => outputs.rewrite(target, () => { throw new Error('sync'); }, resolve)),
   ]);
   assert.deepEqual(errors.map(e => e && e.message), ['disk full', undefined, 'sync']);
@@ -463,11 +538,33 @@ function fakeCompiler5({ outputPath, withWebpack = true }) {
   const hook = (name) => ({ tap: (o, fn) => (taps[name] = fn), tapAsync: (o, fn) => (taps[name] = fn) });
   const compiler = {
     context: path.dirname(outputPath), outputPath, name: 'fake',
-    hooks: { thisCompilation: hook('thisCompilation'), afterEmit: hook('afterEmit') },
+    hooks: { thisCompilation: hook('thisCompilation'), emit: hook('emit'), afterEmit: hook('afterEmit') },
     outputFileSystem: { writeFile: (f, c, cb) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, c); cb(); } },
   };
-  if (withWebpack) compiler.webpack = { Compilation: { PROCESS_ASSETS_STAGE_REPORT: 5000 }, sources: { RawSource: class { constructor(s) { this.s = s; } source() { return this.s; } } } };
+  if (withWebpack) compiler.webpack = { sources: { RawSource: class { constructor(s) { this.s = s; } source() { return this.s; } } } };
   return { compiler, taps };
+}
+
+// A compiler writing to outputPath through the plugin's real hooks (webpack 5 shape). Returns build(assets),
+// which "emits" by writing the asset files (asset name -> file name on disk; null: none) and resolves once
+// afterEmit has finished. Default: one asset <name>.js. Its module is in node_modules/<name>.
+function sharedCompiler(root, outputPath, name) {
+  const { compiler, taps } = fakeCompiler5({ outputPath });
+  compiler.name = name;
+  Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
+  compiler.options = { entry: { main: { import: [`./src/${name}.js`] } } };
+  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  return async (assets = { [`${name}.js`]: `${name}.js` }) => {
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: Object.keys(assets), modules: [{ resource: J(root, 'node_modules', name, 'i.js') }] }],
+      assets: Object.fromEntries(Object.keys(assets).map(n => [n, {}])) });
+    comp.compiler = compiler;
+    comp.emitAsset = () => {};
+    comp.hooks = { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } };
+    taps.thisCompilation(comp);
+    comp.stage();
+    for (const file of Object.values(assets)) if (file) fs.writeFileSync(J(outputPath, file), '');
+    await new Promise(resolve => taps.afterEmit(comp, resolve));
+  };
 }
 
 test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sources), injection skips a configured plugin', () => {
@@ -478,16 +575,81 @@ test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sou
     comp.compiler = compiler;
     const emitted = {};
     comp.emitAsset = (file, src) => { emitted[file] = src.source(); };
+    comp.getAsset = (file) => (file in emitted ? { name: file } : undefined);
     let stageTap;
-    comp.hooks = { processAssets: { tap: (o, fn) => (stageTap = fn) }, afterOptimizeAssets: { tap: (o, fn) => (stageTap = fn) } };
-    new webpack.BundleLockfilePlugin('bundle-lockfile/package-lock.json').apply(compiler); // webpack 4: no compilerFile, webpack-sources not found
+    // webpack 5: after processAssets, whose additionalAssets taps would process the lockfile too; webpack 4: afterOptimizeAssets
+    comp.hooks = withWebpack
+      ? { processAssets: { tap() { throw new Error('emitted in processAssets'); } }, afterProcessAssets: { tap: (o, fn) => (stageTap = fn) } }
+      : { afterOptimizeAssets: { tap: (o, fn) => (stageTap = fn) } };
+    new webpack.BundleLockfilePlugin(LOCK).apply(compiler); // webpack 4: no compilerFile, webpack-sources not found
     taps.thisCompilation(comp);
     stageTap();
-    assert.deepEqual(entries(emitted['bundle-lockfile/package-lock.json']).map(([k]) => k), ['node_modules/a'], `withWebpack=${withWebpack}`);
+    const json = emitted[LOCK];
+    assert.deepEqual(entries(json).map(([k]) => k), ['node_modules/a'], `withWebpack=${withWebpack}`);
+    // a plugin deleted it in the emit hook (compression-webpack-plugin with deleteOriginalAssets on webpack 4): put back
+    delete emitted[LOCK];
+    taps.emit(comp);
+    assert.equal(emitted[LOCK], json, `withWebpack=${withWebpack}`);
+    taps.emit(comp); // still there: left alone
     let done = false;
     taps.afterEmit(comp, () => (done = true)); // not shared: no extra write, continues at once
     assert.equal(done, true);
     assert.equal(compiler[Symbol.for('bundle-lockfile.webpack.applied')], true);
+  }
+});
+
+test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) count as the package files whose bytes they have', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('copied'), ...pj('other'), ...pj('empty'), ...pj('named'),
+    'node_modules/copied/x.css': 'body{}', 'node_modules/other/z.css': 'BODY{}', 'node_modules/empty/e.css': '', 'src/robots.txt': 'x' });
+  const dep = (f) => J(root, f);
+  const DEPS = [dep('node_modules/a/i.js'), dep('node_modules/copied/x.css'), dep('node_modules/other/z.css'), dep('node_modules/empty/e.css'), dep('src/robots.txt')];
+  for (const shape of ['webpack 4', 'webpack 5']) {
+    const outputPath = J(root, shape === 'webpack 4' ? 'dist4' : 'dist5');
+    const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: shape === 'webpack 5' });
+    compiler.outputFileSystem.readFile = fs.readFile;
+    new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+    // late: assets the emit hook adds (name -> [content, info]); deps: the compilation's file dependencies
+    const build = async (late, deps = DEPS) => {
+      const comp = {
+        compiler, chunks: [{ files: ['main.js'], modulesIterable: [{ resource: dep('node_modules/a/i.js') }] }], children: [],
+        fileDependencies: new Set(deps),
+        hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) }, afterOptimizeAssets: { tap: (o, fn) => (comp.stage = fn) } },
+      };
+      let add, sourceOf;
+      if (shape === 'webpack 4') { // assets: an object of sources, no asset info (webpack < 4.40), no emitAsset
+        comp.assets = {};
+        add = (name, source) => { comp.assets[name] = source; };
+        sourceOf = (name) => comp.assets[name];
+      } else {
+        const assets = new Map();
+        add = (name, source, info = {}) => assets.set(name, { name, source, info });
+        sourceOf = (name) => assets.get(name).source;
+        Object.assign(comp, { emitAsset: add, getAsset: (name) => assets.get(name), getAssets: () => [...assets.values()] });
+      }
+      add('main.js', { source: () => 'main' });
+      taps.thisCompilation(comp);
+      comp.stage();
+      for (const [name, [content, info]] of Object.entries(late)) {
+        // webpack 5 keeps only the size of emitted assets: the content is read from the output
+        add(name, shape === 'webpack 5' ? { source() { throw new Error('size only'); } } : { source: () => content }, info);
+        fs.mkdirSync(path.dirname(J(outputPath, name)), { recursive: true });
+        fs.writeFileSync(J(outputPath, name), content);
+      }
+      fs.mkdirSync(J(outputPath, 'bundle-lockfile'), { recursive: true });
+      fs.writeFileSync(J(outputPath, LOCK), sourceOf(LOCK).source()); // webpack writes the lockfile asset
+      await new Promise(resolve => taps.afterEmit(comp, resolve));
+      return lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8'));
+    };
+    // x.css has copied/x.css's bytes; z.css has its size, not its bytes; empty files match nothing;
+    // robots.txt is a first-party file
+    assert.deepEqual(await build({ 'css/x.css': [Buffer.from('body{}')], 'z.css': ['body{}'], 'e.css': [''], 'robots.txt': ['x'] }), ['a', 'copied'], shape);
+    // watch rebuild: copy-webpack-plugin 5 does not add the unchanged file again, it is still in the output
+    assert.deepEqual(await build({}), ['a', 'copied'], shape);
+    // no longer copied (not a file dependency any more)
+    assert.deepEqual(await build({}, DEPS.filter(f => !f.includes('copied'))), ['a'], shape);
+    // a late asset that names its source file
+    if (shape === 'webpack 5') assert.deepEqual(await build({ 'y.js': ['y', { sourceFilename: 'node_modules/named/y.js' }] }), ['a', 'named'], shape);
   }
 });
 
@@ -498,7 +660,7 @@ test('webpack adapter: every top-level compiler gets the listeners once; child c
   webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
   webpack.onCompiler((c) => seen.push(c));
   const top = new W();
-  top.hooks = { thisCompilation: { tap() { applied++; } }, afterEmit: { tapAsync() {} } };
+  top.hooks = { thisCompilation: { tap() { applied++; } }, emit: { tap() {} }, afterEmit: { tapAsync() {} } };
   top.webpack = { Compilation: {}, sources: {} };
   top.compile(); top.compile();
   const configured = new W();

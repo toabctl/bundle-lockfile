@@ -70,9 +70,14 @@ const fixtures = {
   'edge-worker-wp4': { app: 'edge-worker', installer: { type: 'npm' }, deps: { ...WEBPACK4, ...WORKER } },
   'edge-workbox': edge('edge-workbox', { 'workbox-webpack-plugin': '7.4.1', 'workbox-precaching': '7.4.1', 'lodash-es': '4.18.1', ...HTML }),
   'edge-copy': edge('edge-copy', { 'copy-webpack-plugin': '14.0.0', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
+  // copy-webpack-plugin 5 adds its files in webpack 4's emit hook, after the lockfile, without naming their source
+  'edge-copy5-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '5.1.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' } },
   // copy-webpack-plugin 6 adds its files in webpack 4's additionalAssets hook
   'edge-copy-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.4.1', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' } },
   'edge-shared-output': edge('edge-shared-output', { debug: '2.6.9', ms: '2.1.3' }),
+  'edge-compression': edge('edge-compression', { 'compression-webpack-plugin': '12.0.0', 'lodash-es': '4.18.1' }),
+  // compression-webpack-plugin 6 runs in webpack 4's emit hook, after the lockfile was emitted
+  'edge-compression-wp4': { app: 'edge-compression', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'compression-webpack-plugin': '6.1.2', 'lodash-es': '4.18.1' } },
   'edge-vanilla': edge('edge-vanilla', { '@vanilla-extract/css': '1.21.2', '@vanilla-extract/webpack-plugin': '2.3.27',
     'mini-css-extract-plugin': '2.10.2', 'css-loader': '7.1.5', 'lodash-es': '4.18.1' }),
   'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
@@ -97,6 +102,7 @@ const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
+const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 // cold build, then a build that restores every module from webpack's persistent cache: identical lockfiles
 const WARM = 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/package-lock.json .cold.json && rm -rf dist && npm run -s build && cmp .cold.json dist/bundle-lockfile/package-lock.json';
 // worker-loader workers: lodash-es in main.js, ms@2.1.3 in a worker, debug + its ms@2.0.0 in a worker inside it,
@@ -220,8 +226,26 @@ const cases = [
   { name: 'edge: package file copied by copy-webpack-plugin', fixture: 'edge-copy', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
   { name: 'edge: package file copied by copy-webpack-plugin 6, webpack 4', fixture: 'edge-copy-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
+  // its copy is matched by content to the package file it was copied from
+  { name: 'edge: package file copied by copy-webpack-plugin 5, webpack 4', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
   // two compilers write to dist/ in parallel: one lockfile with the packages of both
   { name: 'edge: two compilers, one output dir', fixture: 'edge-shared-output', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // the first compiler's asset names carry a query string ([name].js?[contenthash]): its files are still there
+  { name: 'edge: two compilers, one output dir, file names with a query string', fixture: 'edge-shared-output', cmd: 'npm run -s build',
+    env: { EDGE_SHARED: 'query' }, expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // configs that differ only in resolve.alias, with the same name, entry, target and file name templates
+  { name: 'edge: two compilers, one output dir, configs differing only in resolve.alias', fixture: 'edge-shared-output', cmd: 'npm run -s build',
+    env: { EDGE_SHARED: 'alias' }, expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // output.path 'dist/[fullhash]': each compiler's own directory (the oracle checks each lockfile exactly)
+  { name: 'edge: two compilers, output.path with [fullhash]', fixture: 'edge-shared-output', cmd: 'npm run -s build',
+    env: { EDGE_SHARED: 'fullhash' }, expectIncludes: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // a failed rebuild is not emitted: the lockfile keeps the packages of the output still in dist/
+  { name: 'edge: two compilers, one output dir, watch mode with a failing rebuild', fixture: 'edge-shared-output', cmd: WATCH_FAIL,
+    expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'], watchBuilds: 3 },
+  { name: 'edge: compression-webpack-plugin with deleteOriginalAssets', fixture: 'edge-compression', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1'] },
+  { name: 'edge: compression-webpack-plugin 6 with deleteOriginalAssets, webpack 4', fixture: 'edge-compression-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: ['lodash-es@4.18.1'] },
   // the virtual CSS module reads a placeholder file in @vanilla-extract/webpack-plugin, a build tool;
   // @vanilla-extract/css only runs at build time
   { name: 'edge: vanilla-extract virtual CSS (match resource)', fixture: 'edge-vanilla', cmd: 'npm run -s build',

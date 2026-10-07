@@ -19,7 +19,9 @@ its files ends up in the output:
   `worker-loader`, workbox's `InjectManifest` service worker) or inlined into a bundled module
   (`worker-loader`'s `inline: 'no-fallback'`). Child compilers that only run at build time
   (html-webpack-plugin's template, mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted
-- copied verbatim into the output, e.g. by `copy-webpack-plugin`
+- copied verbatim into the output, e.g. by `copy-webpack-plugin`. Its assets record the file they were copied
+  from; those of copy-webpack-plugin 5 (webpack 4) do not, they count as the file among the compilation's file
+  dependencies in `node_modules` with the same bytes (a copy that was transformed on the way matches none)
 
 A module counts as the file webpack itself names it by (its `nameForCondition`: the path `module.rules`
 match it against, also used by `splitChunks` cache-group tests): its resource, or the match resource of a `<name>!=!<loaders>!<file>`
@@ -164,12 +166,18 @@ A compiler that has the plugin in its config does not get it a second time when 
 Each top-level compiler writes `<output dir>/bundle-lockfile/package-lock.json`. Compilers that share
 an output directory (e.g. a config array whose app and service worker both go to `dist/`) share that
 lockfile: it lists the packages of all of them, also when they build in parallel or rebuild in watch
-mode. A new compiler for the same config (same name, entry, target and file names, e.g. a build restarted
-in the same process) replaces the previous one's packages.
+mode. A compiler's packages count once its build is written: a rebuild that fails and is not emitted
+(webpack's default in production) leaves the packages of its previous output in the lockfile. A new
+compiler for the same config (same output directory, name, entry, target and file names, e.g. a build
+restarted in the same process) replaces the previous one's packages once that one is closed (webpack 4:
+no longer running); until then both are listed.
 When a compiler's `output.clean` deletes what the others have already written (on its first build, except
 paths matching `clean.keep`), their packages are dropped from the lockfile too: after each compiler's emit,
 compilers whose emitted files are all gone are left out. If some of a compiler's files are left, all its
 packages stay.
+The lockfile is added after webpack 5's `processAssets` stages, so plugins that work on the assets there
+(e.g. compression-webpack-plugin) do not get it; if a plugin deletes it later (compression-webpack-plugin's
+`deleteOriginalAssets` on webpack 4, which runs in the `emit` hook), it is emitted again.
 This works for compilers in the same process; separate processes writing to one directory (e.g. two
 `webpack` commands run by `concurrently`) overwrite each other's lockfile.
 
@@ -287,10 +295,13 @@ no lockfile is written.
 Besides installers and bundler versions, the cases cover watch-mode rebuilds, warm builds from webpack's
 persistent cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, and edge cases:
 npm aliases and one version at several paths, Yarn's global cache, Babel-injected helpers, CSS and asset
-modules from packages, a DLL, two compilers sharing an output directory, workspace packages (also with
+modules from packages, a DLL, two compilers sharing an output directory (also with query strings in file
+names, configs that differ only in `resolve.alias`, a failing watch rebuild, and an `output.path` with
+`[fullhash]`), compression-webpack-plugin
+deleting the original assets (webpack 4 and 5), workspace packages (also with
 `resolve.symlinks: false`), subpath manifests, nested and inlined worker-loader workers (webpack 4 and 5),
 a workbox service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin
-(webpack 4 and 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root.
+(5 and 6 on webpack 4, 14 on webpack 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root.
 
 The devDependencies case also runs a functional SBOM check: it stages the build output like a package
 would install it (`usr/share/app/dist/`), runs `syft scan dir:` with SPDX JSON output, and requires

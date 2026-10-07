@@ -7,13 +7,14 @@
 //   are among the child's own assets while its entry module (depth 0) is a shipped module of its parent
 //   (inlined into it, e.g. worker-loader's inline: 'no-fallback')
 // - assets whose info.sourceFilename (relative to the context) is a file in a package (copy-webpack-plugin)
+// - copied: more files in the output, found by the caller (copy-webpack-plugin 5, whose assets name no file)
 const fs = require('fs');
 const path = require('path');
 
 const STATS_OPTIONS = { modules: true, nestedModules: true, chunks: true, chunkModules: false, assets: true, children: true, depth: true, source: false };
 
-function packagesFromStats(json, context) {
-  const files = new Set();
+function packagesFromStats(json, context, copied = []) {
+  const files = new Set(copied);
   // file of a module: nameForCondition = resource path; identifiers can carry prefixes like "javascript/esm|/abs/path"
   const resourceOf = (m) => ((m.identifier || '').split('!').pop().split('|').find(s => path.isAbsolute(s)) || '').split('?')[0];
   const fileOf = (m, byId) => {
