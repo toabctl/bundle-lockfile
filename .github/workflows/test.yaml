@@ -15,7 +15,7 @@ jobs:
     container: cgr.dev/chainguard/wolfi-base:latest
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-24 npm yarn bun syft tar
+        run: apk add --no-cache nodejs-24 npm yarn bun syft
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures"
