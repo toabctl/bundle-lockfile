@@ -9,10 +9,12 @@ const ADAPTERS = ['./adapters/webpack.cjs'];
 
 if (!config.isDisabled('all')) {
   const hooks = require('./hooks.cjs');
+  let enabled = 0;
   for (const file of ADAPTERS) {
     const adapter = require(file);
     if (config.isDisabled(adapter.name)) { config.debug('adapter disabled:', adapter.name); continue; }
     hooks.register(adapter);
+    enabled++;
   }
-  hooks.install();
+  if (enabled) hooks.install(); // nothing to do: leave Module._load alone
 }

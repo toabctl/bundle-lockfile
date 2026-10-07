@@ -17,6 +17,8 @@ jobs:
       - name: Install tools
         run: apk add --no-cache nodejs-24 npm yarn bun syft
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Unit tests
+        run: node --test test/unit.cjs
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures"
       - name: Run matrix

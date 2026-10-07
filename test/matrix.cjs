@@ -1,6 +1,7 @@
 'use strict';
 // Test matrix as data: fixtures (app + bundler + installer) and cases (fixture + command + expectation).
 // A new bundler or installer adds rows here; gen.cjs and run.cjs stay unchanged.
+const path = require('path');
 
 const APP_DEPS = { 'lodash-es': '4.18.1', uuid: '9.0.1', yallist: '5.0.0', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20' };
 // yallist 5 uses class fields, which webpack 4's parser (acorn 6) cannot handle
@@ -60,6 +61,12 @@ const fixtures = {
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
+  'edge-worker': edge('edge-worker', { 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9' }),
+  'edge-worker-wp4': { app: 'edge-worker', installer: { type: 'npm' },
+    deps: { webpack: '4.47.0', 'webpack-cli': '4.10.0', 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9' } },
+  'edge-workbox': edge('edge-workbox', { 'workbox-webpack-plugin': '7.4.1', 'workbox-precaching': '7.4.1', 'lodash-es': '4.18.1', ...HTML }),
+  'edge-copy': edge('edge-copy', { 'copy-webpack-plugin': '14.0.0', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
+  'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
@@ -79,6 +86,8 @@ const DIST_LOCK = '/usr/share/app/dist/bundle-lockfile/package-lock.json'; // sy
 const PROJECT_LOCK = '/usr/share/app/package-lock.json';
 const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
+const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle
 function nextCase(fixture, version, react, flags = '') {
@@ -103,11 +112,21 @@ function nextCase(fixture, version, react, flags = '') {
 //              require exactly these npm packages (name, version, purl, declared license, source file)
 //   heapMB     assert the configured --max-old-space-size reached node
 //   expectOutput  RegExp the build's stdout+stderr must match
+//   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
+//   expectKeys {lockfile key: name@version} - exactly the keys of the single output
+//   watchBuilds  the cmd prints a JSON list of per-build package lists last; there must be this many, each = expect
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
   { name: 'BUNDLE_LOCKFILE_DISABLE=webpack', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'webpack' }, expect: null },
   { name: 'existing NODE_OPTIONS are preserved', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: '--max-old-space-size=3072', heapMB: 3072, expect: W5 },
+  { name: 'BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
+    lockfile: 'sbom/package-lock.json', expect: W5 },
+  // build modes
+  { name: 'watch mode: every rebuild emits the lockfile', fixture: 'wp5-npm', cmd: WATCH, expect: W5, watchBuilds: 2 },
+  // cold build, then a build that restores every module from webpack's persistent cache: identical lockfiles
+  { name: 'persistent cache: warm build = cold build', fixture: 'wp5-npm', env: { EDGE_CACHE: '1' }, expect: W5,
+    cmd: 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/package-lock.json .cold.json && rm -rf dist && npm run -s build && cmp .cold.json dist/bundle-lockfile/package-lock.json' },
   // webpack versions
   { name: 'webpack 4.0.0', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.0.0') },
   { name: 'webpack 4.47.0', fixture: 'wp4.47-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
@@ -166,7 +185,21 @@ const cases = [
   { name: 'edge: npm workspace package', fixture: 'edge-workspace', cmd: 'npm run -s build', expect: ['ms@2.1.3'] },
   // a nested package.json with its own name/version (preact/hooks -> "preact-hooks@0.1.0") is not a package
   { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'] },
-  { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_TEST_FAULT: 'collect' },
+  // workspace packages count as first-party also when webpack keeps the node_modules/@acme/ui symlink path
+  { name: 'edge: npm workspace package, resolve.symlinks=false', fixture: 'edge-workspace', cmd: 'npm run -s build', env: { EDGE_RESOLVE_SYMLINKS: 'false' }, expect: ['ms@2.1.3'] },
+  // child compilers whose output is shipped: worker-loader (a worker inside a worker), workbox's service worker.
+  // html-webpack-plugin's child compiler only renders the template at build time and is not counted.
+  { name: 'edge: worker-loader workers, nested (child compilers)', fixture: 'edge-worker', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3'] },
+  { name: 'edge: worker-loader workers, webpack 4', fixture: 'edge-worker-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3'] },
+  { name: 'edge: workbox InjectManifest service worker', fixture: 'edge-workbox', cmd: 'npm run -s build',
+    expectIncludes: ['workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'lodash-es@4.18.1'], expectExcludes: ['html-webpack-plugin@5.6.6', 'workbox-webpack-plugin@7.4.1'] },
+  // copy-webpack-plugin: a package file copied verbatim into the output is shipped; copied first-party files are not packages
+  { name: 'edge: package file copied by copy-webpack-plugin', fixture: 'edge-copy', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
+  // webpack's context is a subdirectory: keys are relative to it, syft still reads every entry by its name field
+  { name: 'edge: context below the project root', fixture: 'edge-context', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'],
+    expectKeys: { '../node_modules/debug': 'debug@2.6.9', '../node_modules/debug/node_modules/ms': 'ms@2.0.0', '../node_modules/ms': 'ms@2.1.3' } },
+  { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT,
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
   // Next.js
   { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1') },

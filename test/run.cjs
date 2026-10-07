@@ -29,7 +29,7 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
   // vendored package manager releases of the fixture: $PNPM / $NPM in the case's cmd
@@ -57,7 +57,7 @@ function runCase(c) {
 
   const build = run(c.cmd, dir, env);
   if (c.expectOutput && !c.expectOutput.test(build.stdout + build.stderr)) throw new Error(`build output does not match ${c.expectOutput}`);
-  const got = readLockfiles(outDir);
+  const got = readLockfiles(outDir, c.lockfile);
   const all = [...new Set(Object.values(got).flat())].sort();
 
   if (c.expect === null) {
@@ -67,11 +67,16 @@ function runCase(c) {
   if (!Object.keys(got).length) throw new Error('no lockfile written');
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectKeys) {
-    const lock = JSON.parse(fs.readFileSync(path.join(outDir, LOCKFILE), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(outDir, c.lockfile || LOCKFILE), 'utf8'));
     const keys = Object.fromEntries(Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => [k, `${p.name}@${p.version}`]));
     if (!sameMap(Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, [v]])), Object.fromEntries(Object.entries(c.expectKeys).map(([k, v]) => [k, [v]]))))
       throw new Error(`lockfile keys ${JSON.stringify(keys)}, expected ${JSON.stringify(c.expectKeys)}`);
     notes.push('keys as expected');
+  }
+  if (c.watchBuilds) {
+    const builds = JSON.parse(build.stdout.trim().split('\n').pop());
+    if (builds.length !== c.watchBuilds || !builds.every(b => same(b, c.expect))) throw new Error(`watch builds: ${JSON.stringify(builds)}, want ${c.watchBuilds} x ${c.expect.join(' ')}`);
+    notes.push(`${builds.length} watch builds`);
   }
   const missing = (c.expectIncludes || []).filter(p => !all.includes(p));
   if (missing.length) throw new Error(`missing ${missing.join(' ')} in${show(got)}`);

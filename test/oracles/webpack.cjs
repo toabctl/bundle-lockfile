@@ -24,7 +24,7 @@ webpack(Array.isArray(config) ? configs : configs[0], (err, stats) => {
   const result = {};
   for (const s of stats.stats || [stats]) {
     const rel = path.relative(oracleDist, s.compilation.outputOptions.path).split(path.sep).join('/');
-    result[rel] = packagesFromStats(s.toJson(STATS_OPTIONS));
+    result[rel] = packagesFromStats(s.toJson(STATS_OPTIONS), s.compilation.compiler.context);
   }
   console.log(JSON.stringify(result));
 });

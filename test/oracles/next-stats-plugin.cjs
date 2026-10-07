@@ -13,7 +13,7 @@ class NextStatsOraclePlugin {
       const rel = path.relative(path.resolve(compiler.context, this.distDir), compiler.outputPath).split(path.sep).join('/');
       fs.mkdirSync(this.outDir, { recursive: true });
       fs.writeFileSync(path.join(this.outDir, `${compiler.name || 'unnamed'}.json`),
-        JSON.stringify({ output: rel, packages: packagesFromStats(stats.toJson(STATS_OPTIONS)) }));
+        JSON.stringify({ output: rel, packages: packagesFromStats(stats.toJson(STATS_OPTIONS), compiler.context) }));
     });
   }
 }

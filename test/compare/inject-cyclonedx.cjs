@@ -10,7 +10,7 @@
 const Module = require('module');
 const path = require('path');
 require('../../src/register.cjs');
-const { packagesForFiles } = require('../../src/core/packages.cjs');
+const { packageRoot, packagesForFiles } = require('../../src/core/packages.cjs');
 
 const APPLIED = Symbol.for('bundle-lockfile.compare.applied');
 const PATCHED = Symbol.for('bundle-lockfile.compare.patched');
@@ -35,6 +35,21 @@ function idsFirstParty(files) {
   }
   return [...out].sort();
 }
+// packages vendored INSIDE another package (e.g. next/dist/compiled/@edge-runtime/cookies): the nearest
+// package.json with name and version is below the package root - to explain what CycloneDX lists for them
+function idsVendored(files) {
+  const out = new Set();
+  for (const f of files) {
+    const file = f.split('?')[0];
+    const root = packageRoot(file);
+    if (!root) continue;
+    for (let d = path.dirname(file); d.startsWith(root + path.sep); d = path.dirname(d)) {
+      let j; try { j = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch { continue; }
+      if (j.name && j.version) { out.add(`${j.name}@${j.version}`); break; }
+    }
+  }
+  return [...out].sort();
+}
 
 class DiagnosticsPlugin {
   apply(compiler) {
@@ -46,7 +61,7 @@ class DiagnosticsPlugin {
         for (const m of compilation.modules) walk(all)(m);
         for (const c of compilation.chunks) for (const m of compilation.chunkGraph.getChunkModulesIterable(c)) walk(inChunks)(m);
         compilation.emitAsset('bundle-lockfile-compare/diag.json', new sources.RawSource(JSON.stringify({
-          compiler: compiler.name || null, processed: ids(all), inChunks: ids(inChunks), firstParty: idsFirstParty(all),
+          compiler: compiler.name || null, processed: ids(all), inChunks: ids(inChunks), firstParty: idsFirstParty(all), vendored: idsVendored(all),
         }, null, 2)));
       });
     });
@@ -76,9 +91,17 @@ Module._load = function (request, parent) {
     if (typeof exp === 'function') {
       if (exp.name === 'Compiler') patch(exp);
       else if (exp.Compiler && exp.Compilation && exp.version) patch(exp.Compiler);
-    } else if (exp && typeof exp === 'object' && request.includes('webpack') && exp.webpack && exp.webpack.Compiler) {
+    } else if (exp && typeof exp === 'object' && request.includes('webpack')) {
       let where = request; try { where = Module._resolveFilename(request, parent); } catch { /* keep request */ }
-      if (NEXT_WEBPACK.test(where)) patch(exp.webpack.Compiler);
+      if (NEXT_WEBPACK.test(where)) {
+        // Next's webpack.js gets its exports.webpack from init(); see src/adapters/webpack.cjs
+        if (exp.webpack) patch(exp.webpack.Compiler);
+        if (typeof exp.init === 'function' && !exp.init[PATCHED]) {
+          const init = exp.init;
+          exp.init = function (...args) { const r = init.apply(this, args); if (exp.webpack) patch(exp.webpack.Compiler); return r; };
+          exp.init[PATCHED] = true;
+        }
+      }
     }
   } catch (e) { console.error('[bundle-lockfile-compare] WARNING:', e); }
   return exp;

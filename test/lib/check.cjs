@@ -3,8 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const LOCKFILE_DIR = 'bundle-lockfile';
-const LOCKFILE = `${LOCKFILE_DIR}/package-lock.json`;
+const LOCKFILE = 'bundle-lockfile/package-lock.json';
 
 // Sorted name@version list of one lockfile. Throws if it is malformed.
 function readLockfile(f) {
@@ -23,16 +22,19 @@ function readLockfile(f) {
 }
 
 // All lockfiles below outDir: { "<compiler output dir relative to outDir>": [name@version, ...] }.
-// Any other package-lock.json below outDir is an error (e.g. a child compiler writing its own).
-function readLockfiles(outDir) {
+// lockfile: path of the lockfile below each compiler output dir. Any other package-lock.json below
+// outDir is an error (e.g. a child compiler writing its own).
+function readLockfiles(outDir, lockfile = LOCKFILE) {
   const result = {};
+  const suffix = lockfile.split('/');
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) { walk(p); continue; }
       if (e.name !== 'package-lock.json') continue;
-      if (path.basename(d) !== LOCKFILE_DIR) throw new Error(`unexpected lockfile ${p}`);
-      result[path.relative(outDir, path.dirname(d)).split(path.sep).join('/')] = readLockfile(p);
+      const parts = path.relative(outDir, p).split(path.sep);
+      if (parts.length < suffix.length || parts.slice(-suffix.length).join('/') !== lockfile) throw new Error(`unexpected lockfile ${p}`);
+      result[parts.slice(0, -suffix.length).join('/')] = readLockfile(p);
     }
   };
   if (fs.existsSync(outDir)) walk(outDir);

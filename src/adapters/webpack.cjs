@@ -1,10 +1,11 @@
 'use strict';
 // webpack 4 and 5, including the copy Next.js vendors (next/dist/compiled/webpack).
 // Patches Compiler.prototype.compile so every top-level compiler (not child compilers such as
-// html-webpack-plugin's) emits <output>/<BUNDLE_LOCKFILE_FILE> listing the packages in its chunks.
+// html-webpack-plugin's) emits <output>/<BUNDLE_LOCKFILE_FILE> listing the packages in its output.
+const path = require('path');
 const { createRequire } = require('module');
 const config = require('../core/config.cjs');
-const { lockfileForFiles } = require('../core/lockfile.cjs');
+const lockfile = require('../core/lockfile.cjs');
 
 const NAME = 'bundle-lockfile';
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
@@ -19,14 +20,35 @@ function sourceFile(m) {
   return typeof m.nameForCondition === 'function' ? m.nameForCondition() : null;
 }
 
-// Source files of all modules in emitted chunks. Scope-hoisted ConcatenatedModules carry their
-// inner modules in .modules; those inner modules are not in any chunk themselves.
+const chunkModules = (compilation, chunk) =>
+  compilation.chunkGraph ? compilation.chunkGraph.getChunkModulesIterable(chunk) : chunk.modulesIterable; // webpack 5 : 4
+
+// Source files of everything this compilation emits:
+// - modules in its chunks. Scope-hoisted ConcatenatedModules carry their inner modules in .modules;
+//   those inner modules are not in any chunk themselves.
+// - modules in chunks of child compilations whose files reached this compilation's assets (worker-loader,
+//   workbox's InjectManifest). runAsChild copies a child's assets into the parent; child compilations that
+//   only run at build time (html-webpack-plugin's template, mini-css-extract's loader) delete theirs first.
+// - files copied into the output verbatim (copy-webpack-plugin): asset info.sourceFilename, relative to the
+//   context. webpack's asset modules set it too; those are in a chunk anyway.
 function bundledFiles(compilation) {
   const files = new Set();
   const walk = (m) => { const f = sourceFile(m); if (f) files.add(f); for (const im of m.modules || []) walk(im); };
-  for (const chunk of compilation.chunks) {
-    const mods = compilation.chunkGraph ? compilation.chunkGraph.getChunkModulesIterable(chunk) : chunk.modulesIterable; // webpack 5 : 4
-    for (const m of mods) walk(m);
+  for (const chunk of compilation.chunks) for (const m of chunkModules(compilation, chunk)) walk(m);
+
+  const emitted = (name) => (compilation.getAsset ? compilation.getAsset(name) : compilation.assets[name]) !== undefined;
+  const children = (c) => {
+    for (const child of c.children || []) {
+      for (const chunk of child.chunks) {
+        if ([...chunk.files].some(emitted)) for (const m of chunkModules(child, chunk)) walk(m);
+      }
+      children(child); // grandchildren's assets are copied up through every level
+    }
+  };
+  children(compilation);
+
+  for (const { info } of compilation.getAssets ? compilation.getAssets() : []) {
+    if (info && typeof info.sourceFilename === 'string') files.add(path.resolve(compilation.compiler.context, info.sourceFilename));
   }
   return files;
 }
@@ -36,8 +58,7 @@ class BundleLockfilePlugin {
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
 
   lockfile(compilation) {
-    if (config.fault === 'collect') throw new Error('injected fault (BUNDLE_LOCKFILE_TEST_FAULT=collect)');
-    return lockfileForFiles(bundledFiles(compilation), compilation.compiler.context);
+    return lockfile.lockfileForFiles(bundledFiles(compilation), compilation.compiler.context);
   }
 
   apply(compiler) {
@@ -87,6 +108,21 @@ function patchCompiler(Compiler, where) {
   config.debug('webpack: patched Compiler from', where);
 }
 
+// next/dist/compiled/webpack/webpack.js only exports init() when it is loaded; init() then fills in
+// exports.webpack (Object.assign(exports, require('./bundle5')())). Patch right after init(), and also
+// when an already initialized copy is required.
+function patchNext(exp, where) {
+  if (exp.webpack && exp.webpack.Compiler) patchCompiler(exp.webpack.Compiler, where);
+  if (typeof exp.init !== 'function' || exp.init[PATCHED]) return;
+  const init = exp.init;
+  exp.init = function (...args) {
+    const r = init.apply(this, args);
+    try { if (exp.webpack) patchCompiler(exp.webpack.Compiler, where); } catch (e) { config.warn('webpack: could not patch Next.js webpack:', e); }
+    return r;
+  };
+  exp.init[PATCHED] = true;
+}
+
 module.exports = {
   name: 'webpack',
   BundleLockfilePlugin, // usable directly in a webpack config, without injection
@@ -96,9 +132,8 @@ module.exports = {
       if (exp.name === 'Compiler') patchCompiler(exp, resolve());                                    // webpack/lib/Compiler.js
       else if (exp.Compiler && exp.Compilation && exp.version) patchCompiler(exp.Compiler, resolve()); // webpack namespace
     } else if (exp && typeof exp === 'object' && request.includes('webpack')) {
-      // Next.js vendors webpack: next/dist/compiled/webpack/webpack.js is a plain object with a .webpack function
       const where = resolve();
-      if (NEXT_WEBPACK.test(where) && exp.webpack && exp.webpack.Compiler) patchCompiler(exp.webpack.Compiler, where);
+      if (NEXT_WEBPACK.test(where)) patchNext(exp, where);
     }
   },
 };
