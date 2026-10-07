@@ -1,0 +1,23 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    # Wolfi, so the matrix runs against the same node/npm/yarn/bun/syft packages the build environments use
+    container: cgr.dev/chainguard/wolfi-base:latest
+    steps:
+      - name: Install tools
+        run: apk add --no-cache nodejs-24 npm yarn bun syft tar
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Generate fixtures
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures"
+      - name: Run matrix
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures"
