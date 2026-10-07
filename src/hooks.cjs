@@ -16,7 +16,7 @@ const adapters = [];
 function register(adapter) { adapters.push(adapter); }
 
 function install() {
-  // the same --require can end up in NODE_OPTIONS twice (e.g. npm's node-options + env), or two copies at different paths
+  // another copy of bundle-lockfile at a different path can be preloaded too (the same path loads once: require caches it)
   if (globalThis[INSTALLED]) return;
   globalThis[INSTALLED] = true;
 

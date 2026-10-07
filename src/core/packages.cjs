@@ -30,7 +30,7 @@ function licenseOf(j) {
 function readPackage(dir) {
   let j;
   // a leading byte order mark is valid UTF-8 that JSON.parse rejects; npm strips it too
-  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^﻿/, '')); } catch { return null; }
+  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return null; }
   if (!j || typeof j.name !== 'string' || !j.name || typeof j.version !== 'string' || !j.version) return null;
   return { name: j.name, version: j.version, path: dir, license: licenseOf(j) };
 }
