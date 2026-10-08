@@ -285,6 +285,7 @@ ignore it.
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
 | Vite | 7 (Rollup), 8 (Rolldown) | Node.js >= 20.6; 5 and 6 build with Rollup 4 like 7, but are not tested |
+| SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node; see [SvelteKit](#sveltekit) |
 | Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, `build()`, `watch()`), as Vite and its frameworks run them, and the `rollup` command line; not the `rolldown` command line yet |
 
 Tested with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
@@ -314,8 +315,14 @@ Besides the modules of the chunks, the lockfile lists the packages of:
   Such builds, and outputs below `node_modules` (Vite's dependency pre-bundling), get no lockfile of their own.
 - files other plugins write into the output directory after the build (in a `closeBundle` running after theirs):
   JavaScript files with the bytes of such a build's chunk (vite-plugin-pwa's `sw.js` and `workbox-<hash>.js`), and
-  copies from `node_modules` whose path in the output still contains `node_modules/<package>/` and whose bytes are the
-  package's file (vite-plugin-static-copy). Only files changed since the build started count.
+  copies of a package's files (vite-plugin-static-copy, see below). Only files changed since the build started count.
+
+**Copies out of packages.** A file copied out of a package and bundled or shipped from elsewhere still belongs to its
+package: `fs.copyFile`, `fs.copyFileSync`, `fs.cp` and `fs.cpSync` (also their `fs.promises` versions, and fs-extra
+and graceful-fs, which call them) are wrapped to remember, in the process, which file in `node_modules` a file outside
+of it was copied from. A bundled file, or one written into the output after the build, that has the bytes of its
+source lists the source's package (for every adapter). A copy made by another process is recognized only if its path
+in the output still contains `node_modules/<package>/` and its bytes are that package's file.
 
 The hook depends on the Node.js version:
 - Node.js 24.12, 25.2 and later: `module.registerHooks`, in the same thread, in every process.
@@ -325,16 +332,32 @@ The hook depends on the Node.js version:
   time per process and the in-thread hooks of other tools (e.g. OpenTelemetry's) can conflict with it.
   `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it in every process, `off` in none.
 
-Not yet listed: files copied from a package to a path without `node_modules` in it (e.g. vite-plugin-static-copy
-with `dest: 'vendor'` and `rename`, or `public/` files taken from a package), and output that a separate process
-generates (a worker bundle is built in the process of the build that uses it). A Sass partial with only variables
-lists its package although it adds no bytes.
+Not yet listed: files copied from a package by reading and writing them (not with fs's copy functions) or by another
+process, to a path without `node_modules` in it (e.g. `public/` files taken from a package once, by hand), and output
+that a separate process generates (a worker bundle is built in the process of the build that uses it). A Sass partial
+with only variables lists its package although it adds no bytes.
 
-**Nested bundles.** A Vite build can produce a file that another build bundles: GitLab, for example, builds an
-"island" with Vite into `ee/frontend_islands/apps/duo_next/dist/main.js` (Vue inlined) and webpack bundles that file
+**Nested bundles.** A Vite or Rollup build can produce a file that another build bundles: GitLab, for example, builds
+an "island" with Vite into `ee/frontend_islands/apps/duo_next/dist/main.js` (Vue inlined) and webpack bundles that file
 as part of its own code. Every lockfile records the SHA-256 of the JavaScript files its build wrote; when a bundled
 file outside `node_modules` has the bytes recorded by the nearest lockfile above it (or its copy in the export
-directory), that build's packages are listed too. A file changed after its build is not attributed.
+directory), that build's packages are listed too — in webpack, Vite, Rollup and Rolldown builds. A file changed after
+its build is not attributed.
+
+### SvelteKit
+
+`vite build` runs SvelteKit's client and server builds and builds the service worker with a nested Vite build; each
+writes its lockfile below `.svelte-kit/output/` (`client/`: the page code, the runtime and the service worker's
+packages; `server/`: what the server bundles). The adapter then fills `build/`:
+- adapter-static copies the client output, with its lockfile, to `build/`.
+- adapter-node copies it to `build/client/`. SvelteKit 3 copies the server output to `build/server/`, with its
+  lockfile; adapter-node 5 (SvelteKit 2) bundles the server output once more with Rollup into `build/`, whose lockfile
+  lists what is bundled there, including the server output's packages (as a nested bundle) and adapter-node's own
+  files, which it copies to `.svelte-kit/adapter-node/` before bundling them (see copies above).
+
+Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
+`dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile —
+ship that `node_modules` (with its `package.json` files, or `package-lock.json`) for the SBOM, as with Next.js.
 
 ### Next.js
 
@@ -416,9 +439,13 @@ with only the build output, and once with the project's own `package-lock.json` 
 The matrix runs on Node.js 24 (Wolfi `nodejs-24`); the Vite and nested-bundle cases also on Node.js 22, which uses
 the loader-thread hooks. Vite cases: Vite 7 and 8 with npm, pnpm and `npx`, the loader-thread hooks on Node.js 24 too,
 `BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a Vite-built island bundled by webpack 4 and 5 (also changed
-after its build), and an app with a worker, an inlined worker, a CSS `@import` from a package, @vitejs/plugin-legacy,
-vite-plugin-pwa and vite-plugin-static-copy (Vite 7 and 8). Their oracle builds again with Vite's source maps, which
-do not cover CSS-only packages and copied files. The `rollup` command line has its own case and oracle.
+after its build) and by Vite 8 (an island built by Vite 8) and Vite 7 (an island built by `rollup -c`), and an app with
+a worker, an inlined worker, a CSS `@import` from a package, @vitejs/plugin-legacy, vite-plugin-pwa and
+vite-plugin-static-copy (Vite 7 and 8). Their oracle builds again with Vite's source maps, which do not cover CSS-only
+packages and copied files. The `rollup` command line has its own case and oracle. SvelteKit 2 and 3, each with
+adapter-static and adapter-node (also on Node.js 22), are compared with an oracle that builds again with source maps
+into other directories and follows the maps of the files adapter-node 5 bundles again; a server dependency must not
+be listed.
 
 ### Comparison with the CycloneDX webpack plugin
 

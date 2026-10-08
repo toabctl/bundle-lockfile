@@ -1112,6 +1112,57 @@ test('rollup adapter: Rollup\'s CommonJS build is patched when it loads (require
   assert.equal(seen.pop(), 1);
 });
 
+test('copies: a file copied out of a package (fs.copyFile*, fs.cp*) belongs to it while it has its bytes', async () => {
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  copies.install(); // once
+  const root = project({ 'node_modules/adapter/package.json': { name: 'adapter', version: '5.0.0' }, 'node_modules/adapter/files/index.js': 'index',
+    'node_modules/adapter/files/chunks/vendor.js': 'vendor', 'node_modules/adapter/files/b.js': 'b', 'node_modules/adapter/files/c.js': 'c',
+    'node_modules/adapter/files/d.js': 'd', 'src/own.js': 'own' });
+  const nm = (f) => J(root, 'node_modules/adapter/files', f);
+  const out = (f) => J(root, '.kit', f);
+  fs.mkdirSync(J(root, '.kit'), { recursive: true });
+  fs.copyFileSync(nm('index.js'), out('index.js'));
+  await fs.promises.copyFile(nm('b.js'), out('b.js'));
+  await new Promise((res, rej) => fs.copyFile(nm('c.js'), out('c.js'), (e) => (e ? rej(e) : res())));
+  fs.cpSync(J(root, 'node_modules/adapter/files'), out('entries'), { recursive: true }); // a directory
+  await fs.promises.cp(nm('d.js'), out('d.js'));
+  fs.copyFileSync(J(root, 'src/own.js'), out('own.js'));                                 // not from a package
+  fs.mkdirSync(J(root, 'node_modules/other'), { recursive: true });
+  fs.copyFileSync(nm('index.js'), J(root, 'node_modules/other/index.js'));               // into node_modules: a package itself
+  for (const f of ['index.js', 'b.js', 'c.js', 'd.js', 'entries/index.js', 'entries/chunks/vendor.js']) {
+    assert.equal(fs.realpathSync(copies.sourceOf(out(f))).startsWith(J(root, 'node_modules/adapter/files')), true, f);
+  }
+  assert.equal(copies.sourceOf(out('own.js')), null);
+  assert.equal(copies.sourceOf(J(root, 'node_modules/other/index.js')), null);
+  assert.equal(copies.sourceOf(J(root, 'src/own.js')), null);
+  assert.deepEqual(ids(packagesForFiles([out('index.js'), out('entries/chunks/vendor.js'), out('own.js')])), ['adapter@5.0.0']);
+  // changed after the copy (or overwritten with other content): no longer the package's
+  fs.writeFileSync(out('index.js'), 'patched');
+  fs.appendFileSync(out('entries/chunks/vendor.js'), '!');
+  assert.equal(copies.sourceOf(out('index.js')), null);
+  assert.equal(copies.sourceOf(out('entries/chunks/vendor.js')), null);
+  assert.deepEqual(ids(packagesForFiles([out('index.js'), out('entries/chunks/vendor.js')])), []);
+  // copies still work and report their errors as before
+  assert.throws(() => fs.copyFileSync(J(root, 'missing.js'), out('x.js')), { code: 'ENOENT' });
+  await assert.rejects(fs.promises.copyFile(J(root, 'missing.js'), out('x.js')), { code: 'ENOENT' });
+  assert.equal(fs.copyFileSync.name, 'copyFileSync');
+});
+
+test('copies: a file copied out of a package into the output after the build (static copy under another name)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/normalize.css/package.json': { name: 'normalize.css', version: '8.0.1' },
+    'node_modules/normalize.css/normalize.css': 'html{}', 'node_modules/app/package.json': { name: 'app', version: '1.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: dist, chunks: [{ fileName: 'index.js', code: 'copies app', modules: [J(root, 'node_modules/app/i.js')] }],
+      late() { fs.mkdirSync(J(dist, 'vendor'), { recursive: true }); fs.copyFileSync(J(root, 'node_modules/normalize.css/normalize.css'), J(dist, 'vendor/reset.css')); } });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app', 'normalize.css']);
+  } finally { process.chdir(cwd); }
+});
+
 test('config: BUNDLE_LOCKFILE_DEBUG is off when unset, empty, 0 or false', () => {
   const script = `require(${JSON.stringify(J(SRC, 'core/config.cjs'))}).debug('on');`;
   for (const [value, on] of [[undefined, false], ['', false], ['0', false], ['false', false], ['FALSE', false], ['1', true], ['yes', true]]) {

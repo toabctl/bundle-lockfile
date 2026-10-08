@@ -28,5 +28,8 @@ if (!config.isDisabled('all')) {
     hooks.register(adapter);
     enabled++;
   }
-  if (enabled) hooks.install(); // nothing to do: leave Module._load alone
+  if (enabled) {
+    hooks.install(); // nothing to do: leave Module._load alone
+    require('./core/copies.cjs').install(); // fs copies out of packages, see there
+  }
 }

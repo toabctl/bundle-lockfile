@@ -66,10 +66,13 @@ function generatedIn(bundle, ids) {
 
 const merge = (...lists) => { const m = new Map(); for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p); return [...m.values()]; };
 
-// The package a file copied into the output comes from: dist/vendor/node_modules/normalize.css/normalize.css (e.g.
-// vite-plugin-static-copy with a node_modules path) is node_modules/normalize.css/normalize.css with the same bytes,
-// looked up like Node does from the working directory upwards.
+// The package a file copied into the output comes from: one this process copied out of a package with fs (see
+// core/copies.cjs), or dist/vendor/node_modules/normalize.css/normalize.css (e.g. vite-plugin-static-copy with a
+// node_modules path) is node_modules/normalize.css/normalize.css with the same bytes, looked up like Node does from
+// the working directory upwards (the copy may have been made by another process).
 function copiedFrom(file, rel, cwd) {
+  const copy = require('../core/copies.cjs').sourceOf(file);
+  if (copy) { const pkgs = packages.packagesForFiles([copy]); if (pkgs.length) return pkgs; }
   const parts = rel.split(path.sep);
   const i = parts.lastIndexOf('node_modules');
   if (i < 0) return null;
