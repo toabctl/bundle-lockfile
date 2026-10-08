@@ -1241,6 +1241,42 @@ test('rollup adapter: files other plugins write into the output after the build 
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: files written after the build: over 20 MiB only this process\'s copies, at most 20,000 entries looked at', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const copies = require('../src/core/copies.cjs');
+  const big = Buffer.alloc(20 * 1024 * 1024 + 1, 'a');
+  const root = project({ 'node_modules/big/package.json': { name: 'big', version: '1.0.0' }, 'node_modules/app/package.json': { name: 'app', version: '1.0.0' } });
+  fs.writeFileSync(J(root, 'node_modules/big/big.js'), big);
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const build = async (dist, late) => {
+      await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: dist, chunks: [{ fileName: 'index.js', code: `index ${dist}`, modules: [J(root, 'node_modules/app/i.js')] }], late });
+      return lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    };
+    // its path names the package and it has its bytes, but it is over 20 MiB and not a copy this process made: not compared
+    assert.deepEqual(await build(J(root, 'd1'), () => {
+      fs.mkdirSync(J(root, 'd1/vendor/node_modules/big'), { recursive: true });
+      fs.writeFileSync(J(root, 'd1/vendor/node_modules/big/big.js'), big);
+    }), ['app']);
+    // copied by this process with fs (recorded as copies.install's wrappers do): its package, whatever its size
+    assert.deepEqual(await build(J(root, 'd2'), () => {
+      copies.record(J(root, 'node_modules/big/big.js'), J(root, 'd2/big.js'));
+      fs.copyFileSync(J(root, 'node_modules/big/big.js'), J(root, 'd2/big.js'));
+    }), ['app', 'big']);
+    // more than 20,000 entries in the output: the rest is not looked at
+    const many = J(root, 'd3/many');
+    fs.mkdirSync(many, { recursive: true });
+    const statted = new Set();
+    const stat = fs.statSync;
+    fs.statSync = function (p, ...rest) { if (typeof p === 'string' && p.startsWith(many)) statted.add(p); return stat.call(this, p, ...rest); };
+    try {
+      await build(J(root, 'd3'), () => { for (let i = 0; i < 20100; i++) fs.writeFileSync(J(many, `${i}.txt`), ''); });
+    } finally { fs.statSync = stat; }
+    assert.ok(statted.size > 19900 && statted.size <= 20000, `${statted.size} files looked at`);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: the late files of one output are not those another output of the process writes there', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
