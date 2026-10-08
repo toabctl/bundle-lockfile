@@ -51,7 +51,9 @@ const vite = (version, installer = { type: 'npm' }) => ({ app: 'vite-spa', bundl
 // output are pinned (core-js, systemjs: plugin-legacy; workbox-*: vite-plugin-pwa)
 const FEATURES = { 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20', 'sanitize.css': '13.0.0', 'normalize.css': '8.0.1',
   terser: '5.51.2', 'core-js': '3.50.0', systemjs: '6.15.1', 'vite-plugin-pwa': '2.0.0', 'workbox-build': '7.4.1', 'workbox-window': '7.4.1',
-  'vite-plugin-static-copy': '4.1.1', sass: '1.105.1', bulma: '1.0.4', less: '4.9.1', 'normalize.less': '1.0.0' };
+  'vite-plugin-static-copy': '4.1.1', sass: '1.105.1', bulma: '1.0.4', less: '4.9.1', 'normalize.less': '1.0.0',
+  // the service worker's own imports with PWA_INJECT=1 (injectManifest)
+  'workbox-precaching': '7.4.1', 'workbox-routing': '7.4.1', 'workbox-strategies': '7.4.1' };
 const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', installer: { type: 'npm' },
   deps: { vite: version, '@vitejs/plugin-legacy': legacy, ...FEATURES }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
 // the rollup command line (Rollup's CommonJS build)
@@ -550,6 +552,9 @@ const cases = [
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Vite 7.3.7: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite7-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  // vite-plugin-pwa's injectManifest: the service worker (src/sw.js) is a nested Vite build that writes dist/sw.js
+  ...['8.3.3', '7.3.7'].map(v => ({ name: `Vite ${v}: vite-plugin-pwa injectManifest (the service worker a nested Vite build)`, fixture: `vite${v[0]}-features`,
+    cmd: 'npm run -s build', env: { PWA_INJECT: '1' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING })),
   { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
