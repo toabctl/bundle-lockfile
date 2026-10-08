@@ -148,6 +148,7 @@ const fixtures = {
   'wp5-pnpm8': { ...latest, installer: { type: 'pnpm', version: '8.15.9' } },
   'wp5-pnpm9': { ...latest, installer: { type: 'pnpm', version: '9.15.9' } },
   'wp5-pnpm10': { ...latest, installer: { type: 'pnpm', version: '10.34.6' } },
+  'wp4-pnpm10': { ...wp4('4.47.0', '4.10.0'), installer: { type: 'pnpm', version: '10.34.6' } },
   'wp5-pnpm10-global-store': { ...latest, installer: { type: 'pnpm', version: '10.34.6', globalVirtualStore: true } },
   'wp5-pnpm11': { ...latest, installer: { type: 'pnpm', version: '11.28.5' } },
   'wp5-pnpm12': { ...latest, installer: { type: 'pnpm', version: '12.9.1' } },
@@ -340,6 +341,9 @@ const cases = [
   { name: 'webpack 4.47.0 (child compiler: html-webpack-plugin 4)', fixture: 'wp4.47-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
   { name: 'webpack 4.47.0, default-if-unset NODE_OPTIONS script via yarn 1', fixture: 'wp4.47-npm', cmd: 'yarn -s webpack-prod', nodeOptions: `${LEGACY_SSL} --max_old_space_size=4096`, expect: W4('4.47.0') },
   { name: 'webpack 5.0.0', fixture: 'wp5.0-npm', cmd: 'npm run -s build', expect: W5 },
+  // a development build: no unused-export analysis or scope hoisting (what it bundles, the oracle says from the stats)
+  { name: 'webpack 5.111.1, development mode', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_MODE: 'development' }, expect: W5 },
+  { name: 'webpack 4.47.0, pnpm 10.34.6', fixture: 'wp4-pnpm10', cmd: '$PNPM run build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
   { name: 'webpack 5.60.0 (child compiler)', fixture: 'wp5.60-npm', cmd: 'npm run -s build', expect: W5 },
   { name: 'webpack 5.111.1 (child compiler)', fixture: 'wp5-npm', cmd: 'npm run -s build', expect: W5 },
   // runners / installers
