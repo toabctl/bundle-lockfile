@@ -101,7 +101,7 @@ function bundledFiles(compilation) {
 
 // Compilers that write the same files are one writer of a shared lockfile: a new compiler for the same config
 // (a build restarted in the same process, or run again by another process) replaces the previous one's packages
-// instead of adding to them - in this process once the previous one is done: closed (webpack >= 5.20 has a shutdown
+// instead of adding to them - in this process once the previous one is done: closed (webpack >= 5.17 has a shutdown
 // hook), on older versions not running. Until then it is another writer: configs that differ only in what is not
 // compared here (resolve.alias, loader options) can be built side by side into one directory, e.g. with
 // [contenthash] file names. The id has no paths (the lockfile records it, and must be the same on every machine);
@@ -143,7 +143,7 @@ function onDisk(compiler) {
 const outputDir = (compilation) =>
   (typeof compilation.getPath === 'function' ? compilation.getPath(compilation.compiler.outputPath, {}) : compilation.compiler.outputPath);
 
-// The files webpack writes assets to: the name without a query string. webpack >= 5.105 also cuts at a
+// The files webpack writes assets to: the name without a query string. webpack >= 5.104 also cuts at a
 // fragment ("#"), older versions keep it: both names are listed, either one being there counts (see prune).
 function assetFiles(dir, names) {
   const files = [];

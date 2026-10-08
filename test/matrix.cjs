@@ -411,6 +411,12 @@ const cases = [
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7, vite-plugin-singlefile', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { VITE_SINGLEFILE: '1' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // bundle-lockfile's Rollup plugin in the Vite config (no NODE_OPTIONS); the oracle reads source maps, which the
+  // plugin does not change
+  { name: 'Vite 8.3.3, plugin in the config (no NODE_OPTIONS)', fixture: 'vite8-npm', cmd: 'npm run -s build', inject: false,
+    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7, plugin in the config (no NODE_OPTIONS)', fixture: 'vite7-npm', cmd: 'npm run -s build', inject: false,
+    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // two vite build processes writing to one dir: the lockfile has both. The oracle builds only the first page
   { name: 'Vite 8.3.3: two vite build processes, one output dir, in parallel', fixture: 'vite8-npm', cmd: PARALLEL_VITE, env: { VITE_SHARED: '1' },
     expect: VITE_BOTH, oracle: false },

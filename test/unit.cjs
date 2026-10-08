@@ -402,11 +402,11 @@ test('webpack adapter: a compiler for the same config that is still running is a
   // two configs differing only in resolve.alias, writing [contenthash] names to one directory
   const options = { entry: { main: { import: ['./src/app.js'] } }, output: { filename: '[name].[contenthash].js' } };
   const shutdownHook = () => { const fns = []; return { tap: (o, fn) => fns.push(fn), call: () => fns.forEach(fn => fn()) }; };
-  for (const version of ['webpack >= 5.20', 'webpack < 5.20']) {
+  for (const version of ['webpack >= 5.17', 'webpack < 5.17']) {
     const outputPath = J(root, version.includes('>=') ? 'dist-closed' : 'dist-running');
     const build = (dep) => {
       const c = compilation({ context: root, outputPath, chunks: [{ files: [`${dep}.js`], modules: [{ resource: J(root, 'node_modules', dep, 'i.js') }] }] });
-      Object.assign(c.compiler, { options, running: true }, version === 'webpack >= 5.20' && { hooks: { shutdown: shutdownHook() } });
+      Object.assign(c.compiler, { options, running: true }, version === 'webpack >= 5.17' && { hooks: { shutdown: shutdownHook() } });
       const json = plugin().lockfile(c);
       outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]);
       return { compiler: c.compiler, names: lockedNames(json) };
@@ -414,9 +414,9 @@ test('webpack adapter: a compiler for the same config that is still running is a
     const first = build('a');
     assert.deepEqual(first.names, ['a'], version);
     assert.deepEqual(build('b').names, ['a', 'b'], version); // the first one has not finished: both are in the directory
-    // the first compiler is done (closed; webpack < 5.20: not running): a new compiler for the same config replaces it
+    // the first compiler is done (closed; webpack < 5.17: not running): a new compiler for the same config replaces it
     first.compiler.running = false;
-    if (version === 'webpack >= 5.20') {
+    if (version === 'webpack >= 5.17') {
       // finished but not closed, e.g. a config array built one after another (dependencies, parallelism: 1)
       assert.deepEqual(build('c').names, ['a', 'b', 'c'], `${version}: finished, not closed`);
       first.compiler.hooks.shutdown.call();
@@ -599,7 +599,7 @@ test('webpack adapter: a compiler\'s files are those webpack writes: asset names
   fs.mkdirSync(outputPath);
   // asset name -> file webpack writes (null: written below)
   await sharedCompiler(root, outputPath, 'query')({ 'query.js?v=1a2b': 'query.js' });          // output.filename: '[name].js?v=[contenthash]'
-  await sharedCompiler(root, outputPath, 'hash')({ 'hash.js#x?v=1': 'hash.js' });              // webpack >= 5.105 cuts at "#" too
+  await sharedCompiler(root, outputPath, 'hash')({ 'hash.js#x?v=1': 'hash.js' });              // webpack >= 5.104 cuts at "#" too
   await sharedCompiler(root, outputPath, 'oldhash')({ 'oldhash.js#x?v=1': 'oldhash.js#x' });   // older versions keep it
   fs.symlinkSync('../not-built-yet.js', J(outputPath, 'link.js'));                             // a symbolic link asset whose target is missing
   await sharedCompiler(root, outputPath, 'link')({ 'link.js': null });
