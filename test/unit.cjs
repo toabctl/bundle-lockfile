@@ -402,11 +402,11 @@ test('webpack adapter: a compiler for the same config that is still running is a
   // two configs differing only in resolve.alias, writing [contenthash] names to one directory
   const options = { entry: { main: { import: ['./src/app.js'] } }, output: { filename: '[name].[contenthash].js' } };
   const shutdownHook = () => { const fns = []; return { tap: (o, fn) => fns.push(fn), call: () => fns.forEach(fn => fn()) }; };
-  for (const version of ['webpack >= 5.20', 'webpack < 5.20']) {
+  for (const version of ['webpack >= 5.17', 'webpack < 5.17']) {
     const outputPath = J(root, version.includes('>=') ? 'dist-closed' : 'dist-running');
     const build = (dep) => {
       const c = compilation({ context: root, outputPath, chunks: [{ files: [`${dep}.js`], modules: [{ resource: J(root, 'node_modules', dep, 'i.js') }] }] });
-      Object.assign(c.compiler, { options, running: true }, version === 'webpack >= 5.20' && { hooks: { shutdown: shutdownHook() } });
+      Object.assign(c.compiler, { options, running: true }, version === 'webpack >= 5.17' && { hooks: { shutdown: shutdownHook() } });
       const json = plugin().lockfile(c);
       outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]);
       return { compiler: c.compiler, names: lockedNames(json) };
@@ -414,9 +414,9 @@ test('webpack adapter: a compiler for the same config that is still running is a
     const first = build('a');
     assert.deepEqual(first.names, ['a'], version);
     assert.deepEqual(build('b').names, ['a', 'b'], version); // the first one has not finished: both are in the directory
-    // the first compiler is done (closed; webpack < 5.20: not running): a new compiler for the same config replaces it
+    // the first compiler is done (closed; webpack < 5.17: not running): a new compiler for the same config replaces it
     first.compiler.running = false;
-    if (version === 'webpack >= 5.20') {
+    if (version === 'webpack >= 5.17') {
       // finished but not closed, e.g. a config array built one after another (dependencies, parallelism: 1)
       assert.deepEqual(build('c').names, ['a', 'b', 'c'], `${version}: finished, not closed`);
       first.compiler.hooks.shutdown.call();
@@ -599,7 +599,7 @@ test('webpack adapter: a compiler\'s files are those webpack writes: asset names
   fs.mkdirSync(outputPath);
   // asset name -> file webpack writes (null: written below)
   await sharedCompiler(root, outputPath, 'query')({ 'query.js?v=1a2b': 'query.js' });          // output.filename: '[name].js?v=[contenthash]'
-  await sharedCompiler(root, outputPath, 'hash')({ 'hash.js#x?v=1': 'hash.js' });              // webpack >= 5.105 cuts at "#" too
+  await sharedCompiler(root, outputPath, 'hash')({ 'hash.js#x?v=1': 'hash.js' });              // webpack >= 5.104 cuts at "#" too
   await sharedCompiler(root, outputPath, 'oldhash')({ 'oldhash.js#x?v=1': 'oldhash.js#x' });   // older versions keep it
   fs.symlinkSync('../not-built-yet.js', J(outputPath, 'link.js'));                             // a symbolic link asset whose target is missing
   await sharedCompiler(root, outputPath, 'link')({ 'link.js': null });
@@ -1294,12 +1294,16 @@ test('webpack adapter: a process that writes its output after another one has wr
 
 test('webpack adapter: on the real disk the lockfile is no asset: written once the output has landed, also the export copy', async () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
-  class NodeOutputFileSystem { writeFile() { throw new Error('the lockfile on disk is written atomically, not by the output file system'); } }
-  for (const inline of [true, false]) {
-    const outputPath = J(root, `disk-${inline}`);
+  const notByIt = () => { throw new Error('the lockfile on disk is written atomically, not by the output file system'); };
+  // the real disk: webpack 4's NodeOutputFileSystem, webpack 5's graceful-fs - in any copy (the one Next.js bundles, or
+  // one a plugin configured by hand cannot resolve from webpack), known by its gracefulify()
+  class NodeOutputFileSystem { writeFile() { notByIt(); } }
+  const disks = { 'webpack 4': () => new NodeOutputFileSystem(), 'graceful-fs': () => ({ gracefulify() {}, writeFile: notByIt }), "Node's fs": () => fs };
+  for (const [kind, make] of Object.entries(disks)) for (const inline of [true, false]) {
+    const outputPath = J(root, `disk-${kind.replace(/\W/g, '')}-${inline}`);
     await withConfig({ inline, exportDir: J(root, 'export'), exportBase: root }, async () => {
       const { compiler, taps } = fakeCompiler5({ outputPath });
-      compiler.outputFileSystem = Object.assign(new NodeOutputFileSystem(), { lstat: fs.lstat });
+      compiler.outputFileSystem = Object.assign(make(), { lstat: fs.lstat });
       const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
       comp.compiler = compiler;
       const emitted = [];
@@ -1309,12 +1313,12 @@ test('webpack adapter: on the real disk the lockfile is no asset: written once t
       taps.thisCompilation(comp);
       comp.stage();
       taps.emit(comp);
-      assert.deepEqual(emitted, [], `inline=${inline}: no asset`);
-      assert.equal(fs.existsSync(J(outputPath, LOCK)), false, `inline=${inline}: not before the output has landed`);
+      assert.deepEqual(emitted, [], `${kind}, inline=${inline}: no asset`);
+      assert.equal(fs.existsSync(J(outputPath, LOCK)), false, `${kind}, inline=${inline}: not before the output has landed`);
       await new Promise(resolve => taps.afterEmit(comp, resolve));
-      assert.equal(fs.existsSync(J(outputPath, LOCK)), inline, `inline=${inline}: inline file`);
+      assert.equal(fs.existsSync(J(outputPath, LOCK)), inline, `${kind}, inline=${inline}: inline file`);
       if (inline) assert.deepEqual(lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8')), ['a']);
-      assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'export', `disk-${inline}`, LOCK), 'utf8')), ['a'], `inline=${inline}: export copy`);
+      assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'export', path.basename(outputPath), LOCK), 'utf8')), ['a'], `${kind}, inline=${inline}: export copy`);
     });
   }
 });
