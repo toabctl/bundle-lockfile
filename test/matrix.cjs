@@ -267,6 +267,8 @@ const DIST_LOCK = '/usr/share/app/dist/bundle-lockfile/package-lock.json'; // sy
 const PROJECT_LOCK = '/usr/share/app/package-lock.json';
 const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
+// every lockfile below .next and its packages (the files they record differ: Next's build id is new on every build)
+const NEXT_LOCKS = `node ${path.join(__dirname, 'lib/locks.cjs')} .next`;
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
 const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // another preload, which does nothing
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
@@ -771,6 +773,12 @@ const cases = [
   { name: 'Next.js 16.4.0 --webpack', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack') },
   // standalone deployments copy only .next/standalone and .next/static, which drops .next/bundle-lockfile
   { name: 'Next.js 16.4.0 --webpack, export dir only', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'), exportOnly: true },
+  // a second build restores the modules from webpack's persistent cache in .next/cache: the same packages in each lockfile
+  { name: 'Next.js 16.4.0 --webpack, warm build from .next/cache = cold build', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
+    cmd: ['./node_modules/.bin/next build --webpack', `${NEXT_LOCKS} > .cold.json`, './node_modules/.bin/next build --webpack', `${NEXT_LOCKS} | cmp .cold.json -`].join(' && ') },
+  // output: 'standalone': .next/standalone has the traced server files, not the lockfiles (see README: export dir)
+  { name: "Next.js 16.4.0 --webpack, output: 'standalone': .next/standalone gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
+    outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1' }, expect: null },
   // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see README);
   // the export directory has them
   { name: "Next.js 16.4.0 --webpack, output: 'export': out/ gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
