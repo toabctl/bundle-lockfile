@@ -399,7 +399,7 @@ attributed.
 |---|---|---|
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
-| Vite | 7 (Rollup 4), 8 (Rolldown 1) | Vite 5 and 6 also build with Rollup 4, but are not tested |
+| Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown 1) | |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node; see [SvelteKit](#sveltekit) |
 | Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line; not the `rolldown` command line yet |
 
@@ -665,14 +665,15 @@ license and source file — once with only the build output, and once with the p
 alongside.
 
 The Vite cases cover Vite 8 with npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun and
-Vite 7 with npm and yarn 4 Plug'n'Play, the loader-thread hooks on Node.js 24 too,
+Vite 7 with npm and yarn 4 Plug'n'Play, Vite 6 and 5 with npm (also their watch mode and vite-plugin-singlefile), the
+loader-thread hooks on Node.js 24 too,
 `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a build script overwriting `NODE_OPTIONS`
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
 island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
 (also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), an island of several chunks and a
 style sheet bundled whole by Vite 8 and in parts (only its style sheet, only its JavaScript) by Vite 8 and webpack 5, and an app with a worker, an inlined worker, a
-CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 7 and 8). The
+CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 6, 7 and 8). The
 `rollup` command line has its own case, and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`); the
 `rolldown` command line writes no lockfile (not supported yet). SvelteKit 2 and 3, each with adapter-static and

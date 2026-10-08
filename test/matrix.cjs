@@ -79,6 +79,8 @@ const nestedVite = (island, vite, deps = {}) => ({ app: 'nested-island', bundler
 const fixtures = {
   'vite8-npm': vite('8.3.3'),
   'vite7-npm': vite('7.3.7'),
+  'vite6-npm': vite('6.4.4'),
+  'vite5-npm': vite('5.4.21'),
   'vite8-pnpm10': vite('8.3.3', { type: 'pnpm', version: '10.34.6' }),
   'vite8-yarn1': vite('8.3.3', { type: 'yarn1' }),
   'vite8-yarn4-pnp': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
@@ -87,6 +89,8 @@ const fixtures = {
   'vite8-bun': vite('8.3.3', { type: 'bun' }),
   'vite8-features': features('8.3.3', '8.2.3'),
   'vite7-features': features('7.3.7', '7.2.1'),
+  // (vite-plugin-static-copy 4 needs Vite >= 6: no features fixture for Vite 5)
+  'vite6-features': features('6.4.4', '6.1.1'),
   'rollup-cli': rollupCli,
   'rollup-api': rollupApi,
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
@@ -422,6 +426,20 @@ const cases = [
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // Vite 6 and 5 build with Rollup 4 too
+  ...['6.4.4', '5.4.21'].flatMap((v) => {
+    const fixture = `vite${v[0]}-npm`, oracleMissing = ['normalize.css@8.0.1'];
+    return [
+      { name: `Vite ${v} (rollup)`, fixture, cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing },
+      { name: `Vite ${v}, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
+        expect: VITE_EXPECT, oracleMissing },
+      { name: `Vite ${v} watch mode: every rebuild writes the lockfile, with the packages of that build`, fixture, cmd: VITE_WATCH, expect: VITE_EXPECT,
+        watchBuilds: VITE_WATCH_BUILDS, oracleMissing },
+      { name: `Vite ${v}, vite-plugin-singlefile`, fixture, cmd: 'npm run -s build', env: { VITE_SINGLEFILE: '1' }, expect: VITE_EXPECT, oracleMissing },
+    ];
+  }),
+  { name: 'Vite 6.4.4: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite6-features', cmd: 'npm run -s build',
+    expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
   { name: 'Vite 8.3.3, export dir only', fixture: 'vite8-npm', cmd: 'npm run -s build', exportOnly: true, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // workers, CSS @import, legacy polyfills, workbox's sw.js (written after the build), static copy from node_modules
