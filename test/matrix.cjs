@@ -168,6 +168,8 @@ const fixtures = {
     sass: '1.105.1', 'sass-loader': '10.5.2', bulma: '1.0.4', less: '4.9.1', 'less-loader': '7.3.0', 'normalize.less': '1.0.0', 'normalize.css': '8.0.1' } },
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
   'edge-federation': edge('edge-federation', { 'lodash-es': '4.18.1', ms: '2.1.3' }),
+  // the build run by turbo (its package manager field is required)
+  'edge-turbo': edge('edge-turbo', { 'lodash-es': '4.18.1', turbo: '2.11.7' }, { packageJson: { packageManager: 'npm@11.21.0' } }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
   // a directory of the project as a dependency (local-lib, which depends on ms): npm links file: (first-party), yarn 2+
@@ -349,6 +351,9 @@ const cases = [
   // runners / installers
   { name: 'npx webpack', fixture: 'wp5-npm', cmd: 'npx webpack', expect: W5 },
   { name: 'direct node_modules/.bin/webpack', fixture: 'wp5-npm', cmd: './node_modules/.bin/webpack', expect: W5 },
+  // turbo passes NODE_OPTIONS to its tasks, also in its default strict env mode (no turbo cache: the task runs)
+  { name: 'turbo run build (turbo 2.11.7)', fixture: 'edge-turbo', cmd: './node_modules/.bin/turbo run build --cache=local:,remote:',
+    env: { TURBO_TELEMETRY_DISABLED: '1' }, expect: ['lodash-es@4.18.1'] },
   { name: 'yarn 1.22 (yarn.lock)', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build', expect: W5 },
   { name: "yarn 3.8.7 Plug'n'Play", fixture: 'wp5-yarn3-pnp', cmd: 'yarn build', expect: W5 },
   { name: "yarn 4.18.1 Plug'n'Play", fixture: 'wp5-yarn4-pnp', cmd: 'yarn build', expect: W5 },
