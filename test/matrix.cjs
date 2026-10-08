@@ -97,6 +97,9 @@ const fixtures = {
   'vite7-features': features('7.3.7', '7.2.1'),
   // (vite-plugin-static-copy 4 needs Vite >= 6: no features fixture for Vite 5)
   'vite6-features': features('6.4.4', '6.1.1'),
+  // Tailwind CSS 4 through @tailwindcss/vite: its own style sheets are inlined into the CSS output
+  'vite8-tailwind': { app: 'tailwind', bundler: 'vite', installer: { type: 'npm' }, deps: { vite: '8.3.3', tailwindcss: '4.3.3', '@tailwindcss/vite': '4.3.3' },
+    packageJson: { type: 'module', scripts: { build: 'vite build' } } },
   'rollup-cli': rollupCli,
   'rollup-api': rollupApi,
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
@@ -440,6 +443,9 @@ const cases = [
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // @import "tailwindcss": Tailwind's preflight and theme are in dist/assets/*.css (no source map: oracleMissing)
+  { name: 'Vite 8.3.3, Tailwind CSS 4 (@tailwindcss/vite)', fixture: 'vite8-tailwind', cmd: 'npm run -s build', expect: ['tailwindcss@4.3.3'],
+    oracleMissing: ['tailwindcss@4.3.3'] },
   // Vite 6 and 5 build with Rollup 4 too
   ...['6.4.4', '5.4.21'].flatMap((v) => {
     const fixture = `vite${v[0]}-npm`, oracleMissing = ['normalize.css@8.0.1'];
