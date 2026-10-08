@@ -140,11 +140,8 @@ function createPlugin(kind, inputOptions) {
     try {
       outputs.emitted(w.target, w.writer);
       const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
-      const writeFile = (json, cb) => {
-        try { fs.mkdirSync(path.dirname(w.target), { recursive: true }); fs.writeFile(w.target, json, cb); } catch (e) { cb(e); }
-      };
       outputs.prune(w.target, w.writer, exists, () => {
-        outputs.rewrite(w.target, config.inline ? writeFile : null, (err) => {
+        outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
           if (err) config.warn(`${kind}: could not write lockfile:`, err);
           resolve();
         });
@@ -299,7 +296,8 @@ module.exports = {
     return null;
   },
   onCjsLoad(exp, request, resolve) {
-    if (!exp || typeof exp !== 'object' || typeof exp.rollupInternal !== 'function' || !request.endsWith('rollup.js') || exp[PATCHED]) return;
+    // the request first: reading a missing property of a module in a circular require() makes Node warn
+    if (!request.endsWith('rollup.js') || !exp || typeof exp !== 'object' || typeof exp.rollupInternal !== 'function' || exp[PATCHED]) return;
     if (!CJS_ROLLUP.test(resolve())) return;
     exp[PATCHED] = true;
     const rollup = exp.rollup, internal = exp.rollupInternal;

@@ -10,6 +10,9 @@ const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs'];
 // yarn's own entry point: yarn 1 (bin/yarn.js), yarn 2+ releases (.yarn/releases/yarn-4.x.cjs), corepack's copies
 const YARN = /[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-[^\\/]*\.c?js$|[\\/]yarn[\\/]bin[\\/]yarn(\.c?js)?$/;
 
+// the scripts the node shim passed through to start this process (see bin/node): processes this one starts look anew
+delete process.env.BUNDLE_LOCKFILE_NODE_SEEN;
+
 if (!config.isDisabled('all')) {
   // With the node shim (bin/node), yarn still runs scripts with a temporary `node` first in PATH that runs yarn's
   // own process.execPath, bypassing the shim. In yarn's process, and only there (others derive paths from it, e.g.

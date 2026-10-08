@@ -7,13 +7,13 @@
 // copy (BUNDLE_LOCKFILE_EXPORT_DIR) when the inline lockfile is off. A file changed after it was built does not match.
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const config = require('./config.cjs');
 const { readMeta } = require('./lockfile.cjs');
 const { packageRoot } = require('./packages.cjs');
+const { hashOf } = require('./hashes.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
-const state = globalThis[S] || (globalThis[S] = { metas: new Map(), hashes: new Map() }); // dir -> meta | null; file -> hash
+const state = globalThis[S] || (globalThis[S] = { metas: new Map() }); // dir -> meta | null
 
 // The lockfile meta (readMeta) of the build whose output dir is `dir`, or null.
 function metaOf(dir) {
@@ -28,16 +28,6 @@ function metaOf(dir) {
   }
   state.metas.set(dir, meta);
   return meta;
-}
-
-function hashOf(file) {
-  let st;
-  try { st = fs.statSync(file); } catch { return null; }
-  const key = `${file}\0${st.size}\0${st.mtimeMs}`;
-  if (!state.hashes.has(key)) {
-    try { state.hashes.set(key, `sha256-${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}`); } catch { return null; }
-  }
-  return state.hashes.get(key);
 }
 
 // files: absolute paths of bundled source files. Returns the packages ({ name, version, license, path }) recorded for
