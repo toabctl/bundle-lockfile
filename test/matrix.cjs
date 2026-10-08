@@ -33,7 +33,21 @@ const WORKER = { 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', d
 const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/plugin-transform-runtime': '7.29.7', '@babel/runtime': '7.29.10', 'core-js': '3.50.0' };
 
 // installer: npm | yarn1 | bun (the tools in the test image) or a pinned, vendored yarn berry / pnpm release
+// Vite apps: package.json type module, `vite build`
+const VITE_SPA = { 'lodash-es': '4.18.1', debug: '2.6.9', ms: '2.1.3', 'normalize.css': '8.0.1' };
+const vite = (version, installer = { type: 'npm' }) => ({ app: 'vite-spa', bundler: 'vite', installer,
+  deps: { vite: version, ...VITE_SPA }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
+// GitLab's / Element's shape: a library built by Vite into one file, bundled by webpack as a first-party file
+const ISLAND = { vite: '8.3.3', 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20' };
+const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', installer: { type: 'npm' }, deps: { ...webpackDeps, ...ISLAND },
+  packageJson: { scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } });
+
 const fixtures = {
+  'vite8-npm': vite('8.3.3'),
+  'vite7-npm': vite('7.3.7'),
+  'vite8-pnpm10': vite('8.3.3', { type: 'pnpm', version: '10.34.6' }),
+  'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
+  'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
   // html-webpack-plugin 4 takes its template's output out of the parent compilation but keeps it in its child
   'wp4.47-npm': { ...wp4('4.47.0', '4.10.0', { 'html-webpack-plugin': '4.5.2' }), installer: { type: 'npm' } },
@@ -91,6 +105,8 @@ const fixtures = {
   'next16': next('16.4.0', '19.3.0'),
 };
 
+const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
+const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'yallist@5.0.0'];
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
@@ -291,6 +307,26 @@ const cases = [
     shim: true, exportOnly: true, expect: W5 },
   { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT,
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
+  // Vite (rolldown: 8, rollup: 7). The oracle reads Vite's source maps, which do not cover CSS-only packages
+  { name: 'Vite 8.3.3 (rolldown)', fixture: 'vite8-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7 (rollup)', fixture: 'vite7-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, pnpm 10', fixture: 'vite8-pnpm10', cmd: '$PNPM run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, npx vite build', fixture: 'vite8-npm', cmd: 'npx vite build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // the loader-thread hooks, which Node < 24.12 uses (CI's Node 24 would use the in-thread ones)
+  { name: 'Vite 8.3.3, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
+    expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
+    expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
+  { name: 'Vite 8.3.3, export dir only', fixture: 'vite8-npm', cmd: 'npm run -s build', exportOnly: true, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
+  { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
+  { name: 'nested: Vite 8 island bundled by webpack 4', fixture: 'nested-island-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: NESTED_EXPECT },
+  // a changed island file is not attributed (its hash no longer matches)
+  { name: 'nested: island changed after its build is not attributed', fixture: 'nested-island-wp5',
+    cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && echo "/* changed */" >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js',
+    expect: ['lodash-es@4.18.1'], oracle: false },
   // Next.js
   { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1') },
   { name: 'Next.js 13.5.11', ...nextCase('next13', '13.5.11', '18.3.1') },

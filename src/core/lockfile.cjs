@@ -30,8 +30,10 @@ function locationKey(base, dir) {
 // lockfile can keep them. Paths in it are relative to dir (the lockfile's directory) and ids carry no paths, so the
 // same build writes the same bytes on every machine. Tools that read package-lock.json ignore unknown fields (syft,
 // npm). files: absolute paths of the writer's output files (count: their number, if files is a sample); paths: its
-// packages' paths.
+// packages' paths; outputs (optional): { absolute path: "sha256-<hex>" } of its JavaScript output files, so that a
+// build that bundles one of them adds the packages in it (see core/nested.cjs).
 const MAX_FILES = 20; // enough to tell whether the writer's output is still there
+const MAX_OUTPUTS = 500;
 const posix = (p) => p.split(path.sep).join('/');
 function toPackageLock(pkgs, context, meta) {
   const packages = { '': {} };
@@ -64,6 +66,9 @@ function toPackageLock(pkgs, context, meta) {
         count: typeof w.count === 'number' ? w.count : w.files.length, // other processes: only a sample of files
         files: w.files.map(rel).sort(cmp).slice(0, MAX_FILES),
         packages: [...new Set([...w.paths].map(p => keyOf.get(p)).filter(Boolean))].sort(cmp),
+        ...(w.outputs && Object.keys(w.outputs).length
+          ? { outputs: Object.fromEntries(Object.entries(w.outputs).map(([f, h]) => [rel(f), h]).sort((a, b) => cmp(a[0], b[0])).slice(0, MAX_OUTPUTS)) }
+          : {}),
       })).sort((a, b) => cmp(a.id, b.id)),
     };
   }
@@ -84,6 +89,8 @@ function readMeta(json, dir) {
       id: w.id,
       files: (w.files || []).map(f => path.resolve(dir, f)),
       count: typeof w.count === 'number' ? w.count : undefined,
+      outputs: w.outputs && typeof w.outputs === 'object'
+        ? Object.fromEntries(Object.entries(w.outputs).filter(([, h]) => typeof h === 'string').map(([f, h]) => [path.resolve(dir, f), h])) : {},
       pkgs: (w.packages || []).map(k => doc.packages[k] && { ...doc.packages[k], path: path.resolve(context, k) }).filter(p => p && p.name && p.version),
     })),
   };

@@ -91,4 +91,12 @@ function packagesForFiles(files) {
   return [...pkgs.values()];
 }
 
-module.exports = { packageRoot, packagesForFiles, unvirtual };
+// packagesForFiles, plus the packages inside bundled files that another build produced (core/nested.cjs).
+function packagesOfOutput(files) {
+  const all = new Map();
+  for (const p of module.exports.packagesForFiles(files)) all.set(p.path, p); // via exports: tests replace it
+  for (const p of require('./nested.cjs').nestedPackages(files)) if (!all.has(p.path)) all.set(p.path, p);
+  return [...all.values()];
+}
+
+module.exports = { packageRoot, packagesForFiles, packagesOfOutput, unvirtual };
