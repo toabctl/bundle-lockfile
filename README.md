@@ -2,6 +2,7 @@
 
 Records which npm packages actually end up in a JavaScript bundle and writes them as a
 `package-lock.json` next to the build output — without changing the project's build config.
+Supports webpack 4 and 5 (also inside Next.js) and Vite, Rollup and Rolldown.
 
 Lockfiles shipped with an application list everything that was *installed* for the build
 (dev tools, tree-shaken and unused packages included). `bundle-lockfile` lists only the packages
@@ -10,8 +11,8 @@ report what is really shipped.
 
 "In the bundle" is decided at build time, the way the bundler decides it: starting from the entry
 points it follows static `import` / `require()` / `import()` statements, skips ES modules whose exports
-are unused and that are free of side effects (`sideEffects` in `package.json`, or proven by webpack 5),
-and writes the rest into output chunks. A package is listed if any of
+are unused and that are free of side effects (`sideEffects` in `package.json`, or proven by webpack 5;
+Rollup and Rolldown also drop the unused parts of modules), and writes the rest into output chunks. A package is listed if any of
 its files ends up in the output:
 
 - in an emitted chunk
@@ -274,7 +275,8 @@ ignore it.
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
 | `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off`: do not write the lockfile into the output directory, only into the export directory |
 | `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (`0`, `false` and `off` also mean off) |
-| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated adapter names to skip, or `all` (case-insensitive) |
+| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip — `webpack`, `vite`, `rollup`, `rolldown` (plain rollup()/rolldown() builds) — or `all` (case-insensitive) |
+| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite/Rollup/Rolldown are hooked (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)): `sync`, `async` or `off` instead of choosing by Node version |
 
 ## Supported
 
@@ -282,13 +284,43 @@ ignore it.
 |---|---|---|
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
+| Vite | 7 (Rollup), 8 (Rolldown) | Node.js >= 20.6; 5 and 6 build with Rollup 4 like 7, but are not tested |
+| Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, `build()`, `watch()`), as Vite and its frameworks run them; not the Rollup and Rolldown command lines yet |
 
 Tested with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
 calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules
 linker), pnpm 8/9/10/11/12 and bun — see [`test/matrix.cjs`](test/matrix.cjs).
 yarn 2 is not tested: when it writes zip archives it calls `util.isDate`, which Node.js 23 removed.
 
-Not yet: rspack, Vite / Rollup / Rolldown, esbuild, Turbopack.
+Not yet: rspack, esbuild, Turbopack, the Rollup and Rolldown command lines, Bun's own runtime (`bun --bun`).
+
+### Vite, Rollup, Rolldown
+
+Vite, Rollup and Rolldown are ES modules, which `Module._load` does not see. bundle-lockfile wraps the public entry
+module of `rollup` (Vite 5–7) and `rolldown` (Vite 8) with a Node.js ESM hook, so that every `rollup()` /
+`rolldown()` / `watch()` / `build()` call gets one more plugin: it takes the modules of every chunk of an output the
+build writes (also those of chunks a plugin removes later, e.g. vite-plugin-singlefile) and writes
+`<output dir>/bundle-lockfile/package-lock.json` after the build — next to `dist/`'s files, shared like webpack's,
+also with the export directory. Builds that write nothing themselves (Vite's worker and legacy-polyfill bundles,
+whose files the main build emits, `write: false`, Vite 8 bundling its own config) and outputs below `node_modules`
+(Vite's dependency pre-bundling) get none; `vite dev`, `vite preview` and Vitest build nothing.
+
+The hook depends on the Node.js version:
+- Node.js 24.12, 25.2 and later: `module.registerHooks`, in the same thread, in every process.
+- Older versions (18.19, 20.6 and later): `module.register`, in a loader thread — only in processes whose main
+  script belongs to a package that is or depends on `vite`, `rollup` or `rolldown` (the `vite` command, a build
+  script of a project using Vite, tools such as `headlamp-plugin`), because a loader thread costs some memory and
+  time per process and the in-thread hooks of other tools (e.g. OpenTelemetry's) can conflict with it.
+  `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it in every process, `off` in none.
+
+Not yet listed: packages only in Vite's worker or legacy-polyfill bundles, CSS files that other CSS `@import`s from
+packages, and files copied with fs (`public/`, vite-plugin-static-copy).
+
+**Nested bundles.** A Vite build can produce a file that another build bundles: GitLab, for example, builds an
+"island" with Vite into `ee/frontend_islands/apps/duo_next/dist/main.js` (Vue inlined) and webpack bundles that file
+as part of its own code. Every lockfile records the SHA-256 of the JavaScript files its build wrote; when a bundled
+file outside `node_modules` has the bytes recorded by the nearest lockfile above it (or its copy in the export
+directory), that build's packages are listed too. A file changed after its build is not attributed.
 
 ### Next.js
 
@@ -308,7 +340,7 @@ Next does not bundle many packages into the **server** output (Pages Router depe
 ```
 src/register.cjs     NODE_OPTIONS entry point: registers the adapters and installs the hooks
 bin/node             node shim for builds whose scripts overwrite NODE_OPTIONS
-src/hooks.cjs        module-load hooks shared by all adapters
+src/hooks.cjs        module-load hooks shared by all adapters (CommonJS, and ESM via esm-wrap.cjs / esm-loader.mjs)
 src/core/            bundler-agnostic: source files -> packages -> package-lock.json, merged for
                      compilers that write the same lockfile (outputs.cjs)
 src/adapters/        one per bundler: answers "which source files are in the emitted output?"
@@ -321,8 +353,9 @@ test/oracles/        per bundler, an independent build that derives the expected
 Adapters must never break a build: failures are reported on stderr and the build continues.
 
 To add a bundler: write `src/adapters/<name>.cjs` (a `name` and an `onCjsLoad(exports, request, resolve)`
-that recognizes and patches it; emit through `core/outputs.cjs` so shared output directories work), add it to `src/register.cjs`, add an app under `test/apps/`, an oracle
-under `test/oracles/` and rows to `test/matrix.cjs`.
+that recognizes and patches a CommonJS bundler, or `esmEntries` and `esmWrap` for an ES module one, see
+`src/hooks.cjs`; emit through `core/outputs.cjs` so shared output directories work), add it to `src/register.cjs`,
+add an app under `test/apps/`, an oracle under `test/oracles/` and rows to `test/matrix.cjs`.
 
 ## Tests
 
@@ -366,7 +399,10 @@ would install it (`usr/share/app/dist/`), runs `syft scan dir:` with SPDX JSON o
 exactly the expected npm packages with name, version, purl, declared license and source file — once
 with only the build output, and once with the project's own `package-lock.json` shipped alongside.
 
-The matrix runs on Node.js 24 (Wolfi `nodejs-24`); other Node.js versions are not tested yet.
+The matrix runs on Node.js 24 (Wolfi `nodejs-24`); the Vite and nested-bundle cases also on Node.js 22, which uses
+the loader-thread hooks. Vite cases: Vite 7 and 8 with npm, pnpm and `npx`, the loader-thread hooks on Node.js 24 too,
+`BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, and a Vite-built island bundled by webpack 4 and 5 (also changed
+after its build). Their oracle builds again with Vite's source maps, which do not cover CSS-only packages.
 
 ### Comparison with the CycloneDX webpack plugin
 

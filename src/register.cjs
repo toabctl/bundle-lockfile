@@ -6,7 +6,7 @@
 const fs = require('fs');
 const config = require('./core/config.cjs');
 
-const ADAPTERS = ['./adapters/webpack.cjs'];
+const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs'];
 // yarn's own entry point: yarn 1 (bin/yarn.js), yarn 2+ releases (.yarn/releases/yarn-4.x.cjs), corepack's copies
 const YARN = /[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-[^\\/]*\.c?js$|[\\/]yarn[\\/]bin[\\/]yarn(\.c?js)?$/;
 
@@ -23,7 +23,8 @@ if (!config.isDisabled('all')) {
   let enabled = 0;
   for (const file of ADAPTERS) {
     const adapter = require(file);
-    if (config.isDisabled(adapter.name)) { config.debug('adapter disabled:', adapter.name); continue; }
+    // an adapter for several bundlers (rollup: rollup, rolldown, vite) is skipped only if all of them are disabled
+    if ((adapter.names || [adapter.name]).every(n => config.isDisabled(n))) { config.debug('adapter disabled:', adapter.name); continue; }
     hooks.register(adapter);
     enabled++;
   }

@@ -7,7 +7,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { packageRoot, packagesForFiles, unvirtual } = require('../src/core/packages.cjs');
+const packages = require('../src/core/packages.cjs');
+const { packageRoot, packagesForFiles, unvirtual } = packages;
 const { toPackageLock, lockfileForFiles } = require('../src/core/lockfile.cjs');
 const crypto = require('crypto');
 const outputs = require('../src/core/outputs.cjs');
@@ -831,6 +832,134 @@ test('node shim: puts the --require back into NODE_OPTIONS, runs the real node, 
   const none = spawnSync(J(root, 'shim/node'), [J(root, 'probe.cjs')], { env, encoding: 'utf8', timeout: 20000 });
   assert.equal(none.status, 127);
   assert.match(none.stderr, /no node binary in PATH/);
+});
+
+test('esm-wrap: finds the entry, its exports, and wraps only the functions it exports', () => {
+  const esmWrap = require('../src/esm-wrap.cjs');
+  const rollupEntry = { id: 'rollup', suffixes: ['/rollup/dist/es/rollup.js'], wrap: ['rollup', 'watch'] };
+  assert.equal(esmWrap.match('file:///p/node_modules/rollup/dist/es/rollup.js', [rollupEntry]), rollupEntry);
+  assert.equal(esmWrap.match('file:///p/node_modules/rollup/dist/es/rollup.js?bundle-lockfile-real', [rollupEntry]), null); // the real one
+  assert.equal(esmWrap.match('node:fs', [rollupEntry]), null);
+  // rollup 4's and rolldown 1's entries
+  assert.deepEqual([...esmWrap.exportedNames("export { VERSION, defineConfig, rollup, watch } from './shared/node-entry.js';")], ['VERSION', 'defineConfig', 'rollup', 'watch']);
+  assert.deepEqual([...esmWrap.exportedNames('export { RUNTIME_MODULE_ID, RolldownMagicString, VERSION, build, defineConfig, rolldown as rolldown, watch };')],
+    ['RUNTIME_MODULE_ID', 'RolldownMagicString', 'VERSION', 'build', 'defineConfig', 'rolldown', 'watch']);
+  assert.deepEqual([...esmWrap.exportedNames('export function rollup() {}\nexport const x = 1;\nexport default 2;')], ['rollup', 'x', 'default']);
+  const src = esmWrap.source('file:///p/rollup.js', "export { VERSION, rollup } from './x.js';", rollupEntry);
+  assert.match(src, /export \* from "file:\/\/\/p\/rollup\.js\?bundle-lockfile-real";/);
+  assert.match(src, /export const rollup = api \? api\.wrap\("rollup", "rollup", real\.rollup\) : real\.rollup;/);
+  assert.doesNotMatch(src, /export const watch/); // not exported by this version
+  assert.equal(esmWrap.source('file:///p/rollup.js', 'export const other = 1;', rollupEntry), null); // unknown shape: untouched
+});
+
+test('hooks: in-thread ESM hooks only on Node >= 24.12 / 25.2; loader-thread hooks only in bundler processes', () => {
+  const hooks = require('../src/hooks.cjs');
+  for (const [v, safe] of [['22.23.3', false], ['24.11.1', false], ['24.12.0', true], ['25.1.0', false], ['25.2.0', true], ['26.0.0', true], ['v24.21.0', true]]) {
+    assert.equal(hooks.syncHooksSafe(v), safe, v);
+  }
+  const root = project({
+    'node_modules/vite/package.json': { name: 'vite', version: '8.3.3' }, 'node_modules/vite/bin/vite.js': '',
+    'node_modules/headlamp-plugin/package.json': { name: 'headlamp-plugin', version: '1.0.0', dependencies: { vite: '^6' } }, 'node_modules/headlamp-plugin/bin/h.js': '',
+    'node_modules/npm/package.json': { name: 'npm', version: '11.0.0', dependencies: { semver: '*' } }, 'node_modules/npm/bin/npm-cli.js': '',
+    'package.json': { name: 'app', version: '1.0.0', devDependencies: { vite: '8.3.3' } }, 'scripts/build.mjs': '',
+    'scripts/package.json': { type: 'module' }, // no name or dependencies: the project's package.json above counts
+    'other/package.json': { name: 'other', version: '1.0.0', dependencies: { lodash: '*' } }, 'other/x.js': '',
+  });
+  const P = ['vite', 'rollup', 'rolldown'];
+  assert.equal(hooks.bundlerProcess(P, J(root, 'node_modules/vite/bin/vite.js')), true);       // the package itself
+  assert.equal(hooks.bundlerProcess(P, J(root, 'node_modules/headlamp-plugin/bin/h.js')), true); // a tool depending on it
+  assert.equal(hooks.bundlerProcess(P, J(root, 'scripts/build.mjs')), true);                    // a build script of a project using it
+  assert.equal(hooks.bundlerProcess(P, J(root, 'node_modules/npm/bin/npm-cli.js')), false);
+  assert.equal(hooks.bundlerProcess(P, J(root, 'other/x.js')), false);
+  assert.equal(hooks.bundlerProcess(P, undefined), false);
+});
+
+test('rollup adapter: rollup()/rolldown()/watch()/build() get the plugin once, through the ESM hooks (in-thread and loader thread)', () => {
+  const root = project({
+    // a fake rolldown: its entry returns the plugin names of the options it gets
+    'node_modules/rolldown/package.json': { name: 'rolldown', version: '1.2.13', type: 'module', exports: { '.': './dist/index.mjs' } },
+    'node_modules/rolldown/dist/index.mjs': `const names = (o) => [].concat(o.plugins || []).flat().map(p => p.name);
+      const rolldown = async (o) => names(o);
+      const watch = (o) => [].concat(o).map(names);
+      const build = async (o) => [].concat(o).map(names);
+      const VERSION = '1.2.13';
+      export { VERSION, build, rolldown, watch };`,
+    'package.json': { name: 'app', version: '1.0.0', type: 'module', dependencies: { rolldown: '1.2.13' } },
+    'build.mjs': `import { rolldown, watch, build, VERSION } from 'rolldown';
+      const vite = [{ name: 'vite:build-import-analysis' }];
+      console.log(JSON.stringify({ VERSION, plain: await rolldown({ plugins: [{ name: 'x' }] }), vite: await rolldown({ plugins: vite }),
+        twice: await rolldown({ plugins: [{ name: 'bundle-lockfile' }] }), watch: watch([{}, { plugins: vite }]), build: await build({}) }));`,
+  });
+  const run = (env) => {
+    const r = spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'build.mjs')], { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split('\n').pop());
+  };
+  const modes = ['async'];
+  if (typeof require('module').registerHooks === 'function') modes.push('sync');
+  for (const mode of modes) {
+    const got = run({ BUNDLE_LOCKFILE_ESM_HOOKS: mode });
+    assert.deepEqual(got, { VERSION: '1.2.13', plain: ['x', 'bundle-lockfile'], vite: ['vite:build-import-analysis', 'bundle-lockfile'],
+      twice: ['bundle-lockfile'], watch: [['bundle-lockfile'], ['vite:build-import-analysis', 'bundle-lockfile']], build: [['bundle-lockfile']] }, mode);
+    // disabled by kind: a Vite build (it has Vite's plugins) or a plain rolldown() call
+    const vite = run({ BUNDLE_LOCKFILE_ESM_HOOKS: mode, BUNDLE_LOCKFILE_DISABLE: 'vite' });
+    assert.deepEqual([vite.plain, vite.vite], [['x', 'bundle-lockfile'], ['vite:build-import-analysis']], `${mode}: DISABLE=vite`);
+    assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: mode, BUNDLE_LOCKFILE_DISABLE: 'rolldown' }).plain, ['x'], `${mode}: DISABLE=rolldown`);
+  }
+  assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: 'off' }).plain, ['x']);
+});
+
+// runs the plugin's hooks like a rollup/rolldown build writing `outDir`; chunks: [{ fileName, code, modules }],
+// assets: [{ fileName, originalFileNames }]
+async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true }) {
+  const out = { dir: outDir, format: 'es' };
+  plugin.renderStart(out);
+  for (const c of chunks) plugin.renderChunk(c.code, { moduleIds: c.modules }, out);
+  const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules }]),
+    ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
+  plugin.generateBundle.handler(out, bundle, isWrite);
+  if (!isWrite) return;
+  for (const c of chunks) { fs.mkdirSync(path.dirname(J(outDir, c.fileName)), { recursive: true }); fs.writeFileSync(J(outDir, c.fileName), c.code); }
+  await plugin.writeBundle.handler(out);
+}
+
+test('rollup adapter: a written output gets its lockfile; generate-only builds and outputs below node_modules none', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), 'node_modules/d/logo.svg': '<svg/>', 'src/main.js': '' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const plugin = rollupAdapter.bundleLockfile('vite', { input: J(root, 'index.html') });
+    await rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [
+      { fileName: 'assets/index.js', code: 'index', modules: [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js'), '\0vite/modulepreload-polyfill.js',
+        `\0${J(root, 'node_modules/b/i.js')}?commonjs-proxy`, `${J(root, 'node_modules/c/x.css')}?inline`] },
+    ], assets: [{ fileName: 'assets/logo.svg', originalFileNames: ['node_modules/d/logo.svg'] }] });
+    const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+    assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'b', 'c', 'd']);
+    assert.deepEqual(Object.keys(lock['bundle-lockfile'].writers[0].outputs), ['../assets/index.js']); // for nested bundles
+    // a worker / legacy polyfill bundle (isWrite false) and a dependency pre-bundling output write nothing
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'gen'), chunks: [{ fileName: 'w.js', code: 'w', modules: [J(root, 'node_modules/a/i.js')] }], isWrite: false });
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'node_modules/.vite/deps'), chunks: [{ fileName: 'a.js', code: 'a', modules: [J(root, 'node_modules/a/i.js')] }] });
+    assert.equal(fs.existsSync(J(root, 'gen', LOCK)), false);
+    assert.equal(fs.existsSync(J(root, 'node_modules/.vite/deps', LOCK)), false);
+  } finally { process.chdir(cwd); }
+});
+
+test('nested: a bundled file another build produced brings its packages, unless it changed since', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), ...pj('outer') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    // the island: a Vite build into island/dist with main.js containing node_modules/inner
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
+    const ids = (files) => packages.packagesOfOutput(files).map(p => `${p.name}@${p.version}`).sort();
+    assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
+    fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
+    assert.deepEqual(ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['outer@1.0.0']);
+  } finally { process.chdir(cwd); }
 });
 
 test('config: BUNDLE_LOCKFILE_DEBUG is off when unset, empty, 0 or false', () => {

@@ -202,7 +202,7 @@ class BundleLockfilePlugin {
   lockfile(compilation, extra = []) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
-    return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesForFiles([...bundled, ...extra]),
+    return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesOfOutput([...bundled, ...extra]),
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler, this.compilerFile) });
   }
 

@@ -37,7 +37,7 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
   // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture
@@ -110,6 +110,8 @@ function runCase(c) {
     const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
     // PATH: not through the node shim, which would inject bundle-lockfile
     const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
+    // packages the oracle cannot see (e.g. Vite: CSS-only packages have no source map), each also expected
+    for (const k of Object.keys(truth)) truth[k] = [...new Set([...truth[k], ...(c.oracleMissing || [])])].sort();
     if (!sameMap(got, truth)) throw new Error(`plugin and oracle disagree\n  plugin:${show(got)}\n  oracle:${show(truth)}`);
     notes.push(`oracle agrees on ${Object.keys(got).length} output(s)`);
   }
