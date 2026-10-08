@@ -23,4 +23,10 @@ const variants = {
   // EDGE_SHARED=fullhash: output.path 'dist/[fullhash]' - the same setting, but different directories: nothing shared
   fullhash: () => variants.default().map(c => ({ ...c, output: { ...c.output, path: path.join(out.path, '[fullhash]') } })),
 };
-module.exports = variants[process.env.EDGE_SHARED || 'default']();
+// EDGE_PLUGIN=<path of src/adapters/webpack.cjs>: the plugin in the config, as without NODE_OPTIONS
+const withPlugin = (c) => {
+  if (!process.env.EDGE_PLUGIN) return c;
+  const { BundleLockfilePlugin } = require(process.env.EDGE_PLUGIN);
+  return { ...c, plugins: [...(c.plugins || []), new BundleLockfilePlugin('bundle-lockfile/package-lock.json')] };
+};
+module.exports = variants[process.env.EDGE_SHARED || 'default']().map(withPlugin);

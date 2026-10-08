@@ -1294,12 +1294,16 @@ test('webpack adapter: a process that writes its output after another one has wr
 
 test('webpack adapter: on the real disk the lockfile is no asset: written once the output has landed, also the export copy', async () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
-  class NodeOutputFileSystem { writeFile() { throw new Error('the lockfile on disk is written atomically, not by the output file system'); } }
-  for (const inline of [true, false]) {
-    const outputPath = J(root, `disk-${inline}`);
+  const notByIt = () => { throw new Error('the lockfile on disk is written atomically, not by the output file system'); };
+  // the real disk: webpack 4's NodeOutputFileSystem, webpack 5's graceful-fs - in any copy (the one Next.js bundles, or
+  // one a plugin configured by hand cannot resolve from webpack), known by its gracefulify()
+  class NodeOutputFileSystem { writeFile() { notByIt(); } }
+  const disks = { 'webpack 4': () => new NodeOutputFileSystem(), 'graceful-fs': () => ({ gracefulify() {}, writeFile: notByIt }), "Node's fs": () => fs };
+  for (const [kind, make] of Object.entries(disks)) for (const inline of [true, false]) {
+    const outputPath = J(root, `disk-${kind.replace(/\W/g, '')}-${inline}`);
     await withConfig({ inline, exportDir: J(root, 'export'), exportBase: root }, async () => {
       const { compiler, taps } = fakeCompiler5({ outputPath });
-      compiler.outputFileSystem = Object.assign(new NodeOutputFileSystem(), { lstat: fs.lstat });
+      compiler.outputFileSystem = Object.assign(make(), { lstat: fs.lstat });
       const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
       comp.compiler = compiler;
       const emitted = [];
@@ -1309,12 +1313,12 @@ test('webpack adapter: on the real disk the lockfile is no asset: written once t
       taps.thisCompilation(comp);
       comp.stage();
       taps.emit(comp);
-      assert.deepEqual(emitted, [], `inline=${inline}: no asset`);
-      assert.equal(fs.existsSync(J(outputPath, LOCK)), false, `inline=${inline}: not before the output has landed`);
+      assert.deepEqual(emitted, [], `${kind}, inline=${inline}: no asset`);
+      assert.equal(fs.existsSync(J(outputPath, LOCK)), false, `${kind}, inline=${inline}: not before the output has landed`);
       await new Promise(resolve => taps.afterEmit(comp, resolve));
-      assert.equal(fs.existsSync(J(outputPath, LOCK)), inline, `inline=${inline}: inline file`);
+      assert.equal(fs.existsSync(J(outputPath, LOCK)), inline, `${kind}, inline=${inline}: inline file`);
       if (inline) assert.deepEqual(lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8')), ['a']);
-      assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'export', `disk-${inline}`, LOCK), 'utf8')), ['a'], `inline=${inline}: export copy`);
+      assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'export', path.basename(outputPath), LOCK), 'utf8')), ['a'], `${kind}, inline=${inline}: export copy`);
     });
   }
 });

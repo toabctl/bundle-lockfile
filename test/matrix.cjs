@@ -330,6 +330,10 @@ const cases = [
     expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
   { name: 'edge: two webpack processes, one output dir, then one of them again', fixture: 'edge-shared-output', cmd: `${PARALLEL} && ${WEBPACK_BIN} --config-name app`,
     expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // the plugin configured by hand (no NODE_OPTIONS) shares the lockfile across processes too. No oracle: it would build
+  // with the plugin as well (EDGE_PLUGIN reaches it); the list is the one the oracle checks in the cases above
+  { name: 'edge: plugin in the config (no NODE_OPTIONS), two webpack processes, one output dir, in parallel', fixture: 'edge-shared-output',
+    cmd: PARALLEL, inject: false, env: { EDGE_PLUGIN: path.join(__dirname, '../src/adapters/webpack.cjs') }, expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'], oracle: false },
   // app's output.clean deletes sw's files: sw's packages are dropped. The oracle builds both configs in one process,
   // where app's clean does not delete the files of sw building next to it
   { name: 'edge: two webpack processes, one output dir, the second one cleans it', fixture: 'edge-shared-output', env: { EDGE_SHARED: 'clean' },

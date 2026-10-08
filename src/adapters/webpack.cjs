@@ -129,13 +129,14 @@ function writerOf(compiler) {
 }
 
 // The output is on the real disk, where other processes may write the same lockfile: webpack's own Node file system
-// (webpack 5: its graceful-fs; webpack 4: NodeOutputFileSystem), not e.g. webpack-dev-middleware's in-memory one.
-function onDisk(compiler, compilerFile) {
+// (webpack 5: graceful-fs, in whatever copy - webpack's dependency, the one Next.js bundles; webpack 4:
+// NodeOutputFileSystem), or Node's fs; not e.g. webpack-dev-middleware's in-memory one (memfs). graceful-fs is known
+// by its gracefulify(): a plugin configured by hand does not know where webpack is to resolve webpack's graceful-fs.
+function onDisk(compiler) {
   const fsys = compiler.outputFileSystem;
   if (!fsys) return false;
   if (fsys.constructor && fsys.constructor.name === 'NodeOutputFileSystem') return true;
-  if (!compilerFile) return false;
-  try { return fsys === require(require.resolve('graceful-fs', { paths: [path.dirname(compilerFile)] })); } catch { return false; }
+  return fsys === fs || typeof fsys.gracefulify === 'function';
 }
 
 // The directory webpack writes a compilation's assets to: output.path can hold placeholders, e.g. [fullhash].
@@ -203,7 +204,7 @@ class BundleLockfilePlugin {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
     return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesOfOutput([...bundled, ...extra]),
-      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler, this.compilerFile) });
+      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler) });
   }
 
   emit(compilation, write) {
@@ -229,7 +230,7 @@ class BundleLockfilePlugin {
           // asset - rendered now, before they have written theirs - over the packages they put there since, without
           // the lock. It is written in afterEmit, under the lock, like every other write of it (see rewrite).
           // In memory (webpack-dev-server) it is an asset, which only this process writes.
-          const disk = onDisk(compiler, this.compilerFile);
+          const disk = onDisk(compiler);
           compilation[SOURCE] = { src, early: new Set([...assetNames(compilation), this.file]), disk, asset: config.inline && !disk };
           if (compilation[SOURCE].asset) add(compilation, src); // else written in afterEmit (inline and export copy)
         });
@@ -268,7 +269,7 @@ class BundleLockfilePlugin {
         outputs.emitted(file, writer);
         // the inline file on the real disk after every build; in memory again if late copies added packages or
         // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
-        const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler, this.compilerFile);
+        const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler);
         const inline = config.inline && (disk || write || outputs.isShared(file));
         if (!inline && !outputs.exportPath(file)) {
           if (!config.inline) outputs.nowhere();
