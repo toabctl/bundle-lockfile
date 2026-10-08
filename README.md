@@ -94,6 +94,10 @@ package file pulled in under a first-party match resource is not listed either.
   in production) inlined at the use site, leaving its side-effect-free module in no chunk
 - npm packages vendored inside another package without a `package.json` of their own (e.g.
   `@grafana/google-sdk/dist/esm/node_modules/lodash`): a warning names each one
+- the bundler's own runtime code it generates into every bundle - webpack 5's runtime modules, Vite's preload helper
+  and modulepreload polyfill, Rolldown's runtime, @rollup/plugin-commonjs's helpers: they are virtual modules, no files
+  of a package, so `webpack`, `vite`, `rolldown` are not listed for them (webpack 4's `webpack/buildin/*` modules are
+  files of webpack: webpack 4 builds list it)
 - (listed although not shipped: a Sass partial with only variables that a style sheet `@import`s lists its package,
   although it adds no bytes; a Vite SSR build lists the packages of the style sheets its modules import, although it
   emits no CSS - plugins such as vite-plugin-css-injected-by-js put a build's CSS into its JavaScript, so a style
