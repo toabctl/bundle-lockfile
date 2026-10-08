@@ -15,7 +15,7 @@ const SEEN = Symbol.for('bundle-lockfile.webpack.seen');       // compiler: list
 const APPLIED = Symbol.for('bundle-lockfile.webpack.applied'); // compiler: has a BundleLockfilePlugin
 const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
 const CLOSED = Symbol.for('bundle-lockfile.webpack.closed');   // compiler: its shutdown hook has run
-const SOURCE = Symbol('bundle-lockfile.webpack.source');       // compilation: { src: lockfile asset, early: asset names then }
+const SOURCE = Symbol('bundle-lockfile.webpack.source');       // compilation: { src: lockfile content, early: asset names then, disk, asset }
 const BUNDLED = Symbol('bundle-lockfile.webpack.bundled');     // compilation: its bundledFiles()
 const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: files its latest build copied in the emit hook
 const NEXT_WEBPACK = /[\\/]next[\\/]dist[\\/]compiled[\\/]webpack[\\/]webpack(\.js)?$/;
@@ -225,15 +225,20 @@ class BundleLockfilePlugin {
       (compilation.hooks.afterProcessAssets || compilation.hooks.afterOptimizeAssets).tap(NAME, () => {
         this.emit(compilation, (json) => {
           const src = RawSource ? new RawSource(json) : { source: () => json, size: () => Buffer.byteLength(json) };
-          compilation[SOURCE] = { src, early: new Set([...assetNames(compilation), this.file]) };
-          if (config.inline) add(compilation, src); // else only the export copy, written in afterEmit
+          // On the real disk the lockfile is no asset: other processes may write it too, and webpack would write the
+          // asset - rendered now, before they have written theirs - over the packages they put there since, without
+          // the lock. It is written in afterEmit, under the lock, like every other write of it (see rewrite).
+          // In memory (webpack-dev-server) it is an asset, which only this process writes.
+          const disk = onDisk(compiler, this.compilerFile);
+          compilation[SOURCE] = { src, early: new Set([...assetNames(compilation), this.file]), disk, asset: config.inline && !disk };
+          if (compilation[SOURCE].asset) add(compilation, src); // else written in afterEmit (inline and export copy)
         });
       });
     });
     // Plugins that delete assets in the emit hook (compression-webpack-plugin <= 6 with deleteOriginalAssets
     // on webpack 4): put the lockfile back, after them.
     compiler.hooks.emit.tap({ name: NAME, stage: 1000 }, (compilation) => {
-      if (!config.inline || !compilation[SOURCE] || hasAsset(compilation, this.file)) return;
+      if (!compilation[SOURCE] || !compilation[SOURCE].asset || hasAsset(compilation, this.file)) return;
       config.debug('webpack: lockfile asset was deleted by another plugin, emitting it again:', this.file);
       add(compilation, compilation[SOURCE].src);
     });
@@ -261,10 +266,14 @@ class BundleLockfilePlugin {
           try { this.lockfile(compilation, [...copied.values()]); write = true; } catch (e) { config.warn('webpack: could not write lockfile:', e); }
         }
         outputs.emitted(file, writer);
-        // the inline file again: late copies added packages, or other compilers write it too; the export copy
-        // (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
-        const inline = config.inline && (write || outputs.isShared(file));
-        if (!inline && !outputs.exportPath(file)) return callback();
+        // the inline file on the real disk after every build; in memory again if late copies added packages or
+        // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
+        const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler, this.compilerFile);
+        const inline = config.inline && (disk || write || outputs.isShared(file));
+        if (!inline && !outputs.exportPath(file)) {
+          if (!config.inline) outputs.nowhere();
+          return callback();
+        }
         // lstat: a symbolic link asset (webpack >= 5.111) is there also if what it points at is not.
         // webpack 4's output file system has neither (nor output.clean). Anything but "not found" counts as
         // there: when in doubt, keep the packages
@@ -274,8 +283,10 @@ class BundleLockfilePlugin {
           try { fsys[stat](f, (err) => cb(!err || err.code !== 'ENOENT')); } catch { cb(true); }
         };
         outputs.prune(file, writer, exists, () => {
-          outputs.rewrite(file, inline ? (json, done) => fsys.writeFile(file, json, done) : null, (err) => {
+          const writeFile = !inline ? null : disk ? outputs.writeDisk(file) : (json, done) => fsys.writeFile(file, json, done);
+          outputs.rewrite(file, writeFile, (err) => {
             if (err) config.warn('webpack: could not write lockfile:', err);
+            else if (inline) config.debug('webpack: wrote', file);
             callback();
           });
         });

@@ -87,11 +87,15 @@ the `--require`. For such projects, also put the node shim first in `PATH`:
 export PATH="/opt/bundle-lockfile/bin:$PATH"
 ```
 
-`bin/node` puts the `--require` back into `NODE_OPTIONS` (keeping the script's settings) and runs the real
-`node`, the first one in `PATH` that is not a script. Every `node` started through `PATH` — by npm, pnpm, yarn 1
-and 4, bun, `cross-env` or a shell — then loads bundle-lockfile, and so does everything it starts, also with
-`process.execPath`. In yarn's own process, `process.execPath` is the shim: yarn runs scripts with a `node`
-wrapper first in `PATH` that runs its `process.execPath`. A `node` started by absolute path keeps whatever
+`bin/node` puts the `--require` back into `NODE_OPTIONS` (keeping the script's settings; a `--require` of the same
+file through another path, e.g. a symlinked install directory, counts as there) and runs the real `node`: the first
+one in `PATH` that is neither the shim itself nor a script it has already passed through on this start. Every `node`
+started through `PATH` — by npm, pnpm, yarn 1 and 4, bun, `cross-env` or a shell — then loads bundle-lockfile, and so
+does everything it starts, also with `process.execPath`. In yarn's own process, `process.execPath` is the shim: yarn
+runs scripts with a `node` wrapper first in `PATH` that runs its `process.execPath`, which leads back to the shim,
+which then skips the wrapper. Version managers whose `node` is a script (asdf's and nodenv's shims) work the same way;
+one that puts the real `node`'s directory first in `PATH` for the processes it starts (nodenv does) bypasses the shim
+in them, which then keep the `NODE_OPTIONS` they inherit. A `node` started by absolute path keeps whatever
 `NODE_OPTIONS` it gets.
 
 **Next.js 15.0 – 16.3: use a single `--require`.** These versions rewrite `NODE_OPTIONS` for their
@@ -121,7 +125,7 @@ $ BUNDLE_LOCKFILE_DEBUG=1 npm run build
 [bundle-lockfile] webpack: patched Compiler from /app/node_modules/webpack/lib/Compiler.js
 [bundle-lockfile] webpack: applying to compiler (unnamed) output /app/dist via /app/node_modules/webpack/lib/Compiler.js
 ...
-asset bundle-lockfile/package-lock.json 754 bytes [emitted]
+[bundle-lockfile] webpack: wrote /app/dist/bundle-lockfile/package-lock.json
 ```
 
 (More `patched Compiler` lines come from other processes that inherit `NODE_OPTIONS` and load webpack,
@@ -210,15 +214,21 @@ When a compiler's `output.clean` deletes what the others have already written (o
 paths matching `clean.keep`), their packages are dropped from the lockfile too: after each compiler's emit,
 compilers whose emitted files are all gone are left out. If some of a compiler's files are left, all its
 packages stay.
-The lockfile is added after webpack 5's `processAssets` stages, so plugins that work on the assets there
-(e.g. compression-webpack-plugin) do not get it; if a plugin deletes it later (compression-webpack-plugin's
-`deleteOriginalAssets` on webpack 4, which runs in the `emit` hook), it is emitted again.
+On the real disk the lockfile is not a webpack asset: it is written once webpack has written the compiler's
+output (`afterEmit`), so webpack's stats do not list it and plugins that work on or upload the assets
+(compression-webpack-plugin, deploy plugins) do not get it. With an in-memory output file system (e.g.
+webpack-dev-server's) it is an asset, added after webpack 5's `processAssets` stages; if a plugin deletes it later
+(compression-webpack-plugin's `deleteOriginalAssets` on webpack 4, which runs in the `emit` hook), it is emitted
+again.
 Compilers in separate processes writing to one directory (e.g. two `webpack` commands run by `concurrently`
 or `run-p`) share the lockfile the same way: it records, in a `"bundle-lockfile"` field, which writer put which
 packages and files there, and each process keeps the others' packages as long as some of their files are there
-(the writes are serialized with a `package-lock.json.lock` file next to it). The field has no machine-specific
-paths; tools that read `package-lock.json` (syft, npm) ignore it. In-memory output file systems (e.g.
-webpack-dev-server's) are not shared across processes.
+(the writes are serialized with a `package-lock.json.lock` file next to it, and each replaces the file atomically,
+so that a process never reads a partly written one). The field has no machine-specific paths; tools that read
+`package-lock.json` (syft, npm) ignore it. In-memory output file systems are not shared across processes.
+A writer is recognized by its config, not by its files: after a config change (another entry, name or file names), a
+build into a directory that is not cleaned keeps the previous build's packages as long as one of its files is still
+there — also when this build wrote a file of the same name: listing a package too many is safer than missing one.
 
 ```json
 {
@@ -242,7 +252,8 @@ webpack-dev-server's) are not shared across processes.
 
 The `"bundle-lockfile"` field records which compiler ("writer") put which packages there and some of its files
 (paths relative to the lockfile), so that other processes writing the same lockfile can keep them; SBOM tools
-ignore it.
+ignore it. `"outside"` (only if there are any) lists the keys of packages outside the project (see below), so that a
+process listing the same package does not list it a second time.
 
 - keys are the packages' real locations (symlinks resolved) relative to webpack's `context`, so nested
   duplicate versions and pnpm / Yarn Plug'n'Play layouts stay distinct. With a `context` below the
@@ -273,7 +284,7 @@ ignore it.
 | `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json` — syft only reads files with exactly that name |
 | `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [In a melange package build](#in-a-melange-package-build)) |
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
-| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off`: do not write the lockfile into the output directory, only into the export directory |
+| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off`: do not write the lockfile into the output directory, only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written, with a warning) |
 | `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (`0`, `false` and `off` also mean off) |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip — `webpack`, `vite`, `rollup`, `rolldown` (plain rollup()/rolldown() builds) — or `all` (case-insensitive) |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite/Rollup/Rolldown are hooked (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)): `sync`, `async` or `off` instead of choosing by Node version |
@@ -307,7 +318,9 @@ also with the export directory. `vite dev`, `vite preview` and Vitest build noth
 
 Besides the modules of the chunks, the lockfile lists the packages of:
 - style sheets that a style sheet `@import`s from a package (CSS, Sass, Less, Stylus): Vite inlines them, so they are
-  no modules; the plugin takes the style files among the build's watch files.
+  no modules; the plugin takes the style files among the build's watch files. Rolldown has them only on the build
+  object `rolldown()` returns, so its `build()` and `watch()` functions (not Vite 8's builds, which call `rolldown()`)
+  do not list them.
 - builds that write nothing themselves — Vite's worker bundles (emitted as files of the main build, or inlined into
   it with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker (vite-plugin-pwa), any
   `write: false` build: their chunks' packages are kept in memory, in the process, and listed where the same bytes end
@@ -396,11 +409,15 @@ add an app under `test/apps/`, an oracle under `test/oracles/` and rows to `test
 
 ## Tests
 
-The unit tests run anywhere, in about a second:
+The unit tests run anywhere, in a few seconds:
 
 ```sh
 node --test test/unit.cjs
 ```
+
+Besides the core, they cover in separate processes what timing decides in a real build: a webpack process that
+writes its output after another one has written the shared lockfile, processes writing one lockfile at once, and the
+node shim behind wrappers, version-manager shims and symlinked install directories.
 
 The matrix runs in a Wolfi container (see `.github/workflows/test.yaml`):
 

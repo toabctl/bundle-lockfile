@@ -135,12 +135,31 @@ function lock(file) {
   const deadline = Date.now() + 30000;
   try { fs.mkdirSync(path.dirname(l), { recursive: true }); } catch { return () => {}; }
   for (;;) {
-    try { fs.closeSync(fs.openSync(l, 'wx')); return () => { try { fs.unlinkSync(l); } catch { /* gone */ } }; }
-    catch (e) { if (e.code !== 'EEXIST') return () => {}; }
-    try { if (Date.now() - fs.statSync(l).mtimeMs > 60000) { fs.unlinkSync(l); continue; } } catch { continue; }
+    try {
+      fs.closeSync(fs.openSync(l, 'wx'));
+      const mine = fs.statSync(l);
+      // not one another process took over as stale meanwhile (see takeStale)
+      return () => { try { if (sameFile(fs.statSync(l), mine)) fs.unlinkSync(l); } catch { /* gone */ } };
+    } catch (e) { if (e.code !== 'EEXIST') return () => {}; }
+    let st;
+    try { st = fs.statSync(l); } catch { continue; } // released meanwhile
+    if (Date.now() - st.mtimeMs > 60000) { takeStale(l, st); continue; }
     if (Date.now() > deadline) { config.warn('could not lock', file, '- writing it without the lock'); return () => {}; }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
+}
+
+const sameFile = (a, b) => a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs;
+
+// Removes the stale lock `l` that had the stats `st` - not a lock another process has taken since: it is moved away
+// first (only one process can move it), and put back if it is not the stale one.
+function takeStale(l, st) {
+  const away = `${l}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
+  try { fs.renameSync(l, away); } catch { return; } // another process took it first
+  try {
+    if (sameFile(fs.statSync(away), st)) return;
+    try { fs.linkSync(away, l); } catch { /* a third one holds it now: it waits for that one like everyone else */ }
+  } catch { /* gone */ } finally { try { fs.unlinkSync(away); } catch { /* gone */ } }
 }
 
 // Writes atomically: concurrent processes and readers see the old or the new file, never a partial one.
@@ -148,6 +167,19 @@ function writeAtomic(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try { fs.writeFileSync(tmp, content); fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch {} throw e; }
+}
+
+// writeFile for rewrite(): a lockfile on the real disk, which other processes read
+function writeDisk(file) {
+  return (content, cb) => { try { writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
+}
+
+// BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR: there is nowhere to write; said once per process
+let toldNowhere = false;
+function nowhere() {
+  if (toldNowhere) return;
+  toldNowhere = true;
+  config.warn('BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written');
 }
 
 // Parallel compilers can finish writing in any order, so one that wrote before another recorded its packages
@@ -166,6 +198,7 @@ function rewrite(target, writeFile, done) {
       const shared = outputs.disk.get(target) && stateFile(target);
       if (shared) release = lock(shared);
       const content = render(target);
+      if (!writeFile && !exportPath(target)) nowhere();
       const exported = (err) => {
         const file = exportPath(target);
         if (file) try { writeAtomic(file, content); } catch (e) { return finish(err || e); }
@@ -187,4 +220,4 @@ function filesOf(target) {
   return all;
 }
 
-module.exports = { record, emitted, isShared, prune, rewrite, exportPath, filesOf };
+module.exports = { record, emitted, isShared, prune, rewrite, exportPath, filesOf, writeDisk, nowhere, takeStale };

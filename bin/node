@@ -3,10 +3,15 @@
 # whose scripts overwrite NODE_OPTIONS (cross-env NODE_OPTIONS=..., an inline NODE_OPTIONS=... node ...): every node
 # started through PATH gets the --require back, and so does everything it starts (also with process.execPath).
 #
-# 1. puts --require <register.cjs> into NODE_OPTIONS, unless it is there in any form, keeping what else is set
-# 2. runs the real node: the first `node` in PATH that is not a script. Package managers put wrappers in front
-#    (yarn: a temporary `node` that runs `exec "<its process.execPath>" "$@"`, which register.cjs points at this
-#    shim); skipping scripts also skips this shim itself. Looked up on every start: PATH can change (nvm).
+# 1. puts --require <register.cjs> into NODE_OPTIONS, unless it is there in any form (also through another path to
+#    the same file, e.g. a symlinked install directory), keeping what else is set
+# 2. runs the real node: the first `node` in PATH that is neither this shim (nor a copy of it) nor a script it has
+#    already passed through on this start. Package managers and version managers put scripts in front: yarn's
+#    temporary `node` runs `exec "<its process.execPath>" "$@"`, which register.cjs points at this shim, so it comes
+#    back here and is skipped then; asdf's and nodenv's shims run their node by its path. The scripts passed through
+#    are in BUNDLE_LOCKFILE_NODE_SEEN, which register.cjs clears, so that the processes node starts begin anew.
+#    Looked up on every start: PATH can change (nvm).
+set -f # word splitting below, never globbing
 self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
 reg=${BUNDLE_LOCKFILE_REGISTER:-}
 if [ -z "$reg" ]; then
@@ -16,11 +21,18 @@ if [ -z "$reg" ]; then
   done
 fi
 if [ -n "$reg" ]; then
-  case "${NODE_OPTIONS:-}" in
-    *"$reg"*) ;;
-    *) case "$reg" in *' '*) q="\"$reg\"" ;; *) q=$reg ;; esac
-       NODE_OPTIONS="--require $q${NODE_OPTIONS:+ $NODE_OPTIONS}"; export NODE_OPTIONS ;;
-  esac
+  have=
+  case "${NODE_OPTIONS:-}" in *"$reg"*) have=1 ;; esac
+  if [ -z "$have" ]; then
+    for w in ${NODE_OPTIONS:-}; do
+      w=${w#--require=}; w=${w#\"}; w=${w%\"}; w=${w#\'}; w=${w%\'}
+      case "$w" in */register.cjs) [ "$(readlink -f "$w" 2>/dev/null)" = "$reg" ] && { have=1; break; } ;; esac
+    done
+  fi
+  if [ -z "$have" ]; then
+    case "$reg" in *' '*) q="\"$reg\"" ;; *) q=$reg ;; esac
+    NODE_OPTIONS="--require $q${NODE_OPTIONS:+ $NODE_OPTIONS}"; export NODE_OPTIONS
+  fi
   BUNDLE_LOCKFILE_NODE_SHIM=$self; export BUNDLE_LOCKFILE_NODE_SHIM
 else
   echo "bundle-lockfile node shim: register.cjs not found next to $self; set BUNDLE_LOCKFILE_REGISTER" >&2
@@ -29,8 +41,15 @@ oifs=$IFS; IFS=:
 for dir in $PATH; do
   node="$dir/node"
   [ -n "$dir" ] && [ -f "$node" ] && [ -x "$node" ] || continue
-  [ "$(head -c 2 "$node" 2>/dev/null)" = '#!' ] && continue
-  IFS=$oifs
+  case ":${BUNDLE_LOCKFILE_NODE_SEEN:-}:" in *":$node:"*) continue ;; esac
+  if [ "$(head -c 2 "$node" 2>/dev/null)" = '#!' ]; then # a script (only then more is read: a binary has NUL bytes)
+    case "$(head -c 512 "$node" 2>/dev/null)" in *"bundle-lockfile's node shim"*) continue ;; esac
+    [ "$(readlink -f "$node" 2>/dev/null)" = "$self" ] && continue
+    BUNDLE_LOCKFILE_NODE_SEEN="${BUNDLE_LOCKFILE_NODE_SEEN:+$BUNDLE_LOCKFILE_NODE_SEEN:}$node"; export BUNDLE_LOCKFILE_NODE_SEEN
+  else
+    unset BUNDLE_LOCKFILE_NODE_SEEN
+  fi
+  IFS=$oifs; set +f
   exec "$node" "$@"
 done
 echo "bundle-lockfile node shim: no node binary in PATH" >&2
