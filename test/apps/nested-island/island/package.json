@@ -1,1 +1,2 @@
-{ "name": "@acme/island", "version": "1.0.0", "private": true, "main": "dist/main.js" }
+{ "name": "@acme/island", "version": "1.0.0", "private": true, "main": "dist/main.js",
+  "devDependencies": { "rolldown": "1.2.13", "vite": "8.3.3" } }
