@@ -150,6 +150,7 @@ const fixtures = {
   'edge-style-wp4': { app: 'edge-style', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'css-loader': '5.2.7', 'mini-css-extract-plugin': '1.6.2',
     sass: '1.105.1', 'sass-loader': '10.5.2', bulma: '1.0.4', less: '4.9.1', 'less-loader': '7.3.0', 'normalize.less': '1.0.0', 'normalize.css': '8.0.1' } },
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
+  'edge-federation': edge('edge-federation', { 'lodash-es': '4.18.1', ms: '2.1.3' }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
   // a directory of the project as a dependency (local-lib, which depends on ms): npm links file: (first-party), yarn 2+
@@ -371,6 +372,14 @@ const cases = [
   { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'] },
   { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
   { name: 'edge: asset/resource from a package', fixture: 'edge-asset', cmd: 'npm run -s build', expectIncludes: ['bootstrap-icons@1.13.1'] },
+  { name: 'edge: CSS from packages, webpack 5 native CSS (experiments.css)', fixture: 'edge-css', cmd: 'npm run -s build', env: { EDGE_CSS: 'native' },
+    expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
+  { name: 'edge: asset/inline from a package (a data: URL in main.js)', fixture: 'edge-asset', cmd: 'npm run -s build', env: { EDGE_ASSET: 'inline' },
+    expect: ['bootstrap-icons@1.13.1'] },
+  // module federation: each build ships its fallback copy of the shared lodash-es; the host loads the remote's
+  // widget (and its ms) at runtime from the remote's output, so ms is only the remote's
+  { name: 'edge: module federation (a host, a remote, a shared package)', fixture: 'edge-federation', cmd: 'npm run -s build',
+    expectIn: { host: ['lodash-es@4.18.1'], remote: ['lodash-es@4.18.1', 'ms@2.1.3'] } },
   // the stats the oracle reads have no file dependencies, which is where those style sheets are
   { name: 'edge: style sheets inlined from packages (sass-loader, less-loader, Tailwind via postcss-loader)', fixture: 'edge-style', cmd: 'npm run -s build',
     expect: STYLE_EXPECT, oracleMissing: STYLE_EXPECT },
