@@ -452,7 +452,14 @@ ship that `node_modules` (with its `package.json` files, or `package-lock.json`)
 
 Next runs several compilers, so a build writes one lockfile per compiler output (below `distDir`, `.next` by default):
 `.next/bundle-lockfile/` (client), `.next/server/chunks/bundle-lockfile/` (server) and `.next/server/bundle-lockfile/`
-(edge-server; without packages if there are no edge routes).
+(edge-server: middleware and routes with `runtime = 'edge'`; without packages if there are none). With the App
+Router, the server output uses the React Next vendors (`next/dist/compiled/react`), which is listed as `next`; the
+client output lists `react` and `react-dom`.
+
+A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, not the lockfiles: `out/` has none.
+Ship `.next/bundle-lockfile/package-lock.json` with it, or write the lockfiles to an export directory
+(`BUNDLE_LOCKFILE_EXPORT_DIR`). In this mode a custom `distDir` names the export destination; Next builds into `.next`
+anyway, so that is where the lockfiles are.
 
 Next does not bundle many packages into the **server** output (Pages Router dependencies, packages in
 `serverExternalPackages`); the server loads them from `node_modules` at runtime. Next records those runtime files in
@@ -679,7 +686,8 @@ CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin
 `rolldown` command line writes no lockfile (not supported yet). SvelteKit 2 and 3, each with adapter-static and
 adapter-node, are compared with an oracle that builds again with source maps into other directories and follows the
 maps of the files adapter-node 5 bundles again; a server dependency must not be listed. Next.js 12–16 are compared
-per compiler output with webpack's stats.
+per compiler output with webpack's stats: a Pages Router app on each, an App Router app with server and client
+components, an edge route handler and middleware on 15 and 16, and a static export (`output: 'export'`) on 16.
 
 ### Comparison with the CycloneDX webpack plugin
 

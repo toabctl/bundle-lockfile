@@ -17,6 +17,12 @@ const next = (version, react) => ({
   deps: { next: version, react, 'react-dom': react, 'lodash-es': '4.18.1', uuid: '9.0.1', ms: '2.1.3' },
 });
 
+// the App Router app (test/apps/next-app): server and client components, an edge route handler, middleware
+const nextApp = (version, react) => ({
+  app: 'next-app', bundler: 'next', installer: { type: 'npm' },
+  deps: { next: version, react, 'react-dom': react, 'lodash-es': '4.18.1', uuid: '9.0.1', ms: '2.1.3', nanoid: '3.3.20', 'is-number': '7.0.0' },
+});
+
 // dependencies vs devDependencies: what is shipped depends on what is imported, not on the section.
 // Build tools are devDependencies as in real projects.
 const devdeps = (installer) => ({
@@ -162,6 +168,8 @@ const fixtures = {
   'next14': next('14.2.35', '18.3.1'),
   'next15': next('15.5.27', '19.3.0'),
   'next16': next('16.4.0', '19.3.0'),
+  'next15-app': nextApp('15.5.27', '19.3.0'),
+  'next16-app': nextApp('16.4.0', '19.3.0'),
 };
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
@@ -554,6 +562,18 @@ const cases = [
   { name: 'Next.js 16.4.0 --webpack', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack') },
   // standalone deployments copy only .next/standalone and .next/static, which drops .next/bundle-lockfile
   { name: 'Next.js 16.4.0 --webpack, export dir only', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'), exportOnly: true },
+  // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see README);
+  // the export directory has them
+  { name: "Next.js 16.4.0 --webpack, output: 'export': out/ gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
+    outDir: 'out', env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, expect: null },
+  { name: "Next.js 16.4.0 --webpack, output: 'export', export dir only", ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
+    env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, exportOnly: true },
+  // App Router: the exact per-compiler lists are the oracle's; nanoid (edge route) and is-number (middleware) are in the
+  // edge-server output
+  { name: 'Next.js 15.5.27 App Router, edge route handler, middleware', ...nextCase('next15-app', '15.5.27', '19.3.0'),
+    expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'is-number@7.0.0', 'next@15.5.27'] },
+  { name: 'Next.js 16.4.0 --webpack App Router, edge route handler, middleware', ...nextCase('next16-app', '16.4.0', '19.3.0', '--webpack'),
+    expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'is-number@7.0.0', 'next@16.4.0'] },
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV, expect: null },
 ];
