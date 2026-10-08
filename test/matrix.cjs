@@ -140,9 +140,9 @@ const fixtures = {
   // the build script overwrites NODE_OPTIONS with cross-env, as superset's, headlamp's, pgadmin4's (needs the node shim)
   'edge-crossenv': { app: 'webpack5', installer: { type: 'npm' }, deps: { ...WEBPACK, ...APP_DEPS, 'cross-env': '7.0.3' },
     packageJson: { scripts: { build: 'cross-env NODE_OPTIONS=--max-old-space-size=3072 webpack --config webpack.config.js' } } },
-  'edge-compression': edge('edge-compression', { 'compression-webpack-plugin': '12.0.0', 'lodash-es': '4.18.1' }),
+  'edge-compression': edge('edge-compression', { 'compression-webpack-plugin': '12.0.0', 'lodash-es': '4.18.1', ms: '2.1.3' }),
   // compression-webpack-plugin 6 runs in webpack 4's emit hook, after the lockfile was emitted
-  'edge-compression-wp4': { app: 'edge-compression', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'compression-webpack-plugin': '6.1.2', 'lodash-es': '4.18.1' } },
+  'edge-compression-wp4': { app: 'edge-compression', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'compression-webpack-plugin': '6.1.2', 'lodash-es': '4.18.1', ms: '2.1.3' } },
   'edge-vanilla': edge('edge-vanilla', { '@vanilla-extract/css': '1.21.2', '@vanilla-extract/webpack-plugin': '2.3.27',
     'mini-css-extract-plugin': '2.10.2', 'css-loader': '7.1.5', 'lodash-es': '4.18.1' }),
   'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
@@ -351,6 +351,13 @@ const cases = [
   { name: 'edge: compression-webpack-plugin with deleteOriginalAssets', fixture: 'edge-compression', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1'] },
   { name: 'edge: compression-webpack-plugin 6 with deleteOriginalAssets, webpack 4', fixture: 'edge-compression-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: ['lodash-es@4.18.1'] },
+  // two compilers whose files are all replaced by .gz files, then one of them again in another process: the other's
+  // .gz files are still there, so are its packages (webpack 4 replaces them in the emit hook, after the lockfile was rendered)
+  { name: 'edge: compression-webpack-plugin with deleteOriginalAssets, two compilers, one output dir, then one of them again', fixture: 'edge-compression',
+    env: { EDGE_COMPRESSION: 'two' }, cmd: `npm run -s build && ${WEBPACK_BIN} --config-name sw`, expect: ['lodash-es@4.18.1', 'ms@2.1.3'] },
+  { name: 'edge: compression-webpack-plugin 6 with deleteOriginalAssets, two compilers, one output dir, then one of them again, webpack 4',
+    fixture: 'edge-compression-wp4', env: { EDGE_COMPRESSION: 'two' }, cmd: `npm run -s build && ${WEBPACK_BIN} --config-name sw`, nodeOptions: LEGACY_SSL,
+    expectIncludes: ['lodash-es@4.18.1', 'ms@2.1.3'] },
   // the virtual CSS module reads a placeholder file in @vanilla-extract/webpack-plugin, a build tool;
   // @vanilla-extract/css only runs at build time
   { name: 'edge: vanilla-extract virtual CSS (match resource)', fixture: 'edge-vanilla', cmd: 'npm run -s build',

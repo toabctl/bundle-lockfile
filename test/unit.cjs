@@ -591,6 +591,21 @@ test('webpack adapter: a compiler whose output.clean deleted another compiler\'s
   assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
 });
 
+test('webpack adapter: a compiler\'s files are those it wrote, also when a plugin replaced its assets in the emit hook', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b') });
+  const outputPath = J(root, 'dist');
+  const lock = J(outputPath, LOCK);
+  fs.mkdirSync(outputPath);
+  // compression-webpack-plugin 6 with deleteOriginalAssets on webpack 4: a.js is replaced by a.js.gz in the emit hook,
+  // after the lockfile was rendered
+  await sharedCompiler(root, outputPath, 'a')({ 'a.js': null }, { 'a.js.gz': 'a.js.gz' });
+  await sharedCompiler(root, outputPath, 'b')(); // a's output is still there: its packages stay
+  assert.deepEqual(lockedNames(fs.readFileSync(lock, 'utf8')), ['a', 'b']);
+  const files = JSON.parse(fs.readFileSync(lock, 'utf8'))['bundle-lockfile'].writers.map(w => w.files).sort();
+  assert.deepEqual(files, [['../a.js.gz'], ['../b.js']]); // what another process checks
+});
+
 test('webpack adapter: a compiler\'s files are those webpack writes: asset names without query or fragment, symbolic links', async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('query'), ...pj('hash'), ...pj('oldhash'), ...pj('link'), ...pj('last') });
@@ -646,22 +661,26 @@ function fakeCompiler5({ outputPath, withWebpack = true }) {
 // A compiler writing to outputPath through the plugin's real hooks (webpack 5 shape). Returns build(assets),
 // which "emits" by writing the asset files (asset name -> file name on disk; null: none) and resolves once
 // afterEmit has finished. Default: one asset <name>.js. Its module is in node_modules/<name>. onEmitAsset(name):
-// called for assets the plugin emits.
+// called for assets the plugin emits. emitted: the assets after the emit hook, if a plugin replaced them there (asset
+// name -> file name on disk).
 function sharedCompiler(root, outputPath, name, onEmitAsset = () => {}) {
   const { compiler, taps } = fakeCompiler5({ outputPath });
   compiler.name = name;
   Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
   compiler.options = { entry: { main: { import: [`./src/${name}.js`] } } };
   new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
-  return async (assets = { [`${name}.js`]: `${name}.js` }) => {
+  return async (assets = { [`${name}.js`]: `${name}.js` }, emitted = assets) => {
+    const infos = Object.fromEntries(Object.keys(assets).map(n => [n, {}]));
     const comp = compilation({ context: root, outputPath, chunks: [{ files: Object.keys(assets), modules: [{ resource: J(root, 'node_modules', name, 'i.js') }] }],
-      assets: Object.fromEntries(Object.keys(assets).map(n => [n, {}])) });
+      assets: infos });
     comp.compiler = compiler;
     comp.emitAsset = (file) => onEmitAsset(file);
     comp.hooks = { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } };
     taps.thisCompilation(comp);
     comp.stage();
-    for (const file of Object.values(assets)) if (file) fs.writeFileSync(J(outputPath, file), '');
+    for (const n of Object.keys(infos)) if (!(n in emitted)) delete infos[n]; // the emit hook
+    for (const n of Object.keys(emitted)) infos[n] = infos[n] || {};
+    for (const file of Object.values(emitted)) if (file) fs.writeFileSync(J(outputPath, file), '');
     await new Promise(resolve => taps.afterEmit(comp, resolve));
   };
 }

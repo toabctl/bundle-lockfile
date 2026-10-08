@@ -640,7 +640,8 @@ cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, np
 paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, a DLL, two compilers sharing an
 output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing
 watch rebuild), two compilers whose `output.path` with `[fullhash]` resolves to different directories,
-compression-webpack-plugin deleting the original assets (webpack 4 and 5), workspace packages (also with
+compression-webpack-plugin deleting the original assets (webpack 4 and 5, also of two compilers sharing an output
+directory, one of them run again by another process), workspace packages (also with
 `resolve.symlinks: false`), subpath manifests, nested and inlined worker-loader workers (webpack 4 and 5), a workbox
 service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin (5 and 6 on webpack 4, 14 on
 webpack 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root; two webpack
