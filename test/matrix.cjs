@@ -559,6 +559,9 @@ const cases = [
     expectIncludes: SVELTE_CLIENT('3.0.1'), expectExcludes: ['ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-node', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
     oracleArgs: 'client,server', expectIncludes: [...SVELTE_CLIENT('3.0.1'), '@sveltejs/adapter-node@6.0.0'], expectExcludes: ['ms@2.1.3'] },
+  // with BUNDLE_LOCKFILE_INLINE=0 the island's lockfile is only in the export directory: it is found there
+  { name: 'nested: Vite 8 island bundled by webpack 5, export dir only', fixture: 'nested-island-wp5', cmd: 'npm run -s build', exportOnly: true,
+    expect: NESTED_EXPECT },
   // a changed island file is not attributed (its hash no longer matches)
   { name: 'nested: island changed after its build is not attributed', fixture: 'nested-island-wp5',
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && echo "/* changed */" >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js',

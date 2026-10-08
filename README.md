@@ -678,7 +678,8 @@ loader-thread hooks on Node.js 24 too,
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
 island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
-(also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), an island of several chunks and a
+(also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), the island's lockfile only in the export
+directory, an island of several chunks and a
 style sheet bundled whole by Vite 8 and in parts (only its style sheet, only its JavaScript) by Vite 8 and webpack 5, and an app with a worker, an inlined worker, a
 CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 6, 7 and 8), and Tailwind CSS 4 with @tailwindcss/vite. The
 `rollup` command line has its own case, and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
