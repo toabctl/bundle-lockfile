@@ -7,16 +7,19 @@
 const { fixtures, cases } = require('../matrix.cjs');
 
 // "--shard=2/5" anywhere in argv -> { i: 2, n: 5 }; the other arguments in order. Without one: shard 1/1.
+// "--fixtures=<regex>": only fixtures whose name matches, and their cases (fixtures: a RegExp or null).
 function parseArgs(argv) {
   const rest = [];
-  let shard = { i: 1, n: 1 };
+  let shard = { i: 1, n: 1 }, only = null;
   for (const a of argv) {
+    const f = a.match(/^--fixtures=(.*)$/);
+    if (f) { only = new RegExp(f[1]); continue; }
     const m = a.match(/^--shard=(\d+)\/(\d+)$/);
     if (!m) { rest.push(a); continue; }
     shard = { i: Number(m[1]), n: Number(m[2]) };
     if (!(shard.n >= 1 && shard.i >= 1 && shard.i <= shard.n)) throw new Error(`invalid ${a}`);
   }
-  return { shard, rest };
+  return { shard, fixtures: only, rest };
 }
 
 function cost(name) {
@@ -24,10 +27,10 @@ function cost(name) {
   return 1 + caseCost * cases.filter(c => c.fixture === name).length;
 }
 
-// fixture names of shard i of n
-function fixturesOf({ i, n }) {
+// fixture names of shard i of n (of the fixtures matching `only`, a RegExp, if given)
+function fixturesOf({ i, n }, only = null) {
   const load = new Array(n).fill(0), assigned = new Array(n).fill(null).map(() => []);
-  const names = Object.keys(fixtures).sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0));
+  const names = Object.keys(fixtures).filter(f => !only || only.test(f)).sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0));
   for (const name of names) {
     const s = load.indexOf(Math.min(...load));
     load[s] += cost(name);

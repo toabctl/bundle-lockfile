@@ -1,6 +1,7 @@
 'use strict';
 // Creates the fixtures from matrix.cjs (needs network). Afterwards run.cjs works offline.
-// usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex] [--shard=<i>/<n>]   (see lib/shard.cjs)
+// usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex] [--shard=<i>/<n>] [--fixtures=<fixture-name-regex>]
+//   (see lib/shard.cjs; --fixtures: the same as the regex, as run.cjs takes it)
 // Needs node, npm, yarn (1.x), bun on PATH; yarn berry and pnpm releases are vendored into <dir>/.tools.
 const fs = require('fs');
 const path = require('path');
@@ -8,9 +9,9 @@ const { execSync } = require('child_process');
 const { fixtures } = require('./matrix.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
-const { shard, rest: [out, filter] } = parseArgs(process.argv.slice(2));
+const { shard, fixtures: only, rest: [out, filter] } = parseArgs(process.argv.slice(2));
 if (!out) { console.error('usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex] [--shard=<i>/<n>]'); process.exit(2); }
-const inShard = fixturesOf(shard);
+const inShard = fixturesOf(shard, only);
 const OUT = path.resolve(out);
 const TOOLS = path.join(OUT, '.tools');
 // Fixtures are created from scratch, so lockfiles must be writable even when CI=true
