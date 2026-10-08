@@ -8,12 +8,15 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { createRequire } = require('module');
 
 const args = process.argv.slice(2);
 const outIdx = args.indexOf('--out');
 const out = path.resolve(outIdx >= 0 ? args.splice(outIdx, 2)[1] : 'dist-oracle');
-const vite = path.resolve('node_modules/vite/bin/vite.js');
-const r = spawnSync(process.execPath, [vite, 'build', ...args, '--sourcemap', '--outDir', out, '--emptyOutDir'], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+// resolved from the fixture (also with Yarn Plug'n'Play: run with `yarn node`, whose NODE_OPTIONS load PnP, which the
+// build keeps; run.cjs passes no --require of bundle-lockfile)
+const vite = path.join(path.dirname(createRequire(path.resolve('package.json')).resolve('vite/package.json')), 'bin/vite.js');
+const r = spawnSync(process.execPath, [vite, 'build', ...args, '--sourcemap', '--outDir', out, '--emptyOutDir'], { encoding: 'utf8', env: process.env });
 if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
 
 // Relative sources are relative to the map in most maps, but not in all: a worker's map (in assets/) is relative to
