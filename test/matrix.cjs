@@ -419,6 +419,9 @@ const cases = [
   // where app's clean does not delete the files of sw building next to it
   { name: 'edge: two webpack processes, one output dir, the second one cleans it', fixture: 'edge-shared-output', env: { EDGE_SHARED: 'clean' },
     cmd: `${WEBPACK_BIN} --config-name sw && ${WEBPACK_BIN} --config-name app`, expect: ['ms@2.1.3'], oracle: false },
+  // ... unless its clean keeps sw's file (output.clean.keep): sw's packages stay
+  { name: 'edge: two webpack processes, one output dir, the second one cleans it but keeps the first one\'s file', fixture: 'edge-shared-output',
+    env: { EDGE_SHARED: 'clean-keep' }, cmd: `${WEBPACK_BIN} --config-name sw && ${WEBPACK_BIN} --config-name app`, expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
   // a failed rebuild is not emitted: the lockfile keeps the packages of the output still in dist/
   { name: 'edge: two compilers, one output dir, watch mode with a failing rebuild', fixture: 'edge-shared-output', cmd: WATCH_FAIL,
     expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'], watchBuilds: [1, 2, 3].map(() => ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3']) },

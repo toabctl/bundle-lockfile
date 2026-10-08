@@ -20,6 +20,8 @@ const variants = {
   })),
   // EDGE_SHARED=clean: app empties the directory before writing (output.clean), deleting what sw wrote before
   clean: () => variants.default().map(c => (c.name === 'app' ? { ...c, output: { ...c.output, clean: true } } : c)),
+  // EDGE_SHARED=clean-keep: the same, but app's clean keeps sw.js (output.clean.keep)
+  'clean-keep': () => variants.default().map(c => (c.name === 'app' ? { ...c, output: { ...c.output, clean: { keep: /^sw\.js$/ } } } : c)),
   // EDGE_SHARED=fullhash: output.path 'dist/[fullhash]' - the same setting, but different directories: nothing shared
   fullhash: () => variants.default().map(c => ({ ...c, output: { ...c.output, path: path.join(out.path, '[fullhash]') } })),
 };
