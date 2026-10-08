@@ -407,7 +407,7 @@ attributed.
 
 Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles and SvelteKit (Wolfi's `nodejs-24`,
 `nodejs-26` and `nodejs-22`; Next.js 12 itself does not build on Node.js 25 and later, which removed the `SlowBuffer`
-its compiled `jsonwebtoken` uses), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
+its compiled `jsonwebtoken` uses), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, `turbo run` (turbo passes `NODE_OPTIONS` to its tasks, also in its strict env mode), direct `node_modules/.bin`
 calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), pnpm
 8/9/10/11/12 (10 also with its global virtual store) and bun for webpack, and npm, npx, pnpm 9/10/11 (10 also with its
 global virtual store), yarn 1, yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), bun and npm
