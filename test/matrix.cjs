@@ -57,8 +57,10 @@ const FEATURES = { 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20'
 const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', installer: { type: 'npm' },
   deps: { vite: version, '@vitejs/plugin-legacy': legacy, ...FEATURES }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
 // the rollup command line (Rollup's CommonJS build)
+// (@rollup/plugin-typescript, typescript 5, tslib: for rollup.config.ts)
 const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'npm' },
-  deps: { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
+  deps: { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20',
+    '@rollup/plugin-typescript': '12.3.0', typescript: '5.9.3', tslib: '2.8.1' },
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
 // Rollup's and Rolldown's JavaScript APIs, called by a build script (build.mjs <mode>), and the rolldown command line
 const rollupApi = { app: 'rollup-api', bundler: 'rollup', installer: { type: 'npm' },
@@ -241,6 +243,7 @@ const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // anoth
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 const MEMFS = `node ${path.join(__dirname, 'lib/memfs-build.cjs')}`; // into memfs, then copied to the disk
+const ROLLUP_CLI_WATCH = `node ${path.join(__dirname, 'lib/rollup-cli-watch.cjs')}`; // rollup -c -w, rebuilt twice
 // this Node.js has the in-thread ESM hooks (README: 24.12, 25.2 and later), which every process gets
 const [NODE_MA, NODE_MI] = process.versions.node.split('.').map(Number);
 const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 2) || (NODE_MA === 24 && NODE_MI >= 12);
@@ -558,6 +561,11 @@ const cases = [
   { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
+  { name: 'Rollup 4 command line, watch mode (rollup -c -w): every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-cli',
+    cmd: `${ROLLUP_CLI_WATCH} nanoid`, expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
+  // the command line bundles a TypeScript config first, with a build that only generates: no lockfile of its own
+  { name: 'Rollup 4 command line, rollup.config.ts (--configPlugin typescript)', fixture: 'rollup-cli',
+    cmd: './node_modules/.bin/rollup -c rollup.config.ts --configPlugin typescript', expect: ROLLUP_API },
   // installers (yarn Plug'n'Play: Yarn's own loader-thread hook next to bundle-lockfile's ESM hooks)
   { name: 'Vite 8.3.3, yarn 1', fixture: 'vite8-yarn1', cmd: 'yarn --offline -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play", fixture: 'vite8-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
