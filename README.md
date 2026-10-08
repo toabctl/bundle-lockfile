@@ -285,25 +285,37 @@ ignore it.
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
 | Vite | 7 (Rollup), 8 (Rolldown) | Node.js >= 20.6; 5 and 6 build with Rollup 4 like 7, but are not tested |
-| Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, `build()`, `watch()`), as Vite and its frameworks run them; not the Rollup and Rolldown command lines yet |
+| Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, `build()`, `watch()`), as Vite and its frameworks run them, and the `rollup` command line; not the `rolldown` command line yet |
 
 Tested with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
 calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules
 linker), pnpm 8/9/10/11/12 and bun — see [`test/matrix.cjs`](test/matrix.cjs).
 yarn 2 is not tested: when it writes zip archives it calls `util.isDate`, which Node.js 23 removed.
 
-Not yet: rspack, esbuild, Turbopack, the Rollup and Rolldown command lines, Bun's own runtime (`bun --bun`).
+Not yet: rspack, esbuild, Turbopack, the Rolldown command line, Bun's own runtime (`bun --bun`).
 
 ### Vite, Rollup, Rolldown
 
 Vite, Rollup and Rolldown are ES modules, which `Module._load` does not see. bundle-lockfile wraps the public entry
-module of `rollup` (Vite 5–7) and `rolldown` (Vite 8) with a Node.js ESM hook, so that every `rollup()` /
+module of `rollup` (Vite 5–7) and `rolldown` (Vite 8) with a Node.js ESM hook, and patches Rollup's CommonJS build
+when it loads (`require('rollup')`, the `rollup` command line, workbox-build), so that every `rollup()` /
 `rolldown()` / `watch()` / `build()` call gets one more plugin: it takes the modules of every chunk of an output the
 build writes (also those of chunks a plugin removes later, e.g. vite-plugin-singlefile) and writes
 `<output dir>/bundle-lockfile/package-lock.json` after the build — next to `dist/`'s files, shared like webpack's,
-also with the export directory. Builds that write nothing themselves (Vite's worker and legacy-polyfill bundles,
-whose files the main build emits, `write: false`, Vite 8 bundling its own config) and outputs below `node_modules`
-(Vite's dependency pre-bundling) get none; `vite dev`, `vite preview` and Vitest build nothing.
+also with the export directory. `vite dev`, `vite preview` and Vitest build nothing.
+
+Besides the modules of the chunks, the lockfile lists the packages of:
+- style sheets that a style sheet `@import`s from a package (CSS, Sass, Less, Stylus): Vite inlines them, so they are
+  no modules; the plugin takes the style files among the build's watch files.
+- builds that write nothing themselves — Vite's worker bundles (emitted as files of the main build, or inlined into
+  it with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker (vite-plugin-pwa), any
+  `write: false` build: their chunks' packages are kept in memory, in the process, and listed where the same bytes end
+  up in a written output (a chunk or JavaScript asset with that content, or a `?worker` import of the build's entry).
+  Such builds, and outputs below `node_modules` (Vite's dependency pre-bundling), get no lockfile of their own.
+- files other plugins write into the output directory after the build (in a `closeBundle` running after theirs):
+  JavaScript files with the bytes of such a build's chunk (vite-plugin-pwa's `sw.js` and `workbox-<hash>.js`), and
+  copies from `node_modules` whose path in the output still contains `node_modules/<package>/` and whose bytes are the
+  package's file (vite-plugin-static-copy). Only files changed since the build started count.
 
 The hook depends on the Node.js version:
 - Node.js 24.12, 25.2 and later: `module.registerHooks`, in the same thread, in every process.
@@ -313,8 +325,10 @@ The hook depends on the Node.js version:
   time per process and the in-thread hooks of other tools (e.g. OpenTelemetry's) can conflict with it.
   `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it in every process, `off` in none.
 
-Not yet listed: packages only in Vite's worker or legacy-polyfill bundles, CSS files that other CSS `@import`s from
-packages, and files copied with fs (`public/`, vite-plugin-static-copy).
+Not yet listed: files copied from a package to a path without `node_modules` in it (e.g. vite-plugin-static-copy
+with `dest: 'vendor'` and `rename`, or `public/` files taken from a package), and output that a separate process
+generates (a worker bundle is built in the process of the build that uses it). A Sass partial with only variables
+lists its package although it adds no bytes.
 
 **Nested bundles.** A Vite build can produce a file that another build bundles: GitLab, for example, builds an
 "island" with Vite into `ee/frontend_islands/apps/duo_next/dist/main.js` (Vue inlined) and webpack bundles that file
@@ -401,8 +415,10 @@ with only the build output, and once with the project's own `package-lock.json` 
 
 The matrix runs on Node.js 24 (Wolfi `nodejs-24`); the Vite and nested-bundle cases also on Node.js 22, which uses
 the loader-thread hooks. Vite cases: Vite 7 and 8 with npm, pnpm and `npx`, the loader-thread hooks on Node.js 24 too,
-`BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, and a Vite-built island bundled by webpack 4 and 5 (also changed
-after its build). Their oracle builds again with Vite's source maps, which do not cover CSS-only packages.
+`BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a Vite-built island bundled by webpack 4 and 5 (also changed
+after its build), and an app with a worker, an inlined worker, a CSS `@import` from a package, @vitejs/plugin-legacy,
+vite-plugin-pwa and vite-plugin-static-copy (Vite 7 and 8). Their oracle builds again with Vite's source maps, which
+do not cover CSS-only packages and copied files. The `rollup` command line has its own case and oracle.
 
 ### Comparison with the CycloneDX webpack plugin
 

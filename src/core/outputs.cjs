@@ -178,4 +178,13 @@ function rewrite(target, writeFile, done) {
   next.then((err) => setImmediate(done, err)); // outside the promise: done() continues the build
 }
 
-module.exports = { record, emitted, isShared, prune, rewrite, exportPath };
+// The files the writers of `target` in this process emit there (their builds in progress and landed).
+function filesOf(target) {
+  const all = new Set();
+  for (const w of (outputs.files.get(target) || new Map()).values()) {
+    for (const b of [w.building, w.landed]) if (b) for (const f of b.files) all.add(f);
+  }
+  return all;
+}
+
+module.exports = { record, emitted, isShared, prune, rewrite, exportPath, filesOf };

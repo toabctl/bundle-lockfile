@@ -787,7 +787,9 @@ test('hooks: a throwing adapter is reported and does not break require()', () =>
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
   const script = `const M = require('module'); const before = M._load; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._load === before);`;
-  for (const [disable, untouched] of [['all', 'true'], ['webpack', 'true'], ['ALL', 'true'], [' Webpack ', 'true'], ['', 'false'], ['rspack', 'false']]) {
+  // the rollup adapter patches Module._load too (Rollup's CommonJS build): only off with all of its names
+  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite', 'true'],
+    ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
     assert.equal(r.stdout.trim(), untouched, `BUNDLE_LOCKFILE_DISABLE=${disable}: ${r.stderr}`);
   }
@@ -909,18 +911,26 @@ test('rollup adapter: rollup()/rolldown()/watch()/build() get the plugin once, t
   assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: 'off' }).plain, ['x']);
 });
 
-// runs the plugin's hooks like a rollup/rolldown build writing `outDir`; chunks: [{ fileName, code, modules }],
-// assets: [{ fileName, originalFileNames }]
-async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true }) {
+// runs the plugin's hooks like a rollup/rolldown build writing `outDir`; chunks: [{ fileName, code, modules, entry }]
+// (entry: its facade module), assets: [{ fileName, originalFileNames, source }]; ctx: the plugin context (Rollup's
+// getWatchFiles); late(): what other plugins do after the write, before the plugin's closeBundle
+async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true, ctx = {}, late }) {
   const out = { dir: outDir, format: 'es' };
-  plugin.renderStart(out);
-  for (const c of chunks) plugin.renderChunk(c.code, { moduleIds: c.modules }, out);
-  const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules }]),
-    ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
-  plugin.generateBundle.handler(out, bundle, isWrite);
-  if (!isWrite) return;
-  for (const c of chunks) { fs.mkdirSync(path.dirname(J(outDir, c.fileName)), { recursive: true }); fs.writeFileSync(J(outDir, c.fileName), c.code); }
-  await plugin.writeBundle.handler(out);
+  plugin.buildStart.call(ctx);
+  plugin.renderStart.call(ctx, out);
+  for (const c of chunks) plugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
+  const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
+    isEntry: !!c.entry, facadeModuleId: c.entry || null }]), ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
+  await plugin.generateBundle.handler.call(ctx, out, bundle, isWrite);
+  if (isWrite) {
+    for (const f of Object.values(bundle)) {
+      fs.mkdirSync(path.dirname(J(outDir, f.fileName)), { recursive: true });
+      fs.writeFileSync(J(outDir, f.fileName), f.type === 'chunk' ? f.code : f.source || '');
+    }
+    await plugin.writeBundle.handler.call(ctx, out);
+  }
+  if (late) late();
+  await plugin.closeBundle.handler.call(ctx);
 }
 
 test('rollup adapter: a written output gets its lockfile; generate-only builds and outputs below node_modules none', async () => {
@@ -960,6 +970,146 @@ test('nested: a bundled file another build produced brings its packages, unless 
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
     assert.deepEqual(ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['outer@1.0.0']);
   } finally { process.chdir(cwd); }
+});
+
+test('generated: generate-only output inside a written bundle (worker chunks as assets, inlined workers, polyfill chunks)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('wa'), ...pj('wb'), ...pj('inl'), ...pj('poly'), ...pj('app'), ...pj('unused') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const gen = (fileName, code, modules, entry) => rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: '', isWrite: false, chunks: [{ fileName, code, modules, entry }] });
+    // Vite's worker build (generate-only): its chunk becomes an asset of the parent; a ?worker&inline one is a string
+    // in the parent's module; plugin-legacy's polyfills (output below node_modules) a chunk of the parent
+    await gen('assets/worker-1.js', 'worker code', [J(root, 'src/worker.js'), J(root, 'node_modules/wa/i.js')], J(root, 'src/worker.js'));
+    await gen('assets/worker-2.js', 'other worker', [J(root, 'node_modules/wb/i.js')]);
+    await gen('assets/inline-worker.js', 'inline worker', [J(root, 'src/inline.js'), J(root, 'node_modules/inl/i.js')], J(root, 'src/inline.js'));
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'node_modules/@vitejs/plugin-legacy/dist'),
+      chunks: [{ fileName: 'polyfills.js', code: 'polyfills', modules: [J(root, 'node_modules/poly/i.js')] }] });
+    // an unrelated generate-only build must not be listed
+    await gen('x.js', 'not used', [J(root, 'node_modules/unused/i.js')], J(root, 'src/x.js'));
+    assert.equal(fs.existsSync(J(root, 'node_modules/@vitejs/plugin-legacy/dist', LOCK)), false);
+
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'), chunks: [
+      { fileName: 'assets/index.js', code: 'index', modules: [J(root, 'src/main.js'), J(root, 'node_modules/app/i.js'), `${J(root, 'src/inline.js')}?worker&inline`] },
+      { fileName: 'assets/polyfills-legacy.js', code: 'polyfills', modules: [] },
+    ], assets: [{ fileName: 'assets/worker-1.js', source: 'worker code' }, { fileName: 'assets/worker-2.js', source: Buffer.from('other worker') },
+      { fileName: 'assets/notes.txt', source: 'not used' }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['app', 'inl', 'poly', 'wa', 'wb']);
+  } finally { process.chdir(cwd); }
+});
+
+test('generated: the source map comment workbox-build appends does not change the content hash', () => {
+  const generated = require('../src/core/generated.cjs');
+  assert.equal(generated.hash('code'), generated.hash('code\n//# sourceMappingURL=sw.js.map\n'));
+  assert.equal(generated.hash('code'), generated.hash(Buffer.from('code//# sourceMappingURL=sw.js.map')));
+  assert.notEqual(generated.hash('code'), generated.hash('code\n//# sourceMappingURL=sw.js.map\nmore'));
+  assert.equal(generated.hash({}), null);
+});
+
+test('rollup adapter: style sheets a style sheet @imports from packages (watch files of Rollup and of Rolldown builds)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('sanitize.css'), ...pj('bootstrap'), ...pj('tailwind-content'), ...pj('js-only') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const watch = [J(root, 'src/app.css'), J(root, 'node_modules/sanitize.css/sanitize.css'), J(root, 'node_modules/bootstrap/scss/_grid.scss'),
+      J(root, 'node_modules/tailwind-content/dist/x.js'), J(root, 'node_modules/js-only/index.js'), 'virtual:not-a-file.css'];
+    // Rollup: this.getWatchFiles()
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'a'), ctx: { getWatchFiles: () => watch }, chunks: [{ fileName: 'i.js', code: 'style a', modules: [J(root, 'src/main.js')] }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'a', LOCK), 'utf8')), ['bootstrap', 'sanitize.css']);
+    // Rolldown: the RolldownBuild's watchFiles (a promise), given to the plugin by the rolldown() wrapper
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    plugin.api.setBuild({ get watchFiles() { return Promise.resolve(watch); } });
+    await rollupBuild(plugin, { outDir: J(root, 'b'), chunks: [{ fileName: 'i.js', code: 'style b', modules: [J(root, 'src/main.js')] }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'b', LOCK), 'utf8')), ['bootstrap', 'sanitize.css']);
+    // the wrapper hands over the build
+    let built;
+    const rolldown = rollupAdapter.esmWrap('rolldown', 'rolldown', async (options) => { built = options; return { get watchFiles() { return Promise.resolve(watch); } }; });
+    await rolldown({ input: 'x.js', plugins: [{ name: 'vite:css' }] });
+    const added = built.plugins.find(p => p.name === 'bundle-lockfile');
+    await rollupBuild(added, { outDir: J(root, 'c'), chunks: [{ fileName: 'i.js', code: 'style c', modules: [] }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'c', LOCK), 'utf8')), ['bootstrap', 'sanitize.css']);
+  } finally { process.chdir(cwd); }
+});
+
+test('rollup adapter: files other plugins write into the output after the build (workbox sw.js, static copies)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('workbox-core'), ...pj('normalize.css'), ...pj('changed'), ...pj('old'), ...pj('app'),
+    'node_modules/normalize.css/normalize.css': 'html{}', 'node_modules/changed/c.css': 'a{}', 'node_modules/old/o.css': 'o{}' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    fs.mkdirSync(J(dist, 'vendor/node_modules/old'), { recursive: true });
+    fs.writeFileSync(J(dist, 'vendor/node_modules/old/o.css'), 'o{}'); // left from before this build
+    const before = new Date(Date.now() - 60000);
+    fs.utimesSync(J(dist, 'vendor/node_modules/old/o.css'), before, before);
+    // workbox-build: generate-only, written later by vite-plugin-pwa in its closeBundle (with a source map comment)
+    await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: '', isWrite: false, chunks: [{ fileName: 'workbox-1.js', code: 'workbox runtime', modules: [J(root, 'node_modules/workbox-core/i.js')] }] });
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    await rollupBuild(plugin, { outDir: dist, chunks: [{ fileName: 'assets/index.js', code: 'index', modules: [J(root, 'node_modules/app/i.js')] }], late() {
+      fs.writeFileSync(J(dist, 'workbox-1.js'), 'workbox runtime\n//# sourceMappingURL=workbox-1.js.map\n');
+      fs.writeFileSync(J(dist, 'sw.js'), 'unknown');
+      fs.mkdirSync(J(dist, 'vendor/node_modules/normalize.css'), { recursive: true });
+      fs.writeFileSync(J(dist, 'vendor/node_modules/normalize.css/normalize.css'), 'html{}');
+      fs.mkdirSync(J(dist, 'vendor/node_modules/changed'), { recursive: true });
+      fs.writeFileSync(J(dist, 'vendor/node_modules/changed/c.css'), 'a{color:red}'); // not the package's bytes
+    } });
+    const lock = fs.readFileSync(J(dist, LOCK), 'utf8');
+    assert.deepEqual(lockedNames(lock), ['app', 'normalize.css', 'workbox-core']);
+    // a copy deleted later takes its packages with it (the late files are the writer's files, see outputs.prune)
+    assert.ok(JSON.parse(lock)['bundle-lockfile'].writers[0].files.some(f => f.endsWith('normalize.css')));
+
+    // an output directory that contains the working directory is not scanned
+    process.chdir(J(root, 'node_modules'));
+    const up = rollupAdapter.bundleLockfile('vite');
+    await rollupBuild(up, { outDir: root, chunks: [{ fileName: 'top.js', code: 'top', modules: [] }], late() { fs.writeFileSync(J(root, 'w.js'), 'workbox runtime'); } });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, LOCK), 'utf8')), []);
+  } finally { process.chdir(cwd); }
+});
+
+test('rollup adapter: the late files of one output are not those another output of the process writes there', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('modern'), ...pj('legacy'), ...pj('poly') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: '', isWrite: false, chunks: [{ fileName: 'p.js', code: 'legacy polyfills', modules: [J(root, 'node_modules/poly/i.js')] }] });
+    // plugin-legacy: the legacy output (with the polyfill chunk) and the modern one share dist/; the legacy one is
+    // written while the modern one is between its write and its closeBundle
+    const modern = rollupAdapter.bundleLockfile('vite', { input: 'modern' });
+    await rollupBuild(modern, { outDir: dist, chunks: [{ fileName: 'index.js', code: 'modern', modules: [J(root, 'node_modules/modern/i.js')] }], late: () => {} });
+    await rollupBuild(rollupAdapter.bundleLockfile('vite', { input: 'legacy' }), { outDir: dist, chunks: [
+      { fileName: 'index-legacy.js', code: 'legacy', modules: [J(root, 'node_modules/legacy/i.js')] }, { fileName: 'polyfills-legacy.js', code: 'legacy polyfills', modules: [] }] });
+    await modern.closeBundle.handler.call({}); // again, now that the legacy files are there
+    const lock = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    assert.deepEqual(lockedNames(JSON.stringify(lock)), ['legacy', 'modern', 'poly']);
+    const byWriter = lock['bundle-lockfile'].writers.map(w => w.files.map(f => path.basename(f)).sort().join(' ')).sort();
+    assert.deepEqual(byWriter, ['index-legacy.js polyfills-legacy.js', 'index.js']);
+  } finally { process.chdir(cwd); }
+});
+
+test('rollup adapter: Rollup\'s CommonJS build is patched when it loads (require(\'rollup\'), its command line, workbox-build)', () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const seen = [];
+  const exp = { rollup: async (o) => seen.push(['rollup', o.plugins.map(p => p.name)]), rollupInternal: async (o, hooks) => seen.push(['internal', o.plugins.map(p => p.name), hooks]) };
+  const file = J('/x/node_modules/rollup/dist/shared/rollup.js');
+  rollupAdapter.onCjsLoad({ rollupInternal() {} }, './shared/rollup.js', () => J('/x/node_modules/other/dist/shared/rollup.js')); // not Rollup's
+  rollupAdapter.onCjsLoad(exp, '../shared/rollup.js', () => file);
+  rollupAdapter.onCjsLoad(exp, '../shared/rollup.js', () => file); // once
+  exp.rollup({ plugins: [{ name: 'x' }] });
+  exp.rollupInternal({ plugins: [] }, 'hooks');
+  assert.deepEqual(seen, [['rollup', ['x', 'bundle-lockfile']], ['internal', ['bundle-lockfile'], 'hooks']]);
+  const wasm = { rollupInternal: async (o) => seen.push(o.plugins.length) };
+  rollupAdapter.onCjsLoad(wasm, './shared/rollup.js', () => J('/x/node_modules/@rollup/wasm-node/dist/shared/rollup.js'));
+  wasm.rollupInternal({});
+  assert.equal(seen.pop(), 1);
 });
 
 test('config: BUNDLE_LOCKFILE_DEBUG is off when unset, empty, 0 or false', () => {
