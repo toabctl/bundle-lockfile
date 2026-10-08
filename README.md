@@ -683,7 +683,7 @@ style sheet bundled whole by Vite 8 and in parts (only its style sheet, only its
 CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 6, 7 and 8), and Tailwind CSS 4 with @tailwindcss/vite. The
 `rollup` command line has its own case, and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`); the
-`rolldown` command line writes no lockfile (not supported yet). SvelteKit 2 and 3, each with adapter-static and
+`rolldown` command line writes no lockfile (not supported yet), nor does an rspack build (its builds are not affected). SvelteKit 2 and 3, each with adapter-static and
 adapter-node, are compared with an oracle that builds again with source maps into other directories and follows the
 maps of the files adapter-node 5 bundles again; a server dependency must not be listed. Next.js 12–16 are compared
 per compiler output with webpack's stats: a Pages Router app on each, an App Router app with server and client
