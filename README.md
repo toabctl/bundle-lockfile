@@ -453,16 +453,20 @@ would install it (`usr/share/app/dist/`), runs `syft scan dir:` with SPDX JSON o
 exactly the expected npm packages with name, version, purl, declared license and source file — once
 with only the build output, and once with the project's own `package-lock.json` shipped alongside.
 
-The matrix runs on Node.js 24 (Wolfi `nodejs-24`); the Vite and nested-bundle cases also on Node.js 22, which uses
-the loader-thread hooks. Vite cases: Vite 7 and 8 with npm, pnpm and `npx`, the loader-thread hooks on Node.js 24 too,
-`BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a Vite-built island bundled by webpack 4 and 5 (also changed
-after its build) and by Vite 8 (an island built by Vite 8) and Vite 7 (an island built by `rollup -c`), and an app with
-a worker, an inlined worker, a CSS `@import` from a package, @vitejs/plugin-legacy, vite-plugin-pwa and
-vite-plugin-static-copy (Vite 7 and 8). Their oracle builds again with Vite's source maps, which do not cover CSS-only
-packages and copied files. The `rollup` command line has its own case and oracle. SvelteKit 2 and 3, each with
-adapter-static and adapter-node (also on Node.js 22), are compared with an oracle that builds again with source maps
-into other directories and follows the maps of the files adapter-node 5 bundles again; a server dependency must not
-be listed.
+The matrix runs on Node.js 24 (Wolfi `nodejs-24`); the Vite, Rollup, Rolldown and nested-bundle cases also on Node.js
+22, which uses the loader-thread hooks. Vite cases: Vite 7 and 8 with npm, pnpm, `npx`, yarn 1, yarn 4 (Plug'n'Play,
+also Vite 7, and node-modules linker) and bun, the loader-thread hooks on Node.js 24 too, `vite build --watch` (Vite 7
+and 8), `BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a build script overwriting `NODE_OPTIONS` (without and
+with the node shim), vite-plugin-singlefile, two `vite build` processes writing one output directory, a Vite-built
+island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an island built by Vite 8) and Vite 7
+(an island built by `rollup -c`), and an app with a worker, an inlined worker, a CSS `@import` from a package,
+@vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 7 and 8). Their oracle builds again with
+Vite's source maps, which do not cover CSS-only packages and copied files. The `rollup` command line has its own case
+and oracle, and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`, `rolldown()`, Rolldown's
+`build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`); the `rolldown` command line writes
+no lockfile (not supported yet). SvelteKit 2 and 3, each with adapter-static and adapter-node (also on Node.js 22),
+are compared with an oracle that builds again with source maps into other directories and follows the maps of the
+files adapter-node 5 bundles again; a server dependency must not be listed.
 
 ### Comparison with the CycloneDX webpack plugin
 

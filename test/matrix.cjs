@@ -34,9 +34,12 @@ const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/pres
 
 // installer: npm | yarn1 | bun (the tools in the test image) or a pinned, vendored yarn berry / pnpm release
 // Vite apps: package.json type module, `vite build`
-const VITE_SPA = { 'lodash-es': '4.18.1', debug: '2.6.9', ms: '2.1.3', 'normalize.css': '8.0.1' };
+// is-number: only in the second page (vite.second.config.mjs); vite-plugin-singlefile: only with VITE_SINGLEFILE=1
+const VITE_SPA = { 'lodash-es': '4.18.1', debug: '2.6.9', ms: '2.1.3', 'normalize.css': '8.0.1', 'is-number': '7.0.0', 'vite-plugin-singlefile': '2.3.3' };
 const vite = (version, installer = { type: 'npm' }) => ({ app: 'vite-spa', bundler: 'vite', installer,
-  deps: { vite: version, ...VITE_SPA }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
+  deps: { vite: version, ...VITE_SPA },
+  // build-reset overwrites NODE_OPTIONS (drops the --require), as headlamp's and librechat's builds do: needs the node shim
+  packageJson: { type: 'module', scripts: { build: 'vite build', 'build-reset': 'NODE_OPTIONS=--max-old-space-size=3072 vite build' } } });
 // output that reaches dist/ besides the build's chunks: workers (separate and inlined), a CSS @import from a package,
 // legacy polyfills, workbox's service worker, a static copy from node_modules. Transitive packages that end up in the
 // output are pinned (core-js, systemjs: plugin-legacy; workbox-*: vite-plugin-pwa)
@@ -49,6 +52,10 @@ const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', 
 const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'npm' },
   deps: { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
+// Rollup's and Rolldown's JavaScript APIs, called by a build script (build.mjs <mode>), and the rolldown command line
+const rollupApi = { app: 'rollup-api', bundler: 'rollup', installer: { type: 'npm' },
+  deps: { rollup: '4.64.2', rolldown: '1.2.13', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
+  packageJson: { type: 'module', scripts: { build: 'node build.mjs rollup' } } };
 // SvelteKit: client and server builds, the service worker (a nested Vite build), adapter-static (copies the client
 // output to build/) and adapter-node (SVELTEKIT_ADAPTER=node: build/client and build/server; adapter-node 5 bundles
 // the server again with Rollup into build/, from a copy of its own files)
@@ -67,9 +74,15 @@ const fixtures = {
   'vite8-npm': vite('8.3.3'),
   'vite7-npm': vite('7.3.7'),
   'vite8-pnpm10': vite('8.3.3', { type: 'pnpm', version: '10.34.6' }),
+  'vite8-yarn1': vite('8.3.3', { type: 'yarn1' }),
+  'vite8-yarn4-pnp': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
+  'vite7-yarn4-pnp': vite('7.3.7', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
+  'vite8-yarn4-node-modules': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' }),
+  'vite8-bun': vite('8.3.3', { type: 'bun' }),
   'vite8-features': features('8.3.3', '8.2.3'),
   'vite7-features': features('7.3.7', '7.2.1'),
   'rollup-cli': rollupCli,
+  'rollup-api': rollupApi,
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
   'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
@@ -135,6 +148,9 @@ const fixtures = {
 };
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
+// both pages of vite-spa (vite.config.mjs and vite.second.config.mjs)
+const VITE_BOTH = [...VITE_EXPECT, 'is-number@7.0.0'].sort();
+const ROLLUP_API = ['lodash-es@4.18.1', 'nanoid@3.3.20'];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
@@ -158,6 +174,11 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
+// `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
+const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs`;
+// vite-spa's two builds as two processes at the same time, into one dist/ (with VITE_SHARED=1)
+const VITE_BIN = './node_modules/.bin/vite';
+const PARALLEL_VITE = `${VITE_BIN} build & a=$!; ${VITE_BIN} build --config vite.second.config.mjs & b=$!; wait $a && wait $b`;
 // edge-shared-output's two configs as two webpack processes at the same time
 const WEBPACK_BIN = './node_modules/.bin/webpack';
 const PARALLEL = `${WEBPACK_BIN} --config-name app & a=$!; ${WEBPACK_BIN} --config-name sw & b=$!; wait $a && wait $b`;
@@ -365,6 +386,43 @@ const cases = [
   { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
+  // installers (yarn Plug'n'Play: Yarn's own loader-thread hook next to bundle-lockfile's ESM hooks)
+  { name: 'Vite 8.3.3, yarn 1', fixture: 'vite8-yarn1', cmd: 'yarn --offline -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play", fixture: 'vite8-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: "Vite 7.3.7, yarn 4.18.1 Plug'n'Play", fixture: 'vite7-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, yarn 4.18.1 node-modules linker', fixture: 'vite8-yarn4-node-modules', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, bun', fixture: 'vite8-bun', cmd: 'bun run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // vite build --watch: Rolldown's watch() (Vite 8), Rollup's (Vite 7); every rebuild writes the lockfile
+  { name: 'Vite 8.3.3 watch mode: every rebuild writes the lockfile', fixture: 'vite8-npm', cmd: VITE_WATCH, expect: VITE_EXPECT, watchBuilds: 2,
+    oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7 watch mode: every rebuild writes the lockfile', fixture: 'vite7-npm', cmd: VITE_WATCH, expect: VITE_EXPECT, watchBuilds: 2,
+    oracleMissing: ['normalize.css@8.0.1'] },
+  // the build script overwrites NODE_OPTIONS: no lockfile, unless the node shim is first in PATH (also on Node 22, whose
+  // loader-thread hooks are installed only in a process of a package that uses Vite)
+  { name: 'Vite 8.3.3, script overwriting NODE_OPTIONS (no shim)', fixture: 'vite8-npm', cmd: 'npm run -s build-reset', expect: null },
+  { name: 'Vite 8.3.3, script overwriting NODE_OPTIONS, node shim', fixture: 'vite8-npm', cmd: 'npm run -s build-reset', shim: true,
+    expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // vite-plugin-singlefile removes every chunk from the bundle after inlining it into index.html; its source map stays
+  { name: 'Vite 8.3.3, vite-plugin-singlefile', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { VITE_SINGLEFILE: '1' },
+    expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7, vite-plugin-singlefile', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { VITE_SINGLEFILE: '1' },
+    expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // two vite build processes writing to one dir: the lockfile has both. The oracle builds only the first page
+  { name: 'Vite 8.3.3: two vite build processes, one output dir, in parallel', fixture: 'vite8-npm', cmd: PARALLEL_VITE, env: { VITE_SHARED: '1' },
+    expect: VITE_BOTH, oracle: false },
+  { name: 'Vite 7.3.7: two vite build processes, one output dir, then one of them again', fixture: 'vite7-npm', env: { VITE_SHARED: '1' },
+    cmd: `${PARALLEL_VITE} && ${VITE_BIN} build --config vite.second.config.mjs`, expect: VITE_BOTH, oracle: false },
+  // Rollup's and Rolldown's JavaScript APIs (build.mjs). The oracle is the same build with Rollup's command line and
+  // source maps (rollup.config.mjs), also for Rolldown's builds: the same packages
+  { name: 'Rollup 4 JavaScript API: rollup()', fixture: 'rollup-api', cmd: 'node build.mjs rollup', expect: ROLLUP_API },
+  { name: 'Rollup 4 JavaScript API: watch(), every rebuild writes the lockfile', fixture: 'rollup-api', cmd: 'node build.mjs rollup-watch', expect: ROLLUP_API, watchBuilds: 2 },
+  { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
+  { name: 'Rolldown 1 JavaScript API: build()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-build', expect: ROLLUP_API },
+  { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch', expect: ROLLUP_API, watchBuilds: 2 },
+  { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
+  { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rolldown', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', env: { BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, expect: null },
+  // the rolldown command line imports Rolldown's internal chunk, not its entry module, which the hooks wrap
+  { name: 'Rolldown 1 command line (unsupported: no lockfile)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser', expect: null },
   // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
   { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by webpack 4', fixture: 'nested-island-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
