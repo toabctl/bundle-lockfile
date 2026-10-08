@@ -166,6 +166,12 @@ const fixtures = {
   'edge-vanilla': edge('edge-vanilla', { '@vanilla-extract/css': '1.21.2', '@vanilla-extract/webpack-plugin': '2.3.27',
     'mini-css-extract-plugin': '2.10.2', 'css-loader': '7.1.5', 'lodash-es': '4.18.1' }),
   'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
+  // packages with peer dependencies (react-dom, use-sync-external-store): Yarn PnP's virtual paths, pnpm's peer-suffixed
+  // directories; built by Vite (build) and webpack (build-webpack)
+  ...Object.fromEntries([['peer-deps-yarn4-pnp', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }], ['peer-deps-pnpm10', { type: 'pnpm', version: '10.34.6' }]]
+    .map(([name, installer]) => [name, { app: 'peer-deps', bundler: 'vite', installer,
+      deps: { ...WEBPACK, vite: '8.3.3', react: '19.3.0', 'react-dom': '19.3.0', 'use-sync-external-store': '1.6.0' },
+      packageJson: { scripts: { build: 'vite build', 'build-webpack': 'webpack --config webpack.config.js' } } }])),
   // a webpack build (ms) and a Vite build (nanoid) into one dist/, as separate processes
   'mixed-output': { app: 'mixed-output', bundler: 'mixed', installer: { type: 'npm' },
     deps: { ...WEBPACK, vite: '8.3.3', ms: '2.1.3', nanoid: '3.3.20' } },
@@ -201,6 +207,7 @@ const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
 const DEVDEPS = ['classnames@2.5.1', 'lodash-es@4.18.1'];
+const PEER_DEPS = ['react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0', 'use-sync-external-store@1.6.0'];
 // edge-style: bulma's partial, normalize.less and the normalize.css it inlines, Tailwind's style sheets (webpack 5)
 const STYLE_EXPECT_WP4 = ['bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0'];
 const STYLE_EXPECT = [...STYLE_EXPECT_WP4, 'tailwindcss@4.3.3'];
@@ -588,6 +595,14 @@ const cases = [
     expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'is-number@7.0.0', 'next@15.5.27'] },
   { name: 'Next.js 16.4.0 --webpack App Router, edge route handler, middleware', ...nextCase('next16-app', '16.4.0', '19.3.0', '--webpack'),
     expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'is-number@7.0.0', 'next@16.4.0'] },
+  // peer dependencies: every virtual path / peer-suffixed directory of a package is that one package (check.cjs: no
+  // virtual paths in keys)
+  { name: "Vite 8.3.3, packages with peer dependencies, yarn 4.18.1 Plug'n'Play", fixture: 'peer-deps-yarn4-pnp', cmd: 'yarn build', expect: PEER_DEPS },
+  { name: "webpack 5.111.1, packages with peer dependencies, yarn 4.18.1 Plug'n'Play", fixture: 'peer-deps-yarn4-pnp', cmd: 'yarn build-webpack',
+    oracleScript: 'webpack', expect: PEER_DEPS },
+  { name: 'Vite 8.3.3, packages with peer dependencies, pnpm 10.34.6', fixture: 'peer-deps-pnpm10', cmd: '$PNPM run build', expect: PEER_DEPS },
+  { name: 'webpack 5.111.1, packages with peer dependencies, pnpm 10.34.6', fixture: 'peer-deps-pnpm10', cmd: '$PNPM run build-webpack', oracleScript: 'webpack',
+    expect: PEER_DEPS },
   // a Vite and a webpack process writing one output dir: one lockfile with both (writers of different bundlers, with
   // different contexts); each one run again keeps the other's packages
   { name: 'edge: a Vite and a webpack process, one output dir, then each of them again', fixture: 'mixed-output',
