@@ -53,10 +53,12 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   Their chunks' packages are kept in memory, in the process, and listed where the same bytes end up in a written output
   (a chunk or JavaScript asset with that content), or where a module imports the build's entry file with a query
   (`?worker&inline`).
-- **style sheets that a style sheet `@import`s from a package**, in Vite, Rollup and Rolldown builds (CSS, Sass, Less,
-  Stylus; Vite inlines them, so they are no modules): the style files among the build's watch files. Rolldown provides
+- **style sheets that a style sheet `@import`s from a package** (CSS, Sass, Less, Stylus; inlined into it, so they are
+  no modules): in Vite, Rollup and Rolldown builds the style files among the build's watch files. Rolldown provides
   those only on the build object `rolldown()` returns, so Rolldown's `build()` and `watch()` functions — which `vite
-  build --watch` on Vite 8 calls — do not list them.
+  build --watch` on Vite 8 calls — do not list them. In webpack builds the style files among the file dependencies of a
+  shipped style module, which its loaders record: Sass partials (sass-loader), Less `@import`s (less-loader),
+  postcss-import's and Tailwind's style sheets (postcss-loader).
 - **files other plugins write into a Vite, Rollup or Rolldown output after the build** (in a `closeBundle` hook that
   runs before bundle-lockfile's): JavaScript files with the bytes of a chunk of a build that writes nothing itself
   (vite-plugin-pwa's `sw.js` and `workbox-<hash>.js`), and copies of package files (vite-plugin-static-copy). Only
@@ -92,8 +94,8 @@ package file pulled in under a first-party match resource is not listed either.
   in production) inlined at the use site, leaving its side-effect-free module in no chunk
 - npm packages vendored inside another package without a `package.json` of their own (e.g.
   `@grafana/google-sdk/dist/esm/node_modules/lodash`): a warning names each one
-- (listed although not shipped: a Sass partial with only variables that a style sheet in a Vite, Rollup or Rolldown
-  build `@import`s lists its package, although it adds no bytes)
+- (listed although not shipped: a Sass partial with only variables that a style sheet `@import`s lists its package,
+  although it adds no bytes)
 
 ## Usage
 
@@ -644,7 +646,8 @@ cases check that no lockfile is written.
 The webpack cases cover, besides installers and versions, watch-mode rebuilds (as in every watch case: one without an
 import, whose packages must leave the lockfile, then one with it again), warm builds from webpack's persistent
 cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, npm aliases and one version at several
-paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, a DLL, two compilers sharing an
+paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, style sheets loaders inline
+from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent cache), a DLL, two compilers sharing an
 output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing
 watch rebuild), two compilers whose `output.path` with `[fullhash]` resolves to different directories,
 compression-webpack-plugin deleting the original assets (webpack 4 and 5, also of two compilers sharing an output

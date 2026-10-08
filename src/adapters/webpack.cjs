@@ -48,12 +48,38 @@ const issuers = (compilation) => (m) => (compilation.moduleGraph ? compilation.m
 
 // Source files of modules, including the inner modules of scope-hoisted ConcatenatedModules (.modules),
 // which webpack takes out of the root's chunks (for their JavaScript).
+// A style module's style sheets also include those its loaders inlined from other files and recorded as file
+// dependencies of the module: Sass partials (sass-loader), Less @imports (less-loader), postcss-import's and Tailwind's
+// style sheets (postcss-loader). They are no modules of their own. webpack 4 keeps them in buildInfo.fileDependencies;
+// webpack 5 moves them into the snapshot it takes of a cacheable module's build (also restored from the persistent
+// cache) and keeps them there only for one that is not. A module generated from its issuer (mini-css-extract's CssModule) has those of the issuer.
+// A relative path (less-loader 7 adds what Less found from the working directory as it found it) is relative to the
+// working directory, as for the file system that reads and watches it.
+function styleDependencies(m, issuerOf) {
+  const of = (mod) => {
+    const info = mod && mod.buildInfo;
+    if (!info) return null;
+    if (info.fileDependencies) return info.fileDependencies;
+    const s = info.snapshot;
+    if (!s) return null;
+    if (typeof s.getFileIterable === 'function') return s.getFileIterable();
+    return [s.fileTimestamps, s.fileHashes, s.fileTshs].flatMap(map => (map ? [...map.keys()] : []));
+  };
+  const deps = of(m) || (!m.resource && of(issuerOf(m))) || [];
+  const out = [];
+  for (const f of deps) if (typeof f === 'string' && packages.STYLE.test(f)) out.push(path.resolve(f));
+  return out;
+}
+
 function sourcesOf(compilation, modules, into = new Set()) {
   const issuerOf = issuers(compilation);
   const walk = (list) => {
     for (const m of list) {
       const f = sourceFile(m, issuerOf);
-      if (f) into.add(f);
+      if (f) {
+        into.add(f);
+        if (packages.STYLE.test(f.split('?')[0])) for (const d of styleDependencies(m, issuerOf)) into.add(d);
+      }
       if (m.modules) walk(m.modules);
     }
   };

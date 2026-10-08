@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
 
+// Style sheets (CSS, Sass, Less, Stylus, PostCSS): those a style sheet @imports are inlined into it by the bundler's
+// CSS handling (Vite's CSS plugin, sass-loader, less-loader, postcss-import, Tailwind) and are no modules of their own
+const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
+
 // The package a file belongs to is the directory directly below its LAST node_modules segment:
 // node_modules/<name> or node_modules/@scope/<name>. That is how npm, yarn (incl. PnP zip paths
 // .../x.zip/node_modules/<name>) and pnpm (.pnpm/<id>/node_modules/<name>) lay packages out, and it
@@ -135,4 +139,4 @@ function packagesByFile(files) {
   return out;
 }
 
-module.exports = { packageRoot, realRoot, packagesForFiles, packagesOfOutput, packagesByFile, unvirtual };
+module.exports = { STYLE, packageRoot, realRoot, packagesForFiles, packagesOfOutput, packagesByFile, unvirtual };

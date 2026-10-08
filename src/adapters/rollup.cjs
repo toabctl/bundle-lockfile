@@ -15,8 +15,7 @@ const generated = require('../core/generated.cjs');
 const NAME = 'bundle-lockfile';
 const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
 const JS = /\.[cm]?js$/i;
-// style sheets: those CSS/Sass/Less/Stylus @import from packages are inlined by Vite's CSS plugin and are no modules
-const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
+const { STYLE } = packages; // those a style sheet @imports from packages are inlined by Vite's CSS plugin, no modules
 const MAX_SCAN = 20000;           // entries of an output directory looked at for files written after the build
 const MAX_LATE = 20 * 1024 * 1024; // larger files written after the build are not compared
 

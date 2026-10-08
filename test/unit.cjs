@@ -285,6 +285,31 @@ test('webpack adapter: chunks, concatenated modules, shipped child compilations 
   assert.deepEqual(lockedNames(plugin().lockfile(c)), ['chunk', 'copied', 'css', 'inner', 'nested', 'worker']);
 });
 
+test('webpack adapter: style sheets a shipped style module\'s loaders inlined from packages (Sass, Less, PostCSS)', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('bulma'), ...pj('nless'), ...pj('rel'), ...pj('tw'), ...pj('notstyle'), ...pj('unshipped') });
+  const nm = (name, f) => J(root, 'node_modules', name, f);
+  const src = (f) => J(root, 'src', f);
+  // the issuer of mini-css-extract's CssModule: the style module, built with Tailwind (webpack 5: only a snapshot)
+  const tailwind = { resource: src('c.css'), nameForCondition: () => src('c.css'), buildInfo: { snapshot: { fileTimestamps: new Map([[nm('tw', 'index.css'), {}]]) } } };
+  const c = compilation({
+    context: root,
+    chunks: [{ files: ['main.js'], modules: [
+      // webpack 4: sass-loader's partials in buildInfo.fileDependencies; package.json files read on the way are no style sheets
+      { resource: src('a.scss'), buildInfo: { fileDependencies: new Set([src('a.scss'), nm('bulma', 'm.scss'), nm('bulma', 'package.json')]) } },
+      // webpack 5: buildInfo.fileDependencies cleared after the build of a cacheable module, the snapshot has them
+      { modules: [{ resource: src('b.less'), buildInfo: { fileDependencies: undefined, snapshot: { getFileIterable: () => [nm('nless', 'n.less')] } } }] },
+      // less-loader 7 (webpack 4): what Less found from the working directory, relative to it
+      { resource: src('e.less'), buildInfo: { fileDependencies: new Set([path.relative(process.cwd(), nm('rel', 'r.css'))]) } },
+      { nameForCondition: () => src('c.css'), issuer: tailwind, buildInfo: { hash: 'x' } },
+      // no style module: what its loaders read is not inlined style
+      { resource: src('x.js'), buildInfo: { fileDependencies: new Set([nm('notstyle', 'x.css')]) } },
+    ] }],
+  });
+  c.modules = [{ resource: src('d.scss'), buildInfo: { fileDependencies: new Set([nm('unshipped', 'u.scss')]) } }]; // in no chunk
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['bulma', 'nless', 'rel', 'tw']);
+});
+
 test('webpack adapter: inlined child compilations count, build-time ones do not', () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('app'), ...pj('inline'), ...pj('nested-inline'), ...pj('template'), ...pj('unused') });
