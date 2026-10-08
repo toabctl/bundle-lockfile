@@ -677,7 +677,8 @@ alongside.
 
 The Vite cases cover Vite 8 with npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun and
 Vite 7 with npm and yarn 4 Plug'n'Play, Vite 6 and 5 with npm (also their watch mode and vite-plugin-singlefile), the
-loader-thread hooks on Node.js 24 too,
+loader-thread hooks on Node.js 24 too, a programmatic build from a package without a dependency on Vite (hooked on Node.js
+24 and 26, on 22 only with `BUNDLE_LOCKFILE_ESM_HOOKS=async`),
 `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite` (and `rollup,rolldown`, which leaves Vite hooked; with SvelteKit
 and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS`
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
