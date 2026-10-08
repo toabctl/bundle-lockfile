@@ -75,6 +75,9 @@ const fixtures = {
   // copy-webpack-plugin 6 adds its files in webpack 4's additionalAssets hook
   'edge-copy-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.4.1', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' } },
   'edge-shared-output': edge('edge-shared-output', { debug: '2.6.9', ms: '2.1.3' }),
+  // the build script overwrites NODE_OPTIONS with cross-env, as superset's, headlamp's, pgadmin4's (needs the node shim)
+  'edge-crossenv': { app: 'webpack5', installer: { type: 'npm' }, deps: { ...WEBPACK, ...APP_DEPS, 'cross-env': '7.0.3' },
+    packageJson: { scripts: { build: 'cross-env NODE_OPTIONS=--max-old-space-size=3072 webpack --config webpack.config.js' } } },
   'edge-compression': edge('edge-compression', { 'compression-webpack-plugin': '12.0.0', 'lodash-es': '4.18.1' }),
   // compression-webpack-plugin 6 runs in webpack 4's emit hook, after the lockfile was emitted
   'edge-compression-wp4': { app: 'edge-compression', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'compression-webpack-plugin': '6.1.2', 'lodash-es': '4.18.1' } },
@@ -103,6 +106,9 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
+// edge-shared-output's two configs as two webpack processes at the same time
+const WEBPACK_BIN = './node_modules/.bin/webpack';
+const PARALLEL = `${WEBPACK_BIN} --config-name app & a=$!; ${WEBPACK_BIN} --config-name sw & b=$!; wait $a && wait $b`;
 // cold build, then a build that restores every module from webpack's persistent cache: identical lockfiles
 const WARM = 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/package-lock.json .cold.json && rm -rf dist && npm run -s build && cmp .cold.json dist/bundle-lockfile/package-lock.json';
 // worker-loader workers: lodash-es in main.js, ms@2.1.3 in a worker, debug + its ms@2.0.0 in a worker inside it,
@@ -135,6 +141,10 @@ function nextCase(fixture, version, react, flags = '') {
 //   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
 //   expectKeys {lockfile key: name@version} - exactly the keys of the single output
 //   watchBuilds  the cmd prints a JSON list of per-build package lists last; there must be this many, each = expect
+//   exportDir  BUNDLE_LOCKFILE_EXPORT_DIR=<fixture>/.export: its copies are checked and must equal the inline lockfiles
+//   exportOnly the same with BUNDLE_LOCKFILE_INLINE=0: no inline lockfile may be written
+//   shim       put bin/ (the node shim) first in PATH
+//   oracle     false: no oracle comparison (the case's shape cannot be built by the oracle)
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
@@ -240,6 +250,15 @@ const cases = [
   // output.path 'dist/[fullhash]': each compiler's own directory (the oracle checks each lockfile exactly)
   { name: 'edge: two compilers, output.path with [fullhash]', fixture: 'edge-shared-output', cmd: 'npm run -s build',
     env: { EDGE_SHARED: 'fullhash' }, expectIncludes: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // two webpack processes writing to one dir (grafana's two builds, swagger-ui's run-p): the lockfile has both
+  { name: 'edge: two webpack processes, one output dir, in parallel', fixture: 'edge-shared-output', cmd: PARALLEL,
+    expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  { name: 'edge: two webpack processes, one output dir, then one of them again', fixture: 'edge-shared-output', cmd: `${PARALLEL} && ${WEBPACK_BIN} --config-name app`,
+    expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  // app's output.clean deletes sw's files: sw's packages are dropped. The oracle builds both configs in one process,
+  // where app's clean does not delete the files of sw building next to it
+  { name: 'edge: two webpack processes, one output dir, the second one cleans it', fixture: 'edge-shared-output', env: { EDGE_SHARED: 'clean' },
+    cmd: `${WEBPACK_BIN} --config-name sw && ${WEBPACK_BIN} --config-name app`, expect: ['ms@2.1.3'], oracle: false },
   // a failed rebuild is not emitted: the lockfile keeps the packages of the output still in dist/
   { name: 'edge: two compilers, one output dir, watch mode with a failing rebuild', fixture: 'edge-shared-output', cmd: WATCH_FAIL,
     expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'], watchBuilds: 3 },
@@ -255,6 +274,21 @@ const cases = [
   // webpack's context is a subdirectory: keys are relative to it, syft still reads every entry by its name field
   { name: 'edge: context below the project root', fixture: 'edge-context', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'],
     expectKeys: { '../node_modules/debug': 'debug@2.6.9', '../node_modules/debug/node_modules/ms': 'ms@2.0.0', '../node_modules/ms': 'ms@2.1.3' } },
+  // export dir: a copy of every lockfile outside the output (go:embed, jars, copies that drop it), optionally only there
+  { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR and the inline lockfile', fixture: 'wp5-npm', cmd: 'npm run -s build', exportDir: true, expect: W5 },
+  { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR only (BUNDLE_LOCKFILE_INLINE=0)', fixture: 'wp5-npm', cmd: 'npm run -s build', exportOnly: true, expect: W5 },
+  // NODE_OPTIONS overwritten by the build script: no lockfile, unless the node shim is first in PATH
+  { name: 'shim: a script overwriting NODE_OPTIONS drops the --require (no shim)', fixture: 'wp5-npm', cmd: 'npm run -s build-reset', expect: null },
+  { name: 'shim: npm, script overwriting NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build-reset', shim: true, expect: W5 },
+  { name: 'shim: pnpm, script overwriting NODE_OPTIONS', fixture: 'wp5-pnpm10', cmd: '$PNPM run build-reset', shim: true, expect: W5 },
+  { name: 'shim: yarn 1, script overwriting NODE_OPTIONS', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build-reset', shim: true, expect: W5 },
+  { name: 'shim: yarn 4 (node-modules), script overwriting NODE_OPTIONS', fixture: 'wp5-yarn4-node-modules', cmd: 'yarn build-reset', shim: true, expect: W5 },
+  { name: 'shim: bun, script overwriting NODE_OPTIONS', fixture: 'wp5-bun', cmd: 'bun run build-reset', shim: true, expect: W5 },
+  { name: 'shim: cross-env NODE_OPTIONS=... (no shim)', fixture: 'edge-crossenv', cmd: 'npm run -s build', expect: null },
+  { name: 'shim: cross-env NODE_OPTIONS=...', fixture: 'edge-crossenv', cmd: 'npm run -s build', shim: true, expect: W5 },
+  // argo-cd's shape: the recipe overwrites NODE_OPTIONS and the output is embedded into a Go binary
+  { name: 'shim + export only: yarn 1, NODE_OPTIONS overwritten, output not shipped as files', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build-reset',
+    shim: true, exportOnly: true, expect: W5 },
   { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT,
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
   // Next.js
@@ -263,6 +297,8 @@ const cases = [
   { name: 'Next.js 14.2.35', ...nextCase('next14', '14.2.35', '18.3.1') },
   { name: 'Next.js 15.5.27', ...nextCase('next15', '15.5.27', '19.3.0') },
   { name: 'Next.js 16.4.0 --webpack', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack') },
+  // standalone deployments copy only .next/standalone and .next/static, which drops .next/bundle-lockfile
+  { name: 'Next.js 16.4.0 --webpack, export dir only', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'), exportOnly: true },
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV, expect: null },
 ];

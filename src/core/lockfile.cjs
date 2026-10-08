@@ -24,8 +24,18 @@ function locationKey(base, dir) {
 // Every entry carries "name", so aliases (node_modules/ms-old = ms@2.0.0) work: syft takes the name field
 // over the key, as for npm's own lockfiles.
 // The root "" entry has no name on purpose: syft only reports it as a package if it has one.
-function toPackageLock(pkgs, context) {
+//
+// meta (optional): { dir, writers: [{ id, files, paths }] } adds the "bundle-lockfile" field: which writer (a
+// compiler, see core/outputs.cjs) put which packages and files there, so that another process writing the same
+// lockfile can keep them. Paths in it are relative to dir (the lockfile's directory) and ids carry no paths, so the
+// same build writes the same bytes on every machine. Tools that read package-lock.json ignore unknown fields (syft,
+// npm). files: absolute paths of the writer's output files (count: their number, if files is a sample); paths: its
+// packages' paths.
+const MAX_FILES = 20; // enough to tell whether the writer's output is still there
+const posix = (p) => p.split(path.sep).join('/');
+function toPackageLock(pkgs, context, meta) {
   const packages = { '': {} };
+  const keyOf = new Map();
   let base = context;
   try { base = fs.realpathSync(context); } catch { /* keep context */ } // package paths are real paths
   const sorted = [...pkgs].sort((a, b) => cmp(a.name, b.name) || cmp(a.version, b.version) || cmp(a.path, b.path));
@@ -41,8 +51,42 @@ function toPackageLock(pkgs, context) {
       taken.add(key);
     }
     packages[key] = { name: p.name, version: p.version, ...(p.license ? { license: p.license } : {}) };
+    keyOf.set(p.path, key);
   }
-  return JSON.stringify({ lockfileVersion: 3, requires: true, packages }, null, 2) + '\n';
+  const doc = { lockfileVersion: 3, requires: true, packages };
+  if (meta) {
+    const rel = (p) => posix(path.relative(meta.dir, p)) || '.';
+    doc['bundle-lockfile'] = {
+      v: 1,
+      context: rel(base),
+      writers: meta.writers.map(w => ({
+        id: w.id,
+        count: typeof w.count === 'number' ? w.count : w.files.length, // other processes: only a sample of files
+        files: w.files.map(rel).sort(cmp).slice(0, MAX_FILES),
+        packages: [...new Set([...w.paths].map(p => keyOf.get(p)).filter(Boolean))].sort(cmp),
+      })).sort((a, b) => cmp(a.id, b.id)),
+    };
+  }
+  return JSON.stringify(doc, null, 2) + '\n';
+}
+
+// The "bundle-lockfile" field of a lockfile's content (see toPackageLock), with absolute paths again (dir: the
+// lockfile's directory): { context, writers: [{ id, files, pkgs: [{ name, version, license, path }] }] }, or null.
+function readMeta(json, dir) {
+  let doc;
+  try { doc = JSON.parse(json); } catch { return null; }
+  const m = doc && doc['bundle-lockfile'];
+  if (!m || m.v !== 1 || !Array.isArray(m.writers) || typeof m.context !== 'string') return null;
+  const context = path.resolve(dir, m.context);
+  return {
+    context,
+    writers: m.writers.filter(w => w && typeof w.id === 'string').map(w => ({
+      id: w.id,
+      files: (w.files || []).map(f => path.resolve(dir, f)),
+      count: typeof w.count === 'number' ? w.count : undefined,
+      pkgs: (w.packages || []).map(k => doc.packages[k] && { ...doc.packages[k], path: path.resolve(context, k) }).filter(p => p && p.name && p.version),
+    })),
+  };
 }
 
 // files: absolute paths of bundled source files; context: project root the keys are relative to.
@@ -50,4 +94,4 @@ function lockfileForFiles(files, context) {
   return toPackageLock(packagesForFiles(files), context);
 }
 
-module.exports = { cmp, toPackageLock, lockfileForFiles };
+module.exports = { cmp, toPackageLock, readMeta, lockfileForFiles };
