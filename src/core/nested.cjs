@@ -5,11 +5,14 @@
 // node_modules and has the bytes recorded by the nearest such lockfile above it brings that writer's packages.
 // Works across processes, separate commands and machines (the record travels with the output) and for the export
 // copy (BUNDLE_LOCKFILE_EXPORT_DIR) when the inline lockfile is off. A file changed after it was built does not match.
+// A first-party package linked into node_modules (a workspace package that another build wrote, e.g. a library built
+// by Vite) is looked at where it really is, also when the bundler reached it through the link (webpack's
+// resolve.symlinks: false, Vite's resolve.preserveSymlinks).
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
 const { readMeta } = require('./lockfile.cjs');
-const { packageRoot } = require('./packages.cjs');
+const { packageRoot, realRoot } = require('./packages.cjs');
 const { hashOf } = require('./hashes.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
@@ -30,14 +33,30 @@ function metaOf(dir) {
   return meta;
 }
 
+// The real path of a bundled file that is no file of a package: the file itself outside node_modules, the file in
+// the package's real directory for a first-party package linked into node_modules (as packagesForFiles tells them
+// apart); null for a file of a package. roots: package root -> real directory of a linked first-party package, or null.
+function ownFile(file, roots) {
+  const root = packageRoot(file);
+  if (!root) return file;
+  if (!roots.has(root)) {
+    const real = realRoot(root);
+    roots.set(root, real !== root && packageRoot(path.join(real, 'x')) !== real ? real : null);
+  }
+  const real = roots.get(root);
+  return real && path.join(real, path.relative(root, file));
+}
+
 // files: absolute paths of bundled source files. Returns the packages ({ name, version, license, path }) recorded for
 // the ones another build produced.
 function nestedPackages(files) {
   state.metas.clear(); // lockfiles change between builds (watch mode)
   const out = new Map();
+  const roots = new Map();
   for (const f of files) {
-    const file = typeof f === 'string' ? f.split('?')[0] : null;
-    if (!file || !path.isAbsolute(file) || packageRoot(file)) continue;
+    const bundled = typeof f === 'string' ? f.split('?')[0] : null;
+    const file = bundled && path.isAbsolute(bundled) && ownFile(bundled, roots);
+    if (!file) continue;
     for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
       const meta = metaOf(dir);
       const writer = meta && meta.writers.find(w => w.outputs[file]);

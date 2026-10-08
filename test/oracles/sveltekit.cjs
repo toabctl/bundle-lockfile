@@ -74,8 +74,8 @@ const walk = (d) => {
 };
 walk(out);
 
-// package = directory directly below the last node_modules segment, at its real location (written out here, not
-// imported from the tool)
+// package = directory directly below the last node_modules segment, at its real location, which must be in a
+// node_modules directory (written out here, not imported from the tool)
 const result = {};
 for (const [key, files] of Object.entries(byOutput)) {
   const pkgs = new Set();
@@ -85,6 +85,9 @@ for (const [key, files] of Object.entries(byOutput)) {
     if (i < 0) continue;
     let root = parts.slice(0, i + 1 + (parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1)).join(path.sep);
     try { root = fs.realpathSync(root); } catch { /* keep */ }
+    // a package that really is elsewhere (a workspace package linked into node_modules) is first-party
+    const parent = path.basename(path.dirname(root));
+    if (parent !== 'node_modules' && !(parent.startsWith('@') && path.basename(path.dirname(path.dirname(root))) === 'node_modules')) continue;
     let p;
     try { p = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); } catch { continue; }
     if (p && p.name && p.version) pkgs.add(`${p.name}@${p.version}`);

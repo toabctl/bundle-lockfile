@@ -67,6 +67,11 @@ const ISLAND = { vite: '8.3.3', 'lodash-es': '4.18.1', 'is-number': '7.0.0', nan
 const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', installer: { type: 'npm' }, deps: { ...webpackDeps, ...ISLAND },
   packageJson: { scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } });
 // the island bundled by a Vite app: built by Vite (Vite 8 -> Vite 8) or by the rollup command line (-> Vite 7)
+// the island as the workspace package @acme/island (island/package.json), imported by its name: npm links it into
+// node_modules; bundled by webpack 5 or Vite 8 (NESTED_WORKSPACE=1, see the app's configs)
+const nestedWorkspace = { app: 'nested-island', bundler: 'nested', installer: { type: 'npm' },
+  deps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', ...ISLAND, '@acme/island': '1.0.0' },
+  packageJson: { workspaces: ['island'], scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } };
 const nestedVite = (island, vite, deps = {}) => ({ app: 'nested-island', bundler: 'nested-vite', installer: { type: 'npm' },
   deps: { ...ISLAND, vite, ...deps }, packageJson: { type: 'module', scripts: { build: `${island} && vite build` } } });
 
@@ -85,6 +90,7 @@ const fixtures = {
   'rollup-api': rollupApi,
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
+  'nested-island-workspace': nestedWorkspace,
   'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
   'nested-island-rollup': nestedVite('rollup -c island/rollup.config.mjs', '7.3.7',
     { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', '@rollup/plugin-commonjs': '29.0.3' }),
@@ -218,6 +224,7 @@ function nextCase(fixture, version, react, flags = '') {
 //   exportOnly the same with BUNDLE_LOCKFILE_INLINE=0: no inline lockfile may be written
 //   shim       put bin/ (the node shim) first in PATH
 //   oracle     false: no oracle comparison (the case's shape cannot be built by the oracle)
+//   oracleScript  the oracle (test/oracles/<name>.cjs) if not the fixture's bundler's
 //   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
 const cases = [
@@ -439,6 +446,14 @@ const cases = [
     expectIncludes: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by Vite 8', fixture: 'nested-island-vite', cmd: 'npm run -s build', oracleArgs: 'vite', expect: NESTED_EXPECT },
   { name: 'nested: Rollup island (rollup -c) bundled by Vite 7', fixture: 'nested-island-rollup', cmd: 'npm run -s build', oracleArgs: 'rollup', expect: NESTED_EXPECT },
+  // the island as a workspace package: found where it really is, also when the bundler keeps the node_modules link
+  { name: 'nested: Vite 8 island as a workspace package, bundled by webpack 5', fixture: 'nested-island-workspace', cmd: 'npm run -s build',
+    env: { NESTED_WORKSPACE: '1' }, expect: NESTED_EXPECT },
+  { name: 'nested: Vite 8 island as a workspace package, bundled by webpack 5 with resolve.symlinks=false', fixture: 'nested-island-workspace',
+    cmd: 'npm run -s build', env: { NESTED_WORKSPACE: '1', EDGE_RESOLVE_SYMLINKS: 'false' }, expect: NESTED_EXPECT },
+  { name: 'nested: Vite 8 island as a workspace package, bundled by Vite 8 with resolve.preserveSymlinks', fixture: 'nested-island-workspace',
+    cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && ./node_modules/.bin/vite build',
+    env: { NESTED_WORKSPACE: '1', EDGE_RESOLVE_SYMLINKS: 'false' }, oracleScript: 'nested-vite', oracleArgs: 'vite', expect: NESTED_EXPECT },
   // SvelteKit: the exact lists are the oracle's (its source maps); ms is a dependency the server loads from
   // node_modules at runtime (Vite's SSR build and adapter-node keep dependencies external), so in no lockfile.
   // SvelteKit 2 writes no source map for the service worker (nanoid's code is in build/service-worker.js); with

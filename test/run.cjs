@@ -106,7 +106,7 @@ function runCase(c) {
   // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)
   if (c.oracle === false) notes.push('no oracle (see case)');
   else {
-    const oracle = path.join(__dirname, 'oracles', `${fx.bundler || 'webpack'}.cjs`);
+    const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
     const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
     // PATH: not through the node shim, which would inject bundle-lockfile
     const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
