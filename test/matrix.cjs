@@ -234,6 +234,7 @@ const PROJECT_LOCK = '/usr/share/app/package-lock.json';
 const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // another preload, which does nothing
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
@@ -276,6 +277,7 @@ function nextCase(fixture, version, react, flags = '') {
 //              require exactly these npm packages (name, version, purl, declared license, source file)
 //   heapMB     assert the configured --max-old-space-size reached node
 //   expectOutput  RegExp the build's stdout+stderr must match
+//   expectError  RegExp: a known failure of the build tool - the build must fail, its output match (nothing else checked)
 //   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
 //   expectKeys {lockfile key: name@version} - exactly the keys of the single output
 //   watchBuilds  the cmd prints a JSON list of per-build package lists last; it must be this list of lists
@@ -630,6 +632,11 @@ const cases = [
   { name: 'Next.js 13.5.11', ...nextCase('next13', '13.5.11', '18.3.1') },
   { name: 'Next.js 14.2.35', ...nextCase('next14', '14.2.35', '18.3.1') },
   { name: 'Next.js 15.5.27', ...nextCase('next15', '15.5.27', '19.3.0') },
+  // Next 15.0 - 16.3 merge repeated --require flags into one path for their build workers (vercel/next.js#96582): with
+  // another preload the build fails, also without bundle-lockfile's; 16.4 passes both (#96651)
+  { name: 'Next.js 15.5.27 with another --require preload (Next bug: the build fails)', fixture: 'next15', cmd: './node_modules/.bin/next build',
+    nodeOptions: PRELOAD, env: NEXT_ENV, expectError: /Cannot find module '[^']*preload\.cjs [^']*register\.cjs'/ },
+  { name: 'Next.js 16.4.0 --webpack with another --require preload', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'), nodeOptions: PRELOAD },
   { name: 'Next.js 16.4.0 --webpack', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack') },
   // standalone deployments copy only .next/standalone and .next/static, which drops .next/bundle-lockfile
   { name: 'Next.js 16.4.0 --webpack, export dir only', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'), exportOnly: true },

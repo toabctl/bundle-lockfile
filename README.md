@@ -693,7 +693,8 @@ CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin
 adapter-node, are compared with an oracle that builds again with source maps into other directories and follows the
 maps of the files adapter-node 5 bundles again; a server dependency must not be listed. Next.js 12–16 are compared
 per compiler output with webpack's stats: a Pages Router app on each, an App Router app with server and client
-components, an edge route handler and middleware on 15 and 16, and a static export (`output: 'export'`) on 16.
+components, an edge route handler and middleware on 15 and 16, a static export (`output: 'export'`) on 16, and another
+`--require` preload next to bundle-lockfile's (Next 15 fails, as described above; 16.4 builds).
 
 ### Comparison with the CycloneDX webpack plugin
 
