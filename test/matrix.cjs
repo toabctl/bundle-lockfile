@@ -788,6 +788,9 @@ const cases = [
   // different contexts); each one run again keeps the other's packages
   { name: 'edge: a Vite and a webpack process, one output dir, then each of them again', fixture: 'mixed-output',
     cmd: `${VITE_BIN} build && ${WEBPACK_BIN} && ${VITE_BIN} build && ${WEBPACK_BIN}`, expect: ['ms@2.1.3', 'nanoid@3.3.20'] },
+  // Bun's own runtime (bun --bun) does not load NODE_OPTIONS' --require: not supported (yet), no lockfile
+  { name: 'bun --bun (Bun\'s runtime, unsupported: no lockfile), webpack', fixture: 'wp5-bun', cmd: 'bun --bun run build', expect: null },
+  { name: 'bun --bun (Bun\'s runtime, unsupported: no lockfile), Vite 8.3.3', fixture: 'vite8-bun', cmd: 'bun --bun run build', expect: null },
   // rspack, which bundle-lockfile does not support (yet): not hooked, the build is not affected
   { name: 'rspack 2.2.8 (unsupported: no lockfile)', fixture: 'rspack2', cmd: 'npm run -s build', expect: null },
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
