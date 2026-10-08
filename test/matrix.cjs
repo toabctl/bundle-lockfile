@@ -126,6 +126,12 @@ const fixtures = {
   'edge-babel': edge('edge-babel', BABEL7),
   'edge-css': edge('edge-css', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
   'edge-asset': edge('edge-asset', { 'bootstrap-icons': '1.13.1' }),
+  // style sheets from packages that loaders inline: Sass partials, Less @imports, Tailwind's CSS
+  'edge-style': edge('edge-style', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', sass: '1.105.1', 'sass-loader': '17.0.1', bulma: '1.0.4',
+    less: '4.9.1', 'less-loader': '13.0.0', 'normalize.less': '1.0.0', 'normalize.css': '8.0.1', postcss: '8.5.29', 'postcss-loader': '8.2.1',
+    tailwindcss: '4.3.3', '@tailwindcss/postcss': '4.3.3' }),
+  'edge-style-wp4': { app: 'edge-style', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'css-loader': '5.2.7', 'mini-css-extract-plugin': '1.6.2',
+    sass: '1.105.1', 'sass-loader': '10.5.2', bulma: '1.0.4', less: '4.9.1', 'less-loader': '7.3.0', 'normalize.less': '1.0.0', 'normalize.css': '8.0.1' } },
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
@@ -174,6 +180,9 @@ const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
 const DEVDEPS = ['classnames@2.5.1', 'lodash-es@4.18.1'];
+// edge-style: bulma's partial, normalize.less and the normalize.css it inlines, Tailwind's style sheets (webpack 5)
+const STYLE_EXPECT_WP4 = ['bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0'];
+const STYLE_EXPECT = [...STYLE_EXPECT_WP4, 'tailwindcss@4.3.3'];
 // installed in node_modules but not imported: proves the absence above is not an install artefact
 const DEVDEPS_INSTALLED = ['classnames@2.5.1', 'left-pad@1.3.0', 'is-number@7.0.0', 'lodash-es@4.18.1'];
 // expected SPDX package in a functional SBOM check (from = file syft says it found the package in)
@@ -308,6 +317,14 @@ const cases = [
   { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'] },
   { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
   { name: 'edge: asset/resource from a package', fixture: 'edge-asset', cmd: 'npm run -s build', expectIncludes: ['bootstrap-icons@1.13.1'] },
+  // the stats the oracle reads have no file dependencies, which is where those style sheets are
+  { name: 'edge: style sheets inlined from packages (sass-loader, less-loader, Tailwind via postcss-loader)', fixture: 'edge-style', cmd: 'npm run -s build',
+    expect: STYLE_EXPECT, oracleMissing: STYLE_EXPECT },
+  { name: 'edge: style sheets inlined from packages (sass-loader, less-loader), webpack 4', fixture: 'edge-style-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expect: STYLE_EXPECT_WP4, oracleMissing: STYLE_EXPECT_WP4 },
+  // modules restored from webpack's persistent cache keep the snapshot of their build
+  { name: 'edge: style sheets inlined from packages, persistent cache: warm build = cold build', fixture: 'edge-style', env: { EDGE_CACHE: '1' }, cmd: WARM,
+    expect: STYLE_EXPECT, oracleMissing: STYLE_EXPECT },
   // two compilers: dist/vendor (the DLL) and dist/main, which only references what is in the DLL
   { name: 'edge: DllPlugin + multi-config array', fixture: 'edge-dll', cmd: 'npm run -s build', expectIncludes: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3', 'lodash-es@4.18.1'] },
   // workspace packages resolve to their real path outside node_modules and count as first-party; their dependencies are listed
