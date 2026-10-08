@@ -307,7 +307,7 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
   (`node_modules/<name>` or `node_modules/@scope/<name>`): `package.json` files inside a package
   (`dist/esm/package.json`, `preact/hooks/package.json`) are not packages
 - a package outside the project — outside the context and not in an ancestor directory's `node_modules`, e.g. in
-  Yarn's global cache (Yarn 4's default) or a shared store — is keyed `node_modules/<name>`, or
+  Yarn's global cache (Yarn 4's default), pnpm's global virtual store or a shared store — is keyed `node_modules/<name>`, or
   `node_modules/<name>@<version>` (then `-2`, `-3`, …) if that is taken, because its real path differs between
   machines
 - a package whose real location is outside `node_modules` — a workspace package, a `link:` or `portal:` dependency,
@@ -409,7 +409,9 @@ Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles a
 `nodejs-26` and `nodejs-22`; Next.js 12 itself does not build on Node.js 25 and later, which removed the `SlowBuffer`
 its compiled `jsonwebtoken` uses), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
 calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), pnpm
-8/9/10/11/12 and bun for webpack, and npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun
+8/9/10/11/12 (10 also with its global virtual store) and bun for webpack, and npm, npx, pnpm 9/10/11 (10 also with its
+global virtual store), yarn 1, yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), bun and npm
+workspaces (an app built in its own directory)
 for Vite — see [`test/matrix.cjs`](test/matrix.cjs). yarn 2 is not tested: it calls `util.isDate`, which Node.js 23
 removed, when it sets the times of zip entries from dates (e.g. for `file:` dependencies).
 
@@ -683,7 +685,8 @@ scan dir:` with SPDX JSON output, and requires exactly the expected npm packages
 license and source file — once with only the build output, and once with the project's own `package-lock.json` shipped
 alongside.
 
-The Vite cases cover Vite 8 with npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun and
+The Vite cases cover Vite 8 with npm, npx, pnpm 9, 10 (also its global virtual store) and 11, yarn 1, yarn 4
+(Plug'n'Play, also with the global cache, and node-modules linker), bun and an app of an npm workspaces monorepo, and
 Vite 7 with npm and yarn 4 Plug'n'Play, Vite 6 and 5 with npm (also their watch mode and vite-plugin-singlefile), the
 loader-thread hooks on Node.js 24 too, a programmatic build from a package without a dependency on Vite (hooked on Node.js
 24 and 26, on 22 only with `BUNDLE_LOCKFILE_ESM_HOOKS=async`),

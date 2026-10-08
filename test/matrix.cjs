@@ -92,6 +92,14 @@ const fixtures = {
   'vite6-npm': vite('6.4.4'),
   'vite5-npm': vite('5.4.21'),
   'vite8-pnpm10': vite('8.3.3', { type: 'pnpm', version: '10.34.6' }),
+  'vite8-pnpm9': vite('8.3.3', { type: 'pnpm', version: '9.15.9' }),
+  'vite8-pnpm11': vite('8.3.3', { type: 'pnpm', version: '11.28.5' }),
+  // packages outside the project: pnpm's global virtual store, Yarn's global cache
+  'vite8-pnpm10-global-store': vite('8.3.3', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
+  'vite8-yarn4-pnp-global-cache': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp', globalCache: true }),
+  // an app of a monorepo built in its directory (packages/app), its dependencies hoisted to the root's node_modules
+  'vite-monorepo': { app: 'vite-monorepo', bundler: 'vite', installer: { type: 'npm' }, deps: { vite: '8.3.3', 'lodash-es': '4.18.1', debug: '2.6.9', ms: '2.1.3' },
+    packageJson: { workspaces: ['packages/app'] } },
   'vite8-yarn1': vite('8.3.3', { type: 'yarn1' }),
   'vite8-yarn4-pnp': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'vite7-yarn4-pnp': vite('7.3.7', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
@@ -135,6 +143,7 @@ const fixtures = {
   'wp5-pnpm8': { ...latest, installer: { type: 'pnpm', version: '8.15.9' } },
   'wp5-pnpm9': { ...latest, installer: { type: 'pnpm', version: '9.15.9' } },
   'wp5-pnpm10': { ...latest, installer: { type: 'pnpm', version: '10.34.6' } },
+  'wp5-pnpm10-global-store': { ...latest, installer: { type: 'pnpm', version: '10.34.6', globalVirtualStore: true } },
   'wp5-pnpm11': { ...latest, installer: { type: 'pnpm', version: '11.28.5' } },
   'wp5-pnpm12': { ...latest, installer: { type: 'pnpm', version: '12.9.1' } },
   'wp5-bun': { ...latest, installer: { type: 'bun' } },
@@ -228,6 +237,12 @@ const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
 const DEVDEPS = ['classnames@2.5.1', 'lodash-es@4.18.1'];
+// keys of packages outside the project (Yarn's global cache, pnpm's global virtual store): node_modules/<name>, then
+// node_modules/<name>@<version> for another version
+const OUTSIDE_KEYS_VITE = { 'node_modules/debug': 'debug@2.6.9', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/ms': 'ms@2.0.0',
+  'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/normalize.css': 'normalize.css@8.0.1' };
+const OUTSIDE_KEYS_W5 = { 'node_modules/debug': 'debug@2.6.9', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/ms': 'ms@2.0.0',
+  'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/nanoid': 'nanoid@3.3.20', 'node_modules/yallist': 'yallist@5.0.0' };
 const PEER_DEPS = ['react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0', 'use-sync-external-store@1.6.0'];
 // edge-style: bulma's partial, normalize.less and the normalize.css it inlines, Tailwind's style sheets (webpack 5)
 const STYLE_EXPECT_WP4 = ['bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0'];
@@ -342,6 +357,9 @@ const cases = [
   { name: 'pnpm 8.15.9', fixture: 'wp5-pnpm8', cmd: '$PNPM run build', expect: W5 },
   { name: 'pnpm 9.15.9', fixture: 'wp5-pnpm9', cmd: '$PNPM run build', expect: W5 },
   { name: 'pnpm 10.34.6', fixture: 'wp5-pnpm10', cmd: '$PNPM run build', expect: W5 },
+  // packages in pnpm's global virtual store, outside the project: keys without the machine-specific path, like Yarn's
+  // global cache
+  { name: 'pnpm 10.34.6, global virtual store', fixture: 'wp5-pnpm10-global-store', cmd: '$PNPM run build', expect: W5, expectKeys: OUTSIDE_KEYS_W5 },
   { name: 'pnpm 11.28.5', fixture: 'wp5-pnpm11', cmd: '$PNPM run build', expect: W5 },
   // pnpm 12 verifies the lockfile against the registry before `run`; offline that retries for minutes
   { name: 'pnpm 12.9.1', fixture: 'wp5-pnpm12', cmd: '$PNPM --config.verify-deps-before-run=false run build', expect: W5 },
@@ -504,6 +522,17 @@ const cases = [
   { name: 'Vite 8.3.3 (rolldown)', fixture: 'vite8-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7 (rollup)', fixture: 'vite7-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, pnpm 10', fixture: 'vite8-pnpm10', cmd: '$PNPM run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, pnpm 9', fixture: 'vite8-pnpm9', cmd: '$PNPM run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, pnpm 11', fixture: 'vite8-pnpm11', cmd: '$PNPM run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // packages outside the project (pnpm's global virtual store, Yarn's global cache): keys without the machine-specific path
+  { name: 'Vite 8.3.3, pnpm 10 global virtual store', fixture: 'vite8-pnpm10-global-store', cmd: '$PNPM run build', expect: VITE_EXPECT,
+    expectKeys: OUTSIDE_KEYS_VITE, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play, global cache", fixture: 'vite8-yarn4-pnp-global-cache', cmd: 'yarn build', expect: VITE_EXPECT,
+    expectKeys: OUTSIDE_KEYS_VITE, oracleMissing: ['normalize.css@8.0.1'] },
+  // a monorepo's app built in its directory: keys relative to it, into the root's node_modules
+  { name: 'Vite 8.3.3, an app of an npm workspaces monorepo', fixture: 'vite-monorepo', cmd: 'npm run -s build -w packages/app', outDir: 'packages/app/dist',
+    oracleArgs: 'packages/app', expect: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0'],
+    expectKeys: { '../../node_modules/debug': 'debug@2.6.9', '../../node_modules/debug/node_modules/ms': 'ms@2.0.0', '../../node_modules/lodash-es': 'lodash-es@4.18.1' } },
   { name: 'Vite 8.3.3, npx vite build', fixture: 'vite8-npm', cmd: 'npx vite build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // the loader-thread hooks, which Node < 24.12 uses (CI's Node 24 would use the in-thread ones)
   { name: 'Vite 8.3.3, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },

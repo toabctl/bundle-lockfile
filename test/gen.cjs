@@ -63,7 +63,12 @@ const installers = {
     fs.writeFileSync(path.join(dir, 'yarn.lock'), '');
     sh(`node ${rel} install`, dir);
   },
-  pnpm: (dir, { version }) => sh(`node ${pnpmBin(version)} install --no-frozen-lockfile --config.confirmModulesPurge=false`, dir),
+  // globalVirtualStore: packages in pnpm's global virtual store (enable-global-virtual-store), outside the project; the
+  // store is kept in <dir>/.tools, so installs work offline later
+  pnpm: (dir, { version, globalVirtualStore = false }) => {
+    if (globalVirtualStore) fs.writeFileSync(path.join(dir, '.npmrc'), `enable-global-virtual-store=true\nstore-dir=${path.join(TOOLS, 'pnpm-store')}\n`);
+    sh(`node ${pnpmBin(version)} install --no-frozen-lockfile --config.confirmModulesPurge=false`, dir);
+  },
 };
 
 for (const [name, fx] of Object.entries(fixtures)) {
