@@ -17,9 +17,10 @@ and writes the rest into output chunks. bundle-lockfile takes the modules of the
 module's file to the npm package it belongs to, and lists those packages.
 
 That is *shipped* code, not necessarily *executed* code: lazily loaded chunks that are never opened, branches that
-never run, and a package of which only one function is used are all listed. So is a module the bundler reduces to
-nothing (a file that only re-exports another package's names, as `d3` does for `d3-*`) and code the minifier removes
-afterwards: the module is in the chunk.
+never run, and a package of which only one function is used are all listed. A module that is in a chunk counts even
+if none of its code remains: `d3`, which only re-exports `d3-*`, was listed for GitLab (webpack 4) and LibreChat
+(Vite) although the source maps show none of its code, and so was `d3-drag` in GitLab, whose code the minifier
+removed.
 
 What is shipped depends on the import graph, not on whether a package is declared under `dependencies` or
 `devDependencies`. With this project (from the tests):
@@ -46,21 +47,22 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   were copied from. Those of copy-webpack-plugin 5 (webpack 4) do not: such a file counts as the file among the
   compilation's file dependencies in `node_modules` with the same bytes (a copy that was transformed on the way
   matches none).
-- **builds that write nothing themselves** (Vite, Rollup, Rolldown): Vite's worker bundles (emitted as files of the
-  main build, or inlined with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker
+- **builds that write nothing themselves** (Vite, Rollup, Rolldown): Vite's worker bundles (emitted as files of the main
+  build, or inlined with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker
   (vite-plugin-pwa), any build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write: false`).
-  Their chunks' packages are kept in memory, in the process, and listed
-  where the same bytes end up in a written output (a chunk or JavaScript asset with that content), or where a module
-  imports the build's entry file with a query (`?worker&inline`).
-- **style sheets that a style sheet `@import`s from a package** (CSS, Sass, Less, Stylus; Vite inlines them, so they
-  are no modules): the style files among the build's watch files. Rolldown provides those only on the build object
-  `rolldown()` returns, so Rolldown's `build()` and `watch()` functions — which `vite build --watch` on Vite 8 calls —
-  do not list them.
+  Their chunks' packages are kept in memory, in the process, and listed where the same bytes end up in a written output
+  (a chunk or JavaScript asset with that content), or where a module imports the build's entry file with a query
+  (`?worker&inline`).
+- **style sheets that a style sheet `@import`s from a package**, in Vite, Rollup and Rolldown builds (CSS, Sass, Less,
+  Stylus; Vite inlines them, so they are no modules): the style files among the build's watch files. Rolldown provides
+  those only on the build object `rolldown()` returns, so Rolldown's `build()` and `watch()` functions — which `vite
+  build --watch` on Vite 8 calls — do not list them.
 - **files other plugins write into a Vite, Rollup or Rolldown output after the build** (in a `closeBundle` hook that
   runs before bundle-lockfile's): JavaScript files with the bytes of a chunk of a build that writes nothing itself
   (vite-plugin-pwa's `sw.js` and `workbox-<hash>.js`), and copies of package files (vite-plugin-static-copy). Only
-  files modified since the build started count; at most 20,000 entries of the output directory are looked at, files
-  over 20 MiB are not compared, and an output directory that contains the working directory is not looked at.
+  files modified since shortly before the build started count (2 s, for coarse file-system timestamps); at most
+  20,000 entries of the output directory are looked at, files over 20 MiB are compared only if this process copied
+  them with fs, and an output directory that contains the working directory is not looked at.
 - **copies out of packages** (every bundler): `fs.copyFile`, `fs.copyFileSync`, `fs.cp`, `fs.cpSync` and their
   `fs.promises` versions are wrapped to remember, in the process, which file in `node_modules` a file outside of it
   was copied from (fs-extra and graceful-fs call them, so their copies count). A bundled file, or one written into a
@@ -83,13 +85,15 @@ package file pulled in under a first-party match resource is not listed either.
   [SvelteKit](#sveltekit))
 - files other build steps put into the output without going through the bundler, e.g. a
   `cp node_modules/x/dist/x.js dist/` in a script
-- files copied out of a package by reading and writing them (not with fs's copy functions), or by another process,
-  to a path without `node_modules` in it (e.g. `public/` files taken from a package once, by hand)
+- files copied out of a package by reading and writing them (not with fs's copy functions), or by another process
+  (into a Vite, Rollup or Rolldown output after the build: unless its path there contains `node_modules/<package>/`),
+  e.g. `public/` files taken from a package once, by hand
 - a package whose only use is a small constant that webpack (>= 5.108, `optimization.inlineExports`, on by default
   in production) inlined at the use site, leaving its side-effect-free module in no chunk
 - npm packages vendored inside another package without a `package.json` of their own (e.g.
   `@grafana/google-sdk/dist/esm/node_modules/lodash`): a warning names each one
-- a Sass partial with only variables lists its package although it adds no bytes
+- (listed although not shipped: a Sass partial with only variables that a style sheet in a Vite, Rollup or Rolldown
+  build `@import`s lists its package, although it adds no bytes)
 
 ## Usage
 
@@ -98,7 +102,7 @@ starts (which inherits `NODE_OPTIONS`) is hooked automatically. No config change
 project:
 
 ```sh
-git clone --depth 1 --branch v0.0.2 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
+git clone --depth 1 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
 export NODE_OPTIONS="--require /opt/bundle-lockfile/src/register.cjs"
 
 npm run build                    # or any other way the build is started:
@@ -110,9 +114,11 @@ npx vite build
 npx next build --webpack         # Next.js 16 (12-15 build with webpack by default)
 ```
 
-On Node.js before 24.12 (25.2 on 25), Vite, Rollup and Rolldown are hooked only in processes whose main script
-belongs to a package that is or depends on `vite`, `rollup` or `rolldown`; a programmatic build from elsewhere needs
-`BUNDLE_LOCKFILE_ESM_HOOKS=async` (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)).
+On Node.js before 24.12 (25.2 on 25), Vite — and Rollup and Rolldown imported as ES modules — are hooked only in
+processes whose main script belongs to a package that is or depends on `vite`, `rollup`, `rolldown` or
+`rolldown-vite`; a programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async` (see [Vite, Rollup,
+Rolldown](#vite-rollup-rolldown)). Rollup's CommonJS build (`require('rollup')`, the `rollup` command line) is hooked
+in every process.
 
 ### Keep existing `NODE_OPTIONS`
 
@@ -173,12 +179,14 @@ $ BUNDLE_LOCKFILE_DEBUG=1 npm run build
 ```
 
 (More `patched Compiler` lines come from other processes that inherit `NODE_OPTIONS` and load webpack, e.g. Next.js's
-build workers; a process that loads webpack but never compiles writes nothing.) Vite builds log
-`[bundle-lockfile] ESM hooks: sync (Node 24.21.0)` and `[bundle-lockfile] vite: adding the plugin to a rolldown() call`.
+build workers; a process that loads webpack but never compiles writes nothing.) Every process also logs how Vite,
+Rollup and Rolldown are hooked, e.g. `[bundle-lockfile] ESM hooks: sync (Node 24.21.0)`; a Vite 8 build logs
+`[bundle-lockfile] vite: adding the plugin to a rolldown() call` (Vite 7: `rollup()`).
 
-Warnings are always printed, also without `BUNDLE_LOCKFILE_DEBUG`: bundled code from a directory in `node_modules`
-without a `package.json` with name and version, a lockfile that could not be written, a failing adapter (which never
-fails the build).
+Warnings are always printed, also without `BUNDLE_LOCKFILE_DEBUG`, e.g. for bundled code from a directory in
+`node_modules` without a `package.json` with name and version (once per process), a lockfile that could not be
+written or locked, `BUNDLE_LOCKFILE_INLINE=0` without an export directory, and a failing adapter (which never fails
+the build).
 
 ### In a melange package build
 
@@ -273,6 +281,7 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
   "requires": true,
   "packages": {
     "": {},
+    "node_modules/debug": { "name": "debug", "version": "2.6.9", "license": "MIT" },
     "node_modules/debug/node_modules/ms": { "name": "ms", "version": "2.0.0", "license": "MIT" },
     "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" }
   },
@@ -281,7 +290,7 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
     "context": "../..",
     "writers": [
       { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
-        "packages": ["node_modules/debug/node_modules/ms", "node_modules/ms"] }
+        "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms"] }
     ]
   }
 }
@@ -291,8 +300,8 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
   Rolldown, the working directory — so nested duplicate versions and pnpm / Yarn Plug'n'Play layouts stay distinct.
   With a context below the project root they start with `../node_modules/`
 - the package a file belongs to is the directory directly below the last `node_modules` in its path
-  (`node_modules/<name>` or `node_modules/@scope/<name>`): `package.json` files inside a package (`dist/esm/package.json`,
-  `preact/hooks/package.json`) are not packages
+  (`node_modules/<name>` or `node_modules/@scope/<name>`): `package.json` files inside a package
+  (`dist/esm/package.json`, `preact/hooks/package.json`) are not packages
 - a package outside the project — outside the context and not in an ancestor directory's `node_modules`, e.g. in
   Yarn's global cache (Yarn 4's default) or a shared store — is keyed `node_modules/<name>`, or
   `node_modules/<name>@<version>` (then `-2`, `-3`, …) if that is taken, because its real path differs between
@@ -338,8 +347,9 @@ atomically, so no process reads a partly written one.
 - A webpack compiler is recognized by its configuration: name, entry, target and file name templates, per output
   directory. A new compiler for the same configuration (e.g. a build restarted in the same process, or run again)
   replaces the previous one's packages — in the same process once that one is closed (webpack < 5.17: no longer
-  running); until then both are listed. A Vite/Rollup/Rolldown output is recognized by the build's input, its format,
-  its position among the build's outputs and its entry file names.
+  running); until then both are listed. A Vite/Rollup/Rolldown output is recognized by the kind of build (Vite,
+  Rollup, Rolldown), its input, its format, its position among the build's outputs and its entry file name template
+  (if it is a string).
 - Writers whose files are all gone are left out: e.g. when a webpack compiler's `output.clean` deleted what the
   others had written (on its first build, except paths matching `clean.keep`). If one of its files is left, all its
   packages stay. After a configuration change, a build into a directory that is not cleaned therefore keeps the
@@ -355,11 +365,11 @@ atomically, so no process reads a partly written one.
 ### Nested bundles
 
 Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its chunks (`outputs`). For every bundled file outside
-`node_modules`, bundle-lockfile looks at `<dir>/bundle-lockfile/package-lock.json` (or its copy in the export
-directory) in the file's directory and each directory above it; in the first lockfile that records the file, a matching
-hash adds that writer's packages to this build's — in webpack, Vite, Rollup and Rolldown builds. A file changed after
-its build is not attributed. The record travels with the output, so this works across processes, separate commands
-and machines. webpack lockfiles record no hashes: a webpack-built bundle that another build bundles is not
+`node_modules`, bundle-lockfile looks at `<dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE`; or its copy
+in the export directory) in the file's directory and each directory above it; in the first lockfile that records the
+file, a matching hash adds that writer's packages to this build's — in webpack, Vite, Rollup and Rolldown builds. A file
+changed after its build is not attributed. The record travels with the output, so this works across processes, separate
+commands and machines. webpack lockfiles record no hashes: a webpack-built bundle that another build bundles is not
 attributed.
 
 ## Settings
@@ -401,7 +411,8 @@ by a module that re-exports everything and wraps `rollup()` / `watch()` and `rol
 patches Rollup's CommonJS build when it loads (`require('rollup')`, the `rollup` command line, workbox-build), so that
 every such call gets one more plugin, last, unless it has one already. That plugin records the modules of every chunk
 when it is rendered (also of chunks a plugin removes later, e.g. vite-plugin-singlefile) and writes the lockfile after
-the output is written. `vite dev`, `vite preview` and Vitest build nothing and write no lockfile.
+the output is written. `vite dev`, `vite preview` and Vitest write no lockfile: their only builds (such as Vite's
+dependency pre-bundling) write below `node_modules` or nothing.
 
 The ESM hook depends on the Node.js version:
 - Node.js 24.12, 25.2 and later: `module.registerHooks`, in the same thread, in every process. Before those versions,
@@ -435,9 +446,9 @@ Next runs several compilers, so a build writes one lockfile per compiler output 
 
 Next does not bundle many packages into the **server** output (Pages Router dependencies, packages in
 `serverExternalPackages`); the server loads them from `node_modules` at runtime. Next records those runtime files in
-`.next/server/**/*.nft.json` (in the tests: `ms` is only in the client lockfile, and `index.js.nft.json` lists `ms`,
-`uuid`, `react`, `react-dom`, … from `node_modules`). Such packages are in no bundle-lockfile; if `node_modules` is
-shipped with the server, they are covered by the installed `package.json` files there.
+`.next/server/**/*.nft.json` (in the test fixture's build: `ms` is only in the client lockfile, and `index.js.nft.json`
+lists `ms`, `uuid`, `react`, `react-dom`, … from `node_modules`). Such packages are in no bundle-lockfile; if
+`node_modules` is shipped with the server, they are covered by the installed `package.json` files there.
 
 ## How it works
 
@@ -458,7 +469,7 @@ flowchart LR
   end
   nodeopts --> register["register.cjs"]
   register --> cjs["Module._load hook<br/>(hooks.cjs)"]
-  register --> esm["ESM load hook (hooks.cjs)<br/>registerHooks, in-thread: Node ≥ 24.12 / 25.2<br/>module.register, loader thread: older,<br/>in bundler processes"]
+  register --> esm["ESM load hook (hooks.cjs)<br/>registerHooks, in-thread: Node ≥ 24.12 / 25.2<br/>module.register, loader thread (esm-loader.mjs):<br/>older, in bundler processes"]
   register --> copies["fs copy functions wrapped<br/>(core/copies.cjs)"]
 
   cjs -- "webpack/lib/Compiler.js<br/>(webpack-cli, webpack 4/5)" --> wpatch["Compiler.prototype.compile patched"]
@@ -493,8 +504,9 @@ sequenceDiagram
   C->>D: under the lock: read the lockfile, merge, write it (and the export copy)
 ```
 
-(This is the real disk; with an in-memory output file system the lockfile is a webpack asset, added after
-`afterProcessAssets`, and written again in `afterEmit` only if other writers share it or late copies added packages.)
+(This is the real disk; with an in-memory output file system the lockfile is a webpack asset, added in
+`afterProcessAssets`, and written again in `afterEmit` only if other writers share it or files were copied in the emit
+hook; the export copy is written after every build.)
 
 ```mermaid
 sequenceDiagram
@@ -510,7 +522,7 @@ sequenceDiagram
     P->>C: keep each chunk's packages in memory, by content and by entry file
   else writes
     P->>P: source files: chunk modules, assets' original files, style files among the watch files
-    P->>C: packages, plus those of in-memory builds whose bytes are in this bundle, recorded with chunk hashes
+    P->>C: packages, plus those of in-memory builds whose bytes are in this bundle or whose entry a module imports with a query, recorded with chunk hashes
   end
   B->>D: writes the output files
   B->>P: writeBundle (last)
@@ -562,7 +574,7 @@ flowchart LR
 
 Within a process, the writers of an output directory live in a registry shared by every copy of bundle-lockfile that
 is loaded (on `globalThis`); each has the packages of its last written build and of the build in progress. Every write
-of the lockfile renders all of them, plus the writers other processes recorded in the lockfile on disk.
+of the lockfile renders their last written builds, plus the writers other processes recorded in the lockfile on disk.
 
 ### Files
 
@@ -587,7 +599,8 @@ src/core/config.cjs     settings (environment variables), debug and warning outp
 Adapters must never break a build: their failures are reported on stderr and the build continues.
 
 To add a bundler: write `src/adapters/<name>.cjs` (a `name` and an `onCjsLoad(exports, request, resolve)` that
-recognizes and patches a CommonJS bundler, or `esmEntries` and `esmWrap` for an ES module one, see `src/hooks.cjs`;
+recognizes and patches a CommonJS bundler, or `esmEntries`, `esmWrap` and `esmPackages` (the packages whose
+processes get the loader-thread hooks) for an ES module one, see `src/hooks.cjs`;
 write through `core/outputs.cjs` so that shared output directories work), add it to `src/register.cjs`, add an app
 under `test/apps/`, an oracle under `test/oracles/` and rows to `test/matrix.cjs`.
 
@@ -622,22 +635,24 @@ cases check that no lockfile is written.
 
 The webpack cases cover, besides installers and versions, watch-mode rebuilds, warm builds from webpack's persistent
 cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, npm aliases and one version at several
-paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, a DLL, two compilers sharing
-an output directory (also with query strings in file names, configs that differ only in `resolve.alias`, a failing
-watch rebuild, and an `output.path` with `[fullhash]`), compression-webpack-plugin deleting the original assets
-(webpack 4 and 5), workspace packages (also with `resolve.symlinks: false`), subpath manifests, nested and inlined
-worker-loader workers (webpack 4 and 5), a workbox service worker, html-webpack-plugin 4 and 5 templates, files copied
-by copy-webpack-plugin (5 and 6 on webpack 4, 14 on webpack 5), vanilla-extract's virtual CSS modules, externals and a
-`context` below the project root; two webpack processes writing to one directory in parallel, with one rebuilt, with
-one cleaning the other's files, and with the plugin in the config instead of `NODE_OPTIONS`; the export directory with
-and without the inline lockfile (also for Next.js 16); and build scripts that overwrite `NODE_OPTIONS` (inline and with
-`cross-env`) with the node shim under npm, pnpm, yarn 1, yarn 4 and bun. The devDependencies case also runs a
-functional SBOM check: it stages the build output like a package would install it (`usr/share/app/dist/`), runs
-`syft scan dir:` with SPDX JSON output, and requires exactly the expected npm packages with name, version, purl,
-declared license and source file — once with only the build output, and once with the project's own
-`package-lock.json` shipped alongside.
+paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, a DLL, two compilers sharing an
+output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing
+watch rebuild), two compilers whose `output.path` with `[fullhash]` resolves to different directories,
+compression-webpack-plugin deleting the original assets (webpack 4 and 5), workspace packages (also with
+`resolve.symlinks: false`), subpath manifests, nested and inlined worker-loader workers (webpack 4 and 5), a workbox
+service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin (5 and 6 on webpack 4, 14 on
+webpack 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root; two webpack
+processes writing to one directory in parallel, with one rebuilt, with one cleaning the other's files, and with the
+plugin in the config instead of `NODE_OPTIONS`; the export directory with and without the inline lockfile (export only
+also for Next.js 16); and build scripts that overwrite `NODE_OPTIONS` (inline and with `cross-env`) with the node shim
+under npm, pnpm, yarn 1, yarn 4 and bun. The devDependencies case also runs, when syft is on `PATH` (as in CI), a
+functional SBOM check: it stages the build output like a package would install it (`usr/share/app/dist/`), runs `syft
+scan dir:` with SPDX JSON output, and requires exactly the expected npm packages with name, version, purl, declared
+license and source file — once with only the build output, and once with the project's own `package-lock.json` shipped
+alongside.
 
-The Vite cases cover Vite 7 and 8 with the installers above, the loader-thread hooks on Node.js 24 too,
+The Vite cases cover Vite 8 with npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun and
+Vite 7 with npm and yarn 4 Plug'n'Play, the loader-thread hooks on Node.js 24 too,
 `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a build script overwriting `NODE_OPTIONS`
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
@@ -658,7 +673,7 @@ one of the two lists — each explained by what webpack processed vs. what is in
 bundle-lockfile counts):
 
 ```sh
-sh test/compare/fixtures.sh /tmp/fixtures     # all webpack 5 / Next.js fixtures
+sh test/compare/fixtures.sh /tmp/fixtures     # the webpack 5 / Next.js fixtures it lists (19)
 ```
 
 On the fixtures, every difference is explained:
