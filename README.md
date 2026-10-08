@@ -666,7 +666,8 @@ service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webp
 webpack 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root; two webpack
 processes writing to one directory in parallel, with one rebuilt, with one cleaning the other's files (also keeping them
 with `clean.keep`), and with the
-plugin in the config instead of `NODE_OPTIONS`, and a webpack and a Vite process writing to one directory; the export directory with and without the inline lockfile (export only
+plugin in the config instead of `NODE_OPTIONS`, and a webpack and a Vite process writing to one directory; an in-memory output file system (memfs, as
+webpack-dev-middleware uses; also with compression-webpack-plugin 6 deleting the lockfile asset on webpack 4); the export directory with and without the inline lockfile (export only
 also for Next.js 16); and build scripts that overwrite `NODE_OPTIONS` (inline and with `cross-env`) with the node shim
 under npm, pnpm, yarn 1, yarn 4 and bun. The devDependencies case also runs, when syft is on `PATH` (as in CI), a
 functional SBOM check: it stages the build output like a package would install it (`usr/share/app/dist/`), runs `syft

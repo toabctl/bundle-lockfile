@@ -172,7 +172,11 @@ const fixtures = {
     packageJson: { scripts: { build: 'cross-env NODE_OPTIONS=--max-old-space-size=3072 webpack --config webpack.config.js' } } },
   'edge-compression': edge('edge-compression', { 'compression-webpack-plugin': '12.0.0', 'lodash-es': '4.18.1', ms: '2.1.3' }),
   // compression-webpack-plugin 6 runs in webpack 4's emit hook, after the lockfile was emitted
-  'edge-compression-wp4': { app: 'edge-compression', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'compression-webpack-plugin': '6.1.2', 'lodash-es': '4.18.1', ms: '2.1.3' } },
+  // (memfs: in-memory output, see test/lib/memfs-build.cjs)
+  'edge-compression-wp4': { app: 'edge-compression', installer: { type: 'npm' },
+    deps: { ...WEBPACK4, 'compression-webpack-plugin': '6.1.2', 'lodash-es': '4.18.1', ms: '2.1.3', memfs: '4.80.0' } },
+  // the webpack 5 app built into an in-memory output file system (memfs, as webpack-dev-middleware does)
+  'edge-memfs': edge('webpack5', { ...APP_DEPS, memfs: '4.80.0' }),
   'edge-vanilla': edge('edge-vanilla', { '@vanilla-extract/css': '1.21.2', '@vanilla-extract/webpack-plugin': '2.3.27',
     'mini-css-extract-plugin': '2.10.2', 'css-loader': '7.1.5', 'lodash-es': '4.18.1' }),
   'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
@@ -233,6 +237,7 @@ const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes col
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
+const MEMFS = `node ${path.join(__dirname, 'lib/memfs-build.cjs')}`; // into memfs, then copied to the disk
 // `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
 // (rebuilt without src/main.js's lazy import, whose chunk has ms@2.1.3, then with it again)
 const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "import('./lazy.js')"`;
@@ -428,6 +433,12 @@ const cases = [
   { name: 'edge: compression-webpack-plugin with deleteOriginalAssets', fixture: 'edge-compression', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1'] },
   { name: 'edge: compression-webpack-plugin 6 with deleteOriginalAssets, webpack 4', fixture: 'edge-compression-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: ['lodash-es@4.18.1'] },
+  // an in-memory output file system (webpack-dev-middleware's memfs): the lockfile is an asset, nothing reaches the disk
+  // (memfs-build.cjs copies the in-memory output there afterwards)
+  { name: 'edge: in-memory output file system (memfs): the lockfile is an asset', fixture: 'edge-memfs', cmd: MEMFS, expect: W5 },
+  // ... which compression-webpack-plugin 6 deletes in webpack 4's emit hook: emitted again
+  { name: 'edge: in-memory output file system, compression-webpack-plugin 6 deleting the lockfile asset, webpack 4', fixture: 'edge-compression-wp4',
+    cmd: MEMFS, nodeOptions: LEGACY_SSL, expectIncludes: ['lodash-es@4.18.1'] },
   // two compilers whose files are all replaced by .gz files, then one of them again in another process: the other's
   // .gz files are still there, so are its packages (webpack 4 replaces them in the emit hook, after the lockfile was rendered)
   { name: 'edge: compression-webpack-plugin with deleteOriginalAssets, two compilers, one output dir, then one of them again', fixture: 'edge-compression',
