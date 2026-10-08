@@ -148,6 +148,16 @@ const fixtures = {
   'edge-dll': edge('edge-dll', { debug: '2.6.9', ms: '2.1.3', 'lodash-es': '4.18.1' }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
+  // a directory of the project as a dependency (local-lib, which depends on ms): npm links file: (first-party), yarn 2+
+  // and pnpm copy it into node_modules (a package); link: and portal: link it (first-party). ms is a direct dependency
+  // too where the linked directory's dependencies are not installed (link:)
+  'edge-local-file-npm': edge('edge-local-dep', { 'local-lib': 'file:./local-lib' }),
+  'edge-local-file-pnpm10': edge('edge-local-dep', { 'local-lib': 'file:./local-lib' }, { installer: { type: 'pnpm', version: '10.34.6' } }),
+  'edge-local-link-pnpm10': edge('edge-local-dep', { 'local-lib': 'link:./local-lib', ms: '2.1.3' }, { installer: { type: 'pnpm', version: '10.34.6' } }),
+  'edge-local-file-yarn4-pnp': edge('edge-local-dep', { 'local-lib': 'file:./local-lib' }, { installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' } }),
+  'edge-local-portal-yarn4-pnp': edge('edge-local-dep', { 'local-lib': 'portal:./local-lib' }, { installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' } }),
+  'edge-local-link-yarn4-nm': edge('edge-local-dep', { 'local-lib': 'link:./local-lib', ms: '2.1.3' },
+    { installer: { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' } }),
   'edge-worker': edge('edge-worker', WORKER),
   'edge-worker-wp4': { app: 'edge-worker', installer: { type: 'npm' }, deps: { ...WEBPACK4, ...WORKER } },
   'edge-workbox': edge('edge-workbox', { 'workbox-webpack-plugin': '7.4.1', 'workbox-precaching': '7.4.1', 'lodash-es': '4.18.1', ...HTML }),
@@ -361,6 +371,15 @@ const cases = [
   { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'] },
   // workspace packages count as first-party also when webpack keeps the node_modules/@acme/ui symlink path
   { name: 'edge: npm workspace package, resolve.symlinks=false', fixture: 'edge-workspace', cmd: 'npm run -s build', env: { EDGE_RESOLVE_SYMLINKS: 'false' }, expect: ['ms@2.1.3'] },
+  // a project directory as a dependency: linked (first-party, its dependency listed) or copied into node_modules (a package)
+  { name: 'edge: file: directory dependency, npm (linked)', fixture: 'edge-local-file-npm', cmd: 'npm run -s build', expect: ['ms@2.1.3'] },
+  { name: 'edge: file: directory dependency, pnpm 10 (copied into node_modules)', fixture: 'edge-local-file-pnpm10', cmd: '$PNPM run build',
+    expect: ['local-lib@1.0.0', 'ms@2.1.3'] },
+  { name: 'edge: link: dependency, pnpm 10 (linked)', fixture: 'edge-local-link-pnpm10', cmd: '$PNPM run build', expect: ['ms@2.1.3'] },
+  { name: "edge: file: directory dependency, yarn 4 Plug'n'Play (packed into the cache)", fixture: 'edge-local-file-yarn4-pnp', cmd: 'yarn build',
+    expect: ['local-lib@1.0.0', 'ms@2.1.3'] },
+  { name: "edge: portal: dependency, yarn 4 Plug'n'Play (linked)", fixture: 'edge-local-portal-yarn4-pnp', cmd: 'yarn build', expect: ['ms@2.1.3'] },
+  { name: 'edge: link: dependency, yarn 4 node-modules linker (linked)', fixture: 'edge-local-link-yarn4-nm', cmd: 'yarn build', expect: ['ms@2.1.3'] },
   // child compilers whose output is shipped: worker-loader (a worker inside a worker, a worker inlined into
   // main.js), workbox's service worker. html-webpack-plugin's child compiler only renders the template at build
   // time and is not counted.
