@@ -49,10 +49,19 @@ const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', 
 const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'npm' },
   deps: { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
+// SvelteKit: client and server builds, the service worker (a nested Vite build), adapter-static (copies the client
+// output to build/) and adapter-node (SVELTEKIT_ADAPTER=node: build/client and build/server; adapter-node 5 bundles
+// the server again with Rollup into build/, from a copy of its own files)
+const KIT = { svelte: '5.57.2', 'lodash-es': '4.18.1', ms: '2.1.3', nanoid: '3.3.20' };
+const sveltekit = (app, kit, deps) => ({ app, bundler: 'sveltekit', installer: { type: 'npm' }, deps: { '@sveltejs/kit': kit, ...deps, ...KIT },
+  packageJson: { type: 'module', scripts: { build: 'vite build' } } });
 // GitLab's / Element's shape: a library built by Vite into one file, bundled by webpack as a first-party file
 const ISLAND = { vite: '8.3.3', 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20' };
 const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', installer: { type: 'npm' }, deps: { ...webpackDeps, ...ISLAND },
   packageJson: { scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } });
+// the island bundled by a Vite app: built by Vite (Vite 8 -> Vite 8) or by the rollup command line (-> Vite 7)
+const nestedVite = (island, vite, deps = {}) => ({ app: 'nested-island', bundler: 'nested-vite', installer: { type: 'npm' },
+  deps: { ...ISLAND, vite, ...deps }, packageJson: { type: 'module', scripts: { build: `${island} && vite build` } } });
 
 const fixtures = {
   'vite8-npm': vite('8.3.3'),
@@ -63,6 +72,11 @@ const fixtures = {
   'rollup-cli': rollupCli,
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
+  'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
+  'nested-island-rollup': nestedVite('rollup -c island/rollup.config.mjs', '7.3.7',
+    { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', '@rollup/plugin-commonjs': '29.0.3' }),
+  'sveltekit2': sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7' }),
+  'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
   // html-webpack-plugin 4 takes its template's output out of the parent compilation but keeps it in its child
   'wp4.47-npm': { ...wp4('4.47.0', '4.10.0', { 'html-webpack-plugin': '4.5.2' }), installer: { type: 'npm' } },
@@ -122,6 +136,8 @@ const fixtures = {
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
+// in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
+const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
 // the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
 const FEATURES_EXPECT = ['core-js@3.50.0', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'sanitize.css@13.0.0',
   'systemjs@6.15.1', 'workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'workbox-routing@7.4.1', 'workbox-strategies@7.4.1'];
@@ -181,6 +197,8 @@ function nextCase(fixture, version, react, flags = '') {
 //   exportOnly the same with BUNDLE_LOCKFILE_INLINE=0: no inline lockfile may be written
 //   shim       put bin/ (the node shim) first in PATH
 //   oracle     false: no oracle comparison (the case's shape cannot be built by the oracle)
+//   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
+//   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
@@ -351,6 +369,21 @@ const cases = [
   { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by webpack 4', fixture: 'nested-island-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: NESTED_EXPECT },
+  { name: 'nested: Vite 8 island bundled by Vite 8', fixture: 'nested-island-vite', cmd: 'npm run -s build', oracleArgs: 'vite', expect: NESTED_EXPECT },
+  { name: 'nested: Rollup island (rollup -c) bundled by Vite 7', fixture: 'nested-island-rollup', cmd: 'npm run -s build', oracleArgs: 'rollup', expect: NESTED_EXPECT },
+  // SvelteKit: the exact lists are the oracle's (its source maps); ms is a dependency the server loads from
+  // node_modules at runtime (Vite's SSR build and adapter-node keep dependencies external), so in no lockfile.
+  // SvelteKit 2 writes no source map for the service worker (nanoid's code is in build/service-worker.js); with
+  // adapter-node, build/client (and with SvelteKit 3 build/server) are copies of SvelteKit's outputs, with their lockfiles
+  { name: 'SvelteKit 2 (Vite 7), adapter-static', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build',
+    expectIncludes: SVELTE_CLIENT('2.70.3'), expectExcludes: ['ms@2.1.3'], oracleMissing: ['nanoid@3.3.20'] },
+  { name: 'SvelteKit 2 (Vite 7), adapter-node', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
+    oracleArgs: 'client', expectIncludes: [...SVELTE_CLIENT('2.70.3'), '@sveltejs/adapter-node@5.5.7'], expectExcludes: ['ms@2.1.3'],
+    oracleMissingIn: { client: ['nanoid@3.3.20'] } },
+  { name: 'SvelteKit 3 (Vite 8), adapter-static', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build',
+    expectIncludes: SVELTE_CLIENT('3.0.1'), expectExcludes: ['ms@2.1.3'] },
+  { name: 'SvelteKit 3 (Vite 8), adapter-node', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
+    oracleArgs: 'client,server', expectIncludes: [...SVELTE_CLIENT('3.0.1'), '@sveltejs/adapter-node@6.0.0'], expectExcludes: ['ms@2.1.3'] },
   // a changed island file is not attributed (its hash no longer matches)
   { name: 'nested: island changed after its build is not attributed', fixture: 'nested-island-wp5',
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && echo "/* changed */" >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js',

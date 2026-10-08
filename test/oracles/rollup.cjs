@@ -2,16 +2,21 @@
 // Oracle for Rollup command-line fixtures: builds again WITHOUT bundle-lockfile, with Rollup's own source maps
 // (rollup -c --sourcemap --dir dist-oracle), and derives the packages from the maps' sources. Shares no code with the
 // adapter, which reads the chunks' module lists.
-// usage (cwd = fixture): node oracles/rollup.cjs
+// usage (cwd = fixture): node oracles/rollup.cjs [--config <file>] [--out <dir> | --out-file <file>]
+// (--out-file for a config with output.file)
 // prints {"": [name@version, ...]} (the output dir relative to itself)
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const out = path.resolve('dist-oracle');
+const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : dflt; };
+const outFile = arg('--out-file', null);
+const out = path.resolve(outFile ? path.dirname(outFile) : arg('--out', 'dist-oracle'));
+const configFile = arg('--config', null);
 fs.rmSync(out, { recursive: true, force: true });
 const rollup = path.resolve('node_modules/rollup/dist/bin/rollup');
-const r = spawnSync(process.execPath, [rollup, '-c', '--sourcemap', '--dir', out], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+const target = outFile ? ['--file', path.resolve(outFile)] : ['--dir', out];
+const r = spawnSync(process.execPath, [rollup, '-c', ...(configFile ? [configFile] : []), '--sourcemap', ...target], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
 if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
 
 const files = new Set();

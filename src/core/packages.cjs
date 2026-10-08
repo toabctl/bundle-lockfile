@@ -68,14 +68,19 @@ function unvirtual(p) {
 
 // files: absolute paths of source files that ended up in the bundle (query strings allowed).
 // Returns one entry per real package directory; files outside node_modules (the project itself,
-// workspace packages, also when reached through a node_modules symlink) are ignored.
+// workspace packages, also when reached through a node_modules symlink) are ignored, unless this process copied them
+// out of a package and they still have its bytes (core/copies.cjs).
 function packagesForFiles(files) {
   const pkgs = new Map();
   const seen = new Set();
   for (const f of files) {
     const file = f.split('?')[0];
     if (!path.isAbsolute(file)) continue;
-    const linked = packageRoot(file);
+    let linked = packageRoot(file);
+    if (!linked) {
+      const src = require('./copies.cjs').sourceOf(file);
+      if (src) { linked = packageRoot(src); config.debug('a copy of', src, ':', file); }
+    }
     if (!linked || seen.has(linked)) continue;
     seen.add(linked);
     const root = realRoot(linked);
