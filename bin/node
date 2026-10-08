@@ -1,0 +1,37 @@
+#!/bin/sh
+# bundle-lockfile's node shim. Put its directory first in PATH (PATH=/path/to/bundle-lockfile/bin:$PATH) for builds
+# whose scripts overwrite NODE_OPTIONS (cross-env NODE_OPTIONS=..., an inline NODE_OPTIONS=... node ...): every node
+# started through PATH gets the --require back, and so does everything it starts (also with process.execPath).
+#
+# 1. puts --require <register.cjs> into NODE_OPTIONS, unless it is there in any form, keeping what else is set
+# 2. runs the real node: the first `node` in PATH that is not a script. Package managers put wrappers in front
+#    (yarn: a temporary `node` that runs `exec "<its process.execPath>" "$@"`, which register.cjs points at this
+#    shim); skipping scripts also skips this shim itself. Looked up on every start: PATH can change (nvm).
+self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+reg=${BUNDLE_LOCKFILE_REGISTER:-}
+if [ -z "$reg" ]; then
+  d=$(dirname "$self")
+  for r in "$d/../src/register.cjs" "$d/../register.cjs"; do
+    [ -f "$r" ] && { reg=$(readlink -f "$r" 2>/dev/null || printf '%s' "$r"); break; }
+  done
+fi
+if [ -n "$reg" ]; then
+  case "${NODE_OPTIONS:-}" in
+    *"$reg"*) ;;
+    *) case "$reg" in *' '*) q="\"$reg\"" ;; *) q=$reg ;; esac
+       NODE_OPTIONS="--require $q${NODE_OPTIONS:+ $NODE_OPTIONS}"; export NODE_OPTIONS ;;
+  esac
+  BUNDLE_LOCKFILE_NODE_SHIM=$self; export BUNDLE_LOCKFILE_NODE_SHIM
+else
+  echo "bundle-lockfile node shim: register.cjs not found next to $self; set BUNDLE_LOCKFILE_REGISTER" >&2
+fi
+oifs=$IFS; IFS=:
+for dir in $PATH; do
+  node="$dir/node"
+  [ -n "$dir" ] && [ -f "$node" ] && [ -x "$node" ] || continue
+  [ "$(head -c 2 "$node" 2>/dev/null)" = '#!' ] && continue
+  IFS=$oifs
+  exec "$node" "$@"
+done
+echo "bundle-lockfile node shim: no node binary in PATH" >&2
+exit 127

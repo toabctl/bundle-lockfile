@@ -78,6 +78,8 @@ for (const [name, fx] of Object.entries(fixtures)) {
       build: 'webpack --config webpack.config.js',
       // default-if-unset pattern: keep NODE_OPTIONS if set, else default it
       'webpack-prod': 'NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" NODE_ENV=production webpack --config webpack.config.js',
+      // overwrites NODE_OPTIONS (drops the --require), as e.g. argo-cd's recipe does: needs the node shim
+      'build-reset': 'NODE_OPTIONS=--max-old-space-size=3072 webpack --config webpack.config.js',
     },
     dependencies: fx.deps,
     ...(fx.devDeps && { devDependencies: fx.devDeps }),

@@ -80,7 +80,18 @@ export NODE_OPTIONS="--max-old-space-size=16384 --require /opt/bundle-lockfile/s
 Scripts that set `NODE_OPTIONS` themselves keep it only if they pass it on — a default-if-unset
 script like `NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" webpack` does, a plain
 `NODE_OPTIONS=--max-old-space-size=10240 webpack` (or `cross-env NODE_OPTIONS=... webpack`) drops
-the `--require`. For such projects, run the bundler directly with the script's settings instead.
+the `--require`. For such projects, also put the node shim first in `PATH`:
+
+```sh
+export PATH="/opt/bundle-lockfile/bin:$PATH"
+```
+
+`bin/node` puts the `--require` back into `NODE_OPTIONS` (keeping the script's settings) and runs the real
+`node`, the first one in `PATH` that is not a script. Every `node` started through `PATH` — by npm, pnpm, yarn 1
+and 4, bun, `cross-env` or a shell — then loads bundle-lockfile, and so does everything it starts, also with
+`process.execPath`. In yarn's own process, `process.execPath` is the shim: yarn runs scripts with a `node`
+wrapper first in `PATH` that runs its `process.execPath`. A `node` started by absolute path keeps whatever
+`NODE_OPTIONS` it gets.
 
 **Next.js 15.0 – 16.3: use a single `--require`.** These versions rewrite `NODE_OPTIONS` for their
 build workers and merge repeated flags: `--require a.cjs --require b.cjs` reaches the workers as the
@@ -143,6 +154,29 @@ container image needs `--select-catalogers +javascript-lock-cataloger`.
 Note that the lockfile is part of the build output: if that output is served by a web server
 (e.g. a `public/assets` directory), the lockfile is publicly readable too.
 
+When the output does not ship as files — embedded into a Go binary (`go:embed`), packed into a jar, gzipped,
+or copied away by a step that drops the `bundle-lockfile/` directory (e.g. Next.js' standalone output) — write
+the lockfiles to an export directory as well, or only there (`BUNDLE_LOCKFILE_INLINE=0`, which also keeps
+them out of served directories), and install that directory:
+
+```yaml
+  environment:
+    NODE_OPTIONS: "--require /usr/lib/bundle-lockfile/register.cjs"
+    BUNDLE_LOCKFILE_EXPORT_DIR: /home/build/bundle-lockfile-export
+    BUNDLE_LOCKFILE_EXPORT_BASE: /home/build
+    BUNDLE_LOCKFILE_INLINE: "0"
+
+pipeline:
+  - runs: |
+      make build                 # e.g. webpack into ui/dist, then go build embedding it
+      mkdir -p ${{targets.contextdir}}/usr/share/myapp/bundle-lockfile
+      cp -r /home/build/bundle-lockfile-export/. ${{targets.contextdir}}/usr/share/myapp/bundle-lockfile/
+```
+
+Each lockfile lands at `<export dir>/<its path in the output>`, here
+`usr/share/myapp/bundle-lockfile/ui/dist/bundle-lockfile/package-lock.json` — relative to
+`BUNDLE_LOCKFILE_EXPORT_BASE` when the output is below it, else its absolute path without the leading `/`.
+
 ### Without NODE_OPTIONS
 
 The webpack plugin can also be added to a config directly:
@@ -178,8 +212,12 @@ packages stay.
 The lockfile is added after webpack 5's `processAssets` stages, so plugins that work on the assets there
 (e.g. compression-webpack-plugin) do not get it; if a plugin deletes it later (compression-webpack-plugin's
 `deleteOriginalAssets` on webpack 4, which runs in the `emit` hook), it is emitted again.
-This works for compilers in the same process; separate processes writing to one directory (e.g. two
-`webpack` commands run by `concurrently`) overwrite each other's lockfile.
+Compilers in separate processes writing to one directory (e.g. two `webpack` commands run by `concurrently`
+or `run-p`) share the lockfile the same way: it records, in a `"bundle-lockfile"` field, which writer put which
+packages and files there, and each process keeps the others' packages as long as some of their files are there
+(the writes are serialized with a `package-lock.json.lock` file next to it). The field has no machine-specific
+paths; tools that read `package-lock.json` (syft, npm) ignore it. In-memory output file systems (e.g.
+webpack-dev-server's) are not shared across processes.
 
 ```json
 {
@@ -189,9 +227,21 @@ This works for compilers in the same process; separate processes writing to one 
     "": {},
     "node_modules/debug/node_modules/ms": { "name": "ms", "version": "2.0.0", "license": "MIT" },
     "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" }
+  },
+  "bundle-lockfile": {
+    "v": 1,
+    "context": "../..",
+    "writers": [
+      { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
+        "packages": ["node_modules/debug/node_modules/ms", "node_modules/ms"] }
+    ]
   }
 }
 ```
+
+The `"bundle-lockfile"` field records which compiler ("writer") put which packages there and some of its files
+(paths relative to the lockfile), so that other processes writing the same lockfile can keep them; SBOM tools
+ignore it.
 
 - keys are the packages' real locations (symlinks resolved) relative to webpack's `context`, so nested
   duplicate versions and pnpm / Yarn Plug'n'Play layouts stay distinct. With a `context` below the
@@ -220,7 +270,10 @@ This works for compilers in the same process; separate processes writing to one 
 | Variable | Default | |
 |---|---|---|
 | `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json` — syft only reads files with exactly that name |
-| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (`0` and `false` also mean off) |
+| `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [In a melange package build](#in-a-melange-package-build)) |
+| `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
+| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off`: do not write the lockfile into the output directory, only into the export directory |
+| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (`0`, `false` and `off` also mean off) |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated adapter names to skip, or `all` (case-insensitive) |
 
 ## Supported
@@ -254,6 +307,7 @@ Next does not bundle many packages into the **server** output (Pages Router depe
 
 ```
 src/register.cjs     NODE_OPTIONS entry point: registers the adapters and installs the hooks
+bin/node             node shim for builds whose scripts overwrite NODE_OPTIONS
 src/hooks.cjs        module-load hooks shared by all adapters
 src/core/            bundler-agnostic: source files -> packages -> package-lock.json, merged for
                      compilers that write the same lockfile (outputs.cjs)
@@ -302,6 +356,10 @@ deleting the original assets (webpack 4 and 5), workspace packages (also with
 `resolve.symlinks: false`), subpath manifests, nested and inlined worker-loader workers (webpack 4 and 5),
 a workbox service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin
 (5 and 6 on webpack 4, 14 on webpack 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root.
+Two webpack processes writing to one directory are tested in parallel, with one rebuilt, and with one cleaning
+the other's files; the export directory with and without the inline lockfile (also for Next.js); and build
+scripts that overwrite `NODE_OPTIONS` (inline and with `cross-env`) with the node shim under npm, pnpm, yarn 1,
+yarn 4 and bun.
 
 The devDependencies case also runs a functional SBOM check: it stages the build output like a package
 would install it (`usr/share/app/dist/`), runs `syft scan dir:` with SPDX JSON output, and requires

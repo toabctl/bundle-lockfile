@@ -18,6 +18,8 @@ const variants = {
   alias: () => ['ms', 'debug'].map(dep => ({
     mode: 'production', entry: './src/dep.js', resolve: { alias: { dep } }, output: { ...out, filename: '[name].[contenthash].js' },
   })),
+  // EDGE_SHARED=clean: app empties the directory before writing (output.clean), deleting what sw wrote before
+  clean: () => variants.default().map(c => (c.name === 'app' ? { ...c, output: { ...c.output, clean: true } } : c)),
   // EDGE_SHARED=fullhash: output.path 'dist/[fullhash]' - the same setting, but different directories: nothing shared
   fullhash: () => variants.default().map(c => ({ ...c, output: { ...c.output, path: path.join(out.path, '[fullhash]') } })),
 };

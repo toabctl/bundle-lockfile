@@ -37,9 +37,13 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
+  // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture
+  const exportDir = (c.exportDir || c.exportOnly) && path.join(dir, '.export');
+  if (exportDir) Object.assign(base, { BUNDLE_LOCKFILE_EXPORT_DIR: exportDir, BUNDLE_LOCKFILE_EXPORT_BASE: dir, BUNDLE_LOCKFILE_INLINE: c.exportOnly ? '0' : '1' });
+  if (c.shim) base.PATH = `${path.resolve(__dirname, '../bin')}${path.delimiter}${base.PATH}`; // the node shim first
   // vendored package manager releases of the fixture: $PNPM / $NPM in the case's cmd
   for (const [file, name] of [['.pnpm-bin', 'PNPM'], ['.npm-bin', 'NPM']]) {
     if (fs.existsSync(path.join(dir, file))) base[name] = `node ${path.join(dir, fs.readFileSync(path.join(dir, file), 'utf8').trim())}`;
@@ -65,7 +69,15 @@ function runCase(c) {
 
   const build = run(c.cmd, dir, env);
   if (c.expectOutput && !c.expectOutput.test(build.stdout + build.stderr)) throw new Error(`build output does not match ${c.expectOutput}`);
-  const got = readLockfiles(outDir, c.lockfile);
+  const inline = readLockfiles(outDir, c.lockfile);
+  // with an export dir, its copies are the lockfiles under test; the inline ones must be the same, or absent
+  const lockDir = exportDir ? path.join(exportDir, path.relative(dir, outDir)) : outDir;
+  const got = exportDir ? readLockfiles(lockDir, c.lockfile) : inline;
+  if (exportDir) {
+    const want = c.exportOnly ? {} : got;
+    if (!sameMap(inline, want)) throw new Error(`inline lockfiles${show(inline)}\n  want${show(want) || ' none'}`);
+    notes.push(c.exportOnly ? 'export dir only' : 'export dir = inline');
+  }
   const all = [...new Set(Object.values(got).flat())].sort();
 
   if (c.expect === null) {
@@ -75,7 +87,7 @@ function runCase(c) {
   if (!Object.keys(got).length) throw new Error('no lockfile written');
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectKeys) {
-    const lock = JSON.parse(fs.readFileSync(path.join(outDir, c.lockfile || LOCKFILE), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(lockDir, c.lockfile || LOCKFILE), 'utf8'));
     const keys = Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
     const want = Object.entries(c.expectKeys).map(([k, v]) => `${k} = ${v}`).sort(cmp);
     if (JSON.stringify(keys) !== JSON.stringify(want)) throw new Error(`lockfile keys\n    got:  ${keys.join(', ')}\n    want: ${want.join(', ')}`);
@@ -92,14 +104,18 @@ function runCase(c) {
   if (unwanted.length) throw new Error(`unexpected ${unwanted.join(' ')} in${show(got)}`);
 
   // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)
-  const oracle = path.join(__dirname, 'oracles', `${fx.bundler || 'webpack'}.cjs`);
-  const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
-  const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '' }).trim().split('\n').pop());
-  if (!sameMap(got, truth)) throw new Error(`plugin and oracle disagree\n  plugin:${show(got)}\n  oracle:${show(truth)}`);
-  notes.push(`oracle agrees on ${Object.keys(got).length} output(s)`);
+  if (c.oracle === false) notes.push('no oracle (see case)');
+  else {
+    const oracle = path.join(__dirname, 'oracles', `${fx.bundler || 'webpack'}.cjs`);
+    const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
+    // PATH: not through the node shim, which would inject bundle-lockfile
+    const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
+    if (!sameMap(got, truth)) throw new Error(`plugin and oracle disagree\n  plugin:${show(got)}\n  oracle:${show(truth)}`);
+    notes.push(`oracle agrees on ${Object.keys(got).length} output(s)`);
+  }
 
   if (hasSyft) {
-    const s = JSON.parse(sh(`syft scan dir:${outDir} -q -o json`, dir, base));
+    const s = JSON.parse(sh(`syft scan dir:${lockDir} -q -o json`, dir, base));
     const names = syftIds(s);
     if (!same(names, all)) throw new Error(`syft read ${names.join(' ')}\n  want ${all.join(' ')}`);
     const bad = (s.artifacts || []).filter(p => p.foundBy !== 'javascript-lock-cataloger' || !p.purl.startsWith('pkg:npm/') || !(p.licenses || []).length);

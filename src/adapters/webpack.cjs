@@ -100,33 +100,42 @@ function bundledFiles(compilation) {
 }
 
 // Compilers that write the same files are one writer of a shared lockfile: a new compiler for the same config
-// (a build restarted in the same process) replaces the previous one's packages instead of adding to them -
-// once the previous one is done: closed (webpack >= 5.20 has a shutdown hook), on older versions not running.
-// Until then it is another writer: configs that differ only in what is not compared here (resolve.alias,
-// loader options) can be built side by side into one directory, e.g. with [contenthash] file names.
-// Without a comparable entry (a function), each compiler is a writer of its own.
-const writers = globalThis[Symbol.for('bundle-lockfile.webpack.writers')] ||
-  (globalThis[Symbol.for('bundle-lockfile.webpack.writers')] = { count: 0, claims: new Map() }); // id -> ref(compiler)
+// (a build restarted in the same process, or run again by another process) replaces the previous one's packages
+// instead of adding to them - in this process once the previous one is done: closed (webpack >= 5.20 has a shutdown
+// hook), on older versions not running. Until then it is another writer: configs that differ only in what is not
+// compared here (resolve.alias, loader options) can be built side by side into one directory, e.g. with
+// [contenthash] file names. The id has no paths (the lockfile records it, and must be the same on every machine);
+// the claims are per output directory.
+const writers = globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] ||
+  (globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] = { claims: new Map() }); // dir + id -> ref(compiler)
 const ref = (o) => (typeof WeakRef === 'function' ? new WeakRef(o) : { deref: () => o }); // Node < 14.6: no WeakRef
 const busy = (c) => (c.hooks && c.hooks.shutdown ? !c[CLOSED] : !!c.running);
 function writerOf(compiler) {
   if (compiler[WRITER]) return compiler[WRITER];
   const o = compiler.options || {}, out = o.output || {};
-  const plain = (v) => (typeof v === 'function' || v === undefined ? null : v);
-  let base = null;
-  try {
-    if (plain(o.entry) !== null) base = JSON.stringify([compiler.outputPath, compiler.name || null, o.entry, plain(o.target), plain(out.filename), plain(out.chunkFilename)]);
-  } catch { /* not comparable, e.g. a BigInt in an entry option */ }
-  if (base === null) return (compiler[WRITER] = `#${++writers.count}`);
+  const plain = (v) => (typeof v === 'function' ? '(function)' : v === undefined ? null : v);
+  let base;
+  try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)]); }
+  catch { base = JSON.stringify([compiler.name || null, '(not comparable)']); } // e.g. a BigInt in an entry option
   let id = base;
   for (let n = 2; ; n++) {
-    const prev = writers.claims.has(id) && writers.claims.get(id).deref();
-    if (!prev || prev === compiler || !busy(prev)) break;
+    const claim = `${compiler.outputPath}\0${id}`;
+    const prev = writers.claims.has(claim) && writers.claims.get(claim).deref();
+    if (!prev || prev === compiler || !busy(prev)) { writers.claims.set(claim, ref(compiler)); break; }
     id = `${base}#${n}`;
   }
-  writers.claims.set(id, ref(compiler));
   if (compiler.hooks && compiler.hooks.shutdown) compiler.hooks.shutdown.tap(NAME, () => { compiler[CLOSED] = true; });
   return (compiler[WRITER] = id);
+}
+
+// The output is on the real disk, where other processes may write the same lockfile: webpack's own Node file system
+// (webpack 5: its graceful-fs; webpack 4: NodeOutputFileSystem), not e.g. webpack-dev-middleware's in-memory one.
+function onDisk(compiler, compilerFile) {
+  const fsys = compiler.outputFileSystem;
+  if (!fsys) return false;
+  if (fsys.constructor && fsys.constructor.name === 'NodeOutputFileSystem') return true;
+  if (!compilerFile) return false;
+  try { return fsys === require(require.resolve('graceful-fs', { paths: [path.dirname(compilerFile)] })); } catch { return false; }
 }
 
 // The directory webpack writes a compilation's assets to: output.path can hold placeholders, e.g. [fullhash].
@@ -194,7 +203,7 @@ class BundleLockfilePlugin {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
     return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesForFiles([...bundled, ...extra]),
-      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)));
+      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler, this.compilerFile) });
   }
 
   emit(compilation, write) {
@@ -217,14 +226,14 @@ class BundleLockfilePlugin {
         this.emit(compilation, (json) => {
           const src = RawSource ? new RawSource(json) : { source: () => json, size: () => Buffer.byteLength(json) };
           compilation[SOURCE] = { src, early: new Set([...assetNames(compilation), this.file]) };
-          add(compilation, src);
+          if (config.inline) add(compilation, src); // else only the export copy, written in afterEmit
         });
       });
     });
     // Plugins that delete assets in the emit hook (compression-webpack-plugin <= 6 with deleteOriginalAssets
     // on webpack 4): put the lockfile back, after them.
     compiler.hooks.emit.tap({ name: NAME, stage: 1000 }, (compilation) => {
-      if (!compilation[SOURCE] || hasAsset(compilation, this.file)) return;
+      if (!config.inline || !compilation[SOURCE] || hasAsset(compilation, this.file)) return;
       config.debug('webpack: lockfile asset was deleted by another plugin, emitting it again:', this.file);
       add(compilation, compilation[SOURCE].src);
     });
@@ -252,7 +261,10 @@ class BundleLockfilePlugin {
           try { this.lockfile(compilation, [...copied.values()]); write = true; } catch (e) { config.warn('webpack: could not write lockfile:', e); }
         }
         outputs.emitted(file, writer);
-        if (!write && !outputs.isShared(file)) return callback();
+        // the inline file again: late copies added packages, or other compilers write it too; the export copy
+        // (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
+        const inline = config.inline && (write || outputs.isShared(file));
+        if (!inline && !outputs.exportPath(file)) return callback();
         // lstat: a symbolic link asset (webpack >= 5.111) is there also if what it points at is not.
         // webpack 4's output file system has neither (nor output.clean). Anything but "not found" counts as
         // there: when in doubt, keep the packages
@@ -262,7 +274,7 @@ class BundleLockfilePlugin {
           try { fsys[stat](f, (err) => cb(!err || err.code !== 'ENOENT')); } catch { cb(true); }
         };
         outputs.prune(file, writer, exists, () => {
-          outputs.rewrite(file, (json, done) => fsys.writeFile(file, json, done), (err) => {
+          outputs.rewrite(file, inline ? (json, done) => fsys.writeFile(file, json, done) : null, (err) => {
             if (err) config.warn('webpack: could not write lockfile:', err);
             callback();
           });
