@@ -67,6 +67,13 @@ function runCase(c) {
   }
   if (c.installed) notes.push(`${c.installed.length} packages installed`);
 
+  if (c.expectError) { // a known failure of the build tool: the build must fail, with this output
+    const r = spawnSync('sh', ['-c', c.cmd], { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 << 20, timeout: TIMEOUT });
+    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    if (r.status === 0) throw new Error(`"${c.cmd}" succeeded, expected it to fail with ${c.expectError}`);
+    if (!c.expectError.test(out)) throw new Error(`"${c.cmd}" failed, but its output does not match ${c.expectError}\n${out.split('\n').slice(-15).join('\n')}`);
+    return `failed as expected (${c.expectError})`;
+  }
   const build = run(c.cmd, dir, env);
   if (c.expectOutput && !c.expectOutput.test(build.stdout + build.stderr)) throw new Error(`build output does not match ${c.expectOutput}`);
   const inline = readLockfiles(outDir, c.lockfile);
