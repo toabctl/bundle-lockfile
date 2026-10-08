@@ -7,8 +7,9 @@ const distDir = oraclePlugin && !process.env.NEXT_EXPORT ? '.next-oracle' : '.ne
 
 module.exports = {
   distDir,
-  // NEXT_EXPORT=1: a static export into out/
+  // NEXT_EXPORT=1: a static export into out/; NEXT_STANDALONE=1: a standalone server in .next/standalone
   ...(process.env.NEXT_EXPORT && { output: 'export' }),
+  ...(process.env.NEXT_STANDALONE && { output: 'standalone' }),
   ...(oraclePlugin && {
     webpack(config) {
       const Plugin = require(oraclePlugin);

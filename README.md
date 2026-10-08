@@ -713,7 +713,8 @@ adapter-node and adapter-netlify (serverless and edge functions), are compared w
 source maps into other directories and follows the maps of the files the adapters bundle again; a server dependency
 must not be listed (except in an edge function, which bundles it). Next.js 12–16 are compared
 per compiler output with webpack's stats: a Pages Router app on each, an App Router app with server and client
-components, an edge route handler and middleware on 15 and 16, a static export (`output: 'export'`) on 16, and another
+components, an edge route handler and middleware on 15 and 16, a static export (`output: 'export'`), a standalone output
+(`output: 'standalone'`, which gets no lockfile) and a warm build from `.next/cache` on 16, and another
 `--require` preload next to bundle-lockfile's (Next 15 fails, as described above; 16.4 builds).
 
 ### Comparison with the CycloneDX webpack plugin
