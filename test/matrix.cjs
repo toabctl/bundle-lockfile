@@ -166,6 +166,9 @@ const fixtures = {
   'edge-vanilla': edge('edge-vanilla', { '@vanilla-extract/css': '1.21.2', '@vanilla-extract/webpack-plugin': '2.3.27',
     'mini-css-extract-plugin': '2.10.2', 'css-loader': '7.1.5', 'lodash-es': '4.18.1' }),
   'edge-context': edge('edge-context', { debug: '2.6.9', ms: '2.1.3' }),
+  // a webpack build (ms) and a Vite build (nanoid) into one dist/, as separate processes
+  'mixed-output': { app: 'mixed-output', bundler: 'mixed', installer: { type: 'npm' },
+    deps: { ...WEBPACK, vite: '8.3.3', ms: '2.1.3', nanoid: '3.3.20' } },
   'rspack2': { app: 'rspack', bundler: 'rspack', installer: { type: 'npm' }, deps: { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8', 'lodash-es': '4.18.1' },
     packageJson: { scripts: { build: 'rspack build' } } },
   'next12': next('12.3.7', '18.3.1'),
@@ -582,6 +585,10 @@ const cases = [
     expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'is-number@7.0.0', 'next@15.5.27'] },
   { name: 'Next.js 16.4.0 --webpack App Router, edge route handler, middleware', ...nextCase('next16-app', '16.4.0', '19.3.0', '--webpack'),
     expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'is-number@7.0.0', 'next@16.4.0'] },
+  // a Vite and a webpack process writing one output dir: one lockfile with both (writers of different bundlers, with
+  // different contexts); each one run again keeps the other's packages
+  { name: 'edge: a Vite and a webpack process, one output dir, then each of them again', fixture: 'mixed-output',
+    cmd: `${VITE_BIN} build && ${WEBPACK_BIN} && ${VITE_BIN} build && ${WEBPACK_BIN}`, expect: ['ms@2.1.3', 'nanoid@3.3.20'] },
   // rspack, which bundle-lockfile does not support (yet): not hooked, the build is not affected
   { name: 'rspack 2.2.8 (unsupported: no lockfile)', fixture: 'rspack2', cmd: 'npm run -s build', expect: null },
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
