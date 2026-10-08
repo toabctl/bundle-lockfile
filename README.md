@@ -667,7 +667,7 @@ alongside.
 The Vite cases cover Vite 8 with npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun and
 Vite 7 with npm and yarn 4 Plug'n'Play, Vite 6 and 5 with npm (also their watch mode and vite-plugin-singlefile), the
 loader-thread hooks on Node.js 24 too,
-`vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a build script overwriting `NODE_OPTIONS`
+`vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite`, a failing adapter (also in Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS`
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
 island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
