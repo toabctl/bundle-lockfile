@@ -16,6 +16,13 @@ const vite = path.resolve('node_modules/vite/bin/vite.js');
 const r = spawnSync(process.execPath, [vite, 'build', ...args, '--sourcemap', '--outDir', out, '--emptyOutDir'], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
 if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
 
+// Relative sources are relative to the map in most maps, but not in all: a worker's map (in assets/) is relative to
+// the output dir, workbox's (sw.js, workbox-<hash>.js) to the project, plugin-legacy's polyfills to the output dir of
+// its nested build (below node_modules/@vitejs/plugin-legacy). The first candidate that exists is the source.
+const resolveSource = (map, root, s) => {
+  const candidates = [path.resolve(path.dirname(map), root, s), path.resolve(out, s), path.resolve(s), path.resolve('node_modules', s.replace(/^(\.\.\/)+/, ''))];
+  return candidates.find(f => fs.existsSync(f)) || candidates[0];
+};
 const files = new Set();
 const walk = (d) => {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -23,7 +30,7 @@ const walk = (d) => {
     if (e.isDirectory()) walk(p);
     else if (e.name.endsWith('.map')) {
       const m = JSON.parse(fs.readFileSync(p, 'utf8'));
-      for (const s of m.sources || []) files.add(path.resolve(path.dirname(p), m.sourceRoot || '', s.split('?')[0]));
+      for (const s of m.sources || []) files.add(resolveSource(p, m.sourceRoot || '', s.split('?')[0]));
     }
   }
 };

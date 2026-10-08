@@ -37,6 +37,18 @@ const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/pres
 const VITE_SPA = { 'lodash-es': '4.18.1', debug: '2.6.9', ms: '2.1.3', 'normalize.css': '8.0.1' };
 const vite = (version, installer = { type: 'npm' }) => ({ app: 'vite-spa', bundler: 'vite', installer,
   deps: { vite: version, ...VITE_SPA }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
+// output that reaches dist/ besides the build's chunks: workers (separate and inlined), a CSS @import from a package,
+// legacy polyfills, workbox's service worker, a static copy from node_modules. Transitive packages that end up in the
+// output are pinned (core-js, systemjs: plugin-legacy; workbox-*: vite-plugin-pwa)
+const FEATURES = { 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20', 'sanitize.css': '13.0.0', 'normalize.css': '8.0.1',
+  terser: '5.51.2', 'core-js': '3.50.0', systemjs: '6.15.1', 'vite-plugin-pwa': '2.0.0', 'workbox-build': '7.4.1', 'workbox-window': '7.4.1',
+  'vite-plugin-static-copy': '4.1.1' };
+const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', installer: { type: 'npm' },
+  deps: { vite: version, '@vitejs/plugin-legacy': legacy, ...FEATURES }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
+// the rollup command line (Rollup's CommonJS build)
+const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'npm' },
+  deps: { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
+  packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
 // GitLab's / Element's shape: a library built by Vite into one file, bundled by webpack as a first-party file
 const ISLAND = { vite: '8.3.3', 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20' };
 const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', installer: { type: 'npm' }, deps: { ...webpackDeps, ...ISLAND },
@@ -46,6 +58,9 @@ const fixtures = {
   'vite8-npm': vite('8.3.3'),
   'vite7-npm': vite('7.3.7'),
   'vite8-pnpm10': vite('8.3.3', { type: 'pnpm', version: '10.34.6' }),
+  'vite8-features': features('8.3.3', '8.2.3'),
+  'vite7-features': features('7.3.7', '7.2.1'),
+  'rollup-cli': rollupCli,
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
@@ -107,6 +122,11 @@ const fixtures = {
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
+// the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
+const FEATURES_EXPECT = ['core-js@3.50.0', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'sanitize.css@13.0.0',
+  'systemjs@6.15.1', 'workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'workbox-routing@7.4.1', 'workbox-strategies@7.4.1'];
+// not in source maps: CSS (sanitize.css), the copy (normalize.css)
+const FEATURES_MISSING = ['normalize.css@8.0.1', 'sanitize.css@13.0.0'];
 const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'yallist@5.0.0'];
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
@@ -319,6 +339,14 @@ const cases = [
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
   { name: 'Vite 8.3.3, export dir only', fixture: 'vite8-npm', cmd: 'npm run -s build', exportOnly: true, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // workers, CSS @import, legacy polyfills, workbox's sw.js (written after the build), static copy from node_modules
+  { name: 'Vite 8.3.3: workers, CSS @import, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite8-features', cmd: 'npm run -s build',
+    expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  { name: 'Vite 7.3.7: workers, CSS @import, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite7-features', cmd: 'npm run -s build',
+    expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
   // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
   { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by webpack 4', fixture: 'nested-island-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
