@@ -272,6 +272,7 @@ function nextCase(fixture, version, react, flags = '') {
 //   env        extra environment variables
 //   expect     expected name@version list of the single output, or null = no lockfile must be written
 //   expectIncludes / expectExcludes  packages that must / must not appear in any output (multi-compiler builds)
+//   expectIn   { "<output dir relative to outDir>": [name@version, ...] }: exactly these outputs with these packages
 //   outDir     where the bundler writes (default dist); every lockfile below it is checked against the oracle
 //   oracleArgs extra arguments for the oracle (e.g. next build flags)
 //   installed  name@version that must be installed in the fixture's node_modules (checked before the build)
@@ -510,6 +511,27 @@ const cases = [
   }),
   { name: 'Vite 6.4.4: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite6-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  // build modes. build.write false: Vite writes nothing (a tool takes the output from Vite's API), neither does bundle-lockfile
+  { name: 'Vite 8.3.3, build.write false (no lockfile)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { VITE_WRITE_FALSE: '1' }, expect: null },
+  // library mode with two formats: two outputs of one build in one directory, one lockfile
+  { name: 'Vite 8.3.3, library mode with two formats', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { VITE_LIB: '1' }, expect: VITE_EXPECT,
+    oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7, library mode with two formats', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { VITE_LIB: '1' }, expect: VITE_EXPECT,
+    oracleMissing: ['normalize.css@8.0.1'] },
+  // an SSR build keeps the dependencies external (the server loads them from node_modules): none of them is listed;
+  // with ssr.noExternal it bundles them. normalize.css is listed although an SSR build emits no CSS (README: listed
+  // although not shipped; a plugin can also put CSS into the JavaScript, so its style modules count)
+  { name: 'Vite 8.3.3, SSR build (vite build --ssr): dependencies external', fixture: 'vite8-npm', cmd: './node_modules/.bin/vite build --ssr src/main.js',
+    oracleArgs: '--ssr src/main.js', expect: ['normalize.css@8.0.1'], oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, SSR build with ssr.noExternal', fixture: 'vite8-npm', cmd: './node_modules/.bin/vite build --ssr src/main.js', env: { VITE_SSR_NOEXTERNAL: '1' },
+    oracleArgs: '--ssr src/main.js', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7, SSR build with ssr.noExternal', fixture: 'vite7-npm', cmd: './node_modules/.bin/vite build --ssr src/main.js', env: { VITE_SSR_NOEXTERNAL: '1' },
+    oracleArgs: '--ssr src/main.js', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // vite build --app: one build per environment, each with its lockfile (client: the app; server: the SSR build, its
+  // dependencies external). No oracle: it builds one environment into one directory; the cases above compare the
+  // same client and SSR builds with it
+  ...['8.3.3', '6.4.4'].map(v => ({ name: `Vite ${v}, vite build --app (client and SSR environments)`, fixture: `vite${v[0]}-npm`,
+    cmd: './node_modules/.bin/vite build --app', env: { VITE_APP: '1' }, expectIn: { client: VITE_EXPECT, server: ['normalize.css@8.0.1'] }, oracle: false })),
   // a programmatic build from a package without a dependency on Vite (tools/build.mjs): hooked with the in-thread hooks;
   // older Node versions install the loader-thread ones there only with BUNDLE_LOCKFILE_ESM_HOOKS=async (CI's Node 22 job)
   { name: `Vite 8.3.3, programmatic build from a package without Vite (Node ${process.versions.node}: ${SYNC_HOOKS ? 'hooked' : 'not hooked'})`,
