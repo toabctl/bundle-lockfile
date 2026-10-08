@@ -656,7 +656,8 @@ The webpack cases cover, besides installers and versions, watch-mode rebuilds (a
 import, whose packages must leave the lockfile, then one with it again), warm builds from webpack's persistent
 cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, npm aliases and one version at several
 paths, Yarn's global cache, packages with peer dependencies (Yarn Plug'n'Play's virtual paths, pnpm's peer-suffixed
-directories; also with Vite), Babel-injected helpers, CSS and asset modules from packages, style sheets loaders inline
+directories; also with Vite), Babel-injected helpers, CSS and asset modules from packages (also webpack 5's native CSS and `asset/inline`), module
+federation (a host, a remote, a shared package), style sheets loaders inline
 from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent cache), a DLL, two compilers sharing an
 output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing
 watch rebuild), two compilers whose `output.path` with `[fullhash]` resolves to different directories,
