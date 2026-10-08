@@ -640,7 +640,8 @@ code with the adapters; a case names the packages its oracle cannot see (CSS-onl
 source maps), or says why it has none — and, if `syft` is on `PATH`, that syft reads exactly those packages. The other
 cases check that no lockfile is written.
 
-The webpack cases cover, besides installers and versions, watch-mode rebuilds, warm builds from webpack's persistent
+The webpack cases cover, besides installers and versions, watch-mode rebuilds (as in every watch case: one without an
+import, whose packages must leave the lockfile, then one with it again), warm builds from webpack's persistent
 cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, npm aliases and one version at several
 paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, a DLL, two compilers sharing an
 output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing

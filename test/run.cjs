@@ -95,7 +95,7 @@ function runCase(c) {
   }
   if (c.watchBuilds) {
     const builds = JSON.parse(build.stdout.trim().split('\n').pop());
-    if (builds.length !== c.watchBuilds || !builds.every(b => same(b, c.expect))) throw new Error(`watch builds: ${JSON.stringify(builds)}, want ${c.watchBuilds} x ${c.expect.join(' ')}`);
+    if (builds.length !== c.watchBuilds.length || !builds.every((b, i) => same(b, c.watchBuilds[i]))) throw new Error(`watch builds: ${JSON.stringify(builds)}, want ${JSON.stringify(c.watchBuilds)}`);
     notes.push(`${builds.length} watch builds`);
   }
   const missing = (c.expectIncludes || []).filter(p => !all.includes(p));

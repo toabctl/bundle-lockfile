@@ -3,8 +3,9 @@
 //   rollup          rollup() + write()
 //   rolldown        rolldown() + write()
 //   rolldown-build  Rolldown's build()
-//   rollup-watch, rolldown-watch  watch(): builds, rebuilds once after src/main.js is written again (same bytes); the
-//                   lockfile is deleted before every build; prints the package list of every build as JSON last
+//   rollup-watch, rolldown-watch  watch(): builds, rebuilds without src/main.js's nanoid lines (nanoid must leave the
+//                   lockfile), rebuilds with them (it must come back); the lockfile is deleted before every build;
+//                   prints the package list of every build as JSON last. src/main.js is restored also on failure
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -30,6 +31,9 @@ if (mode === 'rollup') {
 } else if (mode === 'rollup-watch' || mode === 'rolldown-watch') {
   const { watch } = await import(mode === 'rollup-watch' ? 'rollup' : 'rolldown');
   const options = mode === 'rollup-watch' ? await rollupOptions() : rolldownOptions;
+  const source = fs.readFileSync(input, 'utf8');
+  process.on('exit', () => fs.writeFileSync(input, source));
+  const without = source.split('\n').filter(l => !l.includes('nanoid')).join('\n');
   const builds = [];
   setTimeout(() => fail(`${mode}: timed out after ${builds.length} build(s)`), 120000).unref();
   fs.rmSync(lockfile, { force: true });
@@ -41,12 +45,13 @@ if (mode === 'rollup') {
     if (!fs.existsSync(lockfile)) fail(`${mode}: build ${builds.length + 1} did not write the lockfile`);
     const lock = JSON.parse(fs.readFileSync(lockfile, 'utf8'));
     builds.push(Object.entries(lock.packages).filter(([k]) => k).map(([, p]) => `${p.name}@${p.version}`).sort());
-    if (builds.length === 1) {
-      fs.rmSync(lockfile);
-      setTimeout(() => fs.writeFileSync(input, fs.readFileSync(input)), 200); // after the watcher has settled
+    if (builds.length === 3) {
+      await watcher.close();
+      console.log(JSON.stringify(builds));
       return;
     }
-    await watcher.close();
-    console.log(JSON.stringify(builds));
+    fs.rmSync(lockfile);
+    const next = builds.length === 1 ? without : source;
+    setTimeout(() => fs.writeFileSync(input, next), 200); // after the watcher has settled
   });
 } else fail(`unknown mode ${mode}`);

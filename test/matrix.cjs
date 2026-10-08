@@ -157,7 +157,11 @@ const fixtures = {
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
 // both pages of vite-spa (vite.config.mjs and vite.second.config.mjs)
 const VITE_BOTH = [...VITE_EXPECT, 'is-number@7.0.0'].sort();
+// watch mode: the build, the rebuild without the lazy chunk (ms@2.1.3), the rebuild with it again
+const VITE_WATCH_BUILDS = [VITE_EXPECT, VITE_EXPECT.filter(p => p !== 'ms@2.1.3'), VITE_EXPECT];
 const ROLLUP_API = ['lodash-es@4.18.1', 'nanoid@3.3.20'];
+// watch modes: the build, the rebuild without nanoid, the rebuild with it again
+const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
@@ -179,10 +183,12 @@ const PROJECT_LOCK = '/usr/share/app/package-lock.json';
 const LEGACY_SSL = '--openssl-legacy-provider'; // webpack 4 hashes with md4
 const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+// watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 // `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
-const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs`;
+// (rebuilt without src/main.js's lazy import, whose chunk has ms@2.1.3, then with it again)
+const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "import('./lazy.js')"`;
 // vite-spa's two builds as two processes at the same time, into one dist/ (with VITE_SHARED=1)
 const VITE_BIN = './node_modules/.bin/vite';
 const PARALLEL_VITE = `${VITE_BIN} build & a=$!; ${VITE_BIN} build --config vite.second.config.mjs & b=$!; wait $a && wait $b`;
@@ -220,7 +226,7 @@ function nextCase(fixture, version, react, flags = '') {
 //   expectOutput  RegExp the build's stdout+stderr must match
 //   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
 //   expectKeys {lockfile key: name@version} - exactly the keys of the single output
-//   watchBuilds  the cmd prints a JSON list of per-build package lists last; there must be this many, each = expect
+//   watchBuilds  the cmd prints a JSON list of per-build package lists last; it must be this list of lists
 //   exportDir  BUNDLE_LOCKFILE_EXPORT_DIR=<fixture>/.export: its copies are checked and must equal the inline lockfiles
 //   exportOnly the same with BUNDLE_LOCKFILE_INLINE=0: no inline lockfile may be written
 //   shim       put bin/ (the node shim) first in PATH
@@ -236,7 +242,9 @@ const cases = [
   { name: 'BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
     lockfile: 'sbom/package-lock.json', expect: W5 },
   // build modes
-  { name: 'watch mode: every rebuild emits the lockfile', fixture: 'wp5-npm', cmd: WATCH, expect: W5, watchBuilds: 2 },
+  // rebuilt without the async chunk's import('nanoid'), then with it: nanoid leaves the lockfile and comes back
+  { name: 'watch mode: every rebuild emits the lockfile, with the packages of that build', fixture: 'wp5-npm', cmd: `${WATCH} src/index.js "import('nanoid')"`,
+    expect: W5, watchBuilds: [W5, W5.filter(p => !p.startsWith('nanoid@')), W5] },
   { name: 'persistent cache: warm build = cold build', fixture: 'wp5-npm', env: { EDGE_CACHE: '1' }, expect: W5, cmd: WARM },
   // modules restored from the cache do not rerun their loaders, and worker-loader runs its child compilers in one
   { name: 'persistent cache with child compilers (worker-loader): warm build = cold build', fixture: 'edge-worker', env: { EDGE_CACHE: '1' }, expect: WORKERS, cmd: WARM },
@@ -348,7 +356,7 @@ const cases = [
     cmd: `${WEBPACK_BIN} --config-name sw && ${WEBPACK_BIN} --config-name app`, expect: ['ms@2.1.3'], oracle: false },
   // a failed rebuild is not emitted: the lockfile keeps the packages of the output still in dist/
   { name: 'edge: two compilers, one output dir, watch mode with a failing rebuild', fixture: 'edge-shared-output', cmd: WATCH_FAIL,
-    expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'], watchBuilds: 3 },
+    expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'], watchBuilds: [1, 2, 3].map(() => ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3']) },
   { name: 'edge: compression-webpack-plugin with deleteOriginalAssets', fixture: 'edge-compression', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1'] },
   { name: 'edge: compression-webpack-plugin 6 with deleteOriginalAssets, webpack 4', fixture: 'edge-compression-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: ['lodash-es@4.18.1'] },
@@ -412,9 +420,11 @@ const cases = [
   { name: 'Vite 8.3.3, yarn 4.18.1 node-modules linker', fixture: 'vite8-yarn4-node-modules', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, bun', fixture: 'vite8-bun', cmd: 'bun run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // vite build --watch: Rolldown's watch() (Vite 8), Rollup's (Vite 7); every rebuild writes the lockfile
-  { name: 'Vite 8.3.3 watch mode: every rebuild writes the lockfile', fixture: 'vite8-npm', cmd: VITE_WATCH, expect: VITE_EXPECT, watchBuilds: 2,
+  { name: 'Vite 8.3.3 watch mode: every rebuild writes the lockfile, with the packages of that build', fixture: 'vite8-npm', cmd: VITE_WATCH, expect: VITE_EXPECT,
+    watchBuilds: VITE_WATCH_BUILDS,
     oracleMissing: ['normalize.css@8.0.1'] },
-  { name: 'Vite 7.3.7 watch mode: every rebuild writes the lockfile', fixture: 'vite7-npm', cmd: VITE_WATCH, expect: VITE_EXPECT, watchBuilds: 2,
+  { name: 'Vite 7.3.7 watch mode: every rebuild writes the lockfile, with the packages of that build', fixture: 'vite7-npm', cmd: VITE_WATCH, expect: VITE_EXPECT,
+    watchBuilds: VITE_WATCH_BUILDS,
     oracleMissing: ['normalize.css@8.0.1'] },
   // the build script overwrites NODE_OPTIONS: no lockfile, unless the node shim is first in PATH (also on Node 22, whose
   // loader-thread hooks are installed only in a process of a package that uses Vite)
@@ -440,10 +450,12 @@ const cases = [
   // Rollup's and Rolldown's JavaScript APIs (build.mjs). The oracle is the same build with Rollup's command line and
   // source maps (rollup.config.mjs), also for Rolldown's builds: the same packages
   { name: 'Rollup 4 JavaScript API: rollup()', fixture: 'rollup-api', cmd: 'node build.mjs rollup', expect: ROLLUP_API },
-  { name: 'Rollup 4 JavaScript API: watch(), every rebuild writes the lockfile', fixture: 'rollup-api', cmd: 'node build.mjs rollup-watch', expect: ROLLUP_API, watchBuilds: 2 },
+  { name: 'Rollup 4 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rollup-watch',
+    expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: build()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-build', expect: ROLLUP_API },
-  { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch', expect: ROLLUP_API, watchBuilds: 2 },
+  { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch',
+    expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
   { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rolldown', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', env: { BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, expect: null },
   // the rolldown command line imports Rolldown's internal chunk, not its entry module, which the hooks wrap
