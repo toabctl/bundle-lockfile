@@ -232,6 +232,7 @@ function nextCase(fixture, version, react, flags = '') {
 //   shim       put bin/ (the node shim) first in PATH
 //   oracle     false: no oracle comparison (the case's shape cannot be built by the oracle)
 //   oracleScript  the oracle (test/oracles/<name>.cjs) if not the fixture's bundler's
+//   maxNode    the newest Node.js major the build tool runs on: skipped (and reported) on newer ones (say why at the case)
 //   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
 const cases = [
@@ -502,7 +503,9 @@ const cases = [
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && echo "/* changed */" >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js',
     expect: ['lodash-es@4.18.1'], oracle: false },
   // Next.js
-  { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1') },
+  // Next 12's own build fails on Node.js >= 25, also without bundle-lockfile: its compiled jsonwebtoken (through
+  // buffer-equal-constant-time) reads require('buffer').SlowBuffer.prototype, and Node.js 25 removed SlowBuffer
+  { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1'), maxNode: 24 },
   { name: 'Next.js 13.5.11', ...nextCase('next13', '13.5.11', '18.3.1') },
   { name: 'Next.js 14.2.35', ...nextCase('next14', '14.2.35', '18.3.1') },
   { name: 'Next.js 15.5.27', ...nextCase('next15', '15.5.27', '19.3.0') },

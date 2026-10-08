@@ -164,11 +164,14 @@ function sbomScenario(c, sc, dir, env) {
   return `SBOM "${sc.name}": ${got.map(p => `${p.name}@${p.version}`).join(' ')}`;
 }
 
-let failed = 0;
+let failed = 0, skipped = 0;
 const selected = cases.filter(c => inShard.has(c.fixture) && (!filter || new RegExp(filter).test(c.name)));
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
 if (!hasSyft) console.log('note: syft not on PATH, skipping syft checks');
 for (const c of selected) {
+  // the build tool itself does not run on this Node.js (the case says why)
+  if (c.maxNode && NODE_MAJOR > c.maxNode) { skipped++; console.log(`SKIP  ${c.name}: needs Node.js <= ${c.maxNode}, this is ${process.versions.node}`); continue; }
   try { console.log(`PASS  ${c.name}: ${runCase(c)}`); } catch (e) { failed++; console.log(`FAIL  ${c.name}: ${e.message}`); }
 }
-console.log(`\n${selected.length - failed}/${selected.length} passed`);
+console.log(`\n${selected.length - failed - skipped}/${selected.length - skipped} passed${skipped ? `, ${skipped} skipped` : ''}`);
 process.exit(failed ? 1 : 0);

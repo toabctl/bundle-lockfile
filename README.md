@@ -401,8 +401,9 @@ attributed.
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node; see [SvelteKit](#sveltekit) |
 | Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line; not the `rolldown` command line yet |
 
-Tested on Node.js 24, and 22 for Vite, Rollup, Rolldown, nested bundles and SvelteKit (Wolfi's `nodejs-24` and
-`nodejs-22`), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
+Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles and SvelteKit (Wolfi's `nodejs-24`,
+`nodejs-26` and `nodejs-22`; Next.js 12 itself does not build on Node.js 25 and later, which removed the `SlowBuffer`
+its compiled `jsonwebtoken` uses), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, direct `node_modules/.bin`
 calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), pnpm
 8/9/10/11/12 and bun for webpack, and npm, npx, pnpm 10, yarn 1, yarn 4 (Plug'n'Play and node-modules linker) and bun
 for Vite — see [`test/matrix.cjs`](test/matrix.cjs). yarn 2 is not tested: it calls `util.isDate`, which Node.js 23
@@ -613,7 +614,7 @@ under `test/apps/`, an oracle under `test/oracles/` and rows to `test/matrix.cjs
 
 ## Tests
 
-The unit tests run anywhere, in a few seconds:
+The unit tests run anywhere, in a few seconds (CI: on Node.js 22, 24 and 26):
 
 ```sh
 node --test test/unit.cjs
