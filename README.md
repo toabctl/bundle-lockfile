@@ -402,7 +402,7 @@ attributed.
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
 | Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown 1) | |
-| SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node; see [SvelteKit](#sveltekit) |
+| SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node, adapter-netlify (edge functions with adapter-netlify 7); see [SvelteKit](#sveltekit) |
 | Rollup, Rolldown | Rollup 4, Rolldown 1 | builds through their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line; not the `rolldown` command line yet |
 
 Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles and SvelteKit (Wolfi's `nodejs-24`,
@@ -445,6 +445,11 @@ packages; `server/`: what the server bundles). The adapter then fills `build/`:
   lockfile; adapter-node 5 (SvelteKit 2) bundles the server output once more with Rollup into `build/`, whose lockfile
   lists what is bundled there, including the server output's packages (as a nested bundle) and adapter-node's own
   files, which it copies to `.svelte-kit/adapter-node/` before bundling them (see copies out of packages above).
+- adapter-netlify copies the client output, with its lockfile, to `build/` and, for a serverless function, the server
+  output, with its lockfile, to `.netlify/server/` (5, SvelteKit 2) or `.netlify/v1/server/` (7, SvelteKit 3). An edge
+  function (`edge: true`) bundles the server output with all its dependencies: adapter-netlify 7 with Rolldown, whose
+  lockfile in `.netlify/v1/edge-functions/` lists them and adapter-netlify's own files (copied, see above);
+  adapter-netlify 5 with esbuild, which is not supported (no lockfile).
 
 Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
 `dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile —
@@ -694,9 +699,10 @@ style sheet bundled whole by Vite 8 and in parts (only its style sheet, only its
 CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa (generateSW; injectManifest on Vite 7 and 8) and vite-plugin-static-copy (Vite 6, 7 and 8), and Tailwind CSS 4 with @tailwindcss/vite. The
 `rollup` command line has its own cases (also `rollup -c -w` and a TypeScript config), and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked); the
-`rolldown` command line writes no lockfile (not supported yet), nor does an rspack build (its builds are not affected). SvelteKit 2 and 3, each with adapter-static and
-adapter-node, are compared with an oracle that builds again with source maps into other directories and follows the
-maps of the files adapter-node 5 bundles again; a server dependency must not be listed. Next.js 12–16 are compared
+`rolldown` command line writes no lockfile (not supported yet), nor does an rspack build (its builds are not affected). SvelteKit 2 and 3, each with adapter-static,
+adapter-node and adapter-netlify (serverless and edge functions), are compared with an oracle that builds again with
+source maps into other directories and follows the maps of the files the adapters bundle again; a server dependency
+must not be listed (except in an edge function, which bundles it). Next.js 12–16 are compared
 per compiler output with webpack's stats: a Pages Router app on each, an App Router app with server and client
 components, an edge route handler and middleware on 15 and 16, a static export (`output: 'export'`) on 16, and another
 `--require` preload next to bundle-lockfile's (Next 15 fails, as described above; 16.4 builds).

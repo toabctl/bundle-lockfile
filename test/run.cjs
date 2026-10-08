@@ -37,7 +37,7 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', 'build-oracle', '.svelte-kit-oracle']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', '.netlify', 'build-oracle', '.svelte-kit-oracle']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
   // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture
@@ -111,21 +111,8 @@ function runCase(c) {
   const unwanted = (c.expectExcludes || []).filter(p => all.includes(p));
   if (unwanted.length) throw new Error(`unexpected ${unwanted.join(' ')} in${show(got)}`);
 
-  // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)
-  if (c.oracle === false) notes.push('no oracle (see case)');
-  else {
-    const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
-    const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
-    // PATH: not through the node shim, which would inject bundle-lockfile
-    const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
-    // packages the oracle cannot see (e.g. Vite: CSS-only packages have no source map), each also expected
-    for (const k of Object.keys(truth)) truth[k] = [...new Set([...truth[k], ...(c.oracleMissing || [])])].sort();
-    // ... or only in some outputs ({ "<output dir>": [...] })
-    for (const [k, list] of Object.entries(c.oracleMissingIn || {})) truth[k] = [...new Set([...(truth[k] || []), ...list])].sort();
-    if (!sameMap(got, truth)) throw new Error(`plugin and oracle disagree\n  plugin:${show(got)}\n  oracle:${show(truth)}`);
-    notes.push(`oracle agrees on ${Object.keys(got).length} output(s)`);
-  }
-
+  // syft first: the oracle's build may write where the case's build wrote (adapter-netlify's .netlify/, Next's .next/
+  // with output: 'export')
   if (hasSyft) {
     const s = JSON.parse(sh(`syft scan dir:${lockDir} -q -o json`, dir, base));
     const names = syftIds(s);
@@ -143,6 +130,21 @@ function runCase(c) {
       if (miss.length || extra.length) throw new Error(`syft on the project lockfile: missing ${miss.join(' ') || '-'}, unexpected ${extra.join(' ') || '-'}\n  read: ${proj.join(' ')}`);
       notes.push(`syft on the project's own lockfile instead: ${proj.join(' ')}`);
     }
+  }
+
+  // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)
+  if (c.oracle === false) notes.push('no oracle (see case)');
+  else {
+    const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
+    const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
+    // PATH: not through the node shim, which would inject bundle-lockfile
+    const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
+    // packages the oracle cannot see (e.g. Vite: CSS-only packages have no source map), each also expected
+    for (const k of Object.keys(truth)) truth[k] = [...new Set([...truth[k], ...(c.oracleMissing || [])])].sort();
+    // ... or only in some outputs ({ "<output dir>": [...] })
+    for (const [k, list] of Object.entries(c.oracleMissingIn || {})) truth[k] = [...new Set([...(truth[k] || []), ...list])].sort();
+    if (!sameMap(got, truth)) throw new Error(`plugin and oracle disagree\n  plugin:${show(got)}\n  oracle:${show(truth)}`);
+    notes.push(`oracle agrees on ${Object.keys(got).length} output(s)`);
   }
   return `${Object.keys(got).length > 1 ? show(got) + '\n   ' : all.join(' ')} (${notes.join(', ')})`;
 }

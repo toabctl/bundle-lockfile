@@ -112,8 +112,10 @@ const fixtures = {
   'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
   'nested-island-rollup': nestedVite('rollup -c island/rollup.config.mjs', '7.3.7',
     { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', '@rollup/plugin-commonjs': '29.0.3' }),
-  'sveltekit2': sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7' }),
-  'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0' }),
+  'sveltekit2': sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7',
+    '@sveltejs/adapter-netlify': '5.2.4' }),
+  'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0',
+    '@sveltejs/adapter-netlify': '7.0.1' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
   // html-webpack-plugin 4 takes its template's output out of the parent compilation but keeps it in its child
   'wp4.47-npm': { ...wp4('4.47.0', '4.10.0', { 'html-webpack-plugin': '4.5.2' }), installer: { type: 'npm' } },
@@ -671,6 +673,19 @@ const cases = [
     expectIncludes: SVELTE_CLIENT('3.0.1'), expectExcludes: ['ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-node', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
     oracleArgs: 'client,server', expectIncludes: [...SVELTE_CLIENT('3.0.1'), '@sveltejs/adapter-node@6.0.0'], expectExcludes: ['ms@2.1.3'] },
+  // adapter-netlify: a serverless function gets a copy of the server output, with its lockfile (ms stays external, the
+  // function loads it from node_modules); an edge function bundles the server output with all its dependencies -
+  // with Rolldown (adapter-netlify 7, SvelteKit 3: a lockfile, ms in it), with esbuild (adapter-netlify 5, SvelteKit
+  // 2: unsupported, none)
+  { name: 'SvelteKit 2 (Vite 7), adapter-netlify, serverless function', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: '.netlify/server',
+    env: { SVELTEKIT_ADAPTER: 'netlify' }, oracleArgs: '--dir .netlify/server', expectIncludes: ['@sveltejs/kit@2.70.3', 'svelte@5.57.2'], expectExcludes: ['ms@2.1.3'] },
+  { name: 'SvelteKit 2 (Vite 7), adapter-netlify, edge function (esbuild: unsupported, no lockfile)', fixture: 'sveltekit2', cmd: 'npm run -s build',
+    outDir: '.netlify', env: { SVELTEKIT_ADAPTER: 'netlify', NETLIFY_EDGE: '1' }, expect: null },
+  { name: 'SvelteKit 3 (Vite 8), adapter-netlify, serverless function', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: '.netlify/v1/server',
+    env: { SVELTEKIT_ADAPTER: 'netlify' }, oracleArgs: '--dir .netlify/v1/server', expectIncludes: ['@sveltejs/kit@3.0.1', 'svelte@5.57.2'], expectExcludes: ['ms@2.1.3'] },
+  { name: 'SvelteKit 3 (Vite 8), adapter-netlify, edge function (Rolldown)', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: '.netlify/v1/edge-functions',
+    env: { SVELTEKIT_ADAPTER: 'netlify', NETLIFY_EDGE: '1' }, oracleArgs: '--dir .netlify/v1/edge-functions',
+    expectIncludes: ['@sveltejs/adapter-netlify@7.0.1', '@sveltejs/kit@3.0.1', 'lodash-es@4.18.1', 'ms@2.1.3', 'svelte@5.57.2'] },
   // with BUNDLE_LOCKFILE_INLINE=0 the island's lockfile is only in the export directory: it is found there
   { name: 'nested: Vite 8 island bundled by webpack 5, export dir only', fixture: 'nested-island-wp5', cmd: 'npm run -s build', exportOnly: true,
     expect: NESTED_EXPECT },
