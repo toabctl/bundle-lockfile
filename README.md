@@ -698,7 +698,8 @@ loader-thread hooks on Node.js 24 too, a programmatic build from a package witho
 and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS`
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, `build.write: false`, library mode with two formats, SSR builds
 (dependencies external, and bundled with `ssr.noExternal`), `vite build --app` (Vite 6 and 8), two `vite build` processes writing
-one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
+one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build; webpack 5 also an island built by Vite 7 and one
+built by Rolldown's API) and by Vite 8 (an
 island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
 (also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), the island's lockfile only in the export
 directory, an island of several chunks and a

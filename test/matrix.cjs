@@ -121,6 +121,10 @@ const fixtures = {
   'vite-rolldown7-npm': { ...vite('npm:rolldown-vite@7.3.1') },
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
+  // the island built by Vite 7 (Rollup), and by Rolldown's API, each bundled by webpack 5
+  'nested-island-vite7-wp5': { ...nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }), deps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', ...ISLAND, vite: '7.3.7' } },
+  'nested-island-rolldown-wp5': { ...nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3', rolldown: '1.2.13' }),
+    packageJson: { scripts: { build: 'node island/rolldown.mjs && webpack --config webpack.config.js' } } },
   'nested-island-workspace': nestedWorkspace,
   'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
   'nested-island-rollup': nestedVite('rollup -c island/rollup.config.mjs', '7.3.7',
@@ -691,6 +695,9 @@ const cases = [
     expectIncludes: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by Vite 8', fixture: 'nested-island-vite', cmd: 'npm run -s build', oracleArgs: 'vite', expect: NESTED_EXPECT },
   { name: 'nested: Rollup island (rollup -c) bundled by Vite 7', fixture: 'nested-island-rollup', cmd: 'npm run -s build', oracleArgs: 'rollup', expect: NESTED_EXPECT },
+  { name: 'nested: Vite 7 island bundled by webpack 5', fixture: 'nested-island-vite7-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
+  { name: "nested: island built by Rolldown's API, bundled by webpack 5", fixture: 'nested-island-rolldown-wp5', cmd: 'npm run -s build',
+    oracleArgs: 'rolldown', expect: NESTED_EXPECT },
   // a split island (NESTED_SPLIT=1): main.js (is-number), lazy.js (nanoid), style.css (normalize.css). Each of its files
   // brings the packages in it, not all of the island's. The oracle reads the island's source maps, which cover no CSS
   { name: 'nested: split Vite 8 island (chunks, a style sheet) bundled by Vite 8', fixture: 'nested-island-vite', env: { NESTED_SPLIT: '1', NESTED_ENTRY: 'split' },
