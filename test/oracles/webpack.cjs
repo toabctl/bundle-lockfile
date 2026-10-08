@@ -3,11 +3,12 @@
 // Supports single configs and arrays (multi-compiler); outputs are redirected from dist/ to dist-oracle/.
 // usage (cwd = fixture): node oracles/webpack.cjs    (Yarn PnP: yarn node ...)
 // prints {"<compiler output dir relative to dist>": [name@version, ...], ...}; compilers sharing an output dir
-// share its lockfile, so their packages are merged
+// share its lockfile, so their packages are merged. --sources: prints { packages: <that>, sources: [<absolute path of
+// every emitted source file>] } (for oracles/nested.cjs)
 const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
-const { STATS_OPTIONS, packagesFromStats } = require('./stats.cjs');
+const { STATS_OPTIONS, filesFromStats, packagesFromStats } = require('./stats.cjs');
 
 const req = createRequire(path.join(process.cwd(), 'package.json'));
 const webpack = req('webpack');
@@ -35,13 +36,15 @@ function copiedFiles(compilation, json, outputPath) {
 
 webpack(Array.isArray(config) ? configs : configs[0], (err, stats) => {
   if (err || stats.hasErrors()) { console.error(err || stats.toString('errors-only')); process.exit(1); }
-  const result = {};
+  const result = {}, sources = new Set();
   for (const s of stats.stats || [stats]) {
     const outputPath = s.compilation.getPath(s.compilation.outputOptions.path, {}); // e.g. dist/[fullhash]
     const rel = path.relative(oracleDist, outputPath).split(path.sep).join('/');
     const json = s.toJson(STATS_OPTIONS);
-    const pkgs = packagesFromStats(json, s.compilation.compiler.context, copiedFiles(s.compilation, json, outputPath));
+    const copied = copiedFiles(s.compilation, json, outputPath);
+    const pkgs = packagesFromStats(json, s.compilation.compiler.context, copied);
     result[rel] = [...new Set([...(result[rel] || []), ...pkgs])].sort();
+    for (const f of filesFromStats(json, s.compilation.compiler.context, copied)) sources.add(f);
   }
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify(process.argv.includes('--sources') ? { packages: result, sources: [...sources].sort() } : result));
 });

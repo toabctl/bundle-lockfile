@@ -66,32 +66,48 @@ function unvirtual(p) {
   return unvirtual(path.join(path.dirname(m[1]), '../'.repeat(Number(m[2])), m[3] || '.'));
 }
 
-// files: absolute paths of source files that ended up in the bundle (query strings allowed).
-// Returns one entry per real package directory; files outside node_modules (the project itself,
-// workspace packages, also when reached through a node_modules symlink) are ignored, unless this process copied them
-// out of a package and they still have its bytes (core/copies.cjs).
-function packagesForFiles(files) {
-  const pkgs = new Map();
-  const seen = new Set();
-  for (const f of files) {
+// A function that gives the package a bundled source file (absolute, query strings allowed) belongs to, or null:
+// the package directory below its last node_modules, at its real location; null for files outside node_modules (the
+// project itself) and of workspace packages, also when reached through a node_modules symlink - unless this process
+// copied the file out of a package and it still has its bytes (core/copies.cjs). Packages are looked up once per
+// package directory.
+function resolver() {
+  const byLinked = new Map(); // package directory as reached -> package | null
+  const byReal = new Map();   // real package directory -> package | null
+  return (f) => {
     const file = f.split('?')[0];
-    if (!path.isAbsolute(file)) continue;
+    if (!path.isAbsolute(file)) return null;
     let linked = packageRoot(file);
     if (!linked) {
       const src = require('./copies.cjs').sourceOf(file);
       if (src) { linked = packageRoot(src); config.debug('a copy of', src, ':', file); }
     }
-    if (!linked || seen.has(linked)) continue;
-    seen.add(linked);
+    if (!linked) return null;
+    if (byLinked.has(linked)) return byLinked.get(linked);
+    let p = null;
     const root = realRoot(linked);
     if (root !== linked && packageRoot(path.join(root, 'x')) !== root) {
       config.debug('first-party package linked into node_modules:', linked, '->', root, '- skipped');
-      continue;
+    } else if (byReal.has(root)) {
+      p = byReal.get(root);
+    } else {
+      p = readPackage(root);
+      if (!p) unlisted(root);
+      byReal.set(root, p);
     }
-    if (pkgs.has(root)) continue;
-    const p = readPackage(root);
-    if (p) pkgs.set(root, p);
-    else unlisted(root);
+    byLinked.set(linked, p);
+    return p;
+  };
+}
+
+// files: absolute paths of source files that ended up in the bundle (query strings allowed). Returns one entry per
+// real package directory (see resolver).
+function packagesForFiles(files) {
+  const of = resolver();
+  const pkgs = new Map();
+  for (const f of files) {
+    const p = of(f);
+    if (p && !pkgs.has(p.path)) pkgs.set(p.path, p);
   }
   return [...pkgs.values()];
 }
@@ -104,4 +120,19 @@ function packagesOfOutput(files) {
   return [...all.values()];
 }
 
-module.exports = { packageRoot, realRoot, packagesForFiles, packagesOfOutput, unvirtual };
+// packagesOfOutput by file: Map(file -> [packages]) of the files (as given) that bring any.
+function packagesByFile(files) {
+  const of = resolver();
+  const nested = require('./nested.cjs').nestedByFile(files);
+  const out = new Map();
+  for (const f of files) {
+    const pkgs = new Map();
+    const p = of(f);
+    if (p) pkgs.set(p.path, p);
+    for (const q of nested.get(f) || []) if (!pkgs.has(q.path)) pkgs.set(q.path, q);
+    if (pkgs.size) out.set(f, [...pkgs.values()]);
+  }
+  return out;
+}
+
+module.exports = { packageRoot, realRoot, packagesForFiles, packagesOfOutput, packagesByFile, unvirtual };

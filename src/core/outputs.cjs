@@ -35,7 +35,8 @@ function foreign(target, own, all = false) {
   const meta = readMeta(json, path.dirname(target));
   if (!meta) return [];
   return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(f => fs.existsSync(f))))
-    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context }));
+    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context,
+      contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
 }
 
 // The packages in the output directory: every writer's landed build; for `own`, the build it is about to write;
@@ -53,7 +54,7 @@ function render(target, own) {
   for (const b of builds) for (const p of b.pkgs) byPath.set(p.path, p);
   // keys are relative to one context; pick it independently of which writer finished last
   const context = builds.map(b => b.context).sort(cmp)[0];
-  const writers = builds.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, paths: b.pkgs.map(p => p.path) }));
+  const writers = builds.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, contents: b.contents, paths: b.pkgs.map(p => p.path) }));
   return toPackageLock([...byPath.values()], context, { dir: path.dirname(target), writers });
 }
 
@@ -61,13 +62,14 @@ function render(target, own) {
 // write, and returns the content for `target`. files: absolute paths of the other files the writer emits
 // there, to tell later whether they are still there (see prune). opts.id: the writer's id in the lockfile (default:
 // a hash of `writer`, which therefore must not contain machine-specific paths); opts.disk: see outputs.disk;
-// opts.outputs: { absolute path: "sha256-<hex>" } of its JavaScript output files (see core/nested.cjs).
+// opts.outputs: { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, opts.contents: { absolute
+// path: [package paths] } the packages in each of them (see core/nested.cjs).
 function record(target, writer, pkgs, context, files = [], opts = {}) {
   let writers = outputs.files.get(target);
   if (!writers) outputs.files.set(target, (writers = new Map()));
   const w = writers.get(writer) || { building: null, landed: null };
   w.id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
-  w.building = { pkgs, context, files, outputs: opts.outputs || {} };
+  w.building = { pkgs, context, files, outputs: opts.outputs || {}, contents: opts.contents || {} };
   writers.set(writer, w);
   if (opts.disk) outputs.disk.set(target, true);
   return render(target, writer);

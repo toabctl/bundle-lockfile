@@ -63,12 +63,13 @@ const KIT = { svelte: '5.57.2', 'lodash-es': '4.18.1', ms: '2.1.3', nanoid: '3.3
 const sveltekit = (app, kit, deps) => ({ app, bundler: 'sveltekit', installer: { type: 'npm' }, deps: { '@sveltejs/kit': kit, ...deps, ...KIT },
   packageJson: { type: 'module', scripts: { build: 'vite build' } } });
 // GitLab's / Element's shape: a library built by Vite into one file, bundled by webpack as a first-party file
-const ISLAND = { vite: '8.3.3', 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20' };
+// normalize.css: in the split island's style sheet (NESTED_SPLIT=1, see the island's config)
+const ISLAND = { vite: '8.3.3', 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20', 'normalize.css': '8.0.1' };
 const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', installer: { type: 'npm' }, deps: { ...webpackDeps, ...ISLAND },
   packageJson: { scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } });
 // the island bundled by a Vite app: built by Vite (Vite 8 -> Vite 8) or by the rollup command line (-> Vite 7)
 // the island as the workspace package @acme/island (island/package.json), imported by its name: npm links it into
-// node_modules; bundled by webpack 5 or Vite 8 (NESTED_WORKSPACE=1, see the app's configs)
+// node_modules; bundled by webpack 5 or Vite 8 (NESTED_ENTRY=workspace, see the app's configs)
 const nestedWorkspace = { app: 'nested-island', bundler: 'nested', installer: { type: 'npm' },
   deps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', ...ISLAND, '@acme/island': '1.0.0' },
   packageJson: { workspaces: ['island'], scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } };
@@ -453,14 +454,24 @@ const cases = [
     expectIncludes: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by Vite 8', fixture: 'nested-island-vite', cmd: 'npm run -s build', oracleArgs: 'vite', expect: NESTED_EXPECT },
   { name: 'nested: Rollup island (rollup -c) bundled by Vite 7', fixture: 'nested-island-rollup', cmd: 'npm run -s build', oracleArgs: 'rollup', expect: NESTED_EXPECT },
+  // a split island (NESTED_SPLIT=1): main.js (is-number), lazy.js (nanoid), style.css (normalize.css). Each of its files
+  // brings the packages in it, not all of the island's. The oracle reads the island's source maps, which cover no CSS
+  { name: 'nested: split Vite 8 island (chunks, a style sheet) bundled by Vite 8', fixture: 'nested-island-vite', env: { NESTED_SPLIT: '1', NESTED_ENTRY: 'split' },
+    cmd: 'npm run -s build', oracleArgs: 'vite', expect: [...NESTED_EXPECT, 'normalize.css@8.0.1'], oracleMissing: ['normalize.css@8.0.1'] },
+  { name: "nested: only the split Vite 8 island's style sheet, bundled by Vite 8", fixture: 'nested-island-vite', env: { NESTED_SPLIT: '1', NESTED_ENTRY: 'split-css' },
+    cmd: 'npm run -s build', oracleArgs: 'vite', expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'], oracleMissing: ['normalize.css@8.0.1'] },
+  { name: "nested: only the split Vite 8 island's JavaScript, bundled by Vite 8", fixture: 'nested-island-vite', env: { NESTED_SPLIT: '1', NESTED_ENTRY: 'split-js' },
+    cmd: 'npm run -s build', oracleArgs: 'vite', expect: NESTED_EXPECT },
+  { name: "nested: only the split Vite 8 island's JavaScript, bundled by webpack 5", fixture: 'nested-island-wp5', env: { NESTED_SPLIT: '1', NESTED_ENTRY: 'split-js' },
+    cmd: 'npm run -s build', expect: NESTED_EXPECT },
   // the island as a workspace package: found where it really is, also when the bundler keeps the node_modules link
   { name: 'nested: Vite 8 island as a workspace package, bundled by webpack 5', fixture: 'nested-island-workspace', cmd: 'npm run -s build',
-    env: { NESTED_WORKSPACE: '1' }, expect: NESTED_EXPECT },
+    env: { NESTED_ENTRY: 'workspace' }, expect: NESTED_EXPECT },
   { name: 'nested: Vite 8 island as a workspace package, bundled by webpack 5 with resolve.symlinks=false', fixture: 'nested-island-workspace',
-    cmd: 'npm run -s build', env: { NESTED_WORKSPACE: '1', EDGE_RESOLVE_SYMLINKS: 'false' }, expect: NESTED_EXPECT },
+    cmd: 'npm run -s build', env: { NESTED_ENTRY: 'workspace', EDGE_RESOLVE_SYMLINKS: 'false' }, expect: NESTED_EXPECT },
   { name: 'nested: Vite 8 island as a workspace package, bundled by Vite 8 with resolve.preserveSymlinks', fixture: 'nested-island-workspace',
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && ./node_modules/.bin/vite build',
-    env: { NESTED_WORKSPACE: '1', EDGE_RESOLVE_SYMLINKS: 'false' }, oracleScript: 'nested-vite', oracleArgs: 'vite', expect: NESTED_EXPECT },
+    env: { NESTED_ENTRY: 'workspace', EDGE_RESOLVE_SYMLINKS: 'false' }, oracleScript: 'nested-vite', oracleArgs: 'vite', expect: NESTED_EXPECT },
   // SvelteKit: the exact lists are the oracle's (its source maps); ms is a dependency the server loads from
   // node_modules at runtime (Vite's SSR build and adapter-node keep dependencies external), so in no lockfile.
   // SvelteKit 2 writes no source map for the service worker (nanoid's code is in build/service-worker.js); with

@@ -991,7 +991,7 @@ async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite =
   plugin.renderStart.call(ctx, out);
   for (const c of chunks) plugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
   const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
-    isEntry: !!c.entry, facadeModuleId: c.entry || null }]), ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
+    isEntry: !!c.entry, facadeModuleId: c.entry || null, ...(c.css && { viteMetadata: { importedCss: new Set(c.css) } }) }]), ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
   await plugin.generateBundle.handler.call(ctx, out, bundle, isWrite);
   if (isWrite) {
     for (const f of Object.values(bundle)) {
@@ -1040,6 +1040,39 @@ test('nested: a bundled file another build produced brings its packages, unless 
     assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
     assert.deepEqual(ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['outer@1.0.0']);
+  } finally { process.chdir(cwd); }
+});
+
+test('nested: each JavaScript and CSS file another build produced brings the packages in it', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('js'), ...pj('lazy'), ...pj('sheet'), ...pj('imported'), ...pj('inline'), ...pj('worker'), ...pj('logo'),
+    'node_modules/logo/l.svg': '<svg/>' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dir = J(root, 'island/dist'), m = (name, f = 'i.js') => J(root, 'node_modules', name, f);
+    // a generate-only worker build whose chunk the island emits as an asset
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'gen'), chunks: [{ fileName: 'w.js', code: 'nested island worker code', modules: [m('worker')] }], isWrite: false });
+    // the island: main.js with a style sheet Vite takes out into style.css (and one inlined as a string), lazy.js; the
+    // style sheet @imports one from a package (a watch file); a worker asset; an image
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: dir, ctx: { getWatchFiles: () => [m('imported', 'i.css')] },
+      chunks: [{ fileName: 'main.js', code: 'main code', modules: [J(root, 'island/src/main.js'), m('js'), m('sheet', 's.css'), `${m('inline', 'x.css')}?inline`], css: ['style.css'] },
+        { fileName: 'lazy.js', code: 'lazy code', modules: [m('lazy')] }],
+      assets: [{ fileName: 'style.css', source: 'css code' }, { fileName: 'w.js', source: 'nested island worker code' },
+        { fileName: 'l.svg', source: '<svg/>', originalFileNames: ['node_modules/logo/l.svg'] }] });
+    const ids = (f) => packages.packagesOfOutput([J(dir, f)]).map(p => `${p.name}@${p.version}`).sort();
+    assert.deepEqual(ids('main.js'), ['inline@1.0.0', 'js@1.0.0']);
+    assert.deepEqual(ids('lazy.js'), ['lazy@1.0.0']);
+    assert.deepEqual(ids('style.css'), ['imported@1.0.0', 'sheet@1.0.0']);
+    assert.deepEqual(ids('w.js'), ['worker@1.0.0']);
+    assert.deepEqual(ids('l.svg'), []); // no JavaScript or CSS: its package is the file's own if bundled from there
+    // recorded by a version that did not record the packages of each file: all of the island's
+    const lock = J(dir, LOCK), json = JSON.parse(fs.readFileSync(lock, 'utf8'));
+    assert.deepEqual(Object.keys(json['bundle-lockfile'].writers[0].contents).sort(), ['../l.svg', '../lazy.js', '../main.js', '../style.css', '../w.js'].filter(f => f !== '../l.svg'));
+    delete json['bundle-lockfile'].writers[0].contents;
+    fs.writeFileSync(lock, JSON.stringify(json));
+    assert.deepEqual(ids('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', 'sheet@1.0.0', 'worker@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
@@ -1458,9 +1491,11 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
   ]) assert.equal(readMeta(json, '/d'), null, json);
   // malformed parts of a writer are left out, the rest is read
   const meta = readMeta(field({ v: 1, context: '.', outside: 'node_modules/b', writers: [
-    null, 'x', { id: 1 }, { id: 'w', files: 'dist/a.js', count: '3', outputs: ['x'], packages: [1, 'node_modules/a', 'node_modules/none', 'toString', 'node_modules/noversion'] },
+    null, 'x', { id: 1 }, { id: 'w', files: 'dist/a.js', count: '3', outputs: ['x'], packages: [1, 'node_modules/a', 'node_modules/none', 'toString', 'node_modules/noversion'],
+      contents: { 'dist/a.js': [0, 1, 3, 9, -1, 0.5, 'node_modules/a'], 'dist/b.js': 'x' } }, // indices into the strings of packages
   ] }, { 'node_modules/a': { name: 'a', version: '1.0.0' }, 'node_modules/noversion': { name: 'n' } }), '/d');
-  assert.deepEqual(meta.writers, [{ id: 'w', files: [], count: undefined, outputs: {}, pkgs: [{ name: 'a', version: '1.0.0', path: J('/d/node_modules/a') }] }]);
+  const pa = { name: 'a', version: '1.0.0', path: J('/d/node_modules/a') };
+  assert.deepEqual(meta.writers, [{ id: 'w', files: [], count: undefined, outputs: {}, contents: { [J('/d/dist/a.js')]: [pa] }, pkgs: [pa] }]);
   // such a file on disk: replaced by a lockfile of this build
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   const target = J(root, 'dist', LOCK);
