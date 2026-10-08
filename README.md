@@ -365,7 +365,9 @@ atomically, so no process reads a partly written one.
 ### Nested bundles
 
 Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its chunks (`outputs`). For every bundled file outside
-`node_modules`, bundle-lockfile looks at `<dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE`; or its copy
+`node_modules` — also one of a first-party package linked into it, e.g. a workspace package built by Vite, at its
+real location, whether the bundler resolved the link or kept it (webpack's `resolve.symlinks: false`, Vite's
+`resolve.preserveSymlinks`) — bundle-lockfile looks at `<dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE`; or its copy
 in the export directory) in the file's directory and each directory above it; in the first lockfile that records the
 file, a matching hash adds that writer's packages to this build's — in webpack, Vite, Rollup and Rolldown builds. A file
 changed after its build is not attributed. The record travels with the output, so this works across processes, separate
@@ -656,7 +658,8 @@ Vite 7 with npm and yarn 4 Plug'n'Play, the loader-thread hooks on Node.js 24 to
 `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite`, the export directory, a build script overwriting `NODE_OPTIONS`
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
-island built by Vite 8) and Vite 7 (an island built by `rollup -c`), and an app with a worker, an inlined worker, a
+island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
+(also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), and an app with a worker, an inlined worker, a
 CSS `@import` from a package, @vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 7 and 8). The
 `rollup` command line has its own case, and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`); the

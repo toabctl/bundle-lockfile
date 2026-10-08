@@ -1024,6 +1024,27 @@ test('nested: a bundled file another build produced brings its packages, unless 
   } finally { process.chdir(cwd); }
 });
 
+test('nested: a workspace package another build produced brings its packages, also through its node_modules link', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), 'packages/island/package.json': { name: '@acme/island', version: '1.0.0' } });
+  fs.mkdirSync(J(root, 'node_modules/@acme'));
+  fs.symlinkSync('../../packages/island', J(root, 'node_modules/@acme/island'));
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'packages/island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
+    const ids = (files) => packages.packagesOfOutput(files).map(p => `${p.name}@${p.version}`).sort();
+    assert.deepEqual(ids([J(root, 'packages/island/dist/main.js')]), ['inner@1.0.0']);          // its real path (resolve.symlinks)
+    assert.deepEqual(ids([J(root, 'node_modules/@acme/island/dist/main.js')]), ['inner@1.0.0']); // the link (resolve.symlinks: false)
+    // a package's own files are no other build's output, even with the same bytes
+    fs.mkdirSync(J(root, 'node_modules/copy/dist'), { recursive: true });
+    fs.writeFileSync(J(root, 'node_modules/copy/package.json'), JSON.stringify({ name: 'copy', version: '1.0.0' }));
+    fs.copyFileSync(J(root, 'packages/island/dist/main.js'), J(root, 'node_modules/copy/dist/main.js'));
+    assert.deepEqual(ids([J(root, 'node_modules/copy/dist/main.js')]), ['copy@1.0.0']);
+  } finally { process.chdir(cwd); }
+});
+
 test('generated: generate-only output inside a written bundle (worker chunks as assets, inlined workers, polyfill chunks)', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });

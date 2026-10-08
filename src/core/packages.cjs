@@ -104,4 +104,4 @@ function packagesOfOutput(files) {
   return [...all.values()];
 }
 
-module.exports = { packageRoot, packagesForFiles, packagesOfOutput, unvirtual };
+module.exports = { packageRoot, realRoot, packagesForFiles, packagesOfOutput, unvirtual };
