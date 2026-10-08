@@ -506,6 +506,11 @@ const cases = [
   { name: 'Vite 6.4.4: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite6-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
+  // disabling the bundlers Vite builds with does not disable Vite's builds
+  { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=rollup,rolldown: still hooked', fixture: 'vite8-npm', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_DISABLE: 'rollup,rolldown' }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
+    lockfile: 'sbom/package-lock.json', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, export dir only', fixture: 'vite8-npm', cmd: 'npm run -s build', exportOnly: true, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // workers, CSS @import, legacy polyfills, workbox's sw.js (written after the build), static copy from node_modules
   { name: 'Vite 8.3.3: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite8-features', cmd: 'npm run -s build',
@@ -560,6 +565,11 @@ const cases = [
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
   { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rolldown', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', env: { BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, expect: null },
+  // the other kinds stay hooked
+  { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=vite,rolldown: still hooked', fixture: 'rollup-api', cmd: 'node build.mjs rollup',
+    env: { BUNDLE_LOCKFILE_DISABLE: 'vite,rolldown' }, expect: ROLLUP_API },
+  { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=vite,rollup,webpack: still hooked', fixture: 'rollup-api', cmd: 'node build.mjs rolldown',
+    env: { BUNDLE_LOCKFILE_DISABLE: 'vite,rollup,webpack' }, expect: ROLLUP_API },
   // the rolldown command line imports Rolldown's internal chunk, not its entry module, which the hooks wrap
   { name: 'Rolldown 1 command line (unsupported: no lockfile)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser', expect: null },
   // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
@@ -595,6 +605,13 @@ const cases = [
   { name: 'SvelteKit 2 (Vite 7), adapter-node', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
     oracleArgs: 'client', expectIncludes: [...SVELTE_CLIENT('2.70.3'), '@sveltejs/adapter-node@5.5.7'], expectExcludes: ['ms@2.1.3'],
     oracleMissingIn: { client: ['nanoid@3.3.20'] } },
+  // BUNDLE_LOCKFILE_DISABLE=vite: SvelteKit's Vite builds write no lockfile (none in build/client), adapter-node 5's own
+  // Rollup build (no Vite plugins: a rollup build) still does - its files and what it bundles from node_modules besides
+  // the project's dependencies (the server runtime's imports left by Vite's SSR build), not what the disabled server
+  // build bundled (no lockfile there to find). No oracle: it derives everything the output has
+  { name: 'SvelteKit 2 (Vite 7), adapter-node, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build',
+    env: { SVELTEKIT_ADAPTER: 'node', BUNDLE_LOCKFILE_DISABLE: 'vite' }, oracle: false,
+    expect: ['@sveltejs/adapter-node@5.5.7', 'clsx@2.1.1', 'cookie@0.6.0', 'devalue@5.9.4', 'set-cookie-parser@3.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-static', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build',
     expectIncludes: SVELTE_CLIENT('3.0.1'), expectExcludes: ['ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-node', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
