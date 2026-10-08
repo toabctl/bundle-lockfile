@@ -73,6 +73,13 @@ function record(target, writer, pkgs, context, files = [], opts = {}) {
   return render(target, writer);
 }
 
+// The files the writer's build in progress writes, once they are known for certain: webpack's emit hook can still
+// replace assets after the lockfile was rendered (compression-webpack-plugin's deleteOriginalAssets on webpack 4).
+function setFiles(target, writer, files) {
+  const w = (outputs.files.get(target) || new Map()).get(writer);
+  if (w && w.building) w.building = { ...w.building, files };
+}
+
 // The writer's files of its latest build have landed.
 function emitted(target, writer) {
   const w = (outputs.files.get(target) || new Map()).get(writer);
@@ -220,4 +227,4 @@ function filesOf(target) {
   return all;
 }
 
-module.exports = { record, emitted, isShared, prune, rewrite, exportPath, filesOf, writeDisk, nowhere, takeStale };
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, exportPath, filesOf, writeDisk, nowhere, takeStale };

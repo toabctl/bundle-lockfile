@@ -266,6 +266,9 @@ class BundleLockfilePlugin {
         if (copied.size) {
           try { this.lockfile(compilation, [...copied.values()]); write = true; } catch (e) { config.warn('webpack: could not write lockfile:', e); }
         }
+        // the files webpack wrote: assets the emit hook deleted or added (compression-webpack-plugin <= 6 with
+        // deleteOriginalAssets on webpack 4 replaces main.js by main.js.gz) were not known when the lockfile was rendered
+        if (!write) outputs.setFiles(file, writer, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)));
         outputs.emitted(file, writer);
         // the inline file on the real disk after every build; in memory again if late copies added packages or
         // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
