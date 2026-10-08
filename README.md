@@ -643,7 +643,7 @@ node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd ar
 CI splits the matrix into shards that run as parallel jobs: `--shard=<i>/<n>` (for both scripts) selects the fixtures
 of shard `i` of `n` and their cases ([`test/lib/shard.cjs`](test/lib/shard.cjs)).
 
-Every case that expects a lockfile checks that it is valid for syft and lists the expected packages (exactly, or
+Every case that expects a lockfile checks that it is valid for syft (with no Yarn virtual path as a key) and lists the expected packages (exactly, or
 including / excluding given ones), that it agrees exactly with an oracle — an independent build per bundler that
 derives the packages from the bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no
 code with the adapters; a case names the packages its oracle cannot see (CSS-only packages and copied files have no
@@ -653,7 +653,8 @@ cases check that no lockfile is written.
 The webpack cases cover, besides installers and versions, watch-mode rebuilds (as in every watch case: one without an
 import, whose packages must leave the lockfile, then one with it again), warm builds from webpack's persistent
 cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, npm aliases and one version at several
-paths, Yarn's global cache, Babel-injected helpers, CSS and asset modules from packages, style sheets loaders inline
+paths, Yarn's global cache, packages with peer dependencies (Yarn Plug'n'Play's virtual paths, pnpm's peer-suffixed
+directories; also with Vite), Babel-injected helpers, CSS and asset modules from packages, style sheets loaders inline
 from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent cache), a DLL, two compilers sharing an
 output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing
 watch rebuild), two compilers whose `output.path` with `[fullhash]` resolves to different directories,
