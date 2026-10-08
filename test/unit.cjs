@@ -563,6 +563,25 @@ test('outputs: a lockfile on disk keeps the packages other processes put there, 
   assert.equal(outputs.isShared(target), false);
 });
 
+test('outputs: a lockfile its own output.clean deleted keeps the other processes\' packages whose files it kept', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'dist/b.js': 'b', 'dist/c.js': 'c' });
+  const target = J(root, 'dist', LOCK);
+  const [a, b, c] = ['a', 'b', 'c'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const writeFile = (json, cb) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); cb(); };
+  // other processes wrote b (dist/b.js) and c (dist/c.js)
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, toPackageLock([b, c], root, { dir: path.dirname(target), writers: [
+    { id: 'other-b', files: [J(root, 'dist/b.js')], paths: [b.path] }, { id: 'other-c', files: [J(root, 'dist/c.js')], paths: [c.path] }] }));
+  outputs.record(target, 'w-clean', [a], root, [J(root, 'dist/a.js')], { disk: true }); // renders with the lockfile on disk
+  // this build's output.clean (clean.keep: b.js) deletes c.js and the lockfile before the output is written
+  fs.rmSync(J(root, 'dist/c.js'));
+  fs.rmSync(target);
+  outputs.emitted(target, 'w-clean');
+  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a', 'b']);
+});
+
 test('outputs: processes writing one lockfile at the same time each add their packages (inline and export only)', async () => {
   const N = 6;
   const pkgs = Object.fromEntries([...Array(N).keys()].map(i => [`node_modules/p${i}/package.json`, { name: `p${i}`, version: '1.0.0' }]));

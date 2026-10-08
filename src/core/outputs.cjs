@@ -19,20 +19,26 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v2'); // v2: shape below; copies
 // Each writer also has an id: the one recorded in the lockfile, the same in every process and on every machine.
 // disk: lockfile path -> its output is on the real disk, where other processes may write it too (not, e.g., a
 // webpack-dev-server's in-memory file system).
+// read: lockfile path -> the record (readMeta) of the lockfile last read from disk, for when it is gone (see foreign).
 const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map() });
+if (!outputs.read) outputs.read = new Map(); // added to the v2 shape: a copy of an earlier version did not have it
 
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
 const stateFile = (target) => (config.inline ? target : exportPath(target));
 
 // Writers of `target` recorded by other processes (in the lockfile on disk) whose files are still there (all:
 // also those whose files are gone), except those with an id in `own` (this process has their newest build):
-// [{ id, pkgs, files, count, context }].
+// [{ id, pkgs, files, count, context }]. A lockfile that is gone since this process last read it was deleted with
+// the output directory - by this build's own output.clean, which deletes it with the other writers' files except
+// those clean.keep keeps: its record is still what the other processes put there, for their files that are left.
 function foreign(target, own, all = false) {
   const file = outputs.disk.get(target) && stateFile(target);
   if (!file) return [];
-  let json;
-  try { json = fs.readFileSync(file, 'utf8'); } catch { return []; }
-  const meta = readMeta(json, path.dirname(target));
+  let meta;
+  try {
+    meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(target));
+    outputs.read.set(target, meta);
+  } catch { meta = outputs.read.get(target) || null; } // not there (any more)
   if (!meta) return [];
   return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(f => fs.existsSync(f))))
     .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context,
