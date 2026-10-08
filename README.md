@@ -654,7 +654,9 @@ node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd ar
 ```
 
 CI splits the matrix into shards that run as parallel jobs: `--shard=<i>/<n>` (for both scripts) selects the fixtures
-of shard `i` of `n` and their cases ([`test/lib/shard.cjs`](test/lib/shard.cjs)).
+of shard `i` of `n` and their cases ([`test/lib/shard.cjs`](test/lib/shard.cjs)); `--fixtures=<regex>` (for both
+scripts) only the fixtures whose names match and their cases, which the Node.js 22 job uses for the Vite, Rollup,
+Rolldown, nested and SvelteKit fixtures.
 
 Every case that expects a lockfile checks that it is valid for syft (with no Yarn virtual path as a key) and lists the expected packages (exactly, or
 including / excluding given ones), that it agrees exactly with an oracle — an independent build per bundler that

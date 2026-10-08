@@ -34,29 +34,36 @@ jobs:
       matrix:
         # the whole matrix on Node 24 and 26 (the current LTS lines with in-thread ESM hooks)
         node: [24, 26]
-        # each shard installs and runs its own fixtures (test/lib/shard.cjs); 6 shards per Node version
-        shard: [1, 2, 3, 4, 5, 6]
-    name: matrix (Node ${{ matrix.node }}, ${{ matrix.shard }}/6)
+        # each shard installs and runs its own fixtures (test/lib/shard.cjs); 8 shards per Node version
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    name: matrix (Node ${{ matrix.node }}, ${{ matrix.shard }}/8)
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate fixtures
-        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/6
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
       - name: Run matrix
-        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/6
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
 
   # Node < 24.12 uses the loader-thread ESM hooks (src/hooks.cjs): the Vite, Rollup, Rolldown, nested and SvelteKit cases on Wolfi's Node 22
   # (e.g. GitLab and Coder build with it)
   node22:
     runs-on: ubuntu-latest
     container: cgr.dev/chainguard/wolfi-base:latest
-    name: matrix (Node 22, Vite)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    name: matrix (Node 22, Vite, ${{ matrix.shard }}/3)
+    env:
+      # the fixtures of the ESM-hooked bundlers and their cases (gen.cjs and run.cjs select the same ones)
+      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output)'
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-22 npm yarn bun syft
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate fixtures
-        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" '^(vite|nested|sveltekit|rollup)'
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
       - name: Run matrix
-        run: node test/run.cjs "$RUNNER_TEMP/fixtures" '^(Vite|nested|SvelteKit|Rollup|Rolldown)'
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3

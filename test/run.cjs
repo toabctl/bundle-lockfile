@@ -1,6 +1,7 @@
 'use strict';
 // Runs the cases from matrix.cjs against fixtures created by gen.cjs (offline).
-// usage: node test/run.cjs <fixtures-dir> [case-name-regex] [--shard=<i>/<n>]   (see lib/shard.cjs)
+// usage: node test/run.cjs <fixtures-dir> [case-name-regex] [--shard=<i>/<n>] [--fixtures=<fixture-name-regex>]
+//   (see lib/shard.cjs; --fixtures: only the cases of these fixtures)
 // Collects all lockfiles under the case's outDir ({output dir: packages}, one per top-level compiler) and checks:
 //   1. they are valid for syft and match the expectation (expect / expectIncludes / expectExcludes)
 //   2. they agree exactly with the bundler's oracle (independent build without bundle-lockfile)
@@ -12,9 +13,9 @@ const { fixtures, cases } = require('./matrix.cjs');
 const { LOCKFILE, readLockfiles, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
-const { shard, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
+const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
 if (!fxDir) { console.error('usage: node test/run.cjs <fixtures-dir> [case-name-regex] [--shard=<i>/<n>]'); process.exit(2); }
-const inShard = fixturesOf(shard);
+const inShard = fixturesOf(shard, only);
 const FX = path.resolve(fxDir);
 const REGISTER = path.resolve(__dirname, '../src/register.cjs');
 const hasSyft = spawnSync('syft', ['version'], { stdio: 'ignore' }).status === 0;
