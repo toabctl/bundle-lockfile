@@ -703,7 +703,7 @@ CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin
 `rollup` command line has its own cases (also `rollup -c -w` and a TypeScript config), and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked; also Rollup 4.0.2, Rolldown 1.0.0 and
 `@rollup/wasm-node`, its API and its command line), rolldown-vite 7 (also its watch mode); the
-`rolldown` command line writes no lockfile (not supported yet), nor does an rspack build (its builds are not affected). SvelteKit 2 and 3, each with adapter-static,
+`rolldown` command line writes no lockfile (not supported yet), nor do an rspack build and webpack and Vite builds in Bun's own runtime (`bun --bun`; the builds are not affected). SvelteKit 2 and 3, each with adapter-static,
 adapter-node and adapter-netlify (serverless and edge functions), are compared with an oracle that builds again with
 source maps into other directories and follows the maps of the files the adapters bundle again; a server dependency
 must not be listed (except in an edge function, which bundles it). Next.js 12–16 are compared
