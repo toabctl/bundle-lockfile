@@ -416,6 +416,12 @@ const cases = [
     shim: true, exportOnly: true, expect: W5 },
   { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT,
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
+  // the same for the Rollup adapter, in each kind of build it hooks: the build succeeds, no lockfile, a warning
+  ...[['Vite 8.3.3', 'vite8-npm', 'npm run -s build', 'vite'], ['Vite 7.3.7', 'vite7-npm', 'npm run -s build', 'vite'],
+    ['Rollup 4 command line', 'rollup-cli', 'npm run -s build', 'rollup'], ['Rollup 4 JavaScript API', 'rollup-api', 'node build.mjs rollup', 'rollup'],
+    ['Rolldown 1 JavaScript API', 'rollup-api', 'node build.mjs rolldown', 'rolldown']].map(([what, fixture, cmd, kind]) => (
+    { name: `${what}: failing adapter does not break the build`, fixture, cmd, nodeOptions: FAULT, expect: null,
+      expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not collect the bundled packages`) })),
   // Vite (rolldown: 8, rollup: 7). The oracle reads Vite's source maps, which do not cover CSS-only packages
   { name: 'Vite 8.3.3 (rolldown)', fixture: 'vite8-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7 (rollup)', fixture: 'vite7-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
