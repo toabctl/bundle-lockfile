@@ -239,6 +239,9 @@ const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // anoth
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 const MEMFS = `node ${path.join(__dirname, 'lib/memfs-build.cjs')}`; // into memfs, then copied to the disk
+// this Node.js has the in-thread ESM hooks (README: 24.12, 25.2 and later), which every process gets
+const [NODE_MA, NODE_MI] = process.versions.node.split('.').map(Number);
+const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 2) || (NODE_MA === 24 && NODE_MI >= 12);
 // `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
 // (rebuilt without src/main.js's lazy import, whose chunk has ms@2.1.3, then with it again)
 const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "import('./lazy.js')"`;
@@ -507,6 +510,12 @@ const cases = [
   }),
   { name: 'Vite 6.4.4: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite6-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  // a programmatic build from a package without a dependency on Vite (tools/build.mjs): hooked with the in-thread hooks;
+  // older Node versions install the loader-thread ones there only with BUNDLE_LOCKFILE_ESM_HOOKS=async (CI's Node 22 job)
+  { name: `Vite 8.3.3, programmatic build from a package without Vite (Node ${process.versions.node}: ${SYNC_HOOKS ? 'hooked' : 'not hooked'})`,
+    fixture: 'vite8-npm', cmd: 'node tools/build.mjs', expect: SYNC_HOOKS ? VITE_EXPECT : null, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, programmatic build from a package without Vite, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'vite8-npm', cmd: 'node tools/build.mjs',
+    env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
   // disabling the bundlers Vite builds with does not disable Vite's builds
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=rollup,rolldown: still hooked', fixture: 'vite8-npm', cmd: 'npm run -s build',
