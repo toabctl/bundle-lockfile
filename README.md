@@ -95,7 +95,9 @@ package file pulled in under a first-party match resource is not listed either.
 - npm packages vendored inside another package without a `package.json` of their own (e.g.
   `@grafana/google-sdk/dist/esm/node_modules/lodash`): a warning names each one
 - (listed although not shipped: a Sass partial with only variables that a style sheet `@import`s lists its package,
-  although it adds no bytes)
+  although it adds no bytes; a Vite SSR build lists the packages of the style sheets its modules import, although it
+  emits no CSS - plugins such as vite-plugin-css-injected-by-js put a build's CSS into its JavaScript, so a style
+  module counts also without a CSS file)
 
 ## Usage
 
@@ -681,7 +683,8 @@ loader-thread hooks on Node.js 24 too, a programmatic build from a package witho
 24 and 26, on 22 only with `BUNDLE_LOCKFILE_ESM_HOOKS=async`),
 `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite` (and `rollup,rolldown`, which leaves Vite hooked; with SvelteKit
 and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS`
-(without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
+(without and with the node shim), the plugin in the config, vite-plugin-singlefile, `build.write: false`, library mode with two formats, SSR builds
+(dependencies external, and bundled with `ssr.noExternal`), `vite build --app` (Vite 6 and 8), two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
 island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
 (also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), the island's lockfile only in the export

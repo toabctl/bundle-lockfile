@@ -93,6 +93,7 @@ function runCase(c) {
   }
   if (!Object.keys(got).length) throw new Error('no lockfile written');
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
+  if (c.expectIn && !sameMap(got, c.expectIn)) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(c.expectIn)}`);
   if (c.expectKeys) {
     const lock = JSON.parse(fs.readFileSync(path.join(lockDir, c.lockfile || LOCKFILE), 'utf8'));
     const keys = Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
