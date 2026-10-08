@@ -327,7 +327,8 @@ it, and it has no machine-specific paths (paths are relative to the lockfile, id
 - `context`: the directory the keys are relative to
 - `writers`: per writer (a webpack compiler, a Vite/Rollup/Rolldown output) its `id`, its `packages` (keys), up to 20
   of its output `files` and their `count`, and — for Vite, Rollup and Rolldown — `outputs`: the SHA-256 of up to 500
-  of its chunks, for [nested bundles](#nested-bundles)
+  of its JavaScript and CSS files, and `contents`: the packages in each of them (indices into its `packages`), for
+  [nested bundles](#nested-bundles)
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time
 
@@ -364,12 +365,16 @@ atomically, so no process reads a partly written one.
 
 ### Nested bundles
 
-Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its chunks (`outputs`). For every bundled file outside
+Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its JavaScript and CSS files (`outputs`) and the
+packages in each (`contents`): a chunk's are its modules' (not those of style sheets Vite took out of it into a CSS
+file), a CSS file's those of the style sheets that went into it and of the style sheets they `@import` from packages. For every bundled file outside
 `node_modules` — also one of a first-party package linked into it, e.g. a workspace package built by Vite, at its
 real location, whether the bundler resolved the link or kept it (webpack's `resolve.symlinks: false`, Vite's
 `resolve.preserveSymlinks`) — bundle-lockfile looks at `<dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE`; or its copy
 in the export directory) in the file's directory and each directory above it; in the first lockfile that records the
-file, a matching hash adds that writer's packages to this build's — in webpack, Vite, Rollup and Rolldown builds. A file
+file, a matching hash adds the packages in that file to this build's (all of the writer's packages if the lockfile
+records none per file) — in webpack, Vite, Rollup and Rolldown builds. So a build that bundles only an island's
+style sheet gets the packages in it, not those of the island's JavaScript. A file
 changed after its build is not attributed. The record travels with the output, so this works across processes, separate
 commands and machines. webpack lockfiles record no hashes: a webpack-built bundle that another build bundles is not
 attributed.
@@ -524,7 +529,7 @@ sequenceDiagram
     P->>C: keep each chunk's packages in memory, by content and by entry file
   else writes
     P->>P: source files: chunk modules, assets' original files, style files among the watch files
-    P->>C: packages, plus those of in-memory builds whose bytes are in this bundle or whose entry a module imports with a query, recorded with chunk hashes
+    P->>C: packages, plus those of in-memory builds whose bytes are in this bundle or whose entry a module imports with a query, recorded with the hashes and packages of its JS and CSS files
   end
   B->>D: writes the output files
   B->>P: writeBundle (last)
@@ -660,7 +665,8 @@ Vite 7 with npm and yarn 4 Plug'n'Play, the loader-thread hooks on Node.js 24 to
 (without and with the node shim), the plugin in the config, vite-plugin-singlefile, two `vite build` processes writing
 one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build) and by Vite 8 (an
 island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
-(also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), and an app with a worker, an inlined worker, a
+(also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), an island of several chunks and a
+style sheet bundled whole by Vite 8 and in parts (only its style sheet, only its JavaScript) by Vite 8 and webpack 5, and an app with a worker, an inlined worker, a
 CSS `@import` from a package, @vitejs/plugin-legacy, vite-plugin-pwa and vite-plugin-static-copy (Vite 7 and 8). The
 `rollup` command line has its own case, and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`); the

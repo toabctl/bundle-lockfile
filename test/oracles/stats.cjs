@@ -13,7 +13,8 @@ const path = require('path');
 
 const STATS_OPTIONS = { modules: true, nestedModules: true, chunks: true, chunkModules: false, assets: true, children: true, depth: true, source: false };
 
-function packagesFromStats(json, context, copied = []) {
+// The source files of everything emitted, see above.
+function filesFromStats(json, context, copied = []) {
   const files = new Set(copied);
   // file of a module: nameForCondition = resource path; identifiers can carry prefixes like "javascript/esm|/abs/path"
   const resourceOf = (m) => ((m.identifier || '').split('!').pop().split('|').find(s => path.isAbsolute(s)) || '').split('?')[0];
@@ -59,6 +60,11 @@ function packagesFromStats(json, context, copied = []) {
     if (a.info && typeof a.info.sourceFilename === 'string') files.add(path.resolve(context, a.info.sourceFilename.split('?')[0]));
   }
 
+  return files;
+}
+
+function packagesFromStats(json, context, copied = []) {
+  const files = filesFromStats(json, context, copied);
   // package = directory directly below the last node_modules segment (npm's layout rule), at its real
   // location; one that resolves out of node_modules (a symlinked workspace package) is first-party.
   // Written out here rather than imported, so the oracle shares no code with the tool.
@@ -79,4 +85,4 @@ function packagesFromStats(json, context, copied = []) {
   return [...pkgs].sort();
 }
 
-module.exports = { STATS_OPTIONS, packagesFromStats };
+module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats };

@@ -64,6 +64,49 @@ function generatedIn(bundle, ids) {
   return out;
 }
 
+// The JavaScript and CSS files of a written bundle that another build may bundle (see core/nested.cjs): hashes
+// { absolute path: "sha256-<hex>" } and contents { absolute path: [package paths] }, the packages in each.
+// - a chunk: its modules' packages and those of generate-only builds in it - not those of style sheets Vite took out
+//   of it into CSS files (a style module without ?inline, ?raw or ?url, if the bundle has CSS files)
+// - a CSS file: the style modules of the chunks that import it (Vite's viteMetadata.importedCss; if no chunk does,
+//   all of the bundle's), the style sheets they @import from packages (styles: watch files, not known per CSS file),
+//   the files it was emitted from
+// - a JavaScript asset (Vite's worker chunks): the generate-only chunk it is, the files it was emitted from
+// ids: the bundle's module ids; originals: asset -> files it was emitted from; byFile: packagesByFile of the sources.
+function outputContents(bundle, dir, ids, originals, styles, byFile) {
+  const hashes = {}, contents = {};
+  const all = Object.values(bundle);
+  const css = all.filter(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
+  const isStyle = (id) => STYLE.test(fileOf(id) || '');
+  const extracted = (id) => css.length > 0 && isStyle(id) && !/[?&](inline|raw|url)\b/.test(id);
+  const moduleIds = (c) => c.moduleIds || Object.keys(c.modules || {});
+  const add = (into, pkgs) => { if (pkgs) for (const p of pkgs) into.add(p.path); };
+  const ofFiles = (into, list) => { for (const f of list) add(into, byFile.get(f)); };
+  for (const f of all) {
+    const file = path.join(dir, f.fileName);
+    const into = new Set();
+    if (f.type === 'chunk') {
+      const own = moduleIds(f).filter(id => !extracted(id));
+      ofFiles(into, own.map(fileOf).filter(Boolean));
+      for (const p of generatedIn({ [f.fileName]: f }, own).values()) into.add(p.path);
+      hashes[file] = sha256(f.code);
+    } else if (css.includes(f)) {
+      const importers = all.filter(c => c.type === 'chunk' && c.viteMetadata && c.viteMetadata.importedCss && c.viteMetadata.importedCss.has(f.fileName));
+      const from = importers.length ? importers.flatMap(moduleIds) : [...ids];
+      ofFiles(into, from.filter(extracted).map(fileOf));
+      ofFiles(into, styles);
+      ofFiles(into, originals.get(f) || []);
+      hashes[file] = sha256(f.source);
+    } else if (JS.test(f.fileName)) {
+      add(into, generated.byContent(f.source));
+      ofFiles(into, originals.get(f) || []);
+      hashes[file] = sha256(f.source);
+    } else continue;
+    contents[file] = [...into];
+  }
+  return { hashes, contents };
+}
+
 const merge = (...lists) => { const m = new Map(); for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p); return [...m.values()]; };
 
 // The package a file copied into the output comes from: one this process copied out of a package with fs (see
@@ -190,27 +233,32 @@ function createPlugin(kind, inputOptions) {
           }
           const key = keyOf(out);
           const ids = new Set(modulesOf.get(key) || []);
-          const sources = [], files = [], hashes = {};
+          const sources = [], files = [], originals = new Map(); // asset -> its source files
           for (const f of Object.values(bundle)) {
             files.push(path.join(dir, f.fileName));
             if (f.type === 'chunk') {
               for (const id of f.moduleIds || Object.keys(f.modules || {})) ids.add(id);
-              hashes[path.join(dir, f.fileName)] = sha256(f.code); // to find its packages when another build bundles it
             } else {
               // assets emitted from a file (Vite: relative to its root, usually the working directory)
+              const own = [];
               for (const n of f.originalFileNames || (f.originalFileName ? [f.originalFileName] : [])) {
                 const p = path.resolve(cwd, n);
-                if (fs.existsSync(p)) sources.push(p);
+                if (fs.existsSync(p)) own.push(p);
               }
+              originals.set(f, own);
+              sources.push(...own);
             }
           }
           for (const id of ids) { const file = fileOf(id); if (file) sources.push(file); }
-          for (const f of await watchFilesOf(this, build)) if (typeof f === 'string' && STYLE.test(f) && path.isAbsolute(f)) sources.push(f);
+          const styles = [];
+          for (const f of await watchFilesOf(this, build)) if (typeof f === 'string' && STYLE.test(f) && path.isAbsolute(f)) styles.push(f);
+          sources.push(...styles);
           const pkgs = merge(packages.packagesOfOutput(sources), generatedIn(bundle, ids).values());
+          const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, packages.packagesByFile(sources));
           const target = path.join(dir, config.file);
           const writer = writerOf(kind, inputOptions && inputOptions.input, out, ordinals.get(key) || 0, cwd);
-          written.set(key, { target, writer, dir, pkgs, files: new Set(files), hashes, landed: false });
-          outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes });
+          written.set(key, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
+          outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents });
         } catch (e) { config.warn(`${kind}: could not collect the bundled packages:`, e); }
       },
     },
@@ -240,7 +288,7 @@ function createPlugin(kind, inputOptions) {
             config.debug(`${kind}: files written into`, w.dir, 'after the build:', late.map(l => path.relative(w.dir, l.file)).join(' '), '- adding', add.map(p => `${p.name}@${p.version}`).join(' '));
             w.pkgs = merge(w.pkgs, add);
             for (const l of late) w.files.add(l.file);
-            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes });
+            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents });
             await write(w);
           } catch (e) { config.warn(`${kind}: could not add the files written after the build:`, e); }
         }

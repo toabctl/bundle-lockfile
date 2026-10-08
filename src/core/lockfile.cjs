@@ -30,12 +30,29 @@ function locationKey(base, dir) {
 // lockfile can keep them. Paths in it are relative to dir (the lockfile's directory) and ids carry no paths, so the
 // same build writes the same bytes on every machine. Tools that read package-lock.json ignore unknown fields (syft,
 // npm). files: absolute paths of the writer's output files (count: their number, if files is a sample); paths: its
-// packages' paths; outputs (optional): { absolute path: "sha256-<hex>" } of its JavaScript output files, so that a
-// build that bundles one of them adds the packages in it (see core/nested.cjs).
+// packages' paths; outputs (optional): { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, so
+// that a build that bundles one of them adds the packages in it (see core/nested.cjs); contents (optional):
+// { absolute path: [package paths] } of those files, the packages in each - recorded as indices into the writer's
+// "packages" (a file without them brings all of the writer's packages).
 const MAX_FILES = 20; // enough to tell whether the writer's output is still there
 const MAX_OUTPUTS = 500;
 const posix = (p) => p.split(path.sep).join('/');
 const entry = (p) => ({ name: p.name, version: p.version, ...(p.license ? { license: p.license } : {}) });
+// A writer's "packages", "outputs" and "contents" (see toPackageLock).
+function outputsOf(w, keyOf, rel) {
+  const packages = [...new Set([...w.paths].map(p => keyOf.get(p)).filter(Boolean))].sort(cmp);
+  const files = Object.entries(w.outputs || {}).map(([f, h]) => [f, rel(f), h]).sort((a, b) => cmp(a[1], b[1])).slice(0, MAX_OUTPUTS);
+  if (!files.length) return { packages };
+  const index = new Map(packages.map((k, i) => [k, i]));
+  const contents = [];
+  for (const [f, r] of files) {
+    const paths = w.contents && w.contents[f];
+    if (!paths) continue;
+    contents.push([r, [...new Set(paths.map(p => index.get(keyOf.get(p))).filter(i => i !== undefined))].sort((a, b) => a - b)]);
+  }
+  return { packages, outputs: Object.fromEntries(files.map(([, r, h]) => [r, h])), ...(contents.length ? { contents: Object.fromEntries(contents) } : {}) };
+}
+
 function toPackageLock(pkgs, context, meta) {
   const packages = { '': {} };
   const keyOf = new Map();
@@ -82,10 +99,7 @@ function toPackageLock(pkgs, context, meta) {
         id: w.id,
         count: typeof w.count === 'number' ? w.count : w.files.length, // other processes: only a sample of files
         files: w.files.map(rel).sort(cmp).slice(0, MAX_FILES),
-        packages: [...new Set([...w.paths].map(p => keyOf.get(p)).filter(Boolean))].sort(cmp),
-        ...(w.outputs && Object.keys(w.outputs).length
-          ? { outputs: Object.fromEntries(Object.entries(w.outputs).map(([f, h]) => [rel(f), h]).sort((a, b) => cmp(a[0], b[0])).slice(0, MAX_OUTPUTS)) }
-          : {}),
+        ...outputsOf(w, keyOf, rel),
       })).sort((a, b) => cmp(a.id, b.id)),
     };
   }
@@ -93,7 +107,8 @@ function toPackageLock(pkgs, context, meta) {
 }
 
 // The "bundle-lockfile" field of a lockfile's content (see toPackageLock), with absolute paths again (dir: the
-// lockfile's directory): { context, writers: [{ id, files, pkgs: [{ name, version, license, path }] }] }, or null.
+// lockfile's directory): { context, writers: [{ id, files, count, outputs, contents: { file: [package] },
+// pkgs: [{ name, version, license, path }] }] }, or null.
 function readMeta(json, dir) {
   let doc;
   try { doc = JSON.parse(json); } catch { return null; }
@@ -112,14 +127,23 @@ function readMeta(json, dir) {
   };
   return {
     context,
-    writers: m.writers.filter(w => isObject(w) && typeof w.id === 'string').map(w => ({
-      id: w.id,
-      files: strings(w.files).map(f => path.resolve(dir, f)),
-      count: typeof w.count === 'number' ? w.count : undefined,
-      outputs: isObject(w.outputs)
-        ? Object.fromEntries(Object.entries(w.outputs).filter(([, h]) => typeof h === 'string').map(([f, h]) => [path.resolve(dir, f), h])) : {},
-      pkgs: strings(w.packages).map(pkgOf).filter(Boolean),
-    })),
+    writers: m.writers.filter(w => isObject(w) && typeof w.id === 'string').map(w => {
+      const keys = strings(w.packages);
+      const contents = {};
+      for (const [f, list] of Object.entries(isObject(w.contents) ? w.contents : {})) {
+        if (!Array.isArray(list)) continue;
+        contents[path.resolve(dir, f)] = list.filter(i => Number.isInteger(i) && i >= 0 && i < keys.length).map(i => pkgOf(keys[i])).filter(Boolean);
+      }
+      return {
+        id: w.id,
+        files: strings(w.files).map(f => path.resolve(dir, f)),
+        count: typeof w.count === 'number' ? w.count : undefined,
+        outputs: isObject(w.outputs)
+          ? Object.fromEntries(Object.entries(w.outputs).filter(([, h]) => typeof h === 'string').map(([f, h]) => [path.resolve(dir, f), h])) : {},
+        contents,
+        pkgs: keys.map(pkgOf).filter(Boolean),
+      };
+    }),
   };
 }
 
