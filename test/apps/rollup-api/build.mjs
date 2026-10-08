@@ -1,6 +1,7 @@
 // Builds through the JavaScript APIs of Rollup and Rolldown, as tools and build scripts do (no Vite, no command
 // line): node build.mjs <mode>
 //   rollup          rollup() + write()
+//   rollup-wasm     the same with @rollup/wasm-node (Rollup's WebAssembly build, for platforms without its native one)
 //   rolldown        rolldown() + write()
 //   rolldown-build  Rolldown's build()
 //   rollup-watch, rolldown-watch  watch(): builds, rebuilds without src/main.js's nanoid lines (nanoid must leave the
@@ -18,8 +19,8 @@ const rollupOptions = async () => ({ input, plugins: [(await import('@rollup/plu
 const rolldownOptions = { input, platform: 'browser' };
 const output = { dir, format: 'es' };
 
-if (mode === 'rollup') {
-  const bundle = await (await import('rollup')).rollup(await rollupOptions());
+if (mode === 'rollup' || mode === 'rollup-wasm') {
+  const bundle = await (await import(mode === 'rollup' ? 'rollup' : '@rollup/wasm-node')).rollup(await rollupOptions());
   await bundle.write(output);
   await bundle.close();
 } else if (mode === 'rolldown') {
@@ -46,9 +47,10 @@ if (mode === 'rollup') {
     const lock = JSON.parse(fs.readFileSync(lockfile, 'utf8'));
     builds.push(Object.entries(lock.packages).filter(([k]) => k).map(([, p]) => `${p.name}@${p.version}`).sort());
     if (builds.length === 3) {
-      await watcher.close();
       console.log(JSON.stringify(builds));
-      return;
+      // Rolldown 1.0.0's watcher.close() does not resolve after a rebuild (also without bundle-lockfile)
+      await Promise.race([watcher.close(), new Promise(resolve => setTimeout(resolve, 5000))]);
+      process.exit(0);
     }
     fs.rmSync(lockfile);
     const next = builds.length === 1 ? without : source;

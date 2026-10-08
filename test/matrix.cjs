@@ -63,9 +63,9 @@ const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'np
     '@rollup/plugin-typescript': '12.3.0', typescript: '5.9.3', tslib: '2.8.1' },
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
 // Rollup's and Rolldown's JavaScript APIs, called by a build script (build.mjs <mode>), and the rolldown command line
-const rollupApi = { app: 'rollup-api', bundler: 'rollup', installer: { type: 'npm' },
-  deps: { rollup: '4.64.2', rolldown: '1.2.13', '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
-  packageJson: { type: 'module', scripts: { build: 'node build.mjs rollup' } } };
+const rollupApi = (rollup = '4.64.2', rolldown = '1.2.13', extra = {}) => ({ app: 'rollup-api', bundler: 'rollup', installer: { type: 'npm' },
+  deps: { rollup, rolldown, '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20', ...extra },
+  packageJson: { type: 'module', scripts: { build: 'node build.mjs rollup' } } });
 // SvelteKit: client and server builds, the service worker (a nested Vite build), adapter-static (copies the client
 // output to build/) and adapter-node (SVELTEKIT_ADAPTER=node: build/client and build/server; adapter-node 5 bundles
 // the server again with Rollup into build/, from a copy of its own files)
@@ -113,7 +113,12 @@ const fixtures = {
   'vite8-tailwind': { app: 'tailwind', bundler: 'vite', installer: { type: 'npm' }, deps: { vite: '8.3.3', tailwindcss: '4.3.3', '@tailwindcss/vite': '4.3.3' },
     packageJson: { type: 'module', scripts: { build: 'vite build' } } },
   'rollup-cli': rollupCli,
-  'rollup-api': rollupApi,
+  // (@rollup/wasm-node: Rollup's WebAssembly build, its own entry modules)
+  'rollup-api': rollupApi('4.64.2', '1.2.13', { '@rollup/wasm-node': '4.64.2' }),
+  // the oldest releases of the supported majors
+  'rollup-api-floor': rollupApi('4.0.2', '1.0.0'),
+  // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
+  'vite-rolldown7-npm': { ...vite('npm:rolldown-vite@7.3.1') },
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
   'nested-island-workspace': nestedWorkspace,
@@ -537,6 +542,10 @@ const cases = [
   // the loader-thread hooks, which Node < 24.12 uses (CI's Node 24 would use the in-thread ones)
   { name: 'Vite 8.3.3, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // rolldown-vite: its process is a bundler process by the package name rolldown-vite (Node 22: loader-thread hooks)
+  { name: 'Vite (rolldown-vite 7.3.1)', fixture: 'vite-rolldown7-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite (rolldown-vite 7.3.1) watch mode: every rebuild writes the lockfile, with the packages of that build', fixture: 'vite-rolldown7-npm',
+    cmd: VITE_WATCH, expect: VITE_EXPECT, watchBuilds: VITE_WATCH_BUILDS, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // @import "tailwindcss": Tailwind's preflight and theme are in dist/assets/*.css (no source map: oracleMissing)
@@ -643,6 +652,15 @@ const cases = [
   // Rollup's and Rolldown's JavaScript APIs (build.mjs). The oracle is the same build with Rollup's command line and
   // source maps (rollup.config.mjs), also for Rolldown's builds: the same packages
   { name: 'Rollup 4 JavaScript API: rollup()', fixture: 'rollup-api', cmd: 'node build.mjs rollup', expect: ROLLUP_API },
+  // Rollup's WebAssembly build: its ES entry (JavaScript API) and its CommonJS build (command line) are hooked too
+  { name: 'Rollup 4 (@rollup/wasm-node) JavaScript API: rollup()', fixture: 'rollup-api', cmd: 'node build.mjs rollup-wasm', expect: ROLLUP_API },
+  { name: 'Rollup 4 (@rollup/wasm-node) command line', fixture: 'rollup-api', cmd: 'node node_modules/@rollup/wasm-node/dist/bin/rollup -c', expect: ROLLUP_API },
+  // the oldest Rollup 4 and Rolldown 1 releases
+  ...[['Rollup 4.0.2 JavaScript API: rollup()', 'rollup'], ['Rollup 4.0.2 JavaScript API: watch(), every rebuild writes the lockfile', 'rollup-watch'],
+    ['Rolldown 1.0.0 JavaScript API: rolldown()', 'rolldown'], ['Rolldown 1.0.0 JavaScript API: build()', 'rolldown-build'],
+    ['Rolldown 1.0.0 JavaScript API: watch(), every rebuild writes the lockfile', 'rolldown-watch']].map(([name, mode]) => (
+    { name, fixture: 'rollup-api-floor', cmd: `node build.mjs ${mode}`, expect: ROLLUP_API, ...(mode.endsWith('watch') && { watchBuilds: ROLLUP_WATCH_BUILDS }) })),
+  { name: 'Rollup 4.0.2 command line (rollup -c)', fixture: 'rollup-api-floor', cmd: './node_modules/.bin/rollup -c', expect: ROLLUP_API },
   { name: 'Rollup 4 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rollup-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
