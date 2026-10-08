@@ -45,7 +45,7 @@ const vite = (version, installer = { type: 'npm' }) => ({ app: 'vite-spa', bundl
 // output are pinned (core-js, systemjs: plugin-legacy; workbox-*: vite-plugin-pwa)
 const FEATURES = { 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20', 'sanitize.css': '13.0.0', 'normalize.css': '8.0.1',
   terser: '5.51.2', 'core-js': '3.50.0', systemjs: '6.15.1', 'vite-plugin-pwa': '2.0.0', 'workbox-build': '7.4.1', 'workbox-window': '7.4.1',
-  'vite-plugin-static-copy': '4.1.1' };
+  'vite-plugin-static-copy': '4.1.1', sass: '1.105.1', bulma: '1.0.4', less: '4.9.1', 'normalize.less': '1.0.0' };
 const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', installer: { type: 'npm' },
   deps: { vite: version, '@vitejs/plugin-legacy': legacy, ...FEATURES }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
 // the rollup command line (Rollup's CommonJS build)
@@ -172,10 +172,11 @@ const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
 // the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
-const FEATURES_EXPECT = ['core-js@3.50.0', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'sanitize.css@13.0.0',
-  'systemjs@6.15.1', 'workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'workbox-routing@7.4.1', 'workbox-strategies@7.4.1'];
-// not in source maps: CSS (sanitize.css), the copy (normalize.css)
-const FEATURES_MISSING = ['normalize.css@8.0.1', 'sanitize.css@13.0.0'];
+// (bulma: a Sass partial; normalize.less: a Less @import)
+const FEATURES_EXPECT = ['bulma@1.0.4', 'core-js@3.50.0', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'normalize.less@1.0.0',
+  'sanitize.css@13.0.0', 'systemjs@6.15.1', 'workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'workbox-routing@7.4.1', 'workbox-strategies@7.4.1'];
+// not in source maps: style sheets (sanitize.css, bulma, normalize.less), the copy (normalize.css)
+const FEATURES_MISSING = ['bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'];
 const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'yallist@5.0.0'];
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
@@ -424,9 +425,9 @@ const cases = [
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
   { name: 'Vite 8.3.3, export dir only', fixture: 'vite8-npm', cmd: 'npm run -s build', exportOnly: true, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // workers, CSS @import, legacy polyfills, workbox's sw.js (written after the build), static copy from node_modules
-  { name: 'Vite 8.3.3: workers, CSS @import, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite8-features', cmd: 'npm run -s build',
+  { name: 'Vite 8.3.3: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite8-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
-  { name: 'Vite 7.3.7: workers, CSS @import, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite7-features', cmd: 'npm run -s build',
+  { name: 'Vite 7.3.7: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite7-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
