@@ -12,9 +12,15 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     container: cgr.dev/chainguard/wolfi-base:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22: loader-thread ESM hooks; 24 and 26: in-thread ones (26 deprecates module.register)
+        node: [22, 24, 26]
+    name: unit (Node ${{ matrix.node }})
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-24
+        run: apk add --no-cache nodejs-${{ matrix.node }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Unit tests
         run: node --test test/unit.cjs
@@ -26,17 +32,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # each shard installs and runs its own fixtures (test/lib/shard.cjs)
+        # the whole matrix on Node 24 and 26 (the current LTS lines with in-thread ESM hooks)
+        node: [24, 26]
+        # each shard installs and runs its own fixtures (test/lib/shard.cjs); 6 shards per Node version
         shard: [1, 2, 3, 4, 5, 6]
-    name: matrix (${{ matrix.shard }}/${{ strategy.job-total }})
+    name: matrix (Node ${{ matrix.node }}, ${{ matrix.shard }}/6)
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-24 npm yarn bun syft
+        run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate fixtures
-        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/6
       - name: Run matrix
-        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/6
 
   # Node < 24.12 uses the loader-thread ESM hooks (src/hooks.cjs): the Vite, Rollup, Rolldown, nested and SvelteKit cases on Wolfi's Node 22
   # (e.g. GitLab and Coder build with it)
