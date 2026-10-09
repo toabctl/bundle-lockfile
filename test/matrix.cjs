@@ -123,6 +123,8 @@ const fixtures = {
   'rollup-api': rollupApi('4.64.2', '1.2.13', { '@rollup/wasm-node': '4.64.2' }),
   // the oldest releases of the supported majors
   'rollup-api-floor': rollupApi('4.0.2', '1.0.0'),
+  // a project directory with "#" in its name, which is no fragment of the module ids
+  'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
   'vite-rolldown7-npm': { ...vite('npm:rolldown-vite@7.3.1') },
   'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
@@ -691,6 +693,8 @@ const cases = [
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: build()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-build', expect: ROLLUP_API },
+  ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => (
+    { name: `${what} JavaScript API in a directory with "#" in its name`, fixture: 'rollup-api-c#', cmd: `node build.mjs ${mode}`, expect: ROLLUP_API })),
   // two outputs written at the same time into one directory, in one format: each a writer with its own files and hashes
   { name: 'Rollup 4 JavaScript API: two outputs into one directory at the same time', fixture: 'rollup-api', cmd: 'node build.mjs rollup-outputs', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: two outputs into one directory at the same time', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-outputs', expect: ROLLUP_API },
