@@ -1720,6 +1720,24 @@ test('outputs: BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR write
   assert.equal(told.length, 1);
 });
 
+test('lockfile: a context reached through a symlink is recorded as given, and read back as the real one', { skip: process.platform === 'win32' }, () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const root = fs.realpathSync(project({ 'real/proj/node_modules/a/package.json': { name: 'a', version: '1.0.0' } }));
+  fs.symlinkSync(J(root, 'real/proj'), J(root, 'link'));
+  const ctx = J(root, 'link'), dir = J(ctx, 'dist/bundle-lockfile'); // webpack's context and output.path as configured
+  const pkg = { name: 'a', version: '1.0.0', path: J(root, 'real/proj/node_modules/a') }; // package paths are real
+  const json = toPackageLock([pkg], ctx, { dir, writers: [{ id: 'w', files: [J(ctx, 'dist/main.js')], paths: [pkg.path] }] });
+  const doc = JSON.parse(json);
+  assert.equal(doc['bundle-lockfile'].context, '../..'); // not ../../../real/proj: no path of this machine
+  assert.deepEqual(Object.keys(doc.packages), ['', 'node_modules/a']);
+  const meta = readMeta(json, dir);
+  assert.equal(meta.context, J(root, 'real/proj'));
+  assert.equal(meta.writers[0].pkgs[0].path, pkg.path);
+  // a record with the real context (written by v0.0.3) reads the same
+  const old = JSON.stringify({ ...doc, 'bundle-lockfile': { ...doc['bundle-lockfile'], context: path.relative(dir, J(root, 'real/proj')) } });
+  assert.equal(readMeta(old, dir).writers[0].pkgs[0].path, pkg.path);
+});
+
 test('lockfile: a package outside the project another process listed is listed once, also after many writes', async () => {
   const pj = (name, version = '1.0.0') => ({ name, version });
   const root = project({ 'proj/node_modules/foo/package.json': pj('foo', '2.0.0') });
