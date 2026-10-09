@@ -1,5 +1,5 @@
 'use strict';
-// Checks shared by all bundlers: lockfiles are ones syft can read, and their package lists.
+// Checks shared by all bundlers: lockfiles are ones syft and Trivy can read, and their package lists.
 const fs = require('fs');
 const path = require('path');
 
@@ -14,11 +14,14 @@ function readLockfile(f) {
   const list = [];
   for (const [key, p] of Object.entries(lock.packages)) {
     if (key === '') continue;
-    if (!key.includes('node_modules/')) throw new Error(`${f}: key ${key} is not a node_modules path`);
+    // Trivy skips every key that does not start with node_modules (syft reads any)
+    if (!key.startsWith('node_modules/')) throw new Error(`${f}: key ${key} does not start with node_modules/ (Trivy would skip it)`);
     // Yarn PnP's virtual paths are one per dependent set of one package: the key is the package in the cache
     if (/(^|\/)(__virtual__|\$\$virtual)\//.test(key)) throw new Error(`${f}: key ${key} is a Yarn virtual path`);
     if (typeof p.name !== 'string' || !p.name) throw new Error(`${f}: no name for ${key} (syft needs it for aliased packages)`);
     if (!p.version) throw new Error(`${f}: no version for ${key}`);
+    // syft reads a string or an array of strings, Trivy a string or {type} objects
+    if (p.license !== undefined && (typeof p.license !== 'string' || !p.license)) throw new Error(`${f}: license of ${key} is not a string: ${JSON.stringify(p.license)}`);
     list.push(`${p.name}@${p.version}`);
   }
   return [...new Set(list)].sort();
@@ -44,9 +47,43 @@ function readLockfiles(outDir, lockfile = LOCKFILE) {
   return result;
 }
 
+// A lockfile's record is right where the lockfile is (f: its path, inline in the output): "self" from its context
+// leads back to it, and every package it lists is where the record says - its key, or its "locations" entry for a key
+// that is not the location, relative to the context is a directory whose package.json has that name and version (in
+// Yarn PnP's cache: in a zip that is there). Packages outside the project ("outside") and those whose location is not
+// known ("unknown") have none. Returns the number checked.
+function checkLocations(f) {
+  const lock = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const m = lock['bundle-lockfile'];
+  if (!m || typeof m.context !== 'string') throw new Error(`${f}: no bundle-lockfile record`);
+  const outside = new Set([...(m.outside || []), ...(m.unknown || [])]), locations = m.locations || {};
+  const context = path.resolve(path.dirname(f), m.context);
+  if (typeof m.self !== 'string' || path.resolve(context, m.self) !== path.resolve(path.dirname(f))) {
+    throw new Error(`${f}: its record is not for where it is (context ${m.context}, self ${m.self})`);
+  }
+  let n = 0;
+  for (const [key, p] of Object.entries(lock.packages)) {
+    if (key === '' || outside.has(key)) continue;
+    const at = Object.prototype.hasOwnProperty.call(locations, key) ? locations[key] : key;
+    const dir = path.resolve(context, at);
+    const zip = dir.match(/^(.*?\.zip)(?=[\\/])/);
+    if (zip) {
+      if (!fs.existsSync(zip[1])) throw new Error(`${f}: ${key} is recorded at ${at}, whose zip is not there`);
+    } else {
+      let j = null;
+      try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { /* checked below */ }
+      if (!j || j.name !== p.name || j.version !== p.version) {
+        throw new Error(`${f}: ${key} (${p.name}@${p.version}) is recorded at ${at}, where ${j ? `${j.name}@${j.version} is` : 'no package.json is'}`);
+      }
+    }
+    n++;
+  }
+  return n;
+}
+
 const sortedKeys = (o) => Object.fromEntries(Object.keys(o).sort().map(k => [k, [...o[k]].sort()]));
 const sameMap = (a, b) => JSON.stringify(sortedKeys(a)) === JSON.stringify(sortedKeys(b));
 const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 const show = (m) => Object.entries(sortedKeys(m)).map(([k, v]) => `\n    ${k || '.'}: ${v.join(' ') || '(none)'}`).join('');
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, sameMap, same, show };
+module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, sameMap, same, show };

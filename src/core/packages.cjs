@@ -1,32 +1,15 @@
 'use strict';
 // Maps bundled source files to the npm packages they belong to.
-const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
 const copies = require('./copies.cjs');
 const nested = require('./nested.cjs');
+const { readPackage } = require('./manifest.cjs');
 const { packageRoot, realRoot } = require('./paths.cjs');
 
 // Style sheets (CSS, Sass, Less, Stylus, PostCSS): those a style sheet @imports are inlined into it by the bundler's
 // CSS handling (Vite's CSS plugin, sass-loader, less-loader, postcss-import, Tailwind) and are no modules of their own
 const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
-
-// "license": "MIT", the legacy {"type": "MIT"} or "licenses": [{"type": "MIT"}, "ISC"]
-function licenseOf(j) {
-  const one = (l) => (typeof l === 'string' ? l : l && typeof l.type === 'string' ? l.type : undefined);
-  if (j.license !== undefined) return one(j.license);
-  if (!Array.isArray(j.licenses)) return undefined;
-  const all = j.licenses.map(one).filter(Boolean);
-  return all.length ? all : undefined;
-}
-
-function readPackage(dir) {
-  let j;
-  // a leading byte order mark is valid UTF-8 that JSON.parse rejects; npm strips it too
-  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return null; }
-  if (!j || typeof j.name !== 'string' || !j.name || typeof j.version !== 'string' || !j.version) return null;
-  return { name: j.name, version: j.version, path: dir, license: licenseOf(j) };
-}
 
 // Bundled code from a package the lockfile cannot list must not go unnoticed. Directories such as
 // node_modules/.cache are no packages: tools generate files there, so they are skipped quietly.

@@ -3,14 +3,16 @@
 // usage: node test/run.cjs <fixtures-dir> [case-name-regex] [--shard=<i>/<n>] [--fixtures=<fixture-name-regex>]
 //   (see lib/shard.cjs; --fixtures: only the cases of these fixtures)
 // Collects all lockfiles under the case's outDir ({output dir: packages}, one per top-level compiler) and checks:
-//   1. they are valid for syft and match the expectation (expect / expectIncludes / expectExcludes)
+//   1. they are valid for syft and match the expectation (expect / expectIncludes / expectExcludes), and their
+//      records give every package's real location
 //   2. they agree exactly with the bundler's oracle (independent build without bundle-lockfile)
 //   3. syft (if on PATH) reads exactly those packages from outDir via javascript-lock-cataloger
+//   4. Trivy (if on PATH) reads exactly those packages from outDir via its npm (package-lock.json) analyzer
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fixtures, cases } = require('./matrix.cjs');
-const { LOCKFILE, readLockfiles, sameMap, same, show } = require('./lib/check.cjs');
+const { LOCKFILE, readLockfiles, checkLocations, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
 const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
@@ -19,6 +21,7 @@ const inShard = fixturesOf(shard, only);
 const FX = path.resolve(fxDir);
 const REGISTER = path.resolve(__dirname, '../src/register.cjs');
 const hasSyft = spawnSync('syft', ['version'], { stdio: 'ignore' }).status === 0;
+const hasTrivy = spawnSync('trivy', ['--version'], { stdio: 'ignore' }).status === 0;
 const TIMEOUT = 15 * 60 * 1000; // per command: a hanging build (e.g. an installer retrying the registry offline) fails its case
 
 function run(cmd, cwd, env) {
@@ -31,6 +34,15 @@ function run(cmd, cwd, env) {
 const sh = (cmd, cwd, env) => run(cmd, cwd, env).stdout;
 // unique, sorted name@version of syft JSON artifacts
 const syftIds = (doc) => [...new Set((doc.artifacts || []).map(a => `${a.name}@${a.version}`))].sort();
+// the packages of Trivy's CycloneDX output that its npm analyzer read from package-lock.json files (the components
+// those files' application components depend on): [{ id: name@version, purl, licensed }]
+function trivyPackages(bom) {
+  const prop = (c, n) => ((c.properties || []).find(p => p.name === n) || {}).value;
+  const locks = new Set((bom.components || []).filter(c => c.type === 'application' && prop(c, 'aquasecurity:trivy:Type') === 'npm').map(c => c['bom-ref']));
+  const refs = new Set((bom.dependencies || []).filter(d => locks.has(d.ref)).flatMap(d => d.dependsOn || []));
+  return (bom.components || []).filter(c => refs.has(c['bom-ref']))
+    .map(c => ({ id: `${c.group ? `${c.group}/` : ''}${c.name}@${c.version}`, purl: c.purl || '', licensed: !!(c.licenses || []).length }));
+}
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 function runCase(c) {
@@ -38,7 +50,7 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', '.netlify', 'build-oracle', '.svelte-kit-oracle']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', '.netlify', 'build-oracle', '.svelte-kit-oracle', 'out', 'vendor']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
   // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture
@@ -93,6 +105,9 @@ function runCase(c) {
     return `no lockfile, as expected${c.expectOutput ? `; output matches ${c.expectOutput}` : ''}`;
   }
   if (!Object.keys(got).length) throw new Error('no lockfile written');
+  // also the copies SvelteKit's adapters make of Vite's output (from .svelte-kit/output/): re-anchored where they are
+  const located = Object.keys(inline).reduce((n, k) => n + checkLocations(path.join(outDir, k, c.lockfile || LOCKFILE)), 0);
+  if (located) notes.push(`${located} locations`);
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectIn && !sameMap(got, c.expectIn)) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(c.expectIn)}`);
   if (c.expectKeys) {
@@ -131,6 +146,17 @@ function runCase(c) {
       if (miss.length || extra.length) throw new Error(`syft on the project lockfile: missing ${miss.join(' ') || '-'}, unexpected ${extra.join(' ') || '-'}\n  read: ${proj.join(' ')}`);
       notes.push(`syft on the project's own lockfile instead: ${proj.join(' ')}`);
     }
+  }
+
+  // `trivy fs` reads package-lock.json files (image and rootfs scans read none); CycloneDX output needs no
+  // vulnerability database
+  if (hasTrivy) {
+    const pkgs = trivyPackages(JSON.parse(sh(`trivy fs -q --skip-version-check --format cyclonedx ${lockDir}`, dir, base)));
+    const names = [...new Set(pkgs.map(p => p.id))].sort();
+    if (!same(names, all)) throw new Error(`trivy read ${names.join(' ')}\n  want ${all.join(' ')}`);
+    const bad = pkgs.filter(p => !p.purl.startsWith('pkg:npm/') || !p.licensed);
+    if (bad.length) throw new Error(`trivy: unexpected purl/license for ${bad.map(p => p.id).join(', ')}`);
+    notes.push('trivy agrees');
   }
 
   // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)
@@ -179,6 +205,7 @@ let failed = 0, skipped = 0;
 const selected = cases.filter(c => inShard.has(c.fixture) && (!filter || new RegExp(filter).test(c.name)));
 const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
 if (!hasSyft) console.log('note: syft not on PATH, skipping syft checks');
+if (!hasTrivy) console.log('note: trivy not on PATH, skipping Trivy checks');
 for (const c of selected) {
   // the build tool itself does not run on this Node.js (the case says why)
   if (c.maxNode && NODE_MAJOR > c.maxNode) { skipped++; console.log(`SKIP  ${c.name}: needs Node.js <= ${c.maxNode}, this is ${process.versions.node}`); continue; }

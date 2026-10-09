@@ -370,7 +370,8 @@ const cases = [
     env: { TURBO_TELEMETRY_DISABLED: '1' }, expect: ['lodash-es@4.18.1'] },
   { name: 'yarn 1.22 (yarn.lock)', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build', expect: W5 },
   { name: "yarn 3.8.7 Plug'n'Play", fixture: 'wp5-yarn3-pnp', cmd: 'yarn build', expect: W5 },
-  { name: "yarn 4.18.1 Plug'n'Play", fixture: 'wp5-yarn4-pnp', cmd: 'yarn build', expect: W5 },
+  // the packages are in .yarn/cache/<zip>/node_modules/: keyed node_modules/<name>[@<version>], as those in a global cache
+  { name: "yarn 4.18.1 Plug'n'Play", fixture: 'wp5-yarn4-pnp', cmd: 'yarn build', expect: W5, expectKeys: OUTSIDE_KEYS_W5 },
   // keys must not carry the path to the cache, which differs between machines
   { name: "yarn 4.18.1 Plug'n'Play, global cache", fixture: 'wp5-yarn4-pnp-global-cache', cmd: 'yarn build', expect: W5,
     expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/ms': 'ms@2.0.0',
@@ -520,9 +521,10 @@ const cases = [
     expectIncludes: ['lodash-es@4.18.1'], expectExcludes: ['@vanilla-extract/webpack-plugin@2.3.27', '@vanilla-extract/css@1.21.2'] },
   { name: 'edge: externals are not listed', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_EXTERNALS: '1' },
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
-  // webpack's context is a subdirectory: keys are relative to it, syft still reads every entry by its name field
+  // webpack's context is a subdirectory: the packages are in ../node_modules, keyed without the ../ (Trivy reads only
+  // keys that start with node_modules/)
   { name: 'edge: context below the project root', fixture: 'edge-context', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'],
-    expectKeys: { '../node_modules/debug': 'debug@2.6.9', '../node_modules/debug/node_modules/ms': 'ms@2.0.0', '../node_modules/ms': 'ms@2.1.3' } },
+    expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/ms': 'ms@2.1.3' } },
   // export dir: a copy of every lockfile outside the output (go:embed, jars, copies that drop it), optionally only there
   { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR and the inline lockfile', fixture: 'wp5-npm', cmd: 'npm run -s build', exportDir: true, expect: W5 },
   { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR only (BUNDLE_LOCKFILE_INLINE=0)', fixture: 'wp5-npm', cmd: 'npm run -s build', exportOnly: true, expect: W5 },
@@ -557,10 +559,18 @@ const cases = [
     expectKeys: OUTSIDE_KEYS_VITE, oracleMissing: ['normalize.css@8.0.1'] },
   { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play, global cache", fixture: 'vite8-yarn4-pnp-global-cache', cmd: 'yarn build', expect: VITE_EXPECT,
     expectKeys: OUTSIDE_KEYS_VITE, oracleMissing: ['normalize.css@8.0.1'] },
-  // a monorepo's app built in its directory: keys relative to it, into the root's node_modules
+  // a monorepo's app built in its directory: the packages are in the root's node_modules, keyed without the ../../
   { name: 'Vite 8.3.3, an app of an npm workspaces monorepo', fixture: 'vite-monorepo', cmd: 'npm run -s build -w packages/app', outDir: 'packages/app/dist',
     oracleArgs: 'packages/app', expect: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0'],
-    expectKeys: { '../../node_modules/debug': 'debug@2.6.9', '../../node_modules/debug/node_modules/ms': 'ms@2.0.0', '../../node_modules/lodash-es': 'lodash-es@4.18.1' } },
+    expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1' } },
+  // two vite build processes, one after the other, into the app's dist/: each keeps the other's packages, which it
+  // knows only from the lockfile's record, at their locations there ("locations": the keys are without ../../); the
+  // packages of both (debug and its nested ms) are listed once
+  { name: 'Vite 8.3.3, an app of an npm workspaces monorepo: two vite build processes, one output dir, then the first again', fixture: 'vite-monorepo',
+    cmd: 'npm run -s build -w packages/app && cd packages/app && ../../node_modules/.bin/vite build --config vite.second.config.mjs && ../../node_modules/.bin/vite build',
+    env: { VITE_SHARED: '1' }, outDir: 'packages/app/dist', expect: ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3'],
+    expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1',
+      'node_modules/ms': 'ms@2.1.3' }, oracle: false },
   { name: 'Vite 8.3.3, npx vite build', fixture: 'vite8-npm', cmd: 'npx vite build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // the loader-thread hooks, which Node < 24.12 uses (CI's Node 24 would use the in-thread ones)
   { name: 'Vite 8.3.3, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
@@ -646,6 +656,12 @@ const cases = [
   // installers (yarn Plug'n'Play: Yarn's own loader-thread hook next to bundle-lockfile's ESM hooks)
   { name: 'Vite 8.3.3, yarn 1', fixture: 'vite8-yarn1', cmd: 'yarn --offline -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play", fixture: 'vite8-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // the packages are in .yarn/cache/<zip>/node_modules/, not at their keys: a process that writes after the other one
+  // knows the other's packages only from the record's "locations"
+  { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play: two vite build processes, one output dir, then the first again", fixture: 'vite8-yarn4-pnp',
+    cmd: 'yarn vite build && yarn vite build --config vite.second.config.mjs && yarn vite build', env: { VITE_SHARED: '1' }, expect: VITE_BOTH,
+    expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1',
+      'node_modules/ms': 'ms@2.0.0', 'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/normalize.css': 'normalize.css@8.0.1' }, oracle: false },
   { name: "Vite 7.3.7, yarn 4.18.1 Plug'n'Play", fixture: 'vite7-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, yarn 4.18.1 node-modules linker', fixture: 'vite8-yarn4-node-modules', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, bun', fixture: 'vite8-bun', cmd: 'bun run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
@@ -675,6 +691,13 @@ const cases = [
   // two vite build processes writing to one dir: the lockfile has both. The oracle builds only the first page
   { name: 'Vite 8.3.3: two vite build processes, one output dir, in parallel', fixture: 'vite8-npm', cmd: PARALLEL_VITE, env: { VITE_SHARED: '1' },
     expect: VITE_BOTH, oracle: false },
+  // a build writes into a directory holding a copy (cp: not seen by bundle-lockfile) of a deeper output, whose record's
+  // context is then above the project: the copy's packages are kept by name and version, keyed as packages whose
+  // location is not known, and the lockfile's context is the project's
+  { name: 'Vite 8.3.3: a vite build into a copy (cp) of another output', fixture: 'vite8-npm', env: { VITE_SHARED: '1' },
+    cmd: `VITE_OUT_DIR=out/deeper/dist ${VITE_BIN} build && cp -r out/deeper/dist dist && ${VITE_BIN} build --config vite.second.config.mjs`,
+    expect: VITE_BOTH, expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1',
+      'node_modules/ms': 'ms@2.0.0', 'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/normalize.css': 'normalize.css@8.0.1' }, oracle: false },
   { name: 'Vite 7.3.7: two vite build processes, one output dir, then one of them again', fixture: 'vite7-npm', env: { VITE_SHARED: '1' },
     cmd: `${PARALLEL_VITE} && ${VITE_BIN} build --config vite.second.config.mjs`, expect: VITE_BOTH, oracle: false },
   // Rollup's and Rolldown's JavaScript APIs (build.mjs). The oracle is the same build with Rollup's command line and
@@ -778,6 +801,12 @@ const cases = [
   // with BUNDLE_LOCKFILE_INLINE=0 the island's lockfile is only in the export directory: it is found there
   { name: 'nested: Vite 8 island bundled by webpack 5, export dir only', fixture: 'nested-island-wp5', cmd: 'npm run -s build', exportOnly: true,
     expect: NESTED_EXPECT },
+  // the island's output vendored with cp into the app (vendor/island/dist, one level deeper): its lockfile is a copy's,
+  // whose packages are kept by name and version
+  { name: 'nested: Vite 8 island copied (cp) into the app, bundled by webpack 5', fixture: 'nested-island-wp5', env: { NESTED_ENTRY: 'vendored' },
+    cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && mkdir -p vendor/island && cp -r island/dist vendor/island/dist && ./node_modules/.bin/webpack --config webpack.config.js',
+    expect: NESTED_EXPECT, expectKeys: { 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/nanoid': 'nanoid@3.3.20' },
+    oracle: false },
   // a changed island file is not attributed (its hash no longer matches)
   { name: 'nested: island changed after its build is not attributed', fixture: 'nested-island-wp5',
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && echo "/* changed */" >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js',
