@@ -4,6 +4,8 @@
 //   rollup-wasm     the same with @rollup/wasm-node (Rollup's WebAssembly build, for platforms without its native one)
 //   rolldown        rolldown() + write()
 //   rolldown-build  Rolldown's build()
+//   rollup-outputs, rolldown-outputs  two outputs into dist/ at the same time (main.js, main.min.js), as the rollup
+//                   command line writes them; fails unless the lockfile records each with its own file
 //   rollup-watch, rolldown-watch  watch(): builds, rebuilds without src/main.js's nanoid lines (nanoid must leave the
 //                   lockfile), rebuilds with them (it must come back); the lockfile is deleted before every build;
 //                   prints the package list of every build as JSON last. src/main.js is restored also on failure
@@ -29,6 +31,15 @@ if (mode === 'rollup' || mode === 'rollup-wasm') {
   await bundle.close();
 } else if (mode === 'rolldown-build') {
   await (await import('rolldown')).build({ ...rolldownOptions, output });
+} else if (mode === 'rollup-outputs' || mode === 'rolldown-outputs') {
+  const rollup = mode === 'rollup-outputs';
+  const bundle = rollup ? await (await import('rollup')).rollup(await rollupOptions()) : await (await import('rolldown')).rolldown(rolldownOptions);
+  await Promise.all(['[name].js', '[name].min.js'].map(entryFileNames => bundle.write({ ...output, entryFileNames })));
+  await bundle.close();
+  // each output is a writer of its own, with its file and its hash (for a build that bundles it)
+  const writers = JSON.parse(fs.readFileSync(lockfile, 'utf8'))['bundle-lockfile'].writers;
+  const got = JSON.stringify(writers.map(w => [w.files, Object.keys(w.outputs || {})]).sort());
+  if (got !== JSON.stringify([[['../main.js'], ['../main.js']], [['../main.min.js'], ['../main.min.js']]])) fail(`${mode}: writers ${got}`);
 } else if (mode === 'rollup-watch' || mode === 'rolldown-watch') {
   const { watch } = await import(mode === 'rollup-watch' ? 'rollup' : 'rolldown');
   const options = mode === 'rollup-watch' ? await rollupOptions() : rolldownOptions;
