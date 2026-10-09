@@ -16,6 +16,7 @@ const { pathToFileURL } = require('url');
 const wt = require('worker_threads');
 const config = require('./core/config.cjs');
 const esmWrap = require('./esm-wrap.cjs');
+const { ancestors } = require('./core/paths.cjs');
 
 const INSTALLED = Symbol.for('bundle-lockfile.hooks-installed');
 const ESM = Symbol.for('bundle-lockfile.esm');
@@ -71,9 +72,9 @@ function syncHooksSafe(version) {
 // versions that need them they are installed only there.
 function bundlerProcess(packages, main = process.argv[1]) {
   if (!main) return false;
-  let dir;
-  try { dir = path.dirname(fs.realpathSync(main)); } catch { return false; }
-  for (;;) {
+  let start;
+  try { start = path.dirname(fs.realpathSync(main)); } catch { return false; }
+  for (const dir of ancestors(start)) {
     const file = path.join(dir, 'package.json');
     if (fs.existsSync(file)) {
       let j;
@@ -83,10 +84,8 @@ function bundlerProcess(packages, main = process.argv[1]) {
         return packages.includes(j.name) || packages.some(p => Object.prototype.hasOwnProperty.call(deps, p));
       }
     }
-    const up = path.dirname(dir);
-    if (up === dir) return false;
-    dir = up;
   }
+  return false;
 }
 
 // sync | async | off, see syncHooksSafe and bundlerProcess. BUNDLE_LOCKFILE_ESM_HOOKS=sync|async|off forces one
