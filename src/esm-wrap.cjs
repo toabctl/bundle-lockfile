@@ -11,9 +11,30 @@ function match(url, entries) {
   return entries.find(e => e.suffixes.some(s => p.endsWith(s))) || null;
 }
 
+// The source without its comments (each replaced by a space), so that an export in a comment does not count: a
+// wrapper that re-exports a default the module does not have fails to link, and the build with it. Strings and
+// template literals are skipped over; regular expression literals are not parsed (the entry modules adapters wrap
+// re-export from other files).
+function withoutComments(src) {
+  let out = '', i = 0;
+  while (i < src.length) {
+    const c = src[i], next = src[i + 1];
+    if (c === '/' && next === '/') { while (i < src.length && src[i] !== '\n') i++; out += ' '; continue; }
+    if (c === '/' && next === '*') { const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2; out += ' '; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1;
+      out += src.slice(i, j + 1); i = j + 1; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 // Names a module exports, from `export { a, b as c }` (also `... from '...'`) and `export function|class|const x`.
-function exportedNames(src) {
+function exportedNames(source) {
   const names = new Set();
+  const src = withoutComments(source);
   for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}/g)) {
     for (const part of m[1].split(',')) {
       const n = part.trim().split(/\s+as\s+/).pop().trim();
