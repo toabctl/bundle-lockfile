@@ -7,8 +7,11 @@ const fs = require('fs');
 const config = require('./core/config.cjs');
 
 const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs'];
-// yarn's own entry point: yarn 1 (bin/yarn.js), yarn 2+ releases (.yarn/releases/yarn-4.x.cjs), corepack's copies
-const YARN = /[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-[^\\/]*\.c?js$|[\\/]yarn[\\/]bin[\\/]yarn(\.c?js)?$/;
+// yarn's own entry point (process.argv[1]): yarn 1's bin/yarn.js (npm's and distributions' package, corepack's copy
+// <COREPACK_HOME>/v1/yarn/1.x/bin/yarn.js) or a bin/yarn link to it, a yarn 2+ release (.yarn/releases/yarn-4.x.cjs),
+// corepack's yarn (dist/yarn.js) and its copies of releases (<COREPACK_HOME>/v1/yarn/4.x/yarn.js) - not other scripts
+// named after yarn (yarn-deduplicate.js, scripts/yarn-audit-fix.js, tools/yarn.js)
+const YARN = /[\\/]bin[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-\d[^\\/]*\.c?js$|[\\/]corepack[\\/]dist[\\/]yarn(pkg)?\.js$|[\\/]yarn[\\/]\d[^\\/]*[\\/]yarn\.js$/;
 
 // the scripts the node shim passed through to start this process (see bin/node): processes this one starts look anew
 delete process.env.BUNDLE_LOCKFILE_NODE_SEEN;
