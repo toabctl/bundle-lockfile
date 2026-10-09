@@ -136,7 +136,7 @@ function exportPath(target) {
   if (!config.exportDir) return null;
   const abs = path.resolve(target);
   const rel = config.exportBase && path.relative(config.exportBase, abs);
-  const inBase = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const inBase = rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); // also <base>/..cache
   const { root } = path.parse(abs);
   return path.join(config.exportDir, inBase ? rel : path.join(root.replace(/[:\\/]+/g, '') || '.', abs.slice(root.length)));
 }
