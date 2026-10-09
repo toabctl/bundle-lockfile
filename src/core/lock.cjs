@@ -6,11 +6,12 @@ const path = require('path');
 const config = require('./config.cjs');
 
 // Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
-// it. A lock older than a minute is from a process that died; one that cannot be taken in 30 s is skipped with a
-// warning (the write goes ahead: a stalled build would be worse than a lockfile missing another process's packages).
-function lock(file) {
+// it. A lock older than a minute (staleAfter) is from a process that died; one that cannot be taken in 30 s (wait) is
+// skipped with a warning (the write goes ahead: a stalled build would be worse than a lockfile missing another
+// process's packages).
+function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
   const l = `${file}.lock`;
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + wait;
   try { fs.mkdirSync(path.dirname(l), { recursive: true }); } catch { return () => {}; }
   for (;;) {
     try {
@@ -21,7 +22,7 @@ function lock(file) {
     } catch (e) { if (e.code !== 'EEXIST') return () => {}; }
     let st;
     try { st = fs.statSync(l); } catch { continue; } // released meanwhile
-    if (Date.now() - st.mtimeMs > 60000) { takeStale(l, st); continue; }
+    if (Date.now() - st.mtimeMs > staleAfter) { takeStale(l, st); continue; }
     if (Date.now() > deadline) { config.warn('could not lock', file, '- writing it without the lock'); return () => {}; }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
