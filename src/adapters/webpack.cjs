@@ -8,6 +8,7 @@ const { createRequire } = require('module');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
+const { posix } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
@@ -142,7 +143,7 @@ function writerOf(compiler) {
   const plain = (v) => (typeof v === 'function' ? '(function)' : v === undefined ? null : v);
   let base;
   const portable = (k, v) => (typeof v === 'string' && path.isAbsolute(v) && compiler.context
-    ? path.relative(compiler.context, v).split(path.sep).join('/') : v);
+    ? posix(path.relative(compiler.context, v)) : v);
   try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)], portable); }
   catch { base = JSON.stringify([compiler.name || null, '(not comparable)']); } // e.g. a BigInt in an entry option
   let id = base;

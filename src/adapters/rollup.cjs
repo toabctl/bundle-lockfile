@@ -11,6 +11,7 @@ const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
 const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
+const { ancestors, posix } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
 const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
@@ -38,7 +39,7 @@ function fileOf(id) {
 // The writer of one output (see core/outputs.cjs): the same input, format and position in the build's outputs,
 // without paths of this machine.
 function writerOf(kind, input, out, ordinal, cwd) {
-  const rel = (v) => (typeof v === 'string' && path.isAbsolute(v) ? path.relative(cwd, v).split(path.sep).join('/') : v);
+  const rel = (v) => (typeof v === 'string' && path.isAbsolute(v) ? posix(path.relative(cwd, v)) : v);
   const inputs = typeof input === 'string' ? rel(input) : Array.isArray(input) ? input.map(rel)
     : input && typeof input === 'object' ? Object.fromEntries(Object.entries(input).map(([k, v]) => [k, rel(v)])) : null;
   return JSON.stringify([kind, inputs, out.format || null, ordinal, typeof out.entryFileNames === 'string' ? out.entryFileNames : null]);
@@ -120,11 +121,11 @@ function copiedFrom(file, rel, cwd) {
   const parts = rel.split(path.sep);
   const sub = parts.slice(parts.lastIndexOf('node_modules') + 1).join(path.sep);
   try { if (fs.statSync(file).size > MAX_LATE) return null; } catch { return null; }
-  for (let dir = cwd; ; dir = path.dirname(dir)) {
+  for (const dir of ancestors(cwd)) {
     const src = path.join(dir, 'node_modules', sub);
     if (copies.sameBytes(src, file)) { const pkgs = packages.packagesForFiles([src]); if (pkgs.length) return pkgs; }
-    if (path.dirname(dir) === dir) return null;
   }
+  return null;
 }
 
 // The directories of the bundle's entry modules and the ones above them, nearest first.

@@ -2,6 +2,7 @@
 // Serializes packages as package-lock.json (lockfileVersion 3), the format syft's javascript-lock-cataloger reads.
 const fs = require('fs');
 const path = require('path');
+const { posix } = require('./paths.cjs');
 
 // Code-unit order, not localeCompare: the output must not depend on the build machine's locale
 // (with LC_ALL=da_DK.UTF-8, "aa-utils" sorts after "zod").
@@ -13,7 +14,7 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // is not in an ancestor's node_modules either (Yarn's global cache, a shared store): that path differs
 // between machines and must not end up in the lockfile.
 function locationKey(base, dir) {
-  const rel = path.relative(base, dir).split(path.sep).join('/');
+  const rel = posix(path.relative(base, dir));
   if (path.isAbsolute(rel)) return null; // another drive
   const down = rel.replace(/^(\.\.\/)+/, '');
   if (down !== rel && !down.startsWith('node_modules/')) return null;
@@ -35,7 +36,6 @@ function locationKey(base, dir) {
 // "packages" (a file without them brings all of the writer's packages).
 const MAX_FILES = 20; // enough to tell whether the writer's output is still there
 const MAX_OUTPUTS = 500;
-const posix = (p) => p.split(path.sep).join('/');
 const entry = (p) => ({ name: p.name, version: p.version, ...(p.license ? { license: p.license } : {}) });
 // A writer's "packages", "outputs" and "contents" (see toPackageLock).
 function outputsOf(w, keyOf, rel) {

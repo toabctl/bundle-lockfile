@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const lru = require('./lru.cjs');
+const { ancestors } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.copies.v1');
 const MAX = 50000; // entries; a long-running process must not grow them forever
@@ -45,11 +46,11 @@ function sourceOf(file) {
   const f = path.resolve(file);
   const direct = state.files.get(f);
   if (direct) return sameBytes(f, direct) ? direct : null;
-  for (let dir = path.dirname(f); ; dir = path.dirname(dir)) {
+  for (const dir of ancestors(path.dirname(f))) {
     const src = state.dirs.get(dir);
     if (src) { const s = path.join(src, path.relative(dir, f)); return sameBytes(f, s) ? s : null; }
-    if (path.dirname(dir) === dir) return null;
   }
+  return null;
 }
 
 // Wraps fs.copyFile, fs.copyFileSync, fs.cp, fs.cpSync and their fs.promises versions (also what fs-extra and

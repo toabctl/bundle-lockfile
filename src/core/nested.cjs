@@ -15,6 +15,7 @@ const config = require('./config.cjs');
 const { readMeta } = require('./lockfile.cjs');
 const { packageRoot, realRoot } = require('./packages.cjs');
 const { hashOf } = require('./hashes.cjs');
+const { ancestors } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
 const state = globalThis[S] || (globalThis[S] = { metas: new Map() }); // dir -> meta | null
@@ -59,7 +60,7 @@ function nestedByFile(files) {
     const bundled = typeof f === 'string' ? f.split('?')[0] : null;
     const file = bundled && path.isAbsolute(bundled) && ownFile(bundled, roots);
     if (!file) continue;
-    for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
+    for (const dir of ancestors(path.dirname(file))) {
       const meta = metaOf(dir);
       const writer = meta && meta.writers.find(w => w.outputs[file]);
       if (writer) {
@@ -67,7 +68,6 @@ function nestedByFile(files) {
         else config.debug('built by another build, but changed since:', file);
         break;
       }
-      if (path.dirname(dir) === dir) break;
     }
   }
   return out;
