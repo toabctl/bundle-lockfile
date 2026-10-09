@@ -112,6 +112,10 @@ const fixtures = {
   // Tailwind CSS 4 through @tailwindcss/vite: its own style sheets are inlined into the CSS output
   'vite8-tailwind': { app: 'tailwind', bundler: 'vite', installer: { type: 'npm' }, deps: { vite: '8.3.3', tailwindcss: '4.3.3', '@tailwindcss/vite': '4.3.3' },
     packageJson: { type: 'module', scripts: { build: 'vite build' } } },
+  // Vite's root is not the working directory (test/apps/vite-root): a font from bootstrap-icons, an asset Vite names
+  // relative to its root
+  ...Object.fromEntries([['vite8-root', '8.3.3'], ['vite7-root', '7.3.7']].map(([name, version]) => [name, { app: 'vite-root', bundler: 'vite', installer: { type: 'npm' },
+    deps: { vite: version, 'lodash-es': '4.18.1', 'bootstrap-icons': '1.13.2' }, packageJson: { type: 'module', scripts: { build: 'vite build' } } }])),
   'rollup-cli': rollupCli,
   // Rollup's CommonJS build under Yarn Plug'n'Play (on Node 22.22.3+ Node loads it without Module._load, see hooks.cjs)
   'rollup-cli-yarn4-pnp': { ...rollupCli, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' } },
@@ -566,6 +570,10 @@ const cases = [
   { name: 'Vite 7.3.7, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // @import "tailwindcss": Tailwind's preflight and theme are in dist/assets/*.css (no source map: oracleMissing)
+  // Vite's root is web/, the build runs in the project: bootstrap-icons' font (url() in a style sheet) is only an asset
+  // named relative to the root; source maps do not show it
+  ...[['Vite 8.3.3', 'vite8-root'], ['Vite 7.3.7', 'vite7-root']].map(([what, fixture]) => ({ name: `${what}, root not the working directory: an asset from a package`,
+    fixture, cmd: 'npm run -s build', expect: ['bootstrap-icons@1.13.2', 'lodash-es@4.18.1'], oracleMissing: ['bootstrap-icons@1.13.2'] })),
   { name: 'Vite 8.3.3, Tailwind CSS 4 (@tailwindcss/vite)', fixture: 'vite8-tailwind', cmd: 'npm run -s build', expect: ['tailwindcss@4.3.3'],
     oracleMissing: ['tailwindcss@4.3.3'] },
   // Vite 6 and 5 build with Rollup 4 too

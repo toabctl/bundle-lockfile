@@ -722,7 +722,7 @@ island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island 
 (also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), the island's lockfile only in the export
 directory, an island of several chunks and a
 style sheet bundled whole by Vite 8 and in parts (only its style sheet, only its JavaScript) by Vite 8 and webpack 5, and an app with a worker, an inlined worker, a
-CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa (generateSW; injectManifest on Vite 7 and 8) and vite-plugin-static-copy (Vite 6, 7 and 8), and Tailwind CSS 4 with @tailwindcss/vite. The
+CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa (generateSW; injectManifest on Vite 7 and 8) and vite-plugin-static-copy (Vite 6, 7 and 8), Tailwind CSS 4 with @tailwindcss/vite, and a Vite root that is not the working directory, with a font from a package loaded by `url()` (Vite 7 and 8). The
 `rollup` command line has its own cases (also `rollup -c -w` and a TypeScript config), and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
 `rolldown()`, Rolldown's `build()`, `watch()` of both, two outputs of one build written into one directory at the same time, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked; also Rollup 4.0.2, Rolldown 1.0.0 and
 `@rollup/wasm-node`, its API and its command line), rolldown-vite 7 (also its watch mode); the

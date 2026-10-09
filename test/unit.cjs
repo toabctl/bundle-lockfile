@@ -1122,6 +1122,29 @@ test('rollup adapter: a written output gets its lockfile; generate-only builds a
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: an asset emitted from a package file, named relative to a Vite root that is not the working directory', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('font'), ...pj('changed'), ...pj('decoy'), 'node_modules/font/f.woff2': 'font bytes',
+    'node_modules/changed/c.svg': 'original', 'web/node_modules/decoy/d.svg': 'other bytes', 'node_modules/decoy/d.svg': 'decoy bytes', 'web/index.html': '',
+    'web/node_modules/decoy/package.json': { name: 'decoy', version: '2.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    // vite build with root: 'web': Vite names an asset relative to its root (web/), the working directory is the project
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'), chunks: [
+      { fileName: 'assets/index.js', code: 'index', modules: [J(root, 'web/index.html'), J(root, 'web/main.js')], entry: J(root, 'web/index.html') },
+    ], assets: [
+      { fileName: 'assets/f.woff2', originalFileNames: ['../node_modules/font/f.woff2'], source: Buffer.from('font bytes') },
+      // a file of that name with other bytes is not the asset's file
+      { fileName: 'assets/c.svg', originalFileNames: ['../node_modules/changed/c.svg'], source: 'transformed' },
+      // a file of that name relative to the working directory, but with other bytes: the one relative to the root is it
+      { fileName: 'assets/d.svg', originalFileNames: ['node_modules/decoy/d.svg'], source: 'other bytes' },
+    ] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['font', 'web/node_modules/decoy']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: outputs of one build written at the same time into one directory, in the same format, are writers of their own', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
