@@ -888,6 +888,20 @@ test('node shim: puts the --require back into NODE_OPTIONS, runs the real node, 
   for (const form of [`--require ${REGISTER}`, `--require=${REGISTER}`, `-r ${REGISTER}`]) {
     assert.equal(run('probe.cjs', { nodeOptions: `--max-old-space-size=1024 ${form}` }).options, `--max-old-space-size=1024 ${form}`, form); // never twice
   }
+  // quoted, with a space, through a symlinked directory: the same register.cjs, not added again
+  fs.symlinkSync(path.dirname(REGISTER), J(root, 'a b'));
+  for (const form of [`--require "${J(root, 'a b/register.cjs')}"`, `--require="${J(root, 'a b/register.cjs')}"`]) {
+    assert.equal(run('probe.cjs', { nodeOptions: `${form} --max-old-space-size=1024` }).options, `${form} --max-old-space-size=1024`, form);
+  }
+  // another copy of bundle-lockfile: no second --require (Next.js 15.0 - 16.3 break with several)
+  fs.cpSync(SRC, J(root, 'other copy/src'), { recursive: true });
+  const other = `--require "${J(root, 'other copy/src/register.cjs')}"`;
+  const withOther = run('probe.cjs', { nodeOptions: other });
+  assert.equal(withOther.options, other);
+  assert.equal(withOther.loaded, true);
+  // another tool's register.cjs is no copy
+  fs.mkdirSync(J(root, 'tool')); fs.writeFileSync(J(root, 'tool/register.cjs'), '// another tool\n');
+  assert.equal(run('probe.cjs', { nodeOptions: `--require ${J(root, 'tool/register.cjs')}` }).options, `--require ${REGISTER} --require ${J(root, 'tool/register.cjs')}`);
   // in yarn's process (and only there) process.execPath is the shim
   const yarn = run('yarn/bin/yarn.js');
   assert.equal(yarn.execPath, fs.realpathSync(J(root, 'shim/node')));

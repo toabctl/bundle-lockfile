@@ -146,7 +146,8 @@ export PATH="/opt/bundle-lockfile/bin:$PATH"
 ```
 
 `bin/node` puts the `--require` back into `NODE_OPTIONS`, keeping what else is set (a `--require` of the same file
-through another path, e.g. a symlinked install directory, counts as there), and runs the real `node`: the first one
+through another path, e.g. a symlinked install directory, also quoted with spaces, counts as there, and so does one of
+another copy of bundle-lockfile: one preload is enough, see Next.js below), and runs the real `node`: the first one
 in `PATH` that is neither this shim (nor a copy of it) nor a script it has already passed through on this start.
 Every `node` started through `PATH` — by npm, pnpm, yarn, bun, `cross-env` or a shell — then loads bundle-lockfile.
 In yarn's own process, `process.execPath` is the shim too: yarn runs scripts with a temporary `node` wrapper first in
