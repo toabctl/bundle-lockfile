@@ -1,0 +1,9 @@
+{
+  "name": "vscode-languageclient",
+  "version": "10.1.2",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "main": "lib/main.js"
+}

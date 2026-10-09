@@ -1,0 +1,3 @@
+# pnpm reads this; npm does not
+packages:
+  - 'pnpm-packages/*' # quoted, with a comment

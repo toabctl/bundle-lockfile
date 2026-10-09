@@ -93,8 +93,10 @@ package file pulled in under a first-party match resource is not listed either.
   e.g. `public/` files taken from a package once, by hand
 - a package whose only use is a small constant that webpack (>= 5.108, `optimization.inlineExports`, on by default
   in production) inlined at the use site, leaving its side-effect-free module in no chunk
-- npm packages vendored inside another package without a `package.json` of their own (e.g.
-  `@grafana/google-sdk/dist/esm/node_modules/lodash`): a warning names each one
+- npm packages vendored without a `package.json` of their own: inside another package (e.g.
+  `@grafana/google-sdk/dist/esm/node_modules/lodash`) their files count as that package, with a warning naming each;
+  outside `node_modules` (a copied `jquery.min.js`, Grafana's Jaeger UI components) they are first-party. Only their
+  code tells what they are (see [Output](#output) for vendored copies that have a `package.json`)
 - the bundler's own runtime code it generates into every bundle - webpack 5's runtime modules, Vite's preload helper
   and modulepreload polyfill, Rolldown's runtime, @rollup/plugin-commonjs's helpers: they are virtual modules, no files
   of a package, so `webpack`, `vite`, `rolldown` are not listed for them (webpack 4's `webpack/buildin/*` modules are
@@ -321,8 +323,25 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
   whose key without `../` another package has — is keyed `node_modules/<name>`, or `node_modules/<name>@<version>`
   (then `-2`, `-3`, …) if that is taken
 - the package a file belongs to is the directory directly below the last `node_modules` in its path
-  (`node_modules/<name>` or `node_modules/@scope/<name>`): `package.json` files inside a package
-  (`dist/esm/package.json`, `preact/hooks/package.json`) are not packages
+  (`node_modules/<name>` or `node_modules/@scope/<name>`), unless a **vendored copy** inside that package holds the
+  file: a directory whose `package.json` has a name npm accepts, a version, is not private, is no VS Code extension's
+  (`publisher` with `engines.vscode`, which VS Code requires of every extension) and has a name no `package.json`
+  further out has (Next.js' `next/dist/compiled/@edge-runtime/cookies` is listed as `@edge-runtime/cookies`). Other
+  `package.json` files inside a package (`dist/esm/package.json`, the private `preact/hooks/package.json`,
+  socket.io-client's `build/esm/package.json` with its own name) are not packages; a directory below a `node_modules`
+  without a `package.json` with name and version (VS Code's stripped `node_modules` inside `@gitlab/web-ide`, a
+  library build's `dist/esm/node_modules/rxjs`) counts as the package around it, with a warning once per process
+- a vendored copy **outside** `node_modules` is listed too, by the same `package.json` rule: the innermost such
+  directory around a bundled file — GitLab's `vendor/assets/javascripts/vue-virtual-scroller` (imported through an
+  alias), a `third_party/` module directory — unless a first-party directory comes first: the build's context (webpack)
+  or working directory (Vite, Rollup, Rolldown) and every directory above it, the package of an entry module, the
+  members of the monorepo (package manager workspaces, `pnpm-workspace.yaml`, `lerna.json`, `rush.json`, Nx's
+  `project.json`), a directory linked into `node_modules` (also Yarn Plug'n'Play's workspaces, portals and links), a
+  private `package.json`, or one `BUNDLE_LOCKFILE_FIRST_PARTY` names. Files another build produced (nested bundles)
+  are that build's output. A note names each vendored copy once per process. Listing a package too many is preferred
+  over missing one: an in-repo library that is not private, has a version and is none of those is listed —
+  `BUNDLE_LOCKFILE_FIRST_PARTY=lib/**` leaves it out. Vendored code without a `package.json` (a copied
+  `jquery.min.js`, Grafana's Jaeger UI components) is not found, here or by syft, Trivy and the CycloneDX plugin
 - so is a package outside the project — outside the context and not in an ancestor directory's `node_modules`, e.g. in
   Yarn's global cache (Yarn 4's default), pnpm's global virtual store or a shared store — whose real path differs
   between machines
@@ -334,9 +353,10 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
 - `name`, `version` and `license` come from each package's own `package.json` (also the legacy `license: {type}` and
   `licenses: [...]` forms). `license` is one string — syft reads no `{type}` objects, Trivy no arrays of strings
   (Trivy 0.70 reads no package at all from a lockfile with one) — several licenses as an SPDX expression:
-  `licenses: [{type: "MIT"}, {type: "Apache-2.0"}]` is `"(MIT OR Apache-2.0)"`. A directory in `node_modules` whose `package.json` has no name or version cannot be
-  listed; a warning names it once per process (only a debug message for directories starting with a dot, such as
-  `node_modules/.cache`, where tools generate files)
+  `licenses: [{type: "MIT"}, {type: "Apache-2.0"}]` is `"(MIT OR Apache-2.0)"`. A directory in `node_modules` whose
+  `package.json` has no name or version, and no package around it, cannot be listed; a warning names it once per
+  process (only a debug message for directories starting with a dot, such as `node_modules/.cache`, where tools
+  generate files)
 - entries are sorted by name, version and path in code-unit order, so the same build writes the same bytes on every
   machine, whatever its locale
 - the root entry has no name, so syft does not report the application itself as a package
@@ -468,6 +488,7 @@ attributed.
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
 | `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): do not write the lockfile into the output directory, only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written; a warning says so) |
 | `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (empty, `0`, `false` and `off` mean off) |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory, that are first-party: never listed as vendored copies (see [Output](#output)); `**`: no vendored copies outside `node_modules` |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack`; `vite` (builds with Vite's plugins), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all` |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite/Rollup/Rolldown are hooked (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)): `sync`, `async` or `off` instead of choosing by Node.js version. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
 
@@ -660,16 +681,25 @@ flowchart TD
   nm -- no --> nested{"recorded with the same hash<br/>in the first lockfile above<br/>that records it?"}
   copy -- yes --> root
   nested -- yes --> theirs["that writer's packages"]
+  nm -- no --> vend{"in a vendored copy below<br/>the first-party boundaries?"}
+  vend -- yes --> copyof["the vendored copy"]
+  vend -- no --> first
   root --> real{"real location<br/>below node_modules?"}
-  real -- "no: workspace, link:" --> first["first-party: not listed"]
+  real -- "no: workspace, link:" --> vend
   real -- yes --> pj{"package.json with<br/>name and version?"}
-  pj -- yes --> pkg["name, version, license<br/>at its real location"]
-  pj -- no --> warn["warning: not listed"]
+  pj -- yes --> inner{"in a vendored copy<br/>inside the package?"}
+  inner -- yes --> copyof
+  inner -- no --> pkg["name, version, license<br/>at its real location"]
+  pj -- no --> around{"a package<br/>around it?"}
+  around -- yes --> pkg
+  around -- no --> warn["warning: not listed"]
+  first["first-party: not listed"]
 ```
 
-A file outside `node_modules` that is neither a copy nor recorded by another build is first-party and not listed. Vite,
-Rollup and Rolldown builds add the packages of builds that write nothing themselves by the content of their chunks
-(see [What is listed](#what-is-listed)).
+A file outside `node_modules` that is neither a copy, nor recorded by another build, nor in a vendored copy is
+first-party and not listed (see [Output](#output) for what a vendored copy is and where the first-party boundaries
+are; `src/core/vendored.cjs`). Vite, Rollup and Rolldown builds add the packages of builds that write nothing
+themselves by the content of their chunks (see [What is listed](#what-is-listed)).
 
 ### One lockfile, several writers
 
@@ -704,6 +734,7 @@ src/adapters/webpack.cjs  webpack 4/5 and Next.js: which source files are in a c
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
+src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
 src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path
 src/core/copies.cjs     files copied with fs in this process: out of packages, and copies of lockfiles
 src/core/generated.cjs  packages of builds that write nothing themselves, by content and entry file

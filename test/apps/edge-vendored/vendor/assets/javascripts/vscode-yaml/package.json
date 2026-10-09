@@ -1,0 +1,9 @@
+{
+  "name": "yaml",
+  "version": "1.0.0",
+  "publisher": "vscode",
+  "engines": {
+    "vscode": "*"
+  },
+  "main": "index.js"
+}

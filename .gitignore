@@ -1,3 +1,5 @@
 node_modules/
 dist/
 dist-oracle/
+# a library build's inlined copy without a package.json (test/apps/edge-vendored)
+!/test/apps/edge-vendored/pkgs/container/lib/esm/node_modules/
