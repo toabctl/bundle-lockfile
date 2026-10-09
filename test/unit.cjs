@@ -1029,6 +1029,11 @@ test('esm-wrap: finds the entry, its exports, and wraps only the functions it ex
   assert.deepEqual([...esmWrap.exportedNames('export { RUNTIME_MODULE_ID, RolldownMagicString, VERSION, build, defineConfig, rolldown as rolldown, watch };')],
     ['RUNTIME_MODULE_ID', 'RolldownMagicString', 'VERSION', 'build', 'defineConfig', 'rolldown', 'watch']);
   assert.deepEqual([...esmWrap.exportedNames('export function rollup() {}\nexport const x = 1;\nexport default 2;')], ['rollup', 'x', 'default']);
+  // exports in comments do not count (a default the module does not have would not link), in strings they are kept
+  const commented = "/**\n * export default rollup;\n */\n// export { a as default }\nconst u = 'http://x/*'; /* export default */ export { rollup }; // export default\n";
+  assert.deepEqual([...esmWrap.exportedNames(commented)], ['rollup']);
+  assert.equal(esmWrap.source('file:///r.js', commented, { id: 'rollup', wrap: ['rollup'] }).includes('default'), false);
+  assert.deepEqual([...esmWrap.exportedNames("const s = '// x';\nexport { a as default };")], ['default']);
   const src = esmWrap.source('file:///p/rollup.js', "export { VERSION, rollup } from './x.js';", rollupEntry);
   assert.match(src, /export \* from "file:\/\/\/p\/rollup\.js\?bundle-lockfile-real";/);
   assert.match(src, /export const rollup = api \? api\.wrap\("rollup", "rollup", real\.rollup\) : real\.rollup;/);
