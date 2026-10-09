@@ -130,8 +130,9 @@ function bundledFiles(compilation) {
 // instead of adding to them - in this process once the previous one is done: closed (webpack >= 5.17 has a shutdown
 // hook), on older versions not running. Until then it is another writer: configs that differ only in what is not
 // compared here (resolve.alias, loader options) can be built side by side into one directory, e.g. with
-// [contenthash] file names. The id has no paths (the lockfile records it, and must be the same on every machine);
-// the claims are per output directory.
+// [contenthash] file names. The id has no paths of this machine (the lockfile records it, and must be the same on
+// every machine): absolute paths in the options (entry: path.resolve(__dirname, ...)) are relative to the context.
+// The claims are per output directory.
 const writers = globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] ||
   (globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] = { claims: new Map() }); // dir + id -> ref(compiler)
 const busy = (c) => (c.hooks && c.hooks.shutdown ? !c[CLOSED] : !!c.running);
@@ -140,7 +141,9 @@ function writerOf(compiler) {
   const o = compiler.options || {}, out = o.output || {};
   const plain = (v) => (typeof v === 'function' ? '(function)' : v === undefined ? null : v);
   let base;
-  try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)]); }
+  const portable = (k, v) => (typeof v === 'string' && path.isAbsolute(v) && compiler.context
+    ? path.relative(compiler.context, v).split(path.sep).join('/') : v);
+  try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)], portable); }
   catch { base = JSON.stringify([compiler.name || null, '(not comparable)']); } // e.g. a BigInt in an entry option
   let id = base;
   for (let n = 2; ; n++) {

@@ -422,6 +422,23 @@ test('webpack adapter: a new compiler for the same config replaces the previous 
   assert.deepEqual(lockedNames(build('d', { ...app, entry: { main: { import: ['./src/app.js'], n: 1n } } })), ['a', 'b', 'c', 'd']);
 });
 
+test('webpack adapter: writer ids have no paths of this machine; ids of configs without absolute paths unchanged', () => {
+  const writerIn = (root, entry) => {
+    const c = compilation({ context: root, outputPath: J(root, 'dist'), chunks: [] });
+    c.compiler.options = { entry, output: { filename: '[name].js' } };
+    plugin().lockfile(c);
+    return c.compiler[WRITER];
+  };
+  // the same config checked out at two paths, with entry: path.resolve(__dirname, 'src/app.js')
+  const [a, b] = [project({}), project({})];
+  const ids = [a, b].map(root => writerIn(root, { main: { import: [J(root, 'src/app.js')] } }));
+  assert.equal(ids[0], ids[1]);
+  assert.equal(ids[0], JSON.stringify([null, { main: { import: ['src/app.js'] } }, null, '[name].js', null]));
+  // as before: relative paths, undefined fields (webpack's normalized entry) left out
+  assert.equal(writerIn(project({}), { main: { import: ['./src/app.js'], filename: undefined } }),
+    JSON.stringify([null, { main: { import: ['./src/app.js'] } }, null, '[name].js', null]));
+});
+
 test('webpack adapter: a compiler for the same config that is still running is another writer, e.g. of a config array', () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
