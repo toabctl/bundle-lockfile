@@ -1122,6 +1122,26 @@ test('rollup adapter: a written output gets its lockfile; generate-only builds a
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: the file of a module id: queries and fragments cut, a "#" in a directory or file name kept', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'c#proj/node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'c#proj/node_modules/a/i.js': '', 'c#proj/src/a#b.js': '' });
+  const p = (f) => J(root, 'c#proj', f);
+  assert.equal(rollupAdapter.fileOf(p('node_modules/a/i.js')), p('node_modules/a/i.js'));
+  assert.equal(rollupAdapter.fileOf(`\0${p('node_modules/a/i.js')}?commonjs-proxy`), p('node_modules/a/i.js'));
+  assert.equal(rollupAdapter.fileOf(p('src/a#b.js')), p('src/a#b.js'));         // a file name with "#"
+  assert.equal(rollupAdapter.fileOf(`${p('src/a#b.js')}#frag`), p('src/a#b.js')); // and a fragment
+  assert.equal(rollupAdapter.fileOf(`${p('src/x.css')}#hash`), p('src/x.css'));   // a fragment, also of a file that is not there
+  assert.equal(rollupAdapter.fileOf(`${p('src/App.vue')}?vue&type=style&index=0#x`), p('src/App.vue'));
+  assert.equal(rollupAdapter.fileOf('\0vite/modulepreload-polyfill.js'), null);
+  // a whole build in that directory: its packages
+  const cwd = process.cwd();
+  process.chdir(J(root, 'c#proj'));
+  try {
+    await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: p('dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [p('src/a#b.js'), p('node_modules/a/i.js')] }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(p(`dist/${LOCK}`), 'utf8')), ['a']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: an asset emitted from a package file, named relative to a Vite root that is not the working directory', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });

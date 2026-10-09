@@ -25,10 +25,13 @@ const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { r
 
 // Source file of a module id: virtual modules (\0vite/..., \0commonjsHelpers.js, virtual:...) have none; a
 // \0-prefixed absolute id (rollup's commonjs proxies) and ids with queries (?vue&type=style, ?inline, ?worker) are
-// the file before them.
+// the file before them. Directories and files can have a "#" in their name (~/c#/app): a "#" in the last part of the
+// path is a fragment only if the file with it is not there.
 function fileOf(id) {
   if (typeof id !== 'string') return null;
-  const f = id.replace(/^\0/, '').split(/[?#]/)[0];
+  let f = id.replace(/^\0/, '').split('?')[0];
+  const hash = f.lastIndexOf('#');
+  if (hash > Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) && !fs.existsSync(f)) f = f.slice(0, hash);
   return path.isAbsolute(f) ? path.normalize(f) : null;
 }
 
