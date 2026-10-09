@@ -11,7 +11,8 @@ const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
 const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
-const { ancestors, posix } = require('../core/paths.cjs');
+const copies = require('../core/copies.cjs');
+const { ancestors, posix, packageRoot } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
 const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
@@ -114,10 +115,9 @@ function outputContents(bundle, dir, ids, originals, styles, byFile) {
 // node_modules path) is node_modules/normalize.css/normalize.css with the same bytes, looked up like Node does from
 // the working directory upwards (the copy may have been made by another process).
 function copiedFrom(file, rel, cwd) {
-  const copies = require('../core/copies.cjs');
   const copy = copies.sourceOf(file);
   if (copy) { const pkgs = packages.packagesForFiles([copy]); if (pkgs.length) return pkgs; }
-  if (!packages.packageRoot(rel)) return null;
+  if (!packageRoot(rel)) return null;
   const parts = rel.split(path.sep);
   const sub = parts.slice(parts.lastIndexOf('node_modules') + 1).join(path.sep);
   try { if (fs.statSync(file).size > MAX_LATE) return null; } catch { return null; }

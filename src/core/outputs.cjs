@@ -10,6 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
 const { cmp, toPackageLock, readMeta } = require('./lockfile.cjs');
+const { exportPath } = require('./paths.cjs');
 
 const KEY = Symbol.for('bundle-lockfile.outputs.v3'); // v3: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
@@ -134,20 +135,6 @@ function prune(target, writer, exists, done) {
   function finish() { if (--pending === 0) done(); }
 }
 
-// Where the export copy of the lockfile `target` goes (BUNDLE_LOCKFILE_EXPORT_DIR, or null): the target's path
-// mirrored below the export dir - relative to BUNDLE_LOCKFILE_EXPORT_BASE if it is below that, else its absolute
-// path without the root (/srv/app/dist/bundle-lockfile/package-lock.json -> <export>/srv/app/dist/bundle-lockfile/
-// package-lock.json; Windows: C:\app\... -> <export>/C/app/...). The file name stays package-lock.json, which syft
-// requires, and outputs of different builds and processes never collide.
-function exportPath(target) {
-  if (!config.exportDir) return null;
-  const abs = path.resolve(target);
-  const rel = config.exportBase && path.relative(config.exportBase, abs);
-  const inBase = rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); // also <base>/..cache
-  const { root } = path.parse(abs);
-  return path.join(config.exportDir, inBase ? rel : path.join(root.replace(/[:\\/]+/g, '') || '.', abs.slice(root.length)));
-}
-
 // Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
 // it. A lock older than a minute is from a process that died; one that cannot be taken in 30 s is skipped with a
 // warning (the write goes ahead: a stalled build would be worse than a lockfile missing another process's packages).
@@ -242,4 +229,4 @@ function filesOf(target) {
   return all;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, exportPath, filesOf, writeDisk, nowhere, takeStale };
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, writeDisk, nowhere, takeStale };

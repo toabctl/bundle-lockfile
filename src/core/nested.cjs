@@ -13,9 +13,8 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
 const { readMeta } = require('./lockfile.cjs');
-const { packageRoot, realRoot } = require('./packages.cjs');
 const { hashOf } = require('./hashes.cjs');
-const { ancestors } = require('./paths.cjs');
+const { ancestors, packageRoot, realRoot, exportPath } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
 const state = globalThis[S] || (globalThis[S] = { metas: new Map() }); // dir -> meta | null
@@ -25,7 +24,7 @@ function metaOf(dir) {
   if (state.metas.has(dir)) return state.metas.get(dir);
   let meta = null;
   const target = path.join(dir, config.file);
-  const exp = require('./outputs.cjs').exportPath(target);
+  const exp = exportPath(target);
   for (const f of exp ? [target, exp] : [target]) {
     try { meta = readMeta(fs.readFileSync(f, 'utf8'), path.dirname(target)); } catch { meta = null; }
     if (meta && meta.writers.some(w => Object.keys(w.outputs).length)) break;

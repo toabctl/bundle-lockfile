@@ -8,7 +8,7 @@ const { createRequire } = require('module');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
-const { posix } = require('../core/paths.cjs');
+const { posix, packageRoot, exportPath } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
@@ -209,7 +209,7 @@ function lateFiles(compilation, early, previous, readAsset, done) {
   const bySize = new Map(); // size -> dependencies in node_modules
   for (const f of unnamed.length ? deps : []) {
     let size;
-    try { size = packages.packageRoot(f) && fs.statSync(f).size; } catch { continue; }
+    try { size = packageRoot(f) && fs.statSync(f).size; } catch { continue; }
     if (size) bySize.set(size, [...(bySize.get(size) || []), f]);
   }
   if (!bySize.size) return done(files);
@@ -300,7 +300,7 @@ class BundleLockfilePlugin {
         // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
         const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler);
         const inline = config.inline && (disk || write || outputs.isShared(file));
-        if (!inline && !outputs.exportPath(file)) {
+        if (!inline && !exportPath(file)) {
           if (!config.inline) outputs.nowhere();
           return callback();
         }

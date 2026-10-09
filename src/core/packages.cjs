@@ -3,24 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
+const copies = require('./copies.cjs');
+const nested = require('./nested.cjs');
+const { packageRoot, realRoot } = require('./paths.cjs');
 
 // Style sheets (CSS, Sass, Less, Stylus, PostCSS): those a style sheet @imports are inlined into it by the bundler's
 // CSS handling (Vite's CSS plugin, sass-loader, less-loader, postcss-import, Tailwind) and are no modules of their own
 const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
-
-// The package a file belongs to is the directory directly below its LAST node_modules segment:
-// node_modules/<name> or node_modules/@scope/<name>. That is how npm, yarn (incl. PnP zip paths
-// .../x.zip/node_modules/<name>) and pnpm (.pnpm/<id>/node_modules/<name>) lay packages out, and it
-// ignores package.json files inside a package - e.g. dist/esm/package.json = {"type":"module"} or
-// preact/hooks/package.json = {"name": "preact-hooks", ...}, which are not packages.
-function packageRoot(file) {
-  const parts = file.split(path.sep);
-  const i = parts.lastIndexOf('node_modules');
-  if (i < 0) return null;
-  const n = parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1;
-  if (i + n >= parts.length - 1) return null; // the file must be inside the package directory
-  return parts.slice(0, i + 1 + n).join(path.sep);
-}
 
 // "license": "MIT", the legacy {"type": "MIT"} or "licenses": [{"type": "MIT"}, "ISC"]
 function licenseOf(j) {
@@ -50,26 +39,6 @@ function unlisted(root) {
   config.warn(msg);
 }
 
-// The real location of a package directory. Bundlers resolve symlinks by default; with
-// resolve.symlinks = false the files keep the symlinked path, e.g. node_modules/@acme/ui for a workspace
-// package (-> packages/ui) or node_modules/foo for pnpm (-> node_modules/.pnpm/foo@1/node_modules/foo).
-// Paths fs cannot resolve (e.g. Yarn PnP zip paths without the PnP fs patch) stay as they are.
-function realRoot(root) {
-  let real = root;
-  try { real = fs.realpathSync(root); } catch { /* keep root */ }
-  return unvirtual(real);
-}
-
-// Yarn PnP gives packages with peer dependencies one virtual path per dependent set, and its fs keeps them as
-// real paths: <dir>/__virtual__/<name>-virtual-<hash>/<depth>/<subpath> is <dir>/(../ x depth)<subpath>
-// (yarn's VirtualFS.resolveVirtual). Resolved, every instance is the one package in the cache.
-const VIRTUAL = /^(.*?[\\/](?:__virtual__|\$\$virtual))[\\/][^\\/]+[\\/](\d+)(?:[\\/](.*))?$/;
-function unvirtual(p) {
-  const m = p.match(VIRTUAL);
-  if (!m) return p;
-  return unvirtual(path.join(path.dirname(m[1]), '../'.repeat(Number(m[2])), m[3] || '.'));
-}
-
 // A function that gives the package a bundled source file (absolute, query strings allowed) belongs to, or null:
 // the package directory below its last node_modules, at its real location; null for files outside node_modules (the
 // project itself) and of workspace packages, also when reached through a node_modules symlink - unless this process
@@ -83,7 +52,7 @@ function resolver() {
     if (!path.isAbsolute(file)) return null;
     let linked = packageRoot(file);
     if (!linked) {
-      const src = require('./copies.cjs').sourceOf(file);
+      const src = copies.sourceOf(file);
       if (src) { linked = packageRoot(src); config.debug('a copy of', src, ':', file); }
     }
     if (!linked) return null;
@@ -124,10 +93,10 @@ function packagesForFiles(files) {
 // the files (as given) that bring any.
 function packagesOfFiles(files) {
   const of = resolver();
-  const nested = require('./nested.cjs').nestedByFile(files);
+  const nestedOf = nested.nestedByFile(files);
   const own = [], inner = [], byFile = new Map();
   for (const f of files) {
-    const p = of(f), n = nested.get(f) || [];
+    const p = of(f), n = nestedOf.get(f) || [];
     if (p) own.push(p);
     inner.push(n);
     const pkgs = unique(p ? [p] : [], n);
@@ -136,4 +105,4 @@ function packagesOfFiles(files) {
   return { all: unique(own, ...inner), byFile };
 }
 
-module.exports = { STYLE, packageRoot, realRoot, unique, packagesForFiles, packagesOfFiles, unvirtual };
+module.exports = { STYLE, unique, packagesForFiles, packagesOfFiles };

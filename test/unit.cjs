@@ -8,7 +8,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const packages = require('../src/core/packages.cjs');
-const { packageRoot, packagesForFiles, unvirtual } = packages;
+const { packagesForFiles } = packages;
+const { packageRoot, unvirtual, exportPath } = require('../src/core/paths.cjs');
 const { toPackageLock } = require('../src/core/lockfile.cjs');
 const crypto = require('crypto');
 const outputs = require('../src/core/outputs.cjs');
@@ -525,15 +526,15 @@ async function withConfig(fields, fn) {
 }
 
 test('outputs: the export path mirrors the lockfile path below the export dir', () => withConfig({ exportDir: '/x/export', exportBase: null }, () => {
-  assert.equal(outputs.exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), '/x/export/srv/app/dist/bundle-lockfile/package-lock.json');
-  assert.equal(outputs.exportPath('/srv/app/../app/dist/l/package-lock.json'), '/x/export/srv/app/dist/l/package-lock.json');
+  assert.equal(exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), '/x/export/srv/app/dist/bundle-lockfile/package-lock.json');
+  assert.equal(exportPath('/srv/app/../app/dist/l/package-lock.json'), '/x/export/srv/app/dist/l/package-lock.json');
   config.exportBase = '/srv/app';
-  assert.equal(outputs.exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), '/x/export/dist/bundle-lockfile/package-lock.json');
-  assert.equal(outputs.exportPath('/srv/other/dist/bundle-lockfile/package-lock.json'), '/x/export/srv/other/dist/bundle-lockfile/package-lock.json'); // not below the base
-  assert.equal(outputs.exportPath('/srv/app/..cache/dist/l/package-lock.json'), '/x/export/..cache/dist/l/package-lock.json'); // below it, a name starting with ..
-  assert.equal(outputs.exportPath('/srv/application/dist/l/package-lock.json'), '/x/export/srv/application/dist/l/package-lock.json');
+  assert.equal(exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), '/x/export/dist/bundle-lockfile/package-lock.json');
+  assert.equal(exportPath('/srv/other/dist/bundle-lockfile/package-lock.json'), '/x/export/srv/other/dist/bundle-lockfile/package-lock.json'); // not below the base
+  assert.equal(exportPath('/srv/app/..cache/dist/l/package-lock.json'), '/x/export/..cache/dist/l/package-lock.json'); // below it, a name starting with ..
+  assert.equal(exportPath('/srv/application/dist/l/package-lock.json'), '/x/export/srv/application/dist/l/package-lock.json');
   config.exportDir = null;
-  assert.equal(outputs.exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), null);
+  assert.equal(exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), null);
 }));
 
 test('webpack adapter: BUNDLE_LOCKFILE_EXPORT_DIR gets every lockfile; BUNDLE_LOCKFILE_INLINE=0 keeps it out of the output', async () => {
