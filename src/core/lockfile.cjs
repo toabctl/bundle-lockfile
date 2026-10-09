@@ -92,7 +92,7 @@ function toPackageLock(pkgs, context, meta) {
     const rel = (p) => posix(path.relative(meta.dir, p)) || '.';
     doc['bundle-lockfile'] = {
       v: 1,
-      context: rel(base),
+      context: rel(context), // as given, like dir: through the same symlinks both, never a real path of this machine
       ...(outsideKeys.length ? { outside: outsideKeys.sort(cmp) } : {}),
       writers: meta.writers.map(w => ({
         id: w.id,
@@ -116,7 +116,8 @@ function readMeta(json, dir) {
   const strings = (v) => (Array.isArray(v) ? v.filter(s => typeof s === 'string') : []);
   // a lockfile of another shape (edited, another tool's) is no record: it must not stop this one from being written
   if (!isObject(m) || m.v !== 1 || !Array.isArray(m.writers) || typeof m.context !== 'string' || !isObject(doc.packages)) return null;
-  const context = path.resolve(dir, m.context);
+  let context = path.resolve(dir, m.context);
+  try { context = fs.realpathSync(context); } catch { /* keep it */ } // package paths are real paths
   const outside = new Set(strings(m.outside));
   // a package outside the project has no path here: an id of its own, never a real path that could be another package
   const pkgOf = (k) => {

@@ -333,7 +333,7 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
 
 The `"bundle-lockfile"` field is bundle-lockfile's own record; tools that read `package-lock.json` (syft, npm) ignore
 it, and it has no machine-specific paths (paths are relative to the lockfile, ids are hashes of the configuration):
-- `context`: the directory the keys are relative to
+- `context`: the directory the keys are relative to, relative to the lockfile's directory (both as configured, so a context reached through a symlink stays `../..`)
 - `writers`: per writer (a webpack compiler, a Vite/Rollup/Rolldown output) its `id`, its `packages` (keys), up to 20
   of its output `files` and their `count`, and — for Vite, Rollup and Rolldown — `outputs`: the SHA-256 of up to 500
   of its JavaScript and CSS files, and `contents`: the packages in each of them (indices into its `packages`), for
