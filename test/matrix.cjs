@@ -730,10 +730,12 @@ const cases = [
   // BUNDLE_LOCKFILE_DISABLE=vite: SvelteKit's Vite builds write no lockfile (none in build/client), adapter-node 5's own
   // Rollup build (no Vite plugins: a rollup build) still does - its files and what it bundles from node_modules besides
   // the project's dependencies (the server runtime's imports left by Vite's SSR build), not what the disabled server
-  // build bundled (no lockfile there to find). No oracle: it derives everything the output has
+  // build bundled (no lockfile there to find): not svelte, the kit's runtime, the client's packages. No oracle: it
+  // derives everything the output has. (Which versions of the runtime's imports it bundles depends on npm's hoisting.)
   { name: 'SvelteKit 2 (Vite 7), adapter-node, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build',
     env: { SVELTEKIT_ADAPTER: 'node', BUNDLE_LOCKFILE_DISABLE: 'vite' }, oracle: false,
-    expect: ['@sveltejs/adapter-node@5.5.7', 'clsx@2.1.1', 'cookie@0.6.0', 'devalue@5.9.4', 'set-cookie-parser@3.1.3'] },
+    expectIncludes: ['@sveltejs/adapter-node@5.5.7', 'clsx@2.1.1', 'cookie@0.6.0', 'devalue@5.9.4'],
+    expectExcludes: ['@sveltejs/kit@2.70.3', 'svelte@5.57.2', 'esm-env@1.2.2', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-static', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build',
     expectIncludes: SVELTE_CLIENT('3.0.1'), expectExcludes: ['ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-node', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
