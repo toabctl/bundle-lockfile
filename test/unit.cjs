@@ -1080,9 +1080,9 @@ test('hooks: another loader-thread hook is recognized in NODE_OPTIONS and the co
 // runs the plugin's hooks like a rollup/rolldown build writing `outDir`; chunks: [{ fileName, code, modules, entry }]
 // (entry: its facade module), assets: [{ fileName, originalFileNames, source }]; ctx: the plugin context (Rollup's
 // getWatchFiles); late(): what other plugins do after the write, before the plugin's closeBundle
-async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true, ctx = {}, late }) {
+async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true, ctx = {}, late, input }) {
   const out = { dir: outDir, format: 'es' };
-  plugin.buildStart.call(ctx);
+  plugin.buildStart.call(ctx, { input }); // Rollup and Rolldown pass the (normalized) input options
   plugin.renderStart.call(ctx, out);
   for (const c of chunks) plugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
   const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
@@ -1191,6 +1191,24 @@ test('rollup adapter: outputs of one build written at the same time into one dir
     // each with the hash of its own file, for a build that bundles it (nested)
     assert.deepEqual(writers.map(w => Object.keys(w.outputs)).sort(), [['../main.js'], ['../main.min.js']]);
     assert.deepEqual(writers.map(w => w.packages), [['node_modules/a'], ['node_modules/a']]);
+  } finally { process.chdir(cwd); }
+});
+
+test('rollup adapter: plugins configured by hand, two builds of different inputs into one directory: both writers', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    // bundleLockfile() without options, as in a config: the input comes from buildStart's options
+    for (const name of ['a', 'b']) {
+      await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'dist'), input: [J(root, `src/${name}.js`)],
+        chunks: [{ fileName: `${name}.js`, code: `hand-configured ${name}`, modules: [J(root, `src/${name}.js`), J(root, `node_modules/${name}/i.js`)] }] });
+    }
+    const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+    assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'b']);
+    assert.equal(new Set(lock['bundle-lockfile'].writers.map(w => w.id)).size, 2);
   } finally { process.chdir(cwd); }
 });
 
