@@ -1844,6 +1844,130 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a']);
 });
 
+test('lock: a lock another process holds is waited for, then skipped with a warning; a stale one is taken over at once', () => {
+  const { lock } = require('../src/core/lock.cjs');
+  const root = project({});
+  const file = J(root, 'dist/l.json'), l = `${file}.lock`;
+  fs.mkdirSync(J(root, 'dist'));
+  fs.writeFileSync(l, 'held'); // fresh: another process holds it
+  let release, took = Date.now();
+  const warned = warnings(() => { release = lock(file, { wait: 300 }); });
+  took = Date.now() - took;
+  assert.ok(took >= 300 && took < 5000, `waited ${took} ms`);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /could not lock .* writing it without the lock/);
+  release();
+  assert.equal(fs.readFileSync(l, 'utf8'), 'held', 'the other process\'s lock is not released by this one');
+  // older than staleAfter: from a process that died, taken over without waiting
+  const old = new Date(Date.now() - 120000);
+  fs.utimesSync(l, old, old);
+  took = Date.now();
+  assert.deepEqual(warnings(() => { release = lock(file); }), []);
+  assert.ok(Date.now() - took < 5000);
+  assert.notEqual(fs.readFileSync(l, 'utf8'), 'held');
+  release();
+  assert.deepEqual(fs.readdirSync(J(root, 'dist')), [], 'released: nothing left behind');
+});
+
+test('lock: two processes never hold it at the same time', async () => {
+  const root = project({});
+  const file = J(root, 'l.json');
+  // each process takes the lock, notes when it holds it, keeps it 300 ms, notes the release, releases it
+  const holder = `const fs = require('fs');
+    const release = require(${JSON.stringify(J(SRC, 'core/lock.cjs'))}).lock(${JSON.stringify(file)});
+    const log = (what) => fs.appendFileSync(${JSON.stringify(J(root, 'log'))}, process.argv[2] + ' ' + what + '\\n');
+    log('in'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); log('out'); release();`;
+  fs.writeFileSync(J(root, 'holder.cjs'), holder);
+  const run = (name) => new Promise((resolve) => require('child_process').spawn(process.execPath, [J(root, 'holder.cjs'), name], { stdio: 'inherit' }).on('exit', resolve));
+  assert.deepEqual(await Promise.all(['a', 'b', 'c'].map(run)), [0, 0, 0]);
+  const log = fs.readFileSync(J(root, 'log'), 'utf8').trim().split('\n').map(l => l.split(' '));
+  assert.equal(log.length, 6);
+  for (let i = 0; i < 6; i += 2) { // in, out of the same process, one after another
+    assert.deepEqual([log[i][1], log[i + 1][1]], ['in', 'out'], JSON.stringify(log));
+    assert.equal(log[i][0], log[i + 1][0], JSON.stringify(log));
+  }
+});
+
+test('lockfile: a writer\'s record has at most 20 of its files (and their count) and 500 output hashes', () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const dir = J(root, 'dist/bundle-lockfile');
+  const files = Array.from({ length: 25 }, (_, i) => J(root, `dist/f${String(i).padStart(2, '0')}.js`));
+  const hashes = Object.fromEntries(Array.from({ length: 600 }, (_, i) => [J(root, `dist/o${String(i).padStart(3, '0')}.js`), `sha256-${i}`]));
+  const pkg = packagesForFiles([J(root, 'node_modules/a/i.js')])[0];
+  const json = toPackageLock([pkg], root, { dir, writers: [{ id: 'w', files, paths: [pkg.path], outputs: hashes }] });
+  const w = JSON.parse(json)['bundle-lockfile'].writers[0];
+  assert.equal(w.count, 25);
+  assert.deepEqual(w.files, files.slice(0, 20).map(f => `../${path.basename(f)}`)); // the first 20 by path
+  assert.equal(Object.keys(w.outputs).length, 500);
+  assert.equal(Object.keys(w.outputs)[499], '../o499.js');
+  const read = readMeta(json, dir).writers[0];
+  assert.equal(read.count, 25);
+  assert.equal(read.files.length, 20);
+});
+
+test('lockfile: the same build in another directory writes the same bytes (webpack and Rollup)', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0', license: 'MIT' } });
+  const tree = { ...pj('a'), ...pj('b'), 'node_modules/b/node_modules/a/package.json': { name: 'a', version: '0.9.0' }, 'src/app.js': '' };
+  // webpack, with entry: path.resolve(__dirname, ...), as configs often have it
+  const webpackLock = (root) => {
+    const c = compilation({ context: root, outputPath: J(root, 'dist'), chunks: [{ files: ['main.js'], modules: [
+      { resource: J(root, 'src/app.js') }, { resource: J(root, 'node_modules/a/i.js') }, { resource: J(root, 'node_modules/b/node_modules/a/i.js') }] }],
+    assets: { 'main.js': {} } });
+    c.compiler.options = { entry: { main: { import: [J(root, 'src/app.js')] } }, output: { filename: '[name].js' } };
+    return plugin().lockfile(c);
+  };
+  const [w1, w2] = [project(tree), project(tree)].map(webpackLock);
+  assert.equal(w1, w2);
+  // Rollup, in the project as the working directory
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const cwd = process.cwd();
+  const rollupLock = async (root) => {
+    process.chdir(root);
+    try {
+      await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'dist'), input: [J(root, 'src/app.js')],
+        chunks: [{ fileName: 'app.js', code: 'same bytes, another directory', modules: [J(root, 'src/app.js'), J(root, 'node_modules/a/i.js'), J(root, 'node_modules/b/i.js')] }] });
+      return fs.readFileSync(J(root, 'dist', LOCK), 'utf8');
+    } finally { process.chdir(cwd); }
+  };
+  const r1 = await rollupLock(project(tree)), r2 = await rollupLock(project(tree));
+  assert.equal(r1, r2);
+  assert.deepEqual(lockedNames(r1), ['a', 'b']);
+});
+
+test('hooks: the ESM hook mode - forced (any case), or by Node version and process', () => {
+  const hooks = require('../src/hooks.cjs');
+  const Module = require('module');
+  const saved = process.env.BUNDLE_LOCKFILE_ESM_HOOKS;
+  const mode = (v) => { if (v === undefined) delete process.env.BUNDLE_LOCKFILE_ESM_HOOKS; else process.env.BUNDLE_LOCKFILE_ESM_HOOKS = v; return hooks.esmMode(['vite']); };
+  try {
+    const sync = typeof Module.registerHooks === 'function', async = typeof Module.register === 'function';
+    assert.equal(mode('off'), 'off');
+    assert.equal(mode(' OFF '), 'off');
+    assert.equal(mode('sync'), sync ? 'sync' : 'off');
+    assert.equal(mode('Async'), async ? 'async' : 'off');
+    // auto: in-thread where safe; else loader-thread hooks only in bundler processes (this one is none) or next to
+    // another loader-thread hook (none here)
+    const auto = sync && hooks.syncHooksSafe(process.versions.node) ? 'sync' : 'off';
+    assert.equal(mode(undefined), auto);
+    assert.equal(mode('auto'), auto);
+    assert.equal(mode('nonsense'), auto);
+  } finally { if (saved === undefined) delete process.env.BUNDLE_LOCKFILE_ESM_HOOKS; else process.env.BUNDLE_LOCKFILE_ESM_HOOKS = saved; }
+});
+
+test('hooks: an adapter that throws while wrapping an ESM entry is reported, and the function is used as it is', () => {
+  const script = `const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+    process.env.BUNDLE_LOCKFILE_ESM_HOOKS = 'off'; // the wrap API only, no hooks
+    hooks.register({ name: 'boom', esmEntries: [{ id: 'x', suffixes: ['/x.js'], wrap: ['f'] }], esmWrap() { throw new Error('boom'); } });
+    hooks.install();
+    const f = () => 42;
+    console.log(globalThis[Symbol.for('bundle-lockfile.esm')].wrap('x', 'f', f) === f);`;
+  const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'true');
+  assert.match(r.stderr, /\[bundle-lockfile\] WARNING: boom adapter failed to wrap x f/);
+});
+
 test('lock: a stale lock is taken over only if it is still the stale one', () => {
   const { takeStale } = require('../src/core/lock.cjs');
   const root = project({ 'stale.lock': '' });
