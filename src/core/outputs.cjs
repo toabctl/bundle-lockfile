@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const config = require('./config.cjs');
 const { cmp, toPackageLock, readMeta } = require('./lockfile.cjs');
 const { exportPath } = require('./paths.cjs');
+const { lock, writeAtomic } = require('./lock.cjs');
 
 const KEY = Symbol.for('bundle-lockfile.outputs.v3'); // v3: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
@@ -135,48 +136,6 @@ function prune(target, writer, exists, done) {
   function finish() { if (--pending === 0) done(); }
 }
 
-// Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
-// it. A lock older than a minute is from a process that died; one that cannot be taken in 30 s is skipped with a
-// warning (the write goes ahead: a stalled build would be worse than a lockfile missing another process's packages).
-function lock(file) {
-  const l = `${file}.lock`;
-  const deadline = Date.now() + 30000;
-  try { fs.mkdirSync(path.dirname(l), { recursive: true }); } catch { return () => {}; }
-  for (;;) {
-    try {
-      fs.closeSync(fs.openSync(l, 'wx'));
-      const mine = fs.statSync(l);
-      // not one another process took over as stale meanwhile (see takeStale)
-      return () => { try { if (sameFile(fs.statSync(l), mine)) fs.unlinkSync(l); } catch { /* gone */ } };
-    } catch (e) { if (e.code !== 'EEXIST') return () => {}; }
-    let st;
-    try { st = fs.statSync(l); } catch { continue; } // released meanwhile
-    if (Date.now() - st.mtimeMs > 60000) { takeStale(l, st); continue; }
-    if (Date.now() > deadline) { config.warn('could not lock', file, '- writing it without the lock'); return () => {}; }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-  }
-}
-
-const sameFile = (a, b) => a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs;
-
-// Removes the stale lock `l` that had the stats `st` - not a lock another process has taken since: it is moved away
-// first (only one process can move it), and put back if it is not the stale one.
-function takeStale(l, st) {
-  const away = `${l}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
-  try { fs.renameSync(l, away); } catch { return; } // another process took it first
-  try {
-    if (sameFile(fs.statSync(away), st)) return;
-    try { fs.linkSync(away, l); } catch { /* a third one holds it now: it waits for that one like everyone else */ }
-  } catch { /* gone */ } finally { try { fs.unlinkSync(away); } catch { /* gone */ } }
-}
-
-// Writes atomically: concurrent processes and readers see the old or the new file, never a partial one.
-function writeAtomic(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-  try { fs.writeFileSync(tmp, content); fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch {} throw e; }
-}
-
 // writeFile for rewrite(): a lockfile on the real disk, which other processes read
 function writeDisk(file) {
   return (content, cb) => { try { writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
@@ -229,4 +188,4 @@ function filesOf(target) {
   return all;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, writeDisk, nowhere, takeStale };
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, writeDisk, nowhere };
