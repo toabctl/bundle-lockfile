@@ -4,7 +4,8 @@
 # started through PATH gets the --require back, and so does everything it starts (also with process.execPath).
 #
 # 1. puts --require <register.cjs> into NODE_OPTIONS, unless it is there in any form (also through another path to
-#    the same file, e.g. a symlinked install directory), keeping what else is set
+#    the same file, e.g. a symlinked install directory, and quoted with spaces) or another copy of bundle-lockfile's
+#    register.cjs is (a second --require breaks Next.js 15.0 - 16.3), keeping what else is set
 # 2. runs the real node: the first `node` in PATH that is neither this shim (nor a copy of it) nor a script it has
 #    already passed through on this start. Package managers and version managers put scripts in front: yarn's
 #    temporary `node` runs `exec "<its process.execPath>" "$@"`, which register.cjs points at this shim, so it comes
@@ -24,9 +25,22 @@ if [ -n "$reg" ]; then
   have=
   case "${NODE_OPTIONS:-}" in *"$reg"*) have=1 ;; esac
   if [ -z "$have" ]; then
+    # the words as Node splits NODE_OPTIONS: a "..." that the word splitting cut at its spaces is one again
+    open=
     for w in ${NODE_OPTIONS:-}; do
+      if [ -n "$open" ]; then
+        open="$open $w"
+        case "$w" in *\"*) w=$open; open= ;; *) continue ;; esac
+      else
+        case "$w" in *\"*) case "${w#*\"}" in *\"*) ;; *) open=$w; continue ;; esac ;; esac
+      fi
       w=${w#--require=}; w=${w#\"}; w=${w%\"}; w=${w#\'}; w=${w%\'}
-      case "$w" in */register.cjs) [ "$(readlink -f "$w" 2>/dev/null)" = "$reg" ] && { have=1; break; } ;; esac
+      case "$w" in
+        */register.cjs)
+          [ "$(readlink -f "$w" 2>/dev/null)" = "$reg" ] && { have=1; break; }
+          # another copy (every release's register.cjs names bundle-lockfile in its first lines)
+          case "$(head -c 512 "$w" 2>/dev/null)" in *bundle-lockfile*) have=1; break ;; esac ;;
+      esac
     done
   fi
   if [ -z "$have" ]; then
