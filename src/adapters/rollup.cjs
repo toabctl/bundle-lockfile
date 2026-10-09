@@ -6,11 +6,11 @@
 // workbox-build, the rollup command line, tools in CommonJS) is patched when it loads (onCjsLoad).
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
 const generated = require('../core/generated.cjs');
+const { sha256 } = require('../core/hashes.cjs');
 
 const NAME = 'bundle-lockfile';
 const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
@@ -20,7 +20,7 @@ const MAX_SCAN = 20000;           // entries of an output directory looked at fo
 const MAX_LATE = 20 * 1024 * 1024; // larger files written after the build are not compared
 
 const flat = (plugins) => [].concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
-const sha256 = (s) => `sha256-${crypto.createHash('sha256').update(s).digest('hex')}`;
+const moduleIds = (chunk) => chunk.moduleIds || Object.keys(chunk.modules || {});
 const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { return process.cwd(); } };
 
 // Source file of a module id: virtual modules (\0vite/..., \0commonjsHelpers.js, virtual:...) have none; a
@@ -71,14 +71,13 @@ function generatedIn(bundle, ids) {
 //   all of the bundle's), the style sheets they @import from packages (styles: watch files, not known per CSS file),
 //   the files it was emitted from
 // - a JavaScript asset (Vite's worker chunks): the generate-only chunk it is, the files it was emitted from
-// ids: the bundle's module ids; originals: asset -> files it was emitted from; byFile: packagesByFile of the sources.
+// ids: the bundle's module ids; originals: asset -> files it was emitted from; byFile: packagesOfFiles(sources).byFile.
 function outputContents(bundle, dir, ids, originals, styles, byFile) {
   const hashes = {}, contents = {};
   const all = Object.values(bundle);
   const css = all.filter(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
   const isStyle = (id) => STYLE.test(fileOf(id) || '');
   const extracted = (id) => css.length > 0 && isStyle(id) && !/[?&](inline|raw|url)\b/.test(id);
-  const moduleIds = (c) => c.moduleIds || Object.keys(c.modules || {});
   const add = (into, pkgs) => { if (pkgs) for (const p of pkgs) into.add(p.path); };
   const ofFiles = (into, list) => { for (const f of list) add(into, byFile.get(f)); };
   for (const f of all) {
@@ -106,33 +105,21 @@ function outputContents(bundle, dir, ids, originals, styles, byFile) {
   return { hashes, contents };
 }
 
-const merge = (...lists) => { const m = new Map(); for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p); return [...m.values()]; };
-
 // The package a file copied into the output comes from: one this process copied out of a package with fs (see
 // core/copies.cjs), or dist/vendor/node_modules/normalize.css/normalize.css (e.g. vite-plugin-static-copy with a
 // node_modules path) is node_modules/normalize.css/normalize.css with the same bytes, looked up like Node does from
 // the working directory upwards (the copy may have been made by another process).
 function copiedFrom(file, rel, cwd) {
-  const copy = require('../core/copies.cjs').sourceOf(file);
+  const copies = require('../core/copies.cjs');
+  const copy = copies.sourceOf(file);
   if (copy) { const pkgs = packages.packagesForFiles([copy]); if (pkgs.length) return pkgs; }
+  if (!packages.packageRoot(rel)) return null;
   const parts = rel.split(path.sep);
-  const i = parts.lastIndexOf('node_modules');
-  if (i < 0) return null;
-  const n = parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1;
-  if (i + n >= parts.length - 1) return null;
-  const sub = parts.slice(i + 1).join(path.sep);
-  let st;
-  try { st = fs.statSync(file); } catch { return null; }
-  if (st.size > MAX_LATE) return null;
+  const sub = parts.slice(parts.lastIndexOf('node_modules') + 1).join(path.sep);
+  try { if (fs.statSync(file).size > MAX_LATE) return null; } catch { return null; }
   for (let dir = cwd; ; dir = path.dirname(dir)) {
     const src = path.join(dir, 'node_modules', sub);
-    try {
-      const ss = fs.statSync(src);
-      if (ss.isFile() && ss.size === st.size && fs.readFileSync(src).equals(fs.readFileSync(file))) {
-        const pkgs = packages.packagesForFiles([src]);
-        if (pkgs.length) return pkgs;
-      }
-    } catch { /* not there */ }
+    if (copies.sameBytes(src, file)) { const pkgs = packages.packagesForFiles([src]); if (pkgs.length) return pkgs; }
     if (path.dirname(dir) === dir) return null;
   }
 }
@@ -205,7 +192,7 @@ function createPlugin(kind, inputOptions) {
     // before generateBundle: plugins that remove chunks there (vite-plugin-singlefile) cannot hide their modules
     renderChunk(code, chunk, out) {
       const ids = modulesOf.get(keyOf(out));
-      if (ids) for (const id of chunk.moduleIds || Object.keys(chunk.modules || {})) ids.add(id);
+      if (ids) for (const id of moduleIds(chunk)) ids.add(id);
       return null;
     },
     generateBundle: {
@@ -220,12 +207,12 @@ function createPlugin(kind, inputOptions) {
             const all = [];
             for (const f of Object.values(bundle)) {
               if (f.type !== 'chunk') continue;
-              const files = (f.moduleIds || Object.keys(f.modules || {})).map(fileOf).filter(Boolean);
-              const pkgs = merge(packages.packagesOfOutput(files), generatedIn({ [f.fileName]: f }, f.moduleIds || Object.keys(f.modules || {})).values());
+              const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean)).all;
+              const pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values());
               generated.addChunk(f.code, pkgs);
               all.push(pkgs);
             }
-            const pkgs = merge(...all);
+            const pkgs = packages.unique(...all);
             for (const f of Object.values(bundle)) if (f.type === 'chunk' && f.isEntry) generated.addEntry(fileOf(f.facadeModuleId), pkgs);
             config.debug(`${kind}: generate-only output with`, pkgs.length, 'packages, kept for the build that uses it');
             return;
@@ -236,7 +223,7 @@ function createPlugin(kind, inputOptions) {
           for (const f of Object.values(bundle)) {
             files.push(path.join(dir, f.fileName));
             if (f.type === 'chunk') {
-              for (const id of f.moduleIds || Object.keys(f.modules || {})) ids.add(id);
+              for (const id of moduleIds(f)) ids.add(id);
             } else {
               // assets emitted from a file (Vite: relative to its root, usually the working directory)
               const own = [];
@@ -252,8 +239,9 @@ function createPlugin(kind, inputOptions) {
           const styles = [];
           for (const f of await watchFilesOf(this, build)) if (typeof f === 'string' && STYLE.test(f) && path.isAbsolute(f)) styles.push(f);
           sources.push(...styles);
-          const pkgs = merge(packages.packagesOfOutput(sources), generatedIn(bundle, ids).values());
-          const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, packages.packagesByFile(sources));
+          const { all, byFile } = packages.packagesOfFiles(sources);
+          const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
+          const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, byFile);
           const target = path.join(dir, config.file);
           const writer = writerOf(kind, inputOptions && inputOptions.input, out, ordinals.get(key) || 0, cwd);
           written.set(key, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
@@ -282,10 +270,10 @@ function createPlugin(kind, inputOptions) {
           if (!w.landed) continue;
           try {
             const late = lateFiles(w, since, cwd);
-            const add = merge(...late.map(l => l.pkgs)).filter(p => !w.pkgs.some(q => q.path === p.path));
+            const add = packages.unique(...late.map(l => l.pkgs)).filter(p => !w.pkgs.some(q => q.path === p.path));
             if (!add.length) continue;
             config.debug(`${kind}: files written into`, w.dir, 'after the build:', late.map(l => path.relative(w.dir, l.file)).join(' '), '- adding', add.map(p => `${p.name}@${p.version}`).join(' '));
-            w.pkgs = merge(w.pkgs, add);
+            w.pkgs = packages.unique(w.pkgs, add);
             for (const l of late) w.files.add(l.file);
             outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents });
             await write(w);

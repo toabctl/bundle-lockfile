@@ -104,39 +104,36 @@ function resolver() {
   };
 }
 
+// Packages ({ name, version, license, path }) of any number of lists, one per path (the first one).
+function unique(...lists) {
+  const m = new Map();
+  for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p);
+  return [...m.values()];
+}
+
 // files: absolute paths of source files that ended up in the bundle (query strings allowed). Returns one entry per
 // real package directory (see resolver).
 function packagesForFiles(files) {
   const of = resolver();
-  const pkgs = new Map();
-  for (const f of files) {
-    const p = of(f);
-    if (p && !pkgs.has(p.path)) pkgs.set(p.path, p);
-  }
-  return [...pkgs.values()];
+  return unique(Array.from(files, of).filter(Boolean));
 }
 
-// packagesForFiles, plus the packages inside bundled files that another build produced (core/nested.cjs).
-function packagesOfOutput(files) {
-  const all = new Map();
-  for (const p of module.exports.packagesForFiles(files)) all.set(p.path, p); // via exports: tests replace it
-  for (const p of require('./nested.cjs').nestedPackages(files)) if (!all.has(p.path)) all.set(p.path, p);
-  return [...all.values()];
-}
-
-// packagesOfOutput by file: Map(file -> [packages]) of the files (as given) that bring any.
-function packagesByFile(files) {
+// The packages of bundled source files (absolute paths, query strings allowed): those the files belong to (see
+// resolver) and those inside files another build produced (core/nested.cjs), the former first - a package's own
+// package.json over what another build recorded for it. all: each package once; byFile: Map(file -> [packages]) of
+// the files (as given) that bring any.
+function packagesOfFiles(files) {
   const of = resolver();
   const nested = require('./nested.cjs').nestedByFile(files);
-  const out = new Map();
+  const own = [], inner = [], byFile = new Map();
   for (const f of files) {
-    const pkgs = new Map();
-    const p = of(f);
-    if (p) pkgs.set(p.path, p);
-    for (const q of nested.get(f) || []) if (!pkgs.has(q.path)) pkgs.set(q.path, q);
-    if (pkgs.size) out.set(f, [...pkgs.values()]);
+    const p = of(f), n = nested.get(f) || [];
+    if (p) own.push(p);
+    inner.push(n);
+    const pkgs = unique(p ? [p] : [], n);
+    if (pkgs.length) byFile.set(f, pkgs);
   }
-  return out;
+  return { all: unique(own, ...inner), byFile };
 }
 
-module.exports = { STYLE, packageRoot, realRoot, packagesForFiles, packagesOfOutput, packagesByFile, unvirtual };
+module.exports = { STYLE, packageRoot, realRoot, unique, packagesForFiles, packagesOfFiles, unvirtual };

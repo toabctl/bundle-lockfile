@@ -134,7 +134,6 @@ function bundledFiles(compilation) {
 // the claims are per output directory.
 const writers = globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] ||
   (globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] = { claims: new Map() }); // dir + id -> ref(compiler)
-const ref = (o) => (typeof WeakRef === 'function' ? new WeakRef(o) : { deref: () => o }); // Node < 14.6: no WeakRef
 const busy = (c) => (c.hooks && c.hooks.shutdown ? !c[CLOSED] : !!c.running);
 function writerOf(compiler) {
   if (compiler[WRITER]) return compiler[WRITER];
@@ -147,7 +146,7 @@ function writerOf(compiler) {
   for (let n = 2; ; n++) {
     const claim = `${compiler.outputPath}\0${id}`;
     const prev = writers.claims.has(claim) && writers.claims.get(claim).deref();
-    if (!prev || prev === compiler || !busy(prev)) { writers.claims.set(claim, ref(compiler)); break; }
+    if (!prev || prev === compiler || !busy(prev)) { writers.claims.set(claim, new WeakRef(compiler)); break; }
     id = `${base}#${n}`;
   }
   if (compiler.hooks && compiler.hooks.shutdown) compiler.hooks.shutdown.tap(NAME, () => { compiler[CLOSED] = true; });
@@ -229,12 +228,8 @@ class BundleLockfilePlugin {
   lockfile(compilation, extra = []) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
-    return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesOfOutput([...bundled, ...extra]),
+    return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesOfFiles([...bundled, ...extra]).all,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler) });
-  }
-
-  emit(compilation, write) {
-    try { write(this.lockfile(compilation)); } catch (e) { config.warn('webpack: could not write lockfile:', e); }
   }
 
   apply(compiler) {
@@ -250,7 +245,8 @@ class BundleLockfilePlugin {
       // tool reads. webpack 4's afterOptimizeAssets (in webpack 5 the same hook) runs after every plugin's
       // additionalAssets, whatever the plugin order (copy-webpack-plugin 6 adds its files there).
       (compilation.hooks.afterProcessAssets || compilation.hooks.afterOptimizeAssets).tap(NAME, () => {
-        this.emit(compilation, (json) => {
+        try {
+          const json = this.lockfile(compilation);
           const src = RawSource ? new RawSource(json) : { source: () => json, size: () => Buffer.byteLength(json) };
           // On the real disk the lockfile is no asset: other processes may write it too, and webpack would write the
           // asset - rendered now, before they have written theirs - over the packages they put there since, without
@@ -259,7 +255,7 @@ class BundleLockfilePlugin {
           const disk = onDisk(compiler);
           compilation[SOURCE] = { src, early: new Set([...assetNames(compilation), this.file]), disk, asset: config.inline && !disk };
           if (compilation[SOURCE].asset) add(compilation, src); // else written in afterEmit (inline and export copy)
-        });
+        } catch (e) { config.warn('webpack: could not write lockfile:', e); }
       });
     });
     // Plugins that delete assets in the emit hook (compression-webpack-plugin <= 6 with deleteOriginalAssets

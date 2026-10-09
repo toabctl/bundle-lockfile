@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const config = require('./config.cjs');
 const { cmp, toPackageLock, readMeta } = require('./lockfile.cjs');
 
-const KEY = Symbol.for('bundle-lockfile.outputs.v2'); // v2: shape below; copies of another shape keep their own
+const KEY = Symbol.for('bundle-lockfile.outputs.v3'); // v3: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
 // building: { pkgs, context, files } of its build in progress, recorded before that build is written;
 // landed: the same of its latest build whose output was written. A build that fails is never written
@@ -20,8 +20,7 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v2'); // v2: shape below; copies
 // disk: lockfile path -> its output is on the real disk, where other processes may write it too (not, e.g., a
 // webpack-dev-server's in-memory file system).
 // read: lockfile path -> the record (readMeta) of the lockfile last read from disk, for when it is gone (see foreign).
-const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map() });
-if (!outputs.read) outputs.read = new Map(); // added to the v2 shape: a copy of an earlier version did not have it
+const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map() });
 
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
 const stateFile = (target) => (config.inline ? target : exportPath(target));

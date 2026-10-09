@@ -55,4 +55,17 @@ function cjsSource(url, result, files) {
   return src.endsWith(CJS_LOADED) ? null : src + CJS_LOADED;
 }
 
-module.exports = { MARK, match, exportedNames, source, cjsSource, CJS_LOADED };
+// What the load hooks (in-thread in hooks.cjs, in the loader thread in esm-loader.mjs) return for `url`, given the
+// result of the next hook: the wrapper of an entry module, a cjsFiles module's source with the line appended, or the
+// result as it is.
+function transform(url, result, entries, cjsFiles) {
+  const entry = match(url, entries);
+  if (!entry) {
+    const cjs = cjsSource(url, result, cjsFiles);
+    return cjs ? { ...result, source: cjs } : result;
+  }
+  const src = source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry);
+  return src ? { format: 'module', source: src, shortCircuit: true } : result;
+}
+
+module.exports = { MARK, match, exportedNames, source, cjsSource, CJS_LOADED, transform };

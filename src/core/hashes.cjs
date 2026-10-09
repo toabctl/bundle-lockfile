@@ -4,10 +4,14 @@
 // same files again and again must not grow it.
 const fs = require('fs');
 const crypto = require('crypto');
+const lru = require('./lru.cjs');
 
 const S = Symbol.for('bundle-lockfile.hashes.v1');
 const MAX = 10000;
 const state = globalThis[S] || (globalThis[S] = { files: new Map() }); // file -> { size, mtimeMs, hash }
+
+// "sha256-<hex>" of a string or Buffer
+const sha256 = (data) => `sha256-${crypto.createHash('sha256').update(data).digest('hex')}`;
 
 // The file's hash, or null if it cannot be read.
 function hashOf(file) {
@@ -16,11 +20,9 @@ function hashOf(file) {
   const known = state.files.get(file);
   if (known && known.size === st.size && known.mtimeMs === st.mtimeMs) return known.hash;
   let hash;
-  try { hash = `sha256-${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}`; } catch { return null; }
-  state.files.delete(file); // re-inserted as the newest
-  state.files.set(file, { size: st.size, mtimeMs: st.mtimeMs, hash });
-  while (state.files.size > MAX) state.files.delete(state.files.keys().next().value);
+  try { hash = sha256(fs.readFileSync(file)); } catch { return null; }
+  lru.set(state.files, file, { size: st.size, mtimeMs: st.mtimeMs, hash }, MAX);
   return hash;
 }
 
-module.exports = { hashOf, MAX, state };
+module.exports = { hashOf, sha256, MAX, state };

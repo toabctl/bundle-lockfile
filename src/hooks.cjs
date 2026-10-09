@@ -112,7 +112,6 @@ function otherLoader(argv = [process.env.NODE_OPTIONS || '', ...process.execArgv
 }
 
 function installEsm(entries, cjsFiles) {
-  if (globalThis[ESM]) return;
   globalThis[ESM] = {
     wrap(id, name, fn) {
       for (const a of adapters) {
@@ -128,16 +127,8 @@ function installEsm(entries, cjsFiles) {
     if (mode === 'sync') {
       Module.registerHooks({
         load(url, context, nextLoad) {
-          const entry = esmWrap.match(url, entries);
           const result = nextLoad(url, context);
-          try {
-            if (!entry) {
-              const cjs = esmWrap.cjsSource(url, result, cjsFiles); // CommonJS whose source another hook provided
-              return cjs ? { ...result, source: cjs } : result;
-            }
-            const src = esmWrap.source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry);
-            return src ? { format: 'module', source: src, shortCircuit: true } : result;
-          } catch (e) { config.warn('could not wrap', url, e); return result; }
+          try { return esmWrap.transform(url, result, entries, cjsFiles); } catch (e) { config.warn('could not wrap', url, e); return result; }
         },
       });
     } else if (mode === 'async') {

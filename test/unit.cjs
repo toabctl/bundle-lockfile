@@ -9,7 +9,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const packages = require('../src/core/packages.cjs');
 const { packageRoot, packagesForFiles, unvirtual } = packages;
-const { toPackageLock, lockfileForFiles } = require('../src/core/lockfile.cjs');
+const { toPackageLock } = require('../src/core/lockfile.cjs');
 const crypto = require('crypto');
 const outputs = require('../src/core/outputs.cjs');
 const config = require('../src/core/config.cjs');
@@ -119,7 +119,7 @@ test('licenses: string, legacy object, legacy array; nothing usable means no lic
     'node_modules/e/package.json': { name: 'e', version: '1.0.0', licenses: [] },
     'node_modules/n/package.json': { name: 'n', version: '1.0.0' },
   });
-  const lock = JSON.parse(lockfileForFiles(['s', 'o', 'l', 'e', 'n'].map(n => J(root, 'node_modules', n, 'i.js')), root));
+  const lock = JSON.parse(toPackageLock(packagesForFiles(['s', 'o', 'l', 'e', 'n'].map(n => J(root, 'node_modules', n, 'i.js'))), root));
   assert.deepEqual(lock.packages, {
     '': {},
     'node_modules/e': { name: 'e', version: '1.0.0' },
@@ -175,7 +175,7 @@ test('toPackageLock: keys are relative to the real context when the project path
   const link = `${real}-link`;
   fs.symlinkSync(real, link, 'dir');
   // with resolve.symlinks (the default) webpack reports real paths, while the context may be the symlinked one
-  assert.deepEqual(entries(lockfileForFiles([J(real, 'node_modules/a/i.js')], link)).map(([k]) => k), ['node_modules/a']);
+  assert.deepEqual(entries(toPackageLock(packagesForFiles([J(real, 'node_modules/a/i.js')]), link)).map(([k]) => k), ['node_modules/a']);
 });
 
 test('toPackageLock: code-unit order, the same bytes under every locale', () => {
@@ -1131,7 +1131,7 @@ test('nested: a bundled file another build produced brings its packages, unless 
   try {
     // the island: a Vite build into island/dist with main.js containing node_modules/inner
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
-    const ids = (files) => packages.packagesOfOutput(files).map(p => `${p.name}@${p.version}`).sort();
+    const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
     assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
     assert.deepEqual(ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['outer@1.0.0']);
@@ -1156,7 +1156,7 @@ test('nested: each JavaScript and CSS file another build produced brings the pac
         { fileName: 'lazy.js', code: 'lazy code', modules: [m('lazy')] }],
       assets: [{ fileName: 'style.css', source: 'css code' }, { fileName: 'w.js', source: 'nested island worker code' },
         { fileName: 'l.svg', source: '<svg/>', originalFileNames: ['node_modules/logo/l.svg'] }] });
-    const ids = (f) => packages.packagesOfOutput([J(dir, f)]).map(p => `${p.name}@${p.version}`).sort();
+    const ids = (f) => packages.packagesOfFiles([J(dir, f)]).all.map(p => `${p.name}@${p.version}`).sort();
     assert.deepEqual(ids('main.js'), ['inline@1.0.0', 'js@1.0.0']);
     assert.deepEqual(ids('lazy.js'), ['lazy@1.0.0']);
     assert.deepEqual(ids('style.css'), ['imported@1.0.0', 'sheet@1.0.0']);
@@ -1181,7 +1181,7 @@ test('nested: a workspace package another build produced brings its packages, al
   process.chdir(root);
   try {
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'packages/island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
-    const ids = (files) => packages.packagesOfOutput(files).map(p => `${p.name}@${p.version}`).sort();
+    const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
     assert.deepEqual(ids([J(root, 'packages/island/dist/main.js')]), ['inner@1.0.0']);          // its real path (resolve.symlinks)
     assert.deepEqual(ids([J(root, 'node_modules/@acme/island/dist/main.js')]), ['inner@1.0.0']); // the link (resolve.symlinks: false)
     // a package's own files are no other build's output, even with the same bytes
