@@ -65,10 +65,16 @@ const installers = {
     sh(`node ${rel} install`, dir);
   },
   // globalVirtualStore: packages in pnpm's global virtual store (enable-global-virtual-store), outside the project; the
-  // store is kept in <dir>/.tools, so installs work offline later
+  // store is kept in <dir>/.tools, so installs work offline later. pnpm turns the global virtual store off in CI (its
+  // `ci` setting, from CI=true): ci=false. The install must have put the packages outside the project
   pnpm: (dir, { version, globalVirtualStore = false }) => {
-    if (globalVirtualStore) fs.writeFileSync(path.join(dir, '.npmrc'), `enable-global-virtual-store=true\nstore-dir=${path.join(TOOLS, 'pnpm-store')}\n`);
+    if (globalVirtualStore) fs.writeFileSync(path.join(dir, '.npmrc'), `enable-global-virtual-store=true\nci=false\nstore-dir=${path.join(TOOLS, 'pnpm-store')}\n`);
     sh(`node ${pnpmBin(version)} install --no-frozen-lockfile --config.confirmModulesPurge=false`, dir);
+    if (globalVirtualStore) {
+      const dep = Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).dependencies)[0];
+      const real = fs.realpathSync(path.join(dir, 'node_modules', dep));
+      if (!path.relative(dir, real).startsWith('..')) throw new Error(`${dir}: pnpm installed ${dep} at ${real}, not in its global virtual store`);
+    }
   },
 };
 
