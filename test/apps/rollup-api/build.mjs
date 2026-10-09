@@ -4,6 +4,7 @@
 //   rollup-wasm     the same with @rollup/wasm-node (Rollup's WebAssembly build, for platforms without its native one)
 //   rolldown        rolldown() + write()
 //   rolldown-build  Rolldown's build()
+//   rolldown-nodir  rolldown() + write() without dir or file (Rolldown writes to dist/)
 //   rollup-outputs, rolldown-outputs  two outputs into dist/ at the same time (main.js, main.min.js), as the rollup
 //                   command line writes them; fails unless the lockfile records each with its own file
 //   rollup-plugin, rolldown-plugin  the plugin in the build's options (BUNDLE_LOCKFILE_PLUGIN: adapters/rollup.cjs, no
@@ -31,6 +32,10 @@ if (mode === 'rollup' || mode === 'rollup-wasm') {
 } else if (mode === 'rolldown') {
   const bundle = await (await import('rolldown')).rolldown(rolldownOptions);
   await bundle.write(output);
+  await bundle.close();
+} else if (mode === 'rolldown-nodir') {
+  const bundle = await (await import('rolldown')).rolldown(rolldownOptions);
+  await bundle.write({ format: 'es' });
   await bundle.close();
 } else if (mode === 'rolldown-build') {
   await (await import('rolldown')).build({ ...rolldownOptions, output });

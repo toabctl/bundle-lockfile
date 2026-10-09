@@ -1194,6 +1194,31 @@ test('rollup adapter: outputs of one build written at the same time into one dir
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: Rolldown write() without dir and file: the lockfile in dist/, where Rolldown writes', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const plugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
+    const ctx = { meta: { rolldownVersion: '1.2.13', rollupVersion: '4.23.0' } }; // Rolldown's plugin context
+    const out = { format: 'es' }; // neither dir nor file in the hooks' output options
+    const modules = [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')];
+    plugin.buildStart.call(ctx, { input: ['src/main.js'] });
+    plugin.renderStart.call(ctx, out);
+    plugin.renderChunk.call(ctx, '', { moduleIds: modules }, out);
+    await plugin.generateBundle.handler.call(ctx, out, { 'main.js': { type: 'chunk', fileName: 'main.js', code: 'rolldown main', moduleIds: modules } }, true);
+    fs.mkdirSync(J(root, 'dist'));
+    fs.writeFileSync(J(root, 'dist/main.js'), 'rolldown main');
+    await plugin.writeBundle.handler.call(ctx, out);
+    await plugin.closeBundle.handler.call(ctx);
+    const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+    assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a']);
+    assert.deepEqual(lock['bundle-lockfile'].writers.map(w => w.files), [['../main.js']]);
+    assert.equal(fs.existsSync(J(root, LOCK)), false);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: plugins configured by hand, two builds of different inputs into one directory: both writers', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });

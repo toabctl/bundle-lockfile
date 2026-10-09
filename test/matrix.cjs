@@ -693,6 +693,7 @@ const cases = [
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: build()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-build', expect: ROLLUP_API },
+  { name: 'Rolldown 1 JavaScript API: write() without dir or file (dist/)', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-nodir', expect: ROLLUP_API },
   ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => (
     { name: `${what} JavaScript API in a directory with "#" in its name`, fixture: 'rollup-api-c#', cmd: `node build.mjs ${mode}`, expect: ROLLUP_API })),
   // two outputs written at the same time into one directory, in one format: each a writer with its own files and hashes

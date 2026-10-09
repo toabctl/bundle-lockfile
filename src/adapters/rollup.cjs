@@ -248,7 +248,8 @@ function createPlugin(kind, inputOptions) {
           // generate-only builds (Vite's workers and legacy polyfills, write: false, workbox-build, Vite 8 bundling its
           // config) write nothing themselves: their chunks' packages are kept for the build that uses them. An output
           // below node_modules is a tool's cache (Vite's dependency pre-bundling) or such a build too (plugin-legacy's).
-          const dir = path.resolve(cwd, out.dir || (out.file ? path.dirname(out.file) : '.'));
+          // without dir and file, Rolldown writes to dist/ (Rollup does not write at all); the hooks get neither
+          const dir = path.resolve(cwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
           if (isWrite === false || dir.split(path.sep).includes('node_modules')) {
             const all = [];
             for (const f of Object.values(bundle)) {
