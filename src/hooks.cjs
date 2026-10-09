@@ -1,10 +1,11 @@
 'use strict';
 // Module-load hooks shared by all adapters.
 //
-// An adapter is { name, onCjsLoad?(exports, request, resolve), esmEntries?, esmPackages?, esmWrap?(id, name, fn) }.
+// An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, esmEntries?, esmPackages?, esmWrap?(id, name, fn) }.
 // - onCjsLoad is called for every CommonJS module that gets loaded and patches the bundler when it recognizes it.
 //   resolve() returns the module's resolved filename; it is lazy because resolving every require() would slow down
-//   large builds.
+//   large builds. cjsFiles (RegExps of file paths): the modules onCjsLoad patches, which the ESM hooks report also when
+//   Node loads them without Module._load (see esm-wrap.cjs cjsSource).
 // - esmEntries ({ id, suffixes, wrap }, see esm-wrap.cjs) are ESM modules replaced by a wrapper whose functions in
 //   `wrap` go through esmWrap(id, name, fn), which returns the function to use instead. esmPackages: npm packages
 //   whose use makes a process a bundler process (see esmMode).
@@ -28,7 +29,15 @@ function install() {
   globalThis[INSTALLED] = true;
   if (adapters.some(a => a.onCjsLoad)) installCjs();
   const entries = adapters.flatMap(a => a.esmEntries || []);
-  if (entries.length) installEsm(entries);
+  const cjsFiles = adapters.flatMap(a => (a.onCjsLoad && a.cjsFiles) || []);
+  if (entries.length || cjsFiles.length) installEsm(entries, cjsFiles);
+}
+
+function onCjsLoad(exp, request, resolve) {
+  for (const a of adapters) {
+    if (!a.onCjsLoad) continue;
+    try { a.onCjsLoad(exp, request, resolve); } catch (e) { config.warn(`${a.name} adapter failed while inspecting ${request}:`, e); }
+  }
 }
 
 function installCjs() {
@@ -40,12 +49,11 @@ function installCjs() {
       if (resolved === undefined) { try { resolved = Module._resolveFilename(request, parent); } catch { resolved = request; } }
       return resolved;
     };
-    for (const a of adapters) {
-      if (!a.onCjsLoad) continue;
-      try { a.onCjsLoad(exp, request, resolve); } catch (e) { config.warn(`${a.name} adapter failed while inspecting ${request}:`, e); }
-    }
+    onCjsLoad(exp, request, resolve);
     return exp;
   };
+  // a cjsFiles module Node evaluated without Module._load reports itself here once it has run (esm-wrap.cjs cjsSource)
+  globalThis[Symbol.for('bundle-lockfile.cjs-loaded')] = (module, filename) => onCjsLoad(module.exports, filename, () => filename);
 }
 
 // module.registerHooks (in-thread, synchronous) together with any loader-thread hook (Yarn PnP's .pnp.loader.mjs,
@@ -92,11 +100,18 @@ function esmMode(packages) {
   // Node 20 has no isInternalThread: its loader thread is not the main thread (nor are user workers, which get none)
   if (forced === 'async') return async && wt.isMainThread ? 'async' : 'off';
   if (sync && syncHooksSafe(process.versions.node)) return 'sync';
-  if (async && wt.isMainThread && bundlerProcess(packages)) return 'async';
+  if (async && wt.isMainThread && (bundlerProcess(packages) || otherLoader())) return 'async';
   return 'off';
 }
 
-function installEsm(entries) {
+// Another loader-thread hook is configured (Yarn Plug'n'Play's --experimental-loader .pnp.loader.mjs, an --import that
+// registers one): it can provide the source of CommonJS modules, which Node then loads without Module._load - only the
+// ESM hooks see them (esm-wrap.cjs cjsSource).
+function otherLoader(argv = [process.env.NODE_OPTIONS || '', ...process.execArgv]) {
+  return /(^|\s)--(?:experimental-loader|loader|import)(?:[=\s]|$)/.test(argv.join(' '));
+}
+
+function installEsm(entries, cjsFiles) {
   if (globalThis[ESM]) return;
   globalThis[ESM] = {
     wrap(id, name, fn) {
@@ -114,18 +129,22 @@ function installEsm(entries) {
       Module.registerHooks({
         load(url, context, nextLoad) {
           const entry = esmWrap.match(url, entries);
-          if (!entry) return nextLoad(url, context);
           const result = nextLoad(url, context);
           try {
+            if (!entry) {
+              const cjs = esmWrap.cjsSource(url, result, cjsFiles); // CommonJS whose source another hook provided
+              return cjs ? { ...result, source: cjs } : result;
+            }
             const src = esmWrap.source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry);
             return src ? { format: 'module', source: src, shortCircuit: true } : result;
           } catch (e) { config.warn('could not wrap', url, e); return result; }
         },
       });
     } else if (mode === 'async') {
-      Module.register(pathToFileURL(path.join(__dirname, 'esm-loader.mjs')).href, { parentURL: pathToFileURL(__filename).href, data: { entries } });
+      Module.register(pathToFileURL(path.join(__dirname, 'esm-loader.mjs')).href,
+        { parentURL: pathToFileURL(__filename).href, data: { entries, cjsFiles } });
     }
   } catch (e) { config.warn('could not install the ESM hooks:', e); }
 }
 
-module.exports = { register, install, syncHooksSafe, bundlerProcess, esmMode };
+module.exports = { register, install, syncHooksSafe, bundlerProcess, otherLoader, esmMode };

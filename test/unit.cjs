@@ -18,6 +18,7 @@ const webpack = require('../src/adapters/webpack.cjs');
 const SRC = path.join(__dirname, '../src');
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
 const J = (...p) => path.join(...p);
+const pathToFileURLHref = (p) => require('url').pathToFileURL(p).href;
 
 // a temporary project: { 'node_modules/a/package.json': {...} | 'text', ... }; returns its real path
 function project(files) {
@@ -1024,6 +1025,56 @@ test('rollup adapter: rollup()/rolldown()/watch()/build() get the plugin once, t
     assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: mode, BUNDLE_LOCKFILE_DISABLE: 'rolldown' }).plain, ['x'], `${mode}: DISABLE=rolldown`);
   }
   assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: 'off' }).plain, ['x']);
+});
+
+test('hooks: a CommonJS bundler whose source another loader hook provides is patched, although Node loads it without Module._load', () => {
+  // Yarn Plug'n'Play's loader returns the source of CommonJS files in its zip cache on Node versions whose fstat fails on
+  // their file descriptors (22.22.3+, 24.15, 25.7+, 26.0): Node then evaluates them, and all they require, with a
+  // require() of its own. This loader does the same for a fake webpack; webpack-cli 7 import()s webpack
+  const compiler = 'class Compiler { compile() {} run() {} watch() {} newCompilation() {} isChild() { return false; } }\nmodule.exports = Compiler;\n';
+  const root = project({
+    'node_modules/webpack/package.json': { name: 'webpack', version: '5.0.0', main: 'lib/index.js' },
+    'node_modules/webpack/lib/index.js': "const Compiler = require('./Compiler');\nmodule.exports = { Compiler };\n",
+    'node_modules/webpack/lib/Compiler.js': compiler,
+    'loader.mjs': `import fs from 'node:fs';
+      export async function load(url, context, nextLoad) {
+        if (!url.includes('/node_modules/webpack/')) return nextLoad(url, context);
+        return { format: 'commonjs', source: fs.readFileSync(new URL(url), 'utf8'), shortCircuit: true };
+      }`,
+    'build.cjs': `const Module = require('module'), seen = [];
+      const load = Module._load;
+      Module._load = function (request) { if (request.includes('Compiler')) seen.push(request); return load.apply(this, arguments); };
+      import('webpack').then(w => console.log(JSON.stringify({ viaModuleLoad: seen.length > 0,
+        patched: !!w.default.Compiler.prototype[Symbol.for('bundle-lockfile.webpack.patched')] })));`,
+  });
+  const run = (env) => {
+    const r = spawnSync(process.execPath, ['--no-warnings', '--require', J(SRC, 'register.cjs'), '--experimental-loader', pathToFileURLHref(J(root, 'loader.mjs')), J(root, 'build.cjs')],
+      { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split('\n').pop());
+  };
+  const modes = ['auto', 'async']; // auto: the other loader makes it a process for the loader-thread hooks (Node < 24.12)
+  if (typeof require('module').registerHooks === 'function' && require(J(SRC, 'hooks.cjs')).syncHooksSafe(process.versions.node)) modes.push('sync');
+  for (const mode of modes) assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: mode }), { viaModuleLoad: false, patched: true }, mode);
+  assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: 'off' }), { viaModuleLoad: false, patched: false }); // the case the hooks are for
+  // the line is appended once, only to the source a hook provided, of the files an adapter patches
+  const { cjsSource, CJS_LOADED } = require(J(SRC, 'esm-wrap.cjs'));
+  const url = pathToFileURLHref(J(root, 'node_modules/webpack/lib/Compiler.js')), files = [/[\\/]webpack[\\/]lib[\\/]Compiler\.js$/];
+  assert.equal(cjsSource(url, { format: 'commonjs', source: compiler }, files), compiler + CJS_LOADED);
+  assert.equal(cjsSource(url, { format: 'commonjs', source: Buffer.from(compiler) }, files), compiler + CJS_LOADED);
+  assert.equal(cjsSource(url, { format: 'commonjs', source: compiler + CJS_LOADED }, files), null);
+  assert.equal(cjsSource(url, { format: 'commonjs', source: null }, files), null); // Node loads it through Module._load
+  assert.equal(cjsSource(url, { format: 'module', source: compiler }, files), null);
+  assert.equal(cjsSource(pathToFileURLHref(J(root, 'node_modules/webpack/lib/index.js')), { format: 'commonjs', source: 'x' }, files), null);
+});
+
+test('hooks: another loader-thread hook is recognized in NODE_OPTIONS and the command line', () => {
+  const { otherLoader } = require(J(SRC, 'hooks.cjs'));
+  assert.equal(otherLoader(['--require /p/.pnp.cjs --experimental-loader file:///p/.pnp.loader.mjs']), true); // Yarn Plug'n'Play
+  assert.equal(otherLoader(['', '--import=tsx']), true);
+  assert.equal(otherLoader(['--loader ./l.mjs']), true);
+  assert.equal(otherLoader(['--max-old-space-size=4096 --require /x/register.cjs', '--inspect']), false);
+  assert.equal(otherLoader(['--require /x/--import-helper.cjs']), false);
 });
 
 // runs the plugin's hooks like a rollup/rolldown build writing `outDir`; chunks: [{ fileName, code, modules, entry }]

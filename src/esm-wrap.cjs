@@ -41,4 +41,18 @@ function source(url, realSrc, entry) {
   ].filter(Boolean).join('\n') + '\n';
 }
 
-module.exports = { MARK, match, exportedNames, source };
+// CommonJS modules whose source a loader hook provides (Yarn Plug'n'Play's for files in its zip cache, on Node versions
+// whose fstat fails on their file descriptors) are not loaded through Module._load: Node evaluates them with a require()
+// of its own, also every module they require - the CommonJS hook (hooks.cjs) never sees them. For the files the adapters
+// patch when they load (cjsFiles), a line appended to that source reports the module to the hook once it has run, as
+// Module._load would. Only when a hook provided the source: else Node loads it through Module._load.
+const CJS_LOADED = "\n;{ const f = globalThis[Symbol.for('bundle-lockfile.cjs-loaded')]; if (typeof f === 'function') f(module, __filename); }\n";
+function cjsSource(url, result, files) {
+  if (!result || result.format !== 'commonjs' || result.source == null || typeof url !== 'string' || !url.startsWith('file:')) return null;
+  const p = decodeURIComponent(url.split(/[?#]/)[0]);
+  if (!files.some(re => re.test(p))) return null;
+  const src = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
+  return src.endsWith(CJS_LOADED) ? null : src + CJS_LOADED;
+}
+
+module.exports = { MARK, match, exportedNames, source, cjsSource, CJS_LOADED };

@@ -336,6 +336,8 @@ module.exports = {
     { id: 'rolldown', suffixes: ['/rolldown/dist/index.mjs'], wrap: ['rolldown', 'watch', 'build'] },
   ],
   esmPackages: ['vite', 'rollup', 'rolldown', 'rolldown-vite'],
+  cjsFiles: [CJS_ROLLUP], // the module onCjsLoad patches
+
   esmWrap(id, name, fn) {
     if (typeof fn !== 'function') return null;
     if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn);

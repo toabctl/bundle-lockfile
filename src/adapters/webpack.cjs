@@ -376,6 +376,8 @@ function patchNext(exp, where) {
 
 module.exports = {
   name: 'webpack',
+  // the modules onCjsLoad patches: webpack's Compiler and Next's vendored webpack
+  cjsFiles: [/[\\/]webpack[\\/]lib[\\/]Compiler\.js$/, NEXT_WEBPACK],
   BundleLockfilePlugin, // usable directly in a webpack config, without injection
   bundledFiles,
   sourceFile,

@@ -57,8 +57,9 @@ jobs:
         shard: [1, 2, 3]
     name: matrix (Node 22, Vite, ${{ matrix.shard }}/3)
     env:
-      # the fixtures of the ESM-hooked bundlers and their cases (gen.cjs and run.cjs select the same ones)
-      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output)'
+      # the fixtures of the ESM-hooked bundlers and of webpack under Yarn Plug'n'Play (whose CommonJS modules Node 22 loads
+      # without Module._load, see src/hooks.cjs), and their cases (gen.cjs and run.cjs select the same ones)
+      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp)'
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-22 npm yarn bun syft
