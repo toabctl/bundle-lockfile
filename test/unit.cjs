@@ -583,6 +583,31 @@ test('outputs: a lockfile on disk keeps the packages other processes put there, 
   assert.equal(outputs.isShared(target), false);
 });
 
+test('outputs: another process\'s file that is a symbolic link to nothing is there, as for this process\'s writers', { skip: process.platform === 'win32' }, async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b') });
+  const target = J(root, 'dist', LOCK);
+  const [a, b] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.symlinkSync(J(root, 'nowhere'), J(root, 'dist/b-link')); // a symbolic link asset (webpack >= 5.111)
+  fs.writeFileSync(target, toPackageLock([b], root, { dir: path.dirname(target), writers: [{ id: 'other', files: [J(root, 'dist/b-link')], paths: [b.path] }] }));
+  outputs.record(target, 'w-link', [a], root, [J(root, 'dist/a.js')], { disk: true });
+  outputs.emitted(target, 'w-link');
+  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a', 'b']);
+});
+
+test('outputs: nothing recorded for a lockfile: nothing written, no error (one that failed before is not hidden)', async () => {
+  const root = project({ 'dist/bundle-lockfile/package-lock.json': 'left alone' });
+  const target = J(root, 'dist', LOCK);
+  let written = false;
+  const err = await new Promise(resolve => outputs.rewrite(target, (json, cb) => { written = true; cb(); }, resolve));
+  assert.equal(err, undefined);
+  assert.equal(written, false);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'left alone');
+});
+
 test('outputs: a lockfile its own output.clean deleted keeps the other processes\' packages whose files it kept', async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'dist/b.js': 'b', 'dist/c.js': 'c' });
