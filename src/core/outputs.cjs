@@ -9,11 +9,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
-const { cmp, toPackageLock, readMeta } = require('./lockfile.cjs');
+const { cmp, toPackageLock, readMeta, reanchor, unknownPackage } = require('./lockfile.cjs');
+const { readPackage } = require('./manifest.cjs');
 const { exportPath } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
+const copies = require('./copies.cjs');
+const lru = require('./lru.cjs');
 
-const KEY = Symbol.for('bundle-lockfile.outputs.v3'); // v3: shape below; copies of another shape keep their own
+const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
 // building: { pkgs, context, files } of its build in progress, recorded before that build is written;
 // landed: the same of its latest build whose output was written. A build that fails is never written
@@ -22,7 +25,10 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v3'); // v3: shape below; copies
 // disk: lockfile path -> its output is on the real disk, where other processes may write it too (not, e.g., a
 // webpack-dev-server's in-memory file system).
 // read: lockfile path -> the record (readMeta) of the lockfile last read from disk, for when it is gone (see foreign).
-const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map() });
+// copies: copy of a lockfile, made in this process -> { target: the lockfile it is a copy of, content: what was
+// written to the copy last } (see copied).
+const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map() });
+const MAX_COPIES = 1000;
 
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
 const stateFile = (target) => (config.inline ? target : exportPath(target));
@@ -35,7 +41,7 @@ function there(file) {
 
 // Writers of `target` recorded by other processes (in the lockfile on disk) whose files are still there (all:
 // also those whose files are gone), except those with an id in `own` (this process has their newest build):
-// [{ id, pkgs, files, count, context }]. A lockfile that is gone since this process last read it was deleted with
+// [{ id, pkgs, files, count, context, anchored }] (anchored: see readMeta). A lockfile that is gone since this process last read it was deleted with
 // the output directory - by this build's own output.clean, which deletes it with the other writers' files except
 // those clean.keep keeps: its record is still what the other processes put there, for their files that are left.
 function foreign(target, own, all = false) {
@@ -48,9 +54,27 @@ function foreign(target, own, all = false) {
   } catch { meta = outputs.read.get(target) || null; } // not there (any more)
   if (!meta) return [];
   return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(there)))
-    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context,
+    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context, anchored: meta.anchored,
       contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
 }
+
+// A build with its packages checked (seen: package directory -> its package, read once per render): a package's path
+// is the package only while its package.json there still has its name and version. A package upgraded in place since
+// the build (npm install during a watch session), reinstalled elsewhere (pnpm's .pnpm directory names) or removed is
+// no longer the one at that path, and another build's package at that path must not replace it: its location is
+// then not known (see toPackageLock), in the build's packages and in its outputs' contents.
+const stillThere = (seen) => (b) => {
+  const at = (dir) => { if (!seen.has(dir)) seen.set(dir, readPackage(dir)); return seen.get(dir); };
+  const ids = new Map(); // path -> path after the check, of this build's packages
+  const pkgs = b.pkgs.map((p) => {
+    const there = !p.outside && !p.unknown && at(p.path);
+    const q = p.outside || p.unknown || (there && there.name === p.name && there.version === p.version) ? p : unknownPackage(p);
+    ids.set(p.path, q.path);
+    return q;
+  });
+  const contents = Object.fromEntries(Object.entries(b.contents || {}).map(([f, paths]) => [f, paths.map(x => ids.get(x) || x)]));
+  return { ...b, pkgs, contents };
+};
 
 // The packages in the output directory: every writer's landed build; for `own`, the build it is about to write;
 // writers in other processes whose files are there. null if there are none (nothing recorded, e.g. after a failure).
@@ -64,11 +88,15 @@ function render(target, own) {
   }
   builds.push(...foreign(target, ids));
   if (!builds.length) return null;
+  const checked = builds.map(stillThere(new Map()));
   const byPath = new Map();
-  for (const b of builds) for (const p of b.pkgs) byPath.set(p.path, p);
-  // keys are relative to one context; pick it independently of which writer finished last
-  const context = builds.map(b => b.context).sort(cmp)[0];
-  const writers = builds.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, contents: b.contents, paths: b.pkgs.map(p => p.path) }));
+  for (const b of checked) for (const p of b.pkgs) byPath.set(p.path, p);
+  // keys are relative to one context; pick it independently of which writer finished last - this process's, and that of
+  // another process's record only if it is no copy's (see readMeta) and has a package that is still where it says: the
+  // context of a copy is not the project (two directories above it, for SvelteKit's build/)
+  const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(p => !p.unknown && !p.outside)));
+  const context = (valid.length ? valid : checked).map(b => b.context).sort(cmp)[0];
+  const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, contents: b.contents, paths: b.pkgs.map(p => p.path) }));
   return toPackageLock([...byPath.values()], context, { dir: path.dirname(target), writers });
 }
 
@@ -136,6 +164,59 @@ function prune(target, writer, exists, done) {
   function finish() { if (--pending === 0) done(); }
 }
 
+// A lockfile copied with fs in this process (e.g. by SvelteKit's adapters, from .svelte-kit/output/ to build/): its
+// record's "context" and "self" are rewritten for where the copy is, so that the copy's record is right there too (see
+// readMeta), and the copy is followed: written again whenever its lockfile is (see rewrite), as long as it has what
+// was written to it last. A lockfile copied before its last write (an adapter that copies in closeBundle, before
+// files written after the build added packages) gets them too. Known are lockfiles this process writes (and their
+// export copies), copies it followed, and - copied as a file - any other with a record written where it is copied
+// from. A copy made otherwise (cp, rsync, an image build) keeps its bytes; readers see that its record is a copy's.
+function copied(src, dest, isDirectory) {
+  const name = path.basename(config.file);
+  const known = new Map(); // lockfile -> the lockfile it is (a target) or follows
+  for (const target of outputs.files.keys()) {
+    known.set(target, target);
+    const exp = exportPath(target);
+    if (exp) known.set(exp, target);
+  }
+  for (const [copy, c] of outputs.copies) known.set(copy, c.target);
+  const pairs = [];
+  if (!isDirectory) {
+    if (path.basename(src) === name) pairs.push([src, dest]);
+  } else {
+    for (const f of known.keys()) if (f.startsWith(src + path.sep)) pairs.push([f, path.join(dest, path.relative(src, f))]);
+  }
+  for (const [from, to] of pairs) {
+    const target = known.get(from) || null;
+    // the record of an export copy is anchored where its lockfile is, that of a copy where it is
+    const anchor = target && exportPath(target) === from ? path.dirname(target) : path.dirname(from);
+    let json;
+    try { json = reanchor(fs.readFileSync(to, 'utf8'), anchor, path.dirname(to)); } catch { continue; }
+    if (json === null) continue; // no record written where it comes from: left as it is
+    writeAtomic(to, json);
+    lru.set(outputs.copies, to, { target, content: json }, MAX_COPIES);
+    config.debug('copied lockfile', from, '->', to, '- its record is for where it is now');
+  }
+}
+if (!outputs.listening) { outputs.listening = true; copies.onCopy(copied); } // once per process, also with copies of this module
+
+// The copies of `target` (see copied), with `content` - the target's new content - for where they are; a copy changed
+// or removed since it was written last is no longer followed.
+function follow(target, content) {
+  for (const [copy, c] of outputs.copies) {
+    if (c.target !== target) continue;
+    let now = null;
+    try { now = fs.readFileSync(copy, 'utf8'); } catch { /* removed */ }
+    if (now !== c.content) { outputs.copies.delete(copy); continue; }
+    try {
+      const json = reanchor(content, path.dirname(target), path.dirname(copy));
+      if (json === null) { outputs.copies.delete(copy); continue; }
+      writeAtomic(copy, json);
+      c.content = json;
+    } catch (e) { outputs.copies.delete(copy); config.warn('could not write the copy', copy, 'of', target, ':', e); }
+  }
+}
+
 // writeFile for rewrite(): a lockfile on the real disk, which other processes read
 function writeDisk(file) {
   return (content, cb) => { try { writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
@@ -170,6 +251,7 @@ function rewrite(target, writeFile, done) {
       const exported = (err) => {
         const file = exportPath(target);
         if (file) try { writeAtomic(file, content); } catch (e) { return finish(err || e); }
+        if (!err) follow(target, content);
         finish(err);
       };
       if (writeFile) writeFile(content, exported); else exported();

@@ -25,9 +25,23 @@ jobs:
       - name: Unit tests
         run: node --test test/unit.cjs
 
+  # the output format against the tools that read it (test/contract.cjs)
+  contract:
+    runs-on: ubuntu-latest
+    container: cgr.dev/chainguard/wolfi-base:latest
+    name: contract (syft, Trivy)
+    steps:
+      - name: Install tools
+        run: apk add --no-cache nodejs-24 syft trivy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tool versions
+        run: syft version && trivy --version
+      - name: Contract tests
+        run: node --test test/contract.cjs
+
   matrix:
     runs-on: ubuntu-latest
-    # Wolfi, so the matrix runs against the same node/npm/yarn/bun/syft packages the build environments use
+    # Wolfi, so the matrix runs against the same node/npm/yarn/bun/syft/trivy packages the build environments use
     container: cgr.dev/chainguard/wolfi-base:latest
     strategy:
       fail-fast: false
@@ -39,7 +53,7 @@ jobs:
     name: matrix (Node ${{ matrix.node }}, ${{ matrix.shard }}/8)
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft
+        run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
@@ -62,7 +76,7 @@ jobs:
       FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp)'
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-22 npm yarn bun syft
+        run: apk add --no-cache nodejs-22 npm yarn bun syft trivy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3

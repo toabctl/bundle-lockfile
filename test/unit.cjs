@@ -112,26 +112,40 @@ test('packagesForFiles: symlinked packages are resolved; ones that resolve out o
   assert.deepEqual(pkgs.map(p => [p.name, p.path]), [['d', J(root, 'node_modules/.pnpm/d@1.0.0/node_modules/d')]]);
 });
 
-test('licenses: string, legacy object, legacy array; nothing usable means no license field', () => {
+test('licenses: string, legacy object, legacy array - always one string; nothing usable means no license field', () => {
+  // one string is the only form both syft (string, array of strings) and Trivy (string, {type} objects) read; several
+  // licenses are the SPDX expression npm's documentation gives for them
   const root = project({
     'node_modules/s/package.json': { name: 's', version: '1.0.0', license: 'MIT' },
     'node_modules/o/package.json': { name: 'o', version: '1.0.0', license: { type: 'ISC', url: 'x' } },
     'node_modules/l/package.json': { name: 'l', version: '1.0.0', licenses: [{ type: 'MIT' }, 'Apache-2.0', { url: 'x' }] },
+    'node_modules/one/package.json': { name: 'one', version: '1.0.0', licenses: [{ type: 'MIT', url: 'x' }] },
+    'node_modules/twice/package.json': { name: 'twice', version: '1.0.0', licenses: ['MIT', { type: 'MIT' }] },
+    'node_modules/sp/package.json': { name: 'sp', version: '1.0.0', licenses: ['Apache 2.0', '(BSD-2-Clause OR ISC)'] },
     'node_modules/e/package.json': { name: 'e', version: '1.0.0', licenses: [] },
     'node_modules/n/package.json': { name: 'n', version: '1.0.0' },
   });
-  const lock = JSON.parse(toPackageLock(packagesForFiles(['s', 'o', 'l', 'e', 'n'].map(n => J(root, 'node_modules', n, 'i.js'))), root));
+  const lock = JSON.parse(toPackageLock(packagesForFiles(['s', 'o', 'l', 'one', 'twice', 'sp', 'e', 'n'].map(n => J(root, 'node_modules', n, 'i.js'))), root));
   assert.deepEqual(lock.packages, {
     '': {},
     'node_modules/e': { name: 'e', version: '1.0.0' },
-    'node_modules/l': { name: 'l', version: '1.0.0', license: ['MIT', 'Apache-2.0'] },
+    'node_modules/l': { name: 'l', version: '1.0.0', license: '(MIT OR Apache-2.0)' },
     'node_modules/n': { name: 'n', version: '1.0.0' },
     'node_modules/o': { name: 'o', version: '1.0.0', license: 'ISC' },
+    'node_modules/one': { name: 'one', version: '1.0.0', license: 'MIT' },
     'node_modules/s': { name: 's', version: '1.0.0', license: 'MIT' },
+    'node_modules/sp': { name: 'sp', version: '1.0.0', license: '((Apache 2.0) OR (BSD-2-Clause OR ISC))' },
+    'node_modules/twice': { name: 'twice', version: '1.0.0', license: 'MIT' },
   });
+  // an array read back from a lockfile of v0.0.3 (readMeta) is written as one string too
+  assert.equal(entries(toPackageLock([{ ...pkg('a', '1.0.0', J(root, 'node_modules/a')), license: ['MIT', 'ISC'] }], root))[0][1].license, '(MIT OR ISC)');
+  // and what is no string there (an edited lockfile) is no license
+  for (const license of [{ type: 'MIT' }, [1, null], 7]) {
+    assert.deepEqual(entries(toPackageLock([{ ...pkg('a', '1.0.0', J(root, 'node_modules/a')), license }], root))[0][1], { name: 'a', version: '1.0.0' });
+  }
 });
 
-test('toPackageLock: lockfileVersion 3, unnamed root, keys relative to the context', () => {
+test('toPackageLock: lockfileVersion 3, unnamed root, keys relative to the context, all in node_modules/', () => {
   const ctx = J(path.sep, 'p', 'app');
   const json = toPackageLock([
     pkg('ms', '2.1.3', J(ctx, 'node_modules/ms')),
@@ -143,9 +157,45 @@ test('toPackageLock: lockfileVersion 3, unnamed root, keys relative to the conte
   const lock = JSON.parse(json);
   assert.equal(lock.lockfileVersion, 3);
   assert.deepEqual(lock.packages[''], {});
-  assert.deepEqual(Object.keys(lock.packages), ['', '../node_modules/h', 'node_modules/debug/node_modules/ms', 'node_modules/ms-old', 'node_modules/ms',
-    '.yarn/cache/y-npm-1.0.0-abc.zip/node_modules/y']);
+  // ../node_modules/h and .yarn/cache/<zip>/node_modules/y as keys would be skipped by Trivy (see the next test)
+  assert.deepEqual(Object.keys(lock.packages), ['', 'node_modules/h', 'node_modules/debug/node_modules/ms', 'node_modules/ms-old', 'node_modules/ms',
+    'node_modules/y']);
   assert.ok(json.endsWith('}\n'));
+});
+
+test('toPackageLock: every key starts with node_modules/, and the record gives the location of those that are not one', () => {
+  // Trivy's npm analyzer skips keys that do not start with node_modules (GitLab's webpack context is below the project
+  // root: all ../node_modules/ keys, none read); syft and Trivy take the package from the name field
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const root = J(path.sep, 'p'), ctx = J(root, 'app'), dir = J(ctx, 'dist/bundle-lockfile');
+  const all = [
+    pkg('a', '1.0.0', J(ctx, 'node_modules/a')),                                   // in the context's node_modules
+    pkg('a', '2.0.0', J(root, 'node_modules/a')),                                  // the same key without ../: taken
+    pkg('b', '1.0.0', J(root, 'node_modules/b')),
+    pkg('c', '1.0.0', J(root, 'node_modules/b/node_modules/c')),                   // nested: stays nested
+    pkg('d', '1.0.0', J(root, '..', 'node_modules/d')),                            // two levels up
+    pkg('e', '1.0.0', J(ctx, 'packages/w/node_modules/e')),                        // a workspace's own node_modules
+    pkg('y', '1.0.0', J(ctx, '.yarn/cache/y-npm-1.0.0-abc.zip/node_modules/y')),   // Yarn PnP, project cache
+    pkg('y', '2.0.0', J(ctx, '.yarn/cache/y-npm-2.0.0-def.zip/node_modules/y')),
+  ];
+  const json = toPackageLock(all, ctx, { dir, writers: [{ id: 'w', files: [J(ctx, 'dist/main.js')], paths: all.map(p => p.path) }] });
+  const doc = JSON.parse(json);
+  assert.deepEqual(entries(json).map(([k, p]) => `${k} = ${p.name}@${p.version}`), [
+    'node_modules/a = a@1.0.0', 'node_modules/a@2.0.0 = a@2.0.0', 'node_modules/b = b@1.0.0', 'node_modules/b/node_modules/c = c@1.0.0',
+    'node_modules/d = d@1.0.0', 'node_modules/e = e@1.0.0', 'node_modules/y = y@1.0.0', 'node_modules/y@2.0.0 = y@2.0.0']);
+  assert.deepEqual(doc['bundle-lockfile'].locations, {
+    'node_modules/a@2.0.0': '../node_modules/a', 'node_modules/b': '../node_modules/b', 'node_modules/b/node_modules/c': '../node_modules/b/node_modules/c',
+    'node_modules/d': '../../node_modules/d', 'node_modules/e': 'packages/w/node_modules/e',
+    'node_modules/y': '.yarn/cache/y-npm-1.0.0-abc.zip/node_modules/y', 'node_modules/y@2.0.0': '.yarn/cache/y-npm-2.0.0-def.zip/node_modules/y' });
+  assert.equal(doc['bundle-lockfile'].outside, undefined);
+  // another process reads the real locations back, and writes the same bytes
+  const read = readMeta(json, dir).writers[0].pkgs;
+  assert.deepEqual(read.map(p => p.path).sort(), all.map(p => p.path).sort());
+  assert.equal(toPackageLock(read, ctx, { dir, writers: [{ id: 'w', files: [J(ctx, 'dist/main.js')], paths: read.map(p => p.path) }] }), json);
+  // a record without "locations" (v0.0.3): its keys are the locations
+  const old = JSON.stringify({ lockfileVersion: 3, packages: { '': {}, '../node_modules/b': { name: 'b', version: '1.0.0' } },
+    'bundle-lockfile': { v: 1, context: '../..', writers: [{ id: 'w', files: [], packages: ['../node_modules/b'] }] } });
+  assert.deepEqual(readMeta(old, dir).writers[0].pkgs.map(p => p.path), [J(root, 'node_modules/b')]);
 });
 
 test('toPackageLock: packages outside the project get keys without their machine-specific path', () => {
@@ -1233,7 +1283,8 @@ test('rollup adapter: an asset emitted from a package file, named relative to a 
       // a file of that name relative to the working directory, but with other bytes: the one relative to the root is it
       { fileName: 'assets/d.svg', originalFileNames: ['node_modules/decoy/d.svg'], source: 'other bytes' },
     ] });
-    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['font', 'web/node_modules/decoy']);
+    // decoy@2.0.0 is the one in web/node_modules (keyed node_modules/decoy: every key is in node_modules/)
+    assert.deepEqual(entries(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')).map(([, p]) => `${p.name}@${p.version}`).sort(), ['decoy@2.0.0', 'font@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
@@ -1772,8 +1823,8 @@ test('lockfile: a context reached through a symlink is recorded as given, and re
   const meta = readMeta(json, dir);
   assert.equal(meta.context, J(root, 'real/proj'));
   assert.equal(meta.writers[0].pkgs[0].path, pkg.path);
-  // a record with the real context (written by v0.0.3) reads the same
-  const old = JSON.stringify({ ...doc, 'bundle-lockfile': { ...doc['bundle-lockfile'], context: path.relative(dir, J(root, 'real/proj')) } });
+  // a record with the real context (written by v0.0.3, without "self") reads the same
+  const old = JSON.stringify({ ...doc, 'bundle-lockfile': { ...doc['bundle-lockfile'], context: path.relative(dir, J(root, 'real/proj')), self: undefined } });
   assert.equal(readMeta(old, dir).writers[0].pkgs[0].path, pkg.path);
 });
 
@@ -2002,3 +2053,258 @@ test('hashes: one cache entry per file, recomputed when the file changes', () =>
   assert.equal(hashes.state.files.size, before);
   assert.equal(hashes.hashOf(J(root, 'missing.js')), null);
 });
+
+// Copies of a lockfile: its record's paths to the project ("context", the packages' locations) are relative to where
+// it was written. A reader tells a copy from the lockfile by "self"; a package's path is the package only while its
+// package.json there has its name and version; lockfiles copied with fs in this process are re-anchored and followed.
+const nameVersions = (json) => entries(json).map(([k, p]) => `${k} = ${p.name}@${p.version}`);
+const recordOf = (json) => JSON.parse(json)['bundle-lockfile'];
+// as SvelteKit's adapters do: the output in .svelte-kit/output/client copied to build/ (another depth)
+function svelteProject() {
+  const root = project({ 'node_modules/kit/package.json': { name: 'kit', version: '2.0.0' }, 'node_modules/esm/package.json': { name: 'esm', version: '1.0.0' } });
+  const [kit, esm] = ['kit', 'esm'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const orig = J(root, '.svelte-kit/output/client'), build = J(root, 'build');
+  const json = toPackageLock([kit, esm], root, { dir: J(orig, 'bundle-lockfile'), writers: [{ id: 'vite', files: [J(orig, '_app/x.js')], paths: [kit.path, esm.path] }] });
+  for (const d of [orig, build]) {
+    fs.mkdirSync(J(d, 'bundle-lockfile'), { recursive: true });
+    fs.mkdirSync(J(d, '_app'), { recursive: true });
+    fs.writeFileSync(J(d, LOCK), json); // a copy made without fs's copy functions (cp, rsync): the same bytes
+    fs.writeFileSync(J(d, '_app/x.js'), 'x');
+  }
+  return { root, kit, esm, orig, build, json };
+}
+
+test('copies of lockfiles: "self" tells the lockfile from a copy at another depth or in another directory', () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const { root, kit, orig, build, json } = svelteProject();
+  assert.equal(recordOf(json).self, '.svelte-kit/output/client/bundle-lockfile');
+  const here = readMeta(json, J(orig, 'bundle-lockfile'));
+  assert.equal(here.anchored, true);
+  assert.equal(here.writers[0].pkgs.find(p => p.name === 'kit').path, kit.path);
+  // the copy: its context would be two directories above the project
+  const copy = readMeta(json, J(build, 'bundle-lockfile'));
+  assert.equal(copy.anchored, false);
+  assert.deepEqual(copy.writers[0].pkgs.map(p => [p.name, p.unknown, p.path]).sort(),
+    [['esm', true, '\0unknown:esm@1.0.0'], ['kit', true, '\0unknown:kit@2.0.0']]);
+  assert.deepEqual(copy.writers[0].files, [J(build, '_app/x.js')]); // paths in the output: where they are in the copy
+  // a copy at the same depth: its context is the project, but it is not written there
+  fs.mkdirSync(J(root, '.svelte-kit/output/other/bundle-lockfile'), { recursive: true });
+  assert.equal(readMeta(json, J(root, '.svelte-kit/output/other/bundle-lockfile')).anchored, false);
+  // the whole project somewhere else (another checkout path): written there, relative to it
+  const moved = `${root}-moved`;
+  fs.cpSync(root, moved, { recursive: true });
+  assert.equal(readMeta(json, J(moved, '.svelte-kit/output/client/bundle-lockfile')).anchored, true);
+  // written by v0.0.3 and before: no "self"
+  const old = JSON.stringify({ ...JSON.parse(json), 'bundle-lockfile': { ...recordOf(json), self: undefined } });
+  assert.equal(readMeta(old, J(build, 'bundle-lockfile')).anchored, null);
+});
+
+test('copies of lockfiles: writing into a directory with a copy - one entry per package, the context is the project', async () => {
+  const { root, kit, build } = svelteProject();
+  const target = J(build, LOCK);
+  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  // a later build writes build/ too (another writer: the copy's files are there, so its packages stay)
+  outputs.record(target, 'later', [kit], root, [J(build, 'later.js')], { disk: true });
+  fs.writeFileSync(J(build, 'later.js'), '');
+  outputs.emitted(target, 'later');
+  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  const json = fs.readFileSync(target, 'utf8');
+  // kit from the copy is this build's kit; esm, only in the copy, keeps its name and version, location unknown
+  assert.deepEqual(nameVersions(json), ['node_modules/esm = esm@1.0.0', 'node_modules/kit = kit@2.0.0']);
+  const m = recordOf(json);
+  assert.equal(m.context, '../..'); // the project, not the copy's context (two directories above it)
+  assert.equal(m.self, 'build/bundle-lockfile');
+  assert.deepEqual(m.unknown, ['node_modules/esm']);
+  assert.equal(m.locations, undefined);
+  // written again (watch mode, the other writer): the same bytes
+  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  assert.equal(fs.readFileSync(target, 'utf8'), json);
+});
+
+test('copies of lockfiles: a bundled file of a copied output brings its packages by name and version', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), ...pj('outer') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
+    // the island's output copied into the app's source with cp (no fs copy this process sees: the original bytes),
+    // to widget/dist (its record says so) and to vendor/island/dist (as if the project had moved to src/vendor/: the
+    // record's packages are not where it says)
+    for (const d of ['src/widget/dist', 'src/vendor/island/dist']) {
+      fs.cpSync(J(root, 'island/dist'), J(root, d), { recursive: true });
+      fs.writeFileSync(J(root, d, LOCK), fs.readFileSync(J(root, 'island/dist', LOCK)));
+    }
+    assert.equal(packages.packagesOfFiles([J(root, 'src/widget/dist/main.js')]).all[0].unknown, true);
+    for (const d of ['src/widget/dist', 'src/vendor/island/dist']) {
+      const target = J(root, 'dist', d.split('/')[1], LOCK);
+      const { all } = packages.packagesOfFiles([J(root, d, 'main.js'), J(root, 'node_modules/outer/i.js')]);
+      outputs.record(target, 'app', all, root, [], { disk: true });
+      outputs.emitted(target, 'app');
+      await new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+      const json = fs.readFileSync(target, 'utf8');
+      assert.deepEqual(nameVersions(json), ['node_modules/inner = inner@1.0.0', 'node_modules/outer = outer@1.0.0'], d);
+      assert.deepEqual(recordOf(json).unknown, ['node_modules/inner'], d);
+      assert.equal(recordOf(json).locations, undefined, d);
+    }
+  } finally { process.chdir(cwd); }
+});
+
+test('copies of lockfiles: a package upgraded in place between two builds of one directory - both versions listed', async () => {
+  const root = project({ 'node_modules/x/package.json': { name: 'x', version: '1.0.0' } });
+  const target = J(root, 'dist', LOCK);
+  const writeFile = (json, cb) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); cb(); };
+  const [x1] = packagesForFiles([J(root, 'node_modules/x/i.js')]);
+  outputs.record(target, 'app', [x1], root, [J(root, 'dist/app.js')], { disk: true });
+  outputs.emitted(target, 'app');
+  // npm install during the watch session: x@2 in the same directory; the other writer's build has it, app.js still x@1
+  fs.writeFileSync(J(root, 'node_modules/x/package.json'), JSON.stringify({ name: 'x', version: '2.0.0' }));
+  const [x2] = packagesForFiles([J(root, 'node_modules/x/i.js')]);
+  outputs.record(target, 'sw', [x2], root, [J(root, 'dist/sw.js')], { disk: true });
+  outputs.emitted(target, 'sw');
+  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  assert.deepEqual(nameVersions(fs.readFileSync(target, 'utf8')), ['node_modules/x@1.0.0 = x@1.0.0', 'node_modules/x = x@2.0.0']);
+  // another process with x@2 reads that lockfile: still both, the same bytes
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const json = fs.readFileSync(target, 'utf8');
+  const read = readMeta(json, path.dirname(target)).writers;
+  const all = read.flatMap(w => w.pkgs);
+  assert.deepEqual(all.map(p => `${p.name}@${p.version}${p.unknown ? ' (unknown)' : ''}`).sort(), ['x@1.0.0 (unknown)', 'x@2.0.0']);
+});
+
+test('copies of lockfiles: a package no longer where another process recorded it (reinstalled, removed) is listed once', async () => {
+  const root = project({ 'node_modules/.pnpm/a@1.0.0_peer@1/node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    'node_modules/.pnpm/gone@1.0.0/node_modules/gone/package.json': { name: 'gone', version: '1.0.0' }, 'dist/other.js': '' });
+  const target = J(root, 'dist', LOCK);
+  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  const [a, gone] = packagesForFiles([J(root, 'node_modules/.pnpm/a@1.0.0_peer@1/node_modules/a/i.js'), J(root, 'node_modules/.pnpm/gone@1.0.0/node_modules/gone/i.js')]);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, toPackageLock([a, gone], root, { dir: path.dirname(target), writers: [{ id: 'other', files: [J(root, 'dist/other.js')], paths: [a.path, gone.path] }] }));
+  // pnpm install again: another peer suffix, the old directory gone; gone@1.0.0 removed
+  fs.renameSync(J(root, 'node_modules/.pnpm/a@1.0.0_peer@1'), J(root, 'node_modules/.pnpm/a@1.0.0_peer@2'));
+  fs.rmSync(J(root, 'node_modules/.pnpm/gone@1.0.0'), { recursive: true });
+  const [a2] = packagesForFiles([J(root, 'node_modules/.pnpm/a@1.0.0_peer@2/node_modules/a/i.js')]);
+  outputs.record(target, 'mine', [a2], root, [J(root, 'dist/mine.js')], { disk: true });
+  fs.writeFileSync(J(root, 'dist/mine.js'), '');
+  outputs.emitted(target, 'mine');
+  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  const json = fs.readFileSync(target, 'utf8');
+  assert.deepEqual(nameVersions(json), ['node_modules/.pnpm/a@1.0.0_peer@2/node_modules/a = a@1.0.0', 'node_modules/gone = gone@1.0.0']);
+  assert.deepEqual(recordOf(json).unknown, ['node_modules/gone']);
+});
+
+test('copies of lockfiles: unknown packages give the same bytes whichever process writes last', () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const root = project({ 'node_modules/x/package.json': { name: 'x', version: '1.0.0' } });
+  const dir = J(root, 'dist/bundle-lockfile');
+  const [x] = packagesForFiles([J(root, 'node_modules/x/i.js')]);
+  const xUnknown = { ...x, path: '\0unknown:x@1.0.0', unknown: true };
+  // process A only knows x from a copy (location unknown), process B has it in node_modules; each writes in turn,
+  // with its own build and the other's record
+  const write = (own, prev) => {
+    const theirs = prev ? readMeta(prev, dir).writers.filter(w => w.id !== own.id) : [];
+    const pkgs = [...own.pkgs, ...theirs.flatMap(w => w.pkgs)];
+    const byPath = new Map(pkgs.map(p => [p.path, p]));
+    return toPackageLock([...byPath.values()], root, { dir, writers: [{ id: own.id, files: [], paths: own.pkgs.map(p => p.path) },
+      ...theirs.map(w => ({ id: w.id, files: [], paths: w.pkgs.map(p => p.path) }))] });
+  };
+  const A = { id: 'a', pkgs: [xUnknown] }, B = { id: 'b', pkgs: [x] };
+  const a1 = write(A, null), b1 = write(B, a1), a2 = write(A, b1), b2 = write(B, a2);
+  assert.deepEqual(nameVersions(a1), ['node_modules/x = x@1.0.0']);
+  assert.deepEqual(recordOf(a1).unknown, ['node_modules/x']);
+  for (const json of [b1, a2, b2]) assert.equal(json, b1);
+  assert.equal(recordOf(b1).unknown, undefined);
+});
+
+test('copies of lockfiles: a record without "self" none of whose packages is there gives no context', async () => {
+  const { root, kit, build, json } = svelteProject();
+  const target = J(build, LOCK);
+  fs.writeFileSync(target, JSON.stringify({ ...JSON.parse(json), 'bundle-lockfile': { ...recordOf(json), self: undefined } })); // v0.0.3's copy
+  outputs.record(target, 'later', [kit], root, [J(build, 'later.js')], { disk: true });
+  fs.writeFileSync(J(build, 'later.js'), '');
+  outputs.emitted(target, 'later');
+  await new Promise(resolve => outputs.rewrite(target, (j, cb) => { fs.writeFileSync(target, j); cb(); }, resolve));
+  const out = fs.readFileSync(target, 'utf8');
+  assert.equal(recordOf(out).context, '../..');
+  assert.deepEqual(nameVersions(out), ['node_modules/esm = esm@1.0.0', 'node_modules/kit = kit@2.0.0']);
+});
+
+test('copies of lockfiles: copied with fs in this process - re-anchored where they are, followed while unchanged', async () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), 'other/package-lock.json': '{"lockfileVersion":3,"packages":{}}' });
+  const [a, b] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const target = J(root, '.svelte-kit/output/client', LOCK);
+  const write = () => new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+  outputs.record(target, 'client', [a], root, [J(root, '.svelte-kit/output/client/x.js')], { disk: true });
+  outputs.emitted(target, 'client');
+  await write();
+  const valid = (file) => {
+    const meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(file));
+    return meta.anchored === true && meta.writers[0].pkgs.every(p => !p.unknown && fs.existsSync(J(p.path, 'package.json')));
+  };
+  // SvelteKit's copy(): fs.copyFileSync, file by file; and the other copy functions
+  const to = (d) => J(root, d, LOCK);
+  for (const d of ['build', 'callback/x', 'promise', 'dir/a/b']) fs.mkdirSync(path.dirname(to(d)), { recursive: true });
+  fs.copyFileSync(target, to('build'));
+  // the copy is re-anchored before the copy's callback runs
+  assert.equal(await new Promise((res, rej) => fs.copyFile(target, to('callback/x'), (e) => (e ? rej(e) : res(valid(to('callback/x')))))), true);
+  await fs.promises.copyFile(target, to('promise'));
+  fs.cpSync(J(root, '.svelte-kit/output'), J(root, 'dir/a/b'), { recursive: true }); // a directory with the lockfile in client/
+  const copiesOf = ['build', 'callback/x', 'promise', 'dir/a/b/client'].map(to);
+  for (const f of copiesOf) assert.equal(valid(f), true, f);
+  assert.equal(recordOf(fs.readFileSync(to('build'), 'utf8')).context, '../..');
+  // a copy of a copy: re-anchored too
+  fs.mkdirSync(J(root, 'deep/er/bundle-lockfile'), { recursive: true });
+  fs.copyFileSync(to('build'), J(root, 'deep/er', LOCK));
+  assert.equal(valid(J(root, 'deep/er', LOCK)), true);
+  // another package-lock.json: copied as it is
+  fs.copyFileSync(J(root, 'other/package-lock.json'), J(root, 'other/copy.json'));
+  fs.mkdirSync(J(root, 'other2'), { recursive: true });
+  fs.copyFileSync(J(root, 'other/package-lock.json'), J(root, 'other2/package-lock.json'));
+  assert.equal(fs.readFileSync(J(root, 'other2/package-lock.json'), 'utf8'), '{"lockfileVersion":3,"packages":{}}');
+  // the lockfile written again after the copies (files written after the build): the copies get the new packages,
+  // except one changed since it was copied
+  fs.appendFileSync(to('promise'), ' ');
+  outputs.record(target, 'client', [a, b], root, [J(root, '.svelte-kit/output/client/x.js')], { disk: true });
+  outputs.emitted(target, 'client');
+  await write();
+  for (const f of [...copiesOf.filter(f => f !== to('promise')), J(root, 'deep/er', LOCK)]) {
+    assert.deepEqual(lockedNames(fs.readFileSync(f, 'utf8')), ['a', 'b'], f);
+    assert.equal(valid(f), true, f);
+  }
+  assert.deepEqual(lockedNames(fs.readFileSync(to('promise'), 'utf8')), ['a']);
+  // a copy removed since (its directory cleaned): no longer followed, without a warning
+  fs.rmSync(J(root, 'build'), { recursive: true });
+  outputs.record(target, 'client', [a], root, [J(root, '.svelte-kit/output/client/x.js')], { disk: true });
+  outputs.emitted(target, 'client');
+  assert.deepEqual(await (async () => { const seen = []; const orig = config.warn; config.warn = (...m) => seen.push(m.join(' '));
+    try { await write(); } finally { config.warn = orig; } return seen; })(), []);
+  assert.equal(fs.existsSync(to('build')), false);
+});
+
+test('copies of lockfiles: an export copy copied with fs is re-anchored like its lockfile', () => withConfig({ exportDir: null }, async () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  config.exportDir = J(root, 'export');
+  config.exportBase = root;
+  try {
+    const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
+    const target = J(root, 'ui/dist', LOCK);
+    outputs.record(target, 'ui', [a], root, [J(root, 'ui/dist/x.js')], { disk: true });
+    outputs.emitted(target, 'ui');
+    await new Promise(resolve => outputs.rewrite(target, null, resolve)); // export copy only
+    const exp = exportPath(target);
+    assert.equal(fs.existsSync(target), false);
+    fs.mkdirSync(J(root, 'pkg/usr/share/app/bundle-lockfile'), { recursive: true });
+    fs.copyFileSync(exp, J(root, 'pkg/usr/share/app', LOCK));
+    const meta = readMeta(fs.readFileSync(J(root, 'pkg/usr/share/app', LOCK), 'utf8'), J(root, 'pkg/usr/share/app/bundle-lockfile'));
+    assert.equal(meta.anchored, true);
+    assert.equal(meta.writers[0].pkgs[0].path, a.path);
+  } finally { config.exportBase = null; }
+}));

@@ -6,7 +6,8 @@ Vite, Rollup and Rolldown (also inside SvelteKit).
 
 A lockfile shipped with an application lists everything that was *installed* for the build: build tools, unused and
 tree-shaken packages included. `bundle-lockfile` lists only the packages whose files the bundler put into the output,
-so SBOM tools such as [syft](https://github.com/anchore/syft) report what is shipped.
+so SBOM tools such as [syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report
+what is shipped. The file is npm's own lockfile format, in the part of it both read (see [Format](#format)).
 
 ## What is listed
 
@@ -164,7 +165,7 @@ build fails; with `--require=a.cjs --require=b.cjs` only the last one reaches th
 [#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15). Next 12–14 do not parse the flags. If
 you need several preloads, require the others from one file.
 
-### Check the result with syft
+### Check the result with syft or Trivy
 
 ```console
 $ syft scan dir:dist -q
@@ -175,6 +176,10 @@ ms         2.0.0    npm
 ms         2.1.3    npm
 nanoid     3.3.20   npm
 yallist    5.0.0    npm
+```
+
+```sh
+trivy fs --format cyclonedx --output sbom.cdx.json dist
 ```
 
 ### See what it does
@@ -220,7 +225,9 @@ An SBOM tool scanning the package contents (e.g. `syft scan dir:`) then finds th
 `usr/share/myapp/dist/bundle-lockfile/package-lock.json`. If the package also ships the project's own lockfile
 (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), syft reports the packages of both. syft does not read lockfiles
 in image scans by default: scanning the resulting container image needs
-`--select-catalogers +javascript-lock-cataloger`.
+`--select-catalogers +javascript-lock-cataloger`. Trivy reads no lockfiles in image scans at all; it reads the SBOM
+files in the image (`*.spdx.json`, `*.cdx.json`, e.g. APK SBOMs in `/var/lib/db/sbom/`) instead, so it reports the
+bundled packages of an image whose SBOM lists them.
 
 The lockfile is part of the build output: if that output is served by a web server (e.g. a `public/assets`
 directory), the lockfile is publicly readable too. Steps that process every file of the output process it as well
@@ -297,6 +304,7 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
   "bundle-lockfile": {
     "v": 1,
     "context": "../..",
+    "self": "dist/bundle-lockfile",
     "writers": [
       { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
         "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms"] }
@@ -305,23 +313,28 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
 }
 ```
 
-- keys are the packages' real locations (symlinks resolved) relative to webpack's `context` or, for Vite, Rollup and
-  Rolldown, the working directory — so nested duplicate versions and pnpm / Yarn Plug'n'Play layouts stay distinct.
-  With a context below the project root they start with `../node_modules/`
+- every key starts with `node_modules/`, as in npm's lockfiles (Trivy skips any other key): a package's real location
+  (symlinks resolved) relative to webpack's `context` or, for Vite, Rollup and Rolldown, the working directory, so
+  nested duplicate versions and pnpm's layout stay distinct — with a context below the project root (e.g. GitLab's)
+  without the leading `../`: `../node_modules/debug` is keyed `node_modules/debug`. A package elsewhere — in Yarn
+  Plug'n'Play's `.yarn/cache/<zip>/node_modules/`, in a workspace's own `packages/<ws>/node_modules/`, at a location
+  whose key without `../` another package has — is keyed `node_modules/<name>`, or `node_modules/<name>@<version>`
+  (then `-2`, `-3`, …) if that is taken
 - the package a file belongs to is the directory directly below the last `node_modules` in its path
   (`node_modules/<name>` or `node_modules/@scope/<name>`): `package.json` files inside a package
   (`dist/esm/package.json`, `preact/hooks/package.json`) are not packages
-- a package outside the project — outside the context and not in an ancestor directory's `node_modules`, e.g. in
-  Yarn's global cache (Yarn 4's default), pnpm's global virtual store or a shared store — is keyed `node_modules/<name>`, or
-  `node_modules/<name>@<version>` (then `-2`, `-3`, …) if that is taken, because its real path differs between
-  machines
+- so is a package outside the project — outside the context and not in an ancestor directory's `node_modules`, e.g. in
+  Yarn's global cache (Yarn 4's default), pnpm's global virtual store or a shared store — whose real path differs
+  between machines
 - a package whose real location is outside `node_modules` — a workspace package, a `link:` or `portal:` dependency,
   a `file:` directory dependency installed by npm as a symlink — is first-party and not listed, also with webpack's
   `resolve.symlinks: false`; its dependencies are listed. Yarn 2+ (packs it into its cache) and pnpm (hard-links it
   into `node_modules/.pnpm`) put a `file:` directory dependency inside `node_modules` instead, which makes it a listed
   package
 - `name`, `version` and `license` come from each package's own `package.json` (also the legacy `license: {type}` and
-  `licenses: [...]` forms). A directory in `node_modules` whose `package.json` has no name or version cannot be
+  `licenses: [...]` forms). `license` is one string — syft reads no `{type}` objects, Trivy no arrays of strings
+  (Trivy 0.70 reads no package at all from a lockfile with one) — several licenses as an SPDX expression:
+  `licenses: [{type: "MIT"}, {type: "Apache-2.0"}]` is `"(MIT OR Apache-2.0)"`. A directory in `node_modules` whose `package.json` has no name or version cannot be
   listed; a warning names it once per process (only a debug message for directories starting with a dot, such as
   `node_modules/.cache`, where tools generate files)
 - entries are sorted by name, version and path in code-unit order, so the same build writes the same bytes on every
@@ -330,16 +343,74 @@ themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling
 - syft's `javascript-lock-cataloger` reads it — in directory and file scans by default, in image scans only when
   selected — unless its path is below a `node_modules` directory, which syft skips for `package-lock.json`. syft
   reads this format only from files named exactly `package-lock.json`
+- Trivy's npm analyzer reads it in `trivy fs` and `trivy repo` scans; `trivy image` and `trivy rootfs` read no
+  lockfiles (see [In a melange package build](#in-a-melange-package-build))
 
 The `"bundle-lockfile"` field is bundle-lockfile's own record; tools that read `package-lock.json` (syft, npm) ignore
 it, and it has no machine-specific paths (paths are relative to the lockfile, ids are hashes of the configuration):
 - `context`: the directory the keys are relative to, relative to the lockfile's directory (both as configured, so a context reached through a symlink stays `../..`)
+- `self`: the lockfile's directory relative to the context. A copy of the lockfile somewhere else — at another depth
+  (SvelteKit's adapters copy Vite's output from `.svelte-kit/output/` to `build/`), in another directory, or vendored
+  into another project — has a `context` that is not the project; `self` from there does not lead back to the copy,
+  so a reader knows it is one
+- `locations` (only if there are any): the location, relative to the context, of each package whose key is not its
+  location (`"node_modules/debug": "../node_modules/debug"`), so that another process finds the same package
 - `writers`: per writer (a webpack compiler, a Vite/Rollup/Rolldown output) its `id`, its `packages` (keys), up to 20
   of its output `files` and their `count`, and — for Vite, Rollup and Rolldown — `outputs`: the SHA-256 of up to 500
   of its JavaScript and CSS files, and `contents`: the packages in each of them (indices into its `packages`), for
   [nested bundles](#nested-bundles)
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time
+- `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or
+  no longer where a record said (upgraded in place, reinstalled elsewhere, removed). Such a package is the one with
+  its name and version that has another key, if there is one; else it has a key of its own, `node_modules/<name>` (or
+  `@<version>`), as long as a writer of it is listed
+
+A copy of a lockfile is read like this whenever bundle-lockfile reads a record: a build writing into a directory that
+holds one, and a build bundling a file of a copied output (nested bundles, whose hashes are paths in the output and
+work in a copy of it). A recorded package's path is the package only while its `package.json` there still has its name
+and version, also for the builds of this process; the lockfile's `context` is never a copy's. A lockfile copied with
+`fs` (`copyFile`, `cp` and their sync and promise versions) in a process bundle-lockfile is loaded in is rewritten for
+where the copy is, and written again whenever its lockfile is, as long as the copy is unchanged — SvelteKit's
+adapters copy that way, so their copies are right where they are, also when files written after the build added
+packages after the copy. A copy made otherwise (`cp`, rsync, an image build) keeps its bytes, which syft and Trivy read
+as before.
+
+### Format
+
+The lockfile is npm's `package-lock.json` with `lockfileVersion: 3`
+([npm's documentation](https://docs.npmjs.com/cli/v11/configuring-npm/package-lock-json); npm writes it in
+[arborist's `shrinkwrap.js`](https://github.com/npm/cli/blob/latest/workspaces/arborist/lib/shrinkwrap.js)), with the
+fields syft and Trivy read and in the forms both read the same way:
+
+| Field | Written | |
+|---|---|---|
+| `lockfileVersion` | `3` | npm 9 and later write it; syft reads 1–3 (not npm's newer `4`, for patched packages) |
+| `requires` | `true` | as npm writes it |
+| `packages[""]` | `{}` | npm puts the project's name and version here; without a name syft does not report the application as a package |
+| `packages[<key>]` | every package | the key starts with `node_modules/` (see above) |
+| `.name` | always | npm writes it only where the key does not end in the name (aliases); syft and Trivy prefer it over the key |
+| `.version` | always | |
+| `.license` | if the package declares one | one string, an SPDX expression for several |
+| `bundle-lockfile` | with every write | bundle-lockfile's record (see above), which syft, Trivy and npm ignore |
+
+Not written: `resolved` and `integrity` (an SBOM gets no download location or hash of a package), `dependencies`,
+`peerDependencies` and `optionalDependencies`, and the install-time fields (`dev`, `optional`, `link`, `bin`,
+`engines`, …). The lockfile is an inventory of what is shipped, for SBOM tools, not a dependency graph: SBOM tools
+report the packages without relationships between them (Trivy calls every one `indirect`, as for any lockfile whose
+root entry declares no dependencies).
+
+| Tool | Reads it in | Tested |
+|---|---|---|
+| syft (`javascript-lock-cataloger`) | `dir:` and `file:` scans; image scans with `--select-catalogers +javascript-lock-cataloger`; not below a `node_modules` directory; only files named `package-lock.json` | 1.54.1 |
+| Trivy (npm analyzer) | `trivy fs`, `trivy repo`; not `trivy image`, `trivy rootfs`; not below a `node_modules` directory; only files named `package-lock.json` | 0.70.0, 0.75.0 |
+
+[`test/contract.cjs`](test/contract.cjs) writes lockfiles with every kind of key and license and requires both tools to
+report exactly their packages and licenses; every matrix case checks its lockfiles with both (see [Tests](#tests)).
+Changes to the format are listed in the release notes. Before this layout, keys were the locations (also
+`../node_modules/…` and `.yarn/cache/…`), and there was no `locations`: bundle-lockfile still reads such a record, and
+a v0.0.3 or older writing into the same directory reads every key as a location — it keeps every package, some
+possibly at a second key.
 
 ### Several writers, one lockfile
 
@@ -392,7 +463,7 @@ attributed.
 
 | Variable | Default | |
 |---|---|---|
-| `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json` — syft only reads files with exactly that name |
+| `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json` — syft and Trivy only read files with exactly that name, and none below a `node_modules` directory |
 | `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [In a melange package build](#in-a-melange-package-build)) |
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
 | `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): do not write the lockfile into the output directory, only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written; a warning says so) |
@@ -632,15 +703,16 @@ src/esm-wrap.cjs
 src/adapters/webpack.cjs  webpack 4/5 and Next.js: which source files are in a compiler's emitted output
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
+src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path
-src/core/copies.cjs     files copied out of packages with fs in this process
+src/core/copies.cjs     files copied with fs in this process: out of packages, and copies of lockfiles
 src/core/generated.cjs  packages of builds that write nothing themselves, by content and entry file
 src/core/nested.cjs     packages of bundled files another build wrote (output hashes in its lockfile)
 src/core/hashes.cjs     SHA-256 of output files, cached by size and mtime
 src/core/lru.cjs        bounded maps for the caches above
 src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
 src/core/lock.cjs       lock across processes, atomic writes
-src/core/lockfile.cjs   package-lock.json (lockfileVersion 3) and its "bundle-lockfile" record
+src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see Format) and its "bundle-lockfile" record
 src/core/config.cjs     settings (environment variables), debug and warning output
 ```
 
@@ -660,6 +732,12 @@ The unit tests run anywhere, in a few seconds (CI: on Node.js 22, 24 and 26):
 node --test test/unit.cjs
 ```
 
+The contract tests check the [format](#format) against syft and Trivy (both on `PATH`; CI: Wolfi's):
+
+```sh
+node --test test/contract.cjs
+```
+
 Besides the core, they cover in separate processes what timing decides in a real build: a webpack process that writes
 its output after another one has written the shared lockfile, processes writing one lockfile at once, and the node
 shim behind wrappers, version-manager shims and symlinked install directories, and a CommonJS bundler whose source
@@ -677,11 +755,11 @@ of shard `i` of `n` and their cases ([`test/lib/shard.cjs`](test/lib/shard.cjs))
 scripts) only the fixtures whose names match and their cases, which the Node.js 22 job uses for the Vite, Rollup,
 Rolldown, nested and SvelteKit fixtures.
 
-Every case that expects a lockfile checks that it is valid for syft (with no Yarn virtual path as a key) and lists the expected packages (exactly, or
+Every case that expects a lockfile checks that it is valid for syft and Trivy (every key in `node_modules/`, no Yarn virtual path as a key, every license one string) and lists the expected packages (exactly, or
 including / excluding given ones), that it agrees exactly with an oracle — an independent build per bundler that
 derives the packages from the bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no
 code with the adapters; a case names the packages its oracle cannot see (CSS-only packages and copied files have no
-source maps), or says why it has none — and, if `syft` is on `PATH`, that syft reads exactly those packages. The other
+source maps), or says why it has none — and, if `syft` and `trivy` are on `PATH` (as in CI), that each reads exactly those packages, each with a license. The other
 cases check that no lockfile is written.
 
 The webpack cases cover, besides installers and versions (also webpack 4 with pnpm), a development build, watch-mode rebuilds (as in every watch case: one without an
