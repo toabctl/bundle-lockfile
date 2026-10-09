@@ -137,7 +137,7 @@ function bundledFiles(compilation) {
 const writers = globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] ||
   (globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] = { claims: new Map() }); // dir + id -> ref(compiler)
 const busy = (c) => (c.hooks && c.hooks.shutdown ? !c[CLOSED] : !!c.running);
-function writerOf(compiler) {
+function compilerWriter(compiler) {
   if (compiler[WRITER]) return compiler[WRITER];
   const o = compiler.options || {}, out = o.output || {};
   const plain = (v) => (typeof v === 'function' ? '(function)' : v === undefined ? null : v);
@@ -196,7 +196,7 @@ const assetOf = (compilation, name) => (compilation.getAsset ? compilation.getAs
 // an earlier build, as long as the plugin still copies them (they are still file dependencies).
 // early: asset names when the lockfile was emitted; previous: what this returned for the compiler's previous
 // build; readAsset(name, callback(Buffer | null)); done(files) gets Map(asset name -> absolute path of the file).
-function lateFiles(compilation, early, previous, readAsset, done) {
+function copiedInEmit(compilation, early, previous, readAsset, done) {
   const files = new Map(), unnamed = [];
   for (const name of assetNames(compilation).filter(n => !early.has(n))) {
     const a = assetOf(compilation, name), info = (a && a.info) || {};
@@ -228,11 +228,11 @@ class BundleLockfilePlugin {
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
 
   // Content of the lockfile this compilation emits: its packages, plus those of other compilers that write
-  // the same lockfile (see core/outputs.cjs). extra: more files in the output (see lateFiles).
+  // the same lockfile (see core/outputs.cjs). extra: more files in the output (see copiedInEmit).
   lockfile(compilation, extra = []) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
-    return outputs.record(path.join(dir, this.file), writerOf(compiler), packages.packagesOfFiles([...bundled, ...extra]).all,
+    return outputs.record(path.join(dir, this.file), compilerWriter(compiler), packages.packagesOfFiles([...bundled, ...extra]).all,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler) });
   }
 
@@ -275,7 +275,7 @@ class BundleLockfilePlugin {
     // output.clean, which ran before its emit).
     compiler.hooks.afterEmit.tapAsync({ name: NAME, stage: 1000 }, (compilation, callback) => {
       const dir = outputDir(compilation), file = path.join(dir, this.file);
-      const writer = writerOf(compiler);
+      const writer = compilerWriter(compiler);
       const fsys = compiler.outputFileSystem;
       const readAsset = (name, cb) => {
         try { const s = assetOf(compilation, name).source.source(); return cb(Buffer.isBuffer(s) ? s : Buffer.from(s)); } catch { /* see below */ }
@@ -285,7 +285,7 @@ class BundleLockfilePlugin {
       };
       let landed = false;
       const land = (copied) => {
-        if (landed) return; // once, also if lateFiles fails after calling it
+        if (landed) return; // once, also if copiedInEmit fails after calling it
         landed = true;
         compiler[COPIED] = copied;
         let write = false;
@@ -322,7 +322,7 @@ class BundleLockfilePlugin {
         });
       };
       if (!compilation[SOURCE]) return land(new Map());
-      try { lateFiles(compilation, compilation[SOURCE].early, compiler[COPIED] || new Map(), readAsset, land); } catch (e) {
+      try { copiedInEmit(compilation, compilation[SOURCE].early, compiler[COPIED] || new Map(), readAsset, land); } catch (e) {
         config.warn('webpack: could not check files copied in the emit hook:', e);
         land(new Map());
       }

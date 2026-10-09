@@ -39,7 +39,7 @@ function fileOf(id) {
 
 // The writer of one output (see core/outputs.cjs): the same input, format and position in the build's outputs,
 // without paths of this machine.
-function writerOf(kind, input, out, ordinal, cwd) {
+function outputWriter(kind, input, out, ordinal, cwd) {
   const rel = (v) => (typeof v === 'string' && path.isAbsolute(v) ? posix(path.relative(cwd, v)) : v);
   const inputs = typeof input === 'string' ? rel(input) : Array.isArray(input) ? input.map(rel)
     : input && typeof input === 'object' ? Object.fromEntries(Object.entries(input).map(([k, v]) => [k, rel(v)])) : null;
@@ -171,7 +171,7 @@ function originalFile(name, source, cwd, bases) {
 // closeBundle) or vite-plugin-static-copy's copies: their packages, or none. Only files changed since the build
 // started count, and none another output of this process writes there (plugin-legacy's legacy and modern outputs share
 // dist/); the output directory must not contain the working directory (it would be the whole project).
-function lateFiles(w, since, cwd) {
+function filesWrittenAfter(w, since, cwd) {
   const found = [];
   if (w.dir === cwd || cwd.startsWith(w.dir + path.sep)) return found;
   const skip = path.dirname(w.target);
@@ -291,7 +291,7 @@ function createPlugin(kind, inputOptions) {
           const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, byFile);
           const target = path.join(dir, config.file);
-          const writer = writerOf(kind, input, out, ordinals.get(out) || 0, cwd);
+          const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
           outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents });
         } catch (e) { config.warn(`${kind}: could not collect the bundled packages:`, e); }
@@ -307,7 +307,7 @@ function createPlugin(kind, inputOptions) {
       },
     },
     // after every other plugin's closeBundle (vite-plugin-pwa writes sw.js in its sequential one): the files they put
-    // into the output directory, see lateFiles. Rollup calls closeBundle on bundle.close(), Vite does that after the
+    // into the output directory, see filesWrittenAfter. Rollup calls closeBundle on bundle.close(), Vite does that after the
     // write; a build closed without it keeps the lockfile of writeBundle.
     closeBundle: {
       order: 'post',
@@ -317,7 +317,7 @@ function createPlugin(kind, inputOptions) {
         for (const w of written.values()) {
           if (!w.landed) continue;
           try {
-            const late = lateFiles(w, since, cwd);
+            const late = filesWrittenAfter(w, since, cwd);
             const add = packages.unique(...late.map(l => l.pkgs)).filter(p => !w.pkgs.some(q => q.path === p.path));
             if (!add.length) continue;
             config.debug(`${kind}: files written into`, w.dir, 'after the build:', late.map(l => path.relative(w.dir, l.file)).join(' '), '- adding', add.map(p => `${p.name}@${p.version}`).join(' '));
