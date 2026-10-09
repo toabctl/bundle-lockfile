@@ -15,9 +15,12 @@ const outFile = arg('--out-file', null);
 const out = path.resolve(outFile ? path.dirname(outFile) : arg('--out', 'dist-oracle'));
 const configFile = arg('--config', null);
 fs.rmSync(out, { recursive: true, force: true });
-const rollup = path.resolve('node_modules/rollup/dist/bin/rollup');
+// resolved from the fixture (also with Yarn Plug'n'Play: run with `yarn node`, whose NODE_OPTIONS load PnP, which the
+// build keeps; run.cjs passes no --require of bundle-lockfile)
+// (rollup's main entry is dist/rollup.js; early 4.x releases export no ./package.json)
+const rollup = path.join(path.dirname(require('module').createRequire(path.resolve('package.json')).resolve('rollup')), 'bin/rollup');
 const target = outFile ? ['--file', path.resolve(outFile)] : ['--dir', out];
-const r = spawnSync(process.execPath, [rollup, '-c', ...(configFile ? [configFile] : []), '--sourcemap', ...target], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+const r = spawnSync(process.execPath, [rollup, '-c', ...(configFile ? [configFile] : []), '--sourcemap', ...target], { encoding: 'utf8', env: process.env });
 if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
 
 const files = new Set();

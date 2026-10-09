@@ -124,9 +124,9 @@ npx next build --webpack         # Next.js 16 (12-15 build with webpack by defau
 
 On Node.js before 24.12 (25.2 on 25), Vite — and Rollup and Rolldown imported as ES modules — are hooked only in
 processes whose main script belongs to a package that is or depends on `vite`, `rollup`, `rolldown` or
-`rolldown-vite`; a programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async` (see [Vite, Rollup,
-Rolldown](#vite-rollup-rolldown)). Rollup's CommonJS build (`require('rollup')`, the `rollup` command line) is hooked
-in every process.
+`rolldown-vite`, or that have another loader-thread hook (Yarn Plug'n'Play's); a programmatic build from elsewhere needs
+`BUNDLE_LOCKFILE_ESM_HOOKS=async` (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)). Rollup's CommonJS build
+(`require('rollup')`, the `rollup` command line) is hooked in every process.
 
 ### Keep existing `NODE_OPTIONS`
 
@@ -409,7 +409,8 @@ attributed.
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node, adapter-netlify (edge functions with adapter-netlify 7); see [SvelteKit](#sveltekit) |
 | Rollup, Rolldown | Rollup 4 (from 4.0, also `@rollup/wasm-node`), Rolldown 1 (from 1.0) | builds through their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line; not the `rolldown` command line yet |
 
-Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles and SvelteKit (Wolfi's `nodejs-24`,
+Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles, SvelteKit and webpack under Yarn
+Plug'n'Play (Wolfi's `nodejs-24`,
 `nodejs-26` and `nodejs-22`; Next.js 12 itself does not build on Node.js 25 and later, which removed the `SlowBuffer`
 its compiled `jsonwebtoken` uses), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's, currently 12), npx, `turbo run` (turbo passes `NODE_OPTIONS` to its tasks, also in its strict env mode), direct `node_modules/.bin`
 calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), pnpm
@@ -438,8 +439,21 @@ The ESM hook depends on the Node.js version:
   [nodejs/node#60380](https://github.com/nodejs/node/pull/60380)).
 - Older versions with `module.register` (18.19, 20.6 and later): a loader thread, only in processes whose main script
   belongs to a package that is or depends on `vite`, `rollup`, `rolldown` or `rolldown-vite` — the `vite` command, a
-  build script of a project using Vite, tools such as `headlamp-plugin` — because a loader thread costs time and
-  memory in every process. `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it in every process, `off` in none.
+  build script of a project using Vite, tools such as `headlamp-plugin` — or that have another loader-thread hook
+  (`--experimental-loader`, `--loader` or `--import` in `NODE_OPTIONS` or on the command line, e.g. Yarn Plug'n'Play's,
+  see below), because a loader thread costs time and memory in every process. `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it
+  in every process, `off` in none.
+
+The ESM hooks also see CommonJS modules that `Module._load` does not: Node.js loads a CommonJS module without it, and
+everything that module `require()`s, when a loader-thread hook provided its source. Yarn Plug'n'Play's does for the
+files in its zip cache on Node.js 22.22.3 and later 22.x, 24.15, 25.7 and later and 26.0, whose `fstat` fails on their
+file descriptors (Yarn's workaround for [nodejs/node#61769](https://github.com/nodejs/node/pull/61769)'s backports,
+[yarnpkg/berry#7141](https://github.com/yarnpkg/berry/pull/7141)) — there, webpack, Next.js' webpack and Rollup's
+CommonJS build would not be hooked (webpack-cli 7 `import()`s webpack; with Plug'n'Play even the main script is loaded
+that way on Node.js 22). For the files the adapters patch (webpack's `Compiler`, Next.js' webpack, Rollup's CommonJS
+build), the ESM hook appends a line to such a provided source that reports the module once it has run, as `Module._load`
+would; other modules and sources are left as they are. A loader-thread hook that is registered after bundle-lockfile's
+(by an `--import` that comes after the `--require`) and provides the source without calling the next hook hides it.
 
 ### SvelteKit
 
@@ -644,7 +658,8 @@ node --test test/unit.cjs
 
 Besides the core, they cover in separate processes what timing decides in a real build: a webpack process that writes
 its output after another one has written the shared lockfile, processes writing one lockfile at once, and the node
-shim behind wrappers, version-manager shims and symlinked install directories.
+shim behind wrappers, version-manager shims and symlinked install directories, and a CommonJS bundler whose source
+another loader-thread hook provides (as Yarn Plug'n'Play's does), which Node.js loads without `Module._load`.
 
 The matrix runs in a Wolfi container (see `.github/workflows/test.yaml`):
 

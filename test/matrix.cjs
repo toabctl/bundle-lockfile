@@ -113,6 +113,8 @@ const fixtures = {
   'vite8-tailwind': { app: 'tailwind', bundler: 'vite', installer: { type: 'npm' }, deps: { vite: '8.3.3', tailwindcss: '4.3.3', '@tailwindcss/vite': '4.3.3' },
     packageJson: { type: 'module', scripts: { build: 'vite build' } } },
   'rollup-cli': rollupCli,
+  // Rollup's CommonJS build under Yarn Plug'n'Play (on Node 22.22.3+ Node loads it without Module._load, see hooks.cjs)
+  'rollup-cli-yarn4-pnp': { ...rollupCli, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' } },
   // (@rollup/wasm-node: Rollup's WebAssembly build, its own entry modules)
   'rollup-api': rollupApi('4.64.2', '1.2.13', { '@rollup/wasm-node': '4.64.2' }),
   // the oldest releases of the supported majors
@@ -625,6 +627,7 @@ const cases = [
   { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
+  { name: "Rollup 4 command line (rollup -c), yarn 4.18.1 Plug'n'Play", fixture: 'rollup-cli-yarn4-pnp', cmd: 'yarn build', expect: ROLLUP_API },
   { name: 'Rollup 4 command line, watch mode (rollup -c -w): every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-cli',
     cmd: `${ROLLUP_CLI_WATCH} nanoid`, expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   // the command line bundles a TypeScript config first, with a build that only generates: no lockfile of its own
