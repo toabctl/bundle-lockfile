@@ -1844,7 +1844,8 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a']);
 });
 
-test('outputs: a stale lock is taken over only if it is still the stale one', () => {
+test('lock: a stale lock is taken over only if it is still the stale one', () => {
+  const { takeStale } = require('../src/core/lock.cjs');
   const root = project({ 'stale.lock': '' });
   const l = J(root, 'stale.lock');
   const old = new Date(Date.now() - 120000);
@@ -1852,14 +1853,14 @@ test('outputs: a stale lock is taken over only if it is still the stale one', ()
   // another process took the stale lock over and holds a new one by now: it stays
   const st = fs.statSync(l);
   fs.unlinkSync(l); fs.writeFileSync(l, 'fresh');
-  outputs.takeStale(l, st);
+  takeStale(l, st);
   assert.equal(fs.readFileSync(l, 'utf8'), 'fresh');
   // still the stale one: removed
   fs.utimesSync(l, old, old);
-  outputs.takeStale(l, fs.statSync(l));
+  takeStale(l, fs.statSync(l));
   assert.equal(fs.existsSync(l), false);
   assert.deepEqual(fs.readdirSync(root), [], 'nothing left behind');
-  outputs.takeStale(l, st); // already gone: nothing to do
+  takeStale(l, st); // already gone: nothing to do
 });
 
 test('hashes: one cache entry per file, recomputed when the file changes', () => {

@@ -638,7 +638,8 @@ src/core/generated.cjs  packages of builds that write nothing themselves, by con
 src/core/nested.cjs     packages of bundled files another build wrote (output hashes in its lockfile)
 src/core/hashes.cjs     SHA-256 of output files, cached by size and mtime
 src/core/lru.cjs        bounded maps for the caches above
-src/core/outputs.cjs    writers of each lockfile, in this process and others; lock, atomic writes, export copies
+src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
+src/core/lock.cjs       lock across processes, atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3) and its "bundle-lockfile" record
 src/core/config.cjs     settings (environment variables), debug and warning output
 ```
