@@ -1122,6 +1122,35 @@ test('rollup adapter: a written output gets its lockfile; generate-only builds a
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: outputs of one build written at the same time into one directory, in the same format, are writers of their own', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    // as Promise.all([bundle.write(a), bundle.write(b)]) (the rollup command line): every hook of one output gets
+    // its own output options object; the hooks of both outputs interleave
+    const dir = J(root, 'dist'), plugin = rollupAdapter.bundleLockfile('rollup', { input: 'src/main.js' });
+    const outs = ['main.js', 'main.min.js'].map(entryFileNames => ({ dir, format: 'es', entryFileNames }));
+    const modules = [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')];
+    const chunk = (out) => ({ type: 'chunk', fileName: out.entryFileNames, code: `code of ${out.entryFileNames}`, moduleIds: modules, isEntry: true, facadeModuleId: modules[0] });
+    plugin.buildStart.call({});
+    for (const out of outs) plugin.renderStart.call({}, out);
+    for (const out of outs) plugin.renderChunk.call({}, '', { moduleIds: modules }, out);
+    for (const out of outs) await plugin.generateBundle.handler.call({}, out, { [out.entryFileNames]: chunk(out) }, true);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const out of outs) fs.writeFileSync(J(dir, out.entryFileNames), chunk(out).code);
+    await Promise.all(outs.map(out => plugin.writeBundle.handler.call({}, out)));
+    await plugin.closeBundle.handler.call({});
+    const writers = JSON.parse(fs.readFileSync(J(dir, LOCK), 'utf8'))['bundle-lockfile'].writers;
+    assert.deepEqual(writers.map(w => w.files).sort(), [['../main.js'], ['../main.min.js']]);
+    // each with the hash of its own file, for a build that bundles it (nested)
+    assert.deepEqual(writers.map(w => Object.keys(w.outputs)).sort(), [['../main.js'], ['../main.min.js']]);
+    assert.deepEqual(writers.map(w => w.packages), [['node_modules/a'], ['node_modules/a']]);
+  } finally { process.chdir(cwd); }
+});
+
 test('nested: a bundled file another build produced brings its packages, unless it changed since', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });

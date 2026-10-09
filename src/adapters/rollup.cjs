@@ -159,10 +159,12 @@ function lateFiles(w, since, cwd) {
 
 function createPlugin(kind, inputOptions) {
   const cwd = realCwd();
-  const modulesOf = new Map(); // output key -> Set(module id), from renderChunk
-  const written = new Map();   // output key -> { target, writer, dir, pkgs, files, hashes, landed }
-  const ordinals = new Map();
-  const keyOf = (out) => `${out.dir || ''}\0${out.file || ''}\0${out.format || ''}`;
+  // per output of the build, by its output options object: Rollup and Rolldown pass the same one to every hook of an
+  // output, and outputs written at the same time (Promise.all of write()s, as the rollup command line does) can share
+  // their directory and format
+  const modulesOf = new Map(); // output -> Set(module id), from renderChunk
+  const written = new Map();   // output -> { target, writer, dir, pkgs, files, hashes, landed }
+  const ordinals = new Map();  // output -> its position among the build's outputs (part of its writer id)
   let build = null; // the RolldownBuild of this plugin's rolldown() call (see esmWrap)
   let since = 0;
   const write = (w) => new Promise((resolve) => {
@@ -181,17 +183,16 @@ function createPlugin(kind, inputOptions) {
     name: NAME,
     api: { setBuild(b) { build = b; } },
     buildStart() {
-      written.clear();
+      written.clear(); modulesOf.clear(); ordinals.clear();
       since = Date.now() - 2000; // file systems with coarse timestamps
     },
     renderStart(out) {
-      const key = keyOf(out);
-      if (!ordinals.has(key)) ordinals.set(key, ordinals.size);
-      modulesOf.set(key, new Set());
+      if (!ordinals.has(out)) ordinals.set(out, ordinals.size);
+      modulesOf.set(out, new Set());
     },
     // before generateBundle: plugins that remove chunks there (vite-plugin-singlefile) cannot hide their modules
     renderChunk(code, chunk, out) {
-      const ids = modulesOf.get(keyOf(out));
+      const ids = modulesOf.get(out);
       if (ids) for (const id of moduleIds(chunk)) ids.add(id);
       return null;
     },
@@ -217,8 +218,7 @@ function createPlugin(kind, inputOptions) {
             config.debug(`${kind}: generate-only output with`, pkgs.length, 'packages, kept for the build that uses it');
             return;
           }
-          const key = keyOf(out);
-          const ids = new Set(modulesOf.get(key) || []);
+          const ids = new Set(modulesOf.get(out) || []);
           const sources = [], files = [], originals = new Map(); // asset -> its source files
           for (const f of Object.values(bundle)) {
             files.push(path.join(dir, f.fileName));
@@ -243,8 +243,8 @@ function createPlugin(kind, inputOptions) {
           const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, byFile);
           const target = path.join(dir, config.file);
-          const writer = writerOf(kind, inputOptions && inputOptions.input, out, ordinals.get(key) || 0, cwd);
-          written.set(key, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
+          const writer = writerOf(kind, inputOptions && inputOptions.input, out, ordinals.get(out) || 0, cwd);
+          written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
           outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents });
         } catch (e) { config.warn(`${kind}: could not collect the bundled packages:`, e); }
       },
@@ -252,7 +252,7 @@ function createPlugin(kind, inputOptions) {
     writeBundle: {
       order: 'post',
       handler(out) {
-        const w = written.get(keyOf(out));
+        const w = written.get(out);
         if (!w) return undefined;
         w.landed = true;
         return write(w);
