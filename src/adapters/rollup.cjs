@@ -207,6 +207,9 @@ function createPlugin(kind, inputOptions) {
   const written = new Map();   // output -> { target, writer, dir, pkgs, files, hashes, landed }
   const ordinals = new Map();  // output -> its position among the build's outputs (part of its writer id)
   let build = null; // the RolldownBuild of this plugin's rolldown() call (see esmWrap)
+  // the build's input, part of its writer ids: from the options of the rollup()/rolldown() call the plugin was added to
+  // (as given, see attach), else - a plugin configured by hand - from the options Rollup and Rolldown pass to buildStart
+  let input = inputOptions && inputOptions.input;
   let since = 0;
   const write = (w) => new Promise((resolve) => {
     try {
@@ -223,8 +226,9 @@ function createPlugin(kind, inputOptions) {
   return {
     name: NAME,
     api: { setBuild(b) { build = b; } },
-    buildStart() {
+    buildStart(options) {
       written.clear(); modulesOf.clear(); ordinals.clear();
+      if (!inputOptions || inputOptions.input === undefined) input = options && options.input;
       since = Date.now() - 2000; // file systems with coarse timestamps
     },
     renderStart(out) {
@@ -285,7 +289,7 @@ function createPlugin(kind, inputOptions) {
           const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, byFile);
           const target = path.join(dir, config.file);
-          const writer = writerOf(kind, inputOptions && inputOptions.input, out, ordinals.get(out) || 0, cwd);
+          const writer = writerOf(kind, input, out, ordinals.get(out) || 0, cwd);
           written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
           outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents });
         } catch (e) { config.warn(`${kind}: could not collect the bundled packages:`, e); }

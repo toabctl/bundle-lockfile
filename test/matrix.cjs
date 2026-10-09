@@ -698,6 +698,9 @@ const cases = [
   // two outputs written at the same time into one directory, in one format: each a writer with its own files and hashes
   { name: 'Rollup 4 JavaScript API: two outputs into one directory at the same time', fixture: 'rollup-api', cmd: 'node build.mjs rollup-outputs', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: two outputs into one directory at the same time', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-outputs', expect: ROLLUP_API },
+  // the plugin in the build's options, no NODE_OPTIONS: two builds of different inputs into one directory, both kept
+  ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => ({ name: `${what} JavaScript API, plugin in the options (no NODE_OPTIONS): two builds into one directory`,
+    fixture: 'rollup-api', cmd: `node build.mjs ${mode}-plugin`, inject: false, env: { BUNDLE_LOCKFILE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: ROLLUP_API })),
   { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
