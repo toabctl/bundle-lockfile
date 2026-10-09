@@ -25,6 +25,12 @@ const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
 const stateFile = (target) => (config.inline ? target : exportPath(target));
 
+// A file of a writer is there: anything but "not found" counts (when in doubt, keep the packages), and lstat: a
+// symbolic link the build wrote is there also if what it points at is not - as prune's checks of this process's writers.
+function there(file) {
+  try { fs.lstatSync(file); return true; } catch (e) { return e.code !== 'ENOENT'; }
+}
+
 // Writers of `target` recorded by other processes (in the lockfile on disk) whose files are still there (all:
 // also those whose files are gone), except those with an id in `own` (this process has their newest build):
 // [{ id, pkgs, files, count, context }]. A lockfile that is gone since this process last read it was deleted with
@@ -39,13 +45,13 @@ function foreign(target, own, all = false) {
     outputs.read.set(target, meta);
   } catch { meta = outputs.read.get(target) || null; } // not there (any more)
   if (!meta) return [];
-  return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(f => fs.existsSync(f))))
+  return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(there)))
     .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context,
       contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
 }
 
 // The packages in the output directory: every writer's landed build; for `own`, the build it is about to write;
-// writers in other processes whose files are there.
+// writers in other processes whose files are there. null if there are none (nothing recorded, e.g. after a failure).
 function render(target, own) {
   const builds = [];
   const ids = new Set();
@@ -55,6 +61,7 @@ function render(target, own) {
     if (b) builds.push({ ...b, id: w.id });
   }
   builds.push(...foreign(target, ids));
+  if (!builds.length) return null;
   const byPath = new Map();
   for (const b of builds) for (const p of b.pkgs) byPath.set(p.path, p);
   // keys are relative to one context; pick it independently of which writer finished last
@@ -212,6 +219,7 @@ function rewrite(target, writeFile, done) {
       const shared = outputs.disk.get(target) && stateFile(target);
       if (shared) release = lock(shared);
       const content = render(target);
+      if (content === null) { config.debug('nothing recorded for', target, '- not written'); return finish(); }
       if (!writeFile && !exportPath(target)) nowhere();
       const exported = (err) => {
         const file = exportPath(target);
