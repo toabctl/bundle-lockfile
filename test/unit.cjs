@@ -513,6 +513,8 @@ test('outputs: the export path mirrors the lockfile path below the export dir', 
   config.exportBase = '/srv/app';
   assert.equal(outputs.exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), '/x/export/dist/bundle-lockfile/package-lock.json');
   assert.equal(outputs.exportPath('/srv/other/dist/bundle-lockfile/package-lock.json'), '/x/export/srv/other/dist/bundle-lockfile/package-lock.json'); // not below the base
+  assert.equal(outputs.exportPath('/srv/app/..cache/dist/l/package-lock.json'), '/x/export/..cache/dist/l/package-lock.json'); // below it, a name starting with ..
+  assert.equal(outputs.exportPath('/srv/application/dist/l/package-lock.json'), '/x/export/srv/application/dist/l/package-lock.json');
   config.exportDir = null;
   assert.equal(outputs.exportPath('/srv/app/dist/bundle-lockfile/package-lock.json'), null);
 }));
