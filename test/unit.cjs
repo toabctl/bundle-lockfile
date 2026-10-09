@@ -924,6 +924,14 @@ test('node shim: puts the --require back into NODE_OPTIONS, runs the real node, 
   // in yarn's process (and only there) process.execPath is the shim
   const yarn = run('yarn/bin/yarn.js');
   assert.equal(yarn.execPath, fs.realpathSync(J(root, 'shim/node')));
+  const script = (rel) => { fs.mkdirSync(path.dirname(J(root, rel)), { recursive: true }); fs.writeFileSync(J(root, rel), `require(${JSON.stringify(J(root, 'probe.cjs'))});`); return rel; };
+  for (const rel of ['.yarn/releases/yarn-4.9.2.cjs', 'corepack/v1/yarn/4.9.2/yarn.js', 'corepack/v1/yarn/1.22.22/bin/yarn.js', 'corepack/dist/yarn.js']) {
+    assert.equal(run(script(rel)).execPath, fs.realpathSync(J(root, 'shim/node')), rel);
+  }
+  // scripts named after yarn are not yarn
+  for (const rel of ['node_modules/yarn-deduplicate/yarn-deduplicate.js', 'scripts/yarn-audit-fix.js', 'build/yarn.js']) {
+    assert.equal(fs.realpathSync(run(script(rel)).execPath), fs.realpathSync(process.execPath), rel);
+  }
   // no node binary in PATH: a clear error, no loop through the wrapper
   fs.mkdirSync(J(root, 'tools')); // only what the shim needs
   for (const t of ['readlink', 'dirname', 'head']) fs.symlinkSync(spawnSync('sh', ['-c', `command -v ${t}`], { encoding: 'utf8' }).stdout.trim(), J(root, 'tools', t));
