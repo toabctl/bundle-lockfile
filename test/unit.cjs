@@ -59,7 +59,7 @@ test('packagesForFiles: one entry per package, nested manifests and first-party 
   const root = project({
     'node_modules/a/package.json': { name: 'a', version: '1.0.0', license: 'MIT' },
     'node_modules/a/dist/esm/package.json': { type: 'module' },
-    'node_modules/a/hooks/package.json': { name: 'a-hooks', version: '0.1.0' },
+    'node_modules/a/hooks/package.json': { name: 'a-hooks', version: '0.1.0', private: true }, // as preact/hooks' (not private: a vendored copy)
     'node_modules/@s/b/package.json': { name: '@s/b', version: '2.0.0' },
     'node_modules/a/node_modules/c/package.json': { name: 'c', version: '3.0.0' },
     'node_modules/noversion/package.json': { name: 'noversion' },
@@ -219,6 +219,12 @@ test('toPackageLock: packages outside the project get keys without their machine
   // a context inside a package: never the root key ""
   const inside = JSON.parse(toPackageLock([pkg('a', '1.0.0', J(path.sep, 'p/node_modules/a'))], J(path.sep, 'p/node_modules/a/sub')));
   assert.deepEqual(Object.keys(inside.packages), ['', 'node_modules/a']);
+  // a vendored copy (core/vendored.cjs): in the context's tree it keeps its location; above it, it has none
+  const lockOf = (dir, ctx) => JSON.parse(toPackageLock([pkg('v', '1.0.0', J(path.sep, dir))], J(path.sep, ctx), { dir: J(path.sep, ctx, 'dist/bundle-lockfile'), writers: [{ id: 'w', files: [], paths: [J(path.sep, dir)] }] }))['bundle-lockfile'];
+  assert.deepEqual(lockOf('p/vendor/v', 'p').locations, { 'node_modules/v': 'vendor/v' });
+  assert.deepEqual(lockOf('p/vendor/v', 'p/app').outside, ['node_modules/v']);
+  assert.deepEqual(lockOf('p/app', 'p/app/sub').outside, ['node_modules/v']); // the context inside it: ..
+  assert.deepEqual(lockOf('p/node_modules/.cache/v', 'p').outside, ['node_modules/v']); // generated files in node_modules
 });
 
 test('toPackageLock: keys are relative to the real context when the project path goes through a symlink', () => {
@@ -2308,3 +2314,118 @@ test('copies of lockfiles: an export copy copied with fs is re-anchored like its
     assert.equal(meta.writers[0].pkgs[0].path, a.path);
   } finally { config.exportBase = null; }
 }));
+
+// Vendored packages (core/vendored.cjs): copies outside node_modules and inside packages, package roots without a
+// package.json, and the first-party boundaries.
+test('vendored: which package.json is a copy of an npm package', () => {
+  const { isVendorable } = require('../src/core/vendored.cjs');
+  const yes = [{ name: 'left-pad', version: '1.3.0' }, { name: '@scope/x', version: '1.0.0' }, { name: 'JSONStream', version: '1.3.5' }, // a legacy name
+    { name: 'vscode-languageclient', version: '10.1.2', engines: { vscode: '^1.91.0' } }]; // a library for extensions: no publisher
+  const no = [{ name: 'x' }, { version: '1.0.0' }, { name: 'x', version: '1.0.0', private: true }, { name: 'GitLab Web IDE', version: '1.94.0' },
+    { name: 'yaml', version: '1.0.0', publisher: 'vscode', engines: { vscode: '*' } }, { name: 'a'.repeat(215), version: '1.0.0' }, null];
+  for (const j of yes) assert.equal(isVendorable(j), true, JSON.stringify(j));
+  for (const j of no) assert.equal(isVendorable(j), false, JSON.stringify(j));
+});
+
+test('vendored: workspace patterns, pnpm-workspace.yaml, rush.json', () => {
+  const { globTest, pnpmPackages, parseJsonc } = require('../src/core/vendored.cjs');
+  const cases = [['packages/*', 'packages/a', true], ['packages/*', 'packages/a/b', false], ['packages/**', 'packages/a/b', true],
+    ['./apps/*/', 'apps/web', true], ['{apps,libs}/*', 'libs/x', true], ['{apps,libs}/*', 'tools/x', false], ['pkg-?', 'pkg-a', true],
+    ['**', 'a/b/c', true], ['packages/*/package.json', 'packages/a', true], ['a.b/*', 'axb/c', false]];
+  for (const [p, rel, want] of cases) assert.equal(globTest(p)(rel), want, `${p} ${rel}`);
+  assert.deepEqual(pnpmPackages("# x\npackages:\n  - 'apps/*' # apps\n  - \"libs/**\"\n  - '!**/test/**'\ncatalog:\n  a: 1\n"), ['apps/*', 'libs/**', '!**/test/**']);
+  assert.deepEqual(pnpmPackages("packages: ['a/*', \"b/*\"]\n"), ['a/*', 'b/*']);
+  assert.deepEqual(pnpmPackages('onlyBuiltDependencies: []\n'), []);
+  assert.deepEqual(parseJsonc('/* c */ { "a": "x//y", // line\n "b": [1, 2,], }'), { a: 'x//y', b: [1, 2] });
+});
+
+test('vendored: first-party boundaries - context, entries, workspaces, pnpm, lerna, rush, Nx, links, settings, private', () => withConfig({ firstParty: ['tools/**'] }, () => {
+  const { scope } = require('../src/core/vendored.cjs');
+  const v = (name) => ({ name, version: '1.0.0', main: 'i.js' });
+  const files = { 'package.json': { name: 'root', version: '1.0.0', workspaces: { packages: ['packages/*', '!packages/excluded'] } },
+    'pnpm-workspace.yaml': "packages:\n  - 'pnpm/*'\n", 'lerna.json': { packages: ['lerna/*'] }, 'rush.json': '{ // c\n "projects": [{ "projectFolder": "rush/x" }] }', 'nx.json': {},
+    'app/package.json': { name: 'app', version: '1.0.0' }, 'other/package.json': v('other') };
+  for (const d of ['packages/ui', 'packages/excluded', 'pnpm/p', 'lerna/l', 'rush/x', 'libs/nx', 'linked/l', 'tools/t', 'vendor/left-pad', 'vendor/private']) {
+    files[`${d}/package.json`] = d === 'vendor/private' ? { ...v('p'), private: true } : v(d.split('/').pop());
+    files[`${d}/i.js`] = '';
+  }
+  files['libs/nx/project.json'] = {};
+  const root = project(files);
+  fs.mkdirSync(J(root, 'node_modules'), { recursive: true });
+  fs.symlinkSync(J(root, 'linked/l'), J(root, 'node_modules/l'), 'dir');
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const s = scope({ context: J(root, 'app') });
+    const owner = (d) => { const p = s.ownerOf(J(root, d, 'i.js')); return p && p.name; };
+    assert.equal(owner('app'), null);                 // the context
+    assert.equal(owner('packages/ui'), null);         // a workspace member
+    assert.equal(owner('lerna/l'), null);
+    assert.equal(owner('packages/excluded'), 'excluded'); // excluded from the workspaces: not a member
+    assert.equal(owner('pnpm/p'), null);
+    assert.equal(owner('rush/x'), null);
+    assert.equal(owner('libs/nx'), null);             // an Nx project.json
+    assert.equal(owner('linked/l'), null);            // linked into node_modules
+    assert.equal(owner('tools/t'), null);             // BUNDLE_LOCKFILE_FIRST_PARTY
+    assert.equal(owner('vendor/private'), null);
+    assert.equal(owner('vendor/left-pad'), 'left-pad');
+    assert.equal(owner('other'), 'other');            // an in-repo library nothing marks first-party
+    // a build started from another directory (Rollup's API): the package of its entry is first-party
+    const elsewhere = scope({ context: os.tmpdir(), entries: [J(root, 'other/i.js')] });
+    assert.equal(elsewhere.ownerOf(J(root, 'other/i.js')), null);
+    assert.equal(scope({ context: os.tmpdir() }).ownerOf(J(root, 'other/i.js')).name, 'other');
+  } finally { process.chdir(cwd); }
+  // a lerna.json without packages: packages/* (as Nx reads it), also without package manager workspaces
+  const lerna = project({ 'package.json': { name: 'r', version: '1.0.0' }, 'lerna.json': {}, 'packages/d/package.json': v('d'), 'libs/e/package.json': v('e') });
+  const ls = scope({ context: lerna });
+  assert.equal(ls.ownerOf(J(lerna, 'packages/d/i.js')), null);
+  assert.equal(ls.ownerOf(J(lerna, 'libs/e/i.js')).name, 'e');
+}));
+
+test('vendored: packages of files - copies outside and inside node_modules, package roots without a package.json', () => {
+  const v = (name, extra = {}) => ({ name, version: '1.0.0', ...extra });
+  const root = project({ 'package.json': { name: 'app', version: '1.0.0' },
+    'vendor/x/package.json': v('x'), 'vendor/x/dist/package.json': { type: 'module' }, 'vendor/x/dist/i.js': '',
+    'vendor/ext/package.json': v('yaml', { publisher: 'vscode', engines: { vscode: '*' } }), 'vendor/ext/i.js': '',
+    'node_modules/c/package.json': v('c'), 'node_modules/c/i.js': '',
+    'node_modules/c/vendor/inner/package.json': v('inner'), 'node_modules/c/vendor/inner/i.js': '',
+    'node_modules/c/build/esm/package.json': v('c'), 'node_modules/c/build/esm/i.js': '',
+    'node_modules/c/hooks/package.json': v('c-hooks', { private: true }), 'node_modules/c/hooks/i.js': '',
+    'node_modules/c/dist/esm/node_modules/flat/i.js': '',
+    'node_modules/c/extensions/e/package.json': v('go', { publisher: 'vscode', engines: { vscode: '*' } }), 'node_modules/c/extensions/e/i.js': '',
+    'ws/package.json': v('ws'), 'ws/vendor/y/package.json': v('y'), 'ws/vendor/y/i.js': '', 'ws/i.js': '',
+    'ws/build/esm/package.json': v('ws'), 'ws/build/esm/i.js': '',
+    'vendor/z/package.json': v('z'), 'vendor/z/build/esm/package.json': v('z'), 'vendor/z/build/esm/i.js': '' });
+  fs.symlinkSync(J(root, 'ws'), J(root, 'node_modules/ws'), 'dir'); // a first-party package linked into node_modules
+  const of = (f) => packagesForFiles([J(root, f)], { context: root }).map(p => `${p.name}@${p.version} ${path.relative(root, p.path)}`);
+  assert.deepEqual(of('vendor/x/dist/i.js'), ['x@1.0.0 vendor/x']);           // the innermost copy, not dist/'s {type}
+  assert.deepEqual(of('vendor/ext/i.js'), []);                                // a VS Code extension: first-party
+  assert.deepEqual(of('node_modules/c/i.js'), ['c@1.0.0 node_modules/c']);
+  assert.deepEqual(of('node_modules/c/vendor/inner/i.js'), ['inner@1.0.0 node_modules/c/vendor/inner']);
+  assert.deepEqual(of('node_modules/c/build/esm/i.js'), ['c@1.0.0 node_modules/c']); // the package's own name
+  assert.deepEqual(of('node_modules/c/hooks/i.js'), ['c@1.0.0 node_modules/c']);     // a private helper
+  assert.deepEqual(of('node_modules/c/extensions/e/i.js'), ['c@1.0.0 node_modules/c']);
+  const seen = warnings(() => assert.deepEqual(of('node_modules/c/dist/esm/node_modules/flat/i.js'), ['c@1.0.0 node_modules/c']));
+  assert.match(seen.join('\n'), /no package\.json with name and version in \S*flat - its bundled files are listed as c@1\.0\.0, the package around it/);
+  assert.deepEqual(of('node_modules/ws/i.js'), []);                           // first-party, through its link
+  assert.deepEqual(of('node_modules/ws/vendor/y/i.js'), ['y@1.0.0 ws/vendor/y']); // a copy inside it is one
+  // a package.json with the name of one further out is that package: first-party ws, the copy z at its root
+  assert.deepEqual(of('node_modules/ws/build/esm/i.js'), []);
+  assert.deepEqual(of('vendor/z/build/esm/i.js'), ['z@1.0.0 vendor/z']);
+  // without the build (other callers): no copies outside node_modules
+  assert.deepEqual(packagesForFiles([J(root, 'vendor/x/dist/i.js')]), []);
+});
+
+test('vendored: a bundled file another build produced is its output, no vendored copy', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/inner/package.json': { name: 'inner', version: '1.0.0' }, 'island/package.json': { name: 'island', version: '1.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island', modules: [J(root, 'node_modules/inner/i.js')] }] });
+    const elsewhere = { context: os.tmpdir() }; // island/ is no ancestor: only the record says it is first-party output
+    assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'island/dist/main.js')], elsewhere).all), ['inner@1.0.0']);
+    fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */'); // no longer that build's output: island's own package.json
+    assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'island/dist/main.js')], elsewhere).all), ['island@1.0.0']);
+  } finally { process.chdir(cwd); }
+});

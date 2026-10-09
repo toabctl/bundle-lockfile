@@ -201,6 +201,7 @@ function filesWrittenAfter(w, since, cwd) {
 
 function createPlugin(kind, inputOptions) {
   const cwd = realCwd();
+  const buildOf = (bundle) => ({ context: cwd, entries: Object.values(bundle).filter(f => f.type === 'chunk' && f.isEntry).map(f => fileOf(f.facadeModuleId)).filter(Boolean) });
   // per output of the build, by its output options object: Rollup and Rolldown pass the same one to every hook of an
   // output, and outputs written at the same time (Promise.all of write()s, as the rollup command line does) can share
   // their directory and format
@@ -255,7 +256,7 @@ function createPlugin(kind, inputOptions) {
             const all = [];
             for (const f of Object.values(bundle)) {
               if (f.type !== 'chunk') continue;
-              const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean)).all;
+              const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean), buildOf(bundle)).all;
               const pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values());
               generated.addChunk(f.code, pkgs);
               all.push(pkgs);
@@ -287,7 +288,7 @@ function createPlugin(kind, inputOptions) {
           const styles = [];
           for (const f of await watchFilesOf(this, build)) if (typeof f === 'string' && STYLE.test(f) && path.isAbsolute(f)) styles.push(f);
           sources.push(...styles);
-          const { all, byFile } = packages.packagesOfFiles(sources);
+          const { all, byFile } = packages.packagesOfFiles(sources, buildOf(bundle));
           const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, byFile);
           const target = path.join(dir, config.file);

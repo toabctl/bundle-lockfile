@@ -1,6 +1,6 @@
 'use strict';
 // A package directory's package.json: its name, version and license. Shared by the modules that map files to packages
-// (packages.cjs) and the ones that check a recorded package is still where it was (outputs.cjs).
+// (packages.cjs, vendored.cjs) and the ones that check a recorded package is still where it was (outputs.cjs).
 const fs = require('fs');
 const path = require('path');
 
@@ -13,13 +13,18 @@ function licenseOf(j) {
   return all.length ? all : undefined;
 }
 
-// { name, version, path: dir, license } of the package in dir, or null without a package.json with name and version
-function readPackage(dir) {
-  let j;
-  // a leading byte order mark is valid UTF-8 that JSON.parse rejects; npm strips it too
-  try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^﻿/, '')); } catch { return null; }
+// The content of dir/package.json, or null. A leading byte order mark is valid UTF-8 that JSON.parse rejects; npm
+// strips it too.
+function readManifest(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^﻿/, '')); } catch { return null; }
+}
+
+// { name, version, path: dir, license } of package.json content j, or null without name and version
+function packageOf(j, dir) {
   if (!j || typeof j.name !== 'string' || !j.name || typeof j.version !== 'string' || !j.version) return null;
   return { name: j.name, version: j.version, path: dir, license: licenseOf(j) };
 }
 
-module.exports = { readPackage };
+const readPackage = (dir) => packageOf(readManifest(dir), dir);
+
+module.exports = { readPackage, readManifest, packageOf };

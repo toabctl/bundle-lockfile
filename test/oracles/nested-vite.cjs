@@ -6,6 +6,7 @@
 // usage (cwd = fixture): node oracles/nested-vite.cjs vite|rollup  -> {"": [name@version, ...]}
 const fs = require('fs');
 const path = require('path');
+const owner = require('./owner.cjs');
 const { execFileSync } = require('child_process');
 
 // The packages of the island's output files among sources (absolute paths, also through a node_modules link), by
@@ -25,8 +26,7 @@ function islandPackages(sources, byFile) {
 }
 
 // The island built by Rolldown's API (island/rolldown.mjs) into island/dist-oracle with a source map, without
-// bundle-lockfile: { "<output file>": [name@version, ...] } from the maps' sources (package = directory directly below
-// the last node_modules segment, at its real location in a node_modules directory; written out here, not imported)
+// bundle-lockfile: { "<output file>": [name@version, ...] } from the maps' sources (see owner.cjs)
 function rolldownIsland() {
   const out = path.resolve('island/dist-oracle');
   fs.rmSync(out, { recursive: true, force: true });
@@ -35,16 +35,8 @@ function rolldownIsland() {
   const byFile = {};
   for (const name of fs.readdirSync(out).filter(n => n.endsWith('.map'))) {
     const map = JSON.parse(fs.readFileSync(path.join(out, name), 'utf8'));
-    const pkgs = new Set();
-    for (const s of map.sources || []) {
-      const parts = path.resolve(out, map.sourceRoot || '', s.split('?')[0]).split(path.sep);
-      const i = parts.lastIndexOf('node_modules');
-      if (i < 0) continue;
-      let root = parts.slice(0, i + 1 + (parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1)).join(path.sep);
-      try { root = fs.realpathSync(root); } catch { /* keep */ }
-      try { const p = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); if (p.name && p.version) pkgs.add(`${p.name}@${p.version}`); } catch { /* none */ }
-    }
-    byFile[name.slice(0, -'.map'.length)] = [...pkgs].sort();
+    const sources = (map.sources || []).map(src => path.resolve(out, map.sourceRoot || '', src.split('?')[0]));
+    byFile[name.slice(0, -'.map'.length)] = owner.packagesOf(sources); // see owner.cjs
   }
   return byFile;
 }

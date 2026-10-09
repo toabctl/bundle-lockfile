@@ -11,15 +11,17 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // A package's location relative to the context, like npm writes it: node_modules/a, nested duplicates as
 // node_modules/a/node_modules/b, pnpm's node_modules/.pnpm/..., Yarn PnP's .yarn/cache/<zip>/node_modules/...,
-// and ../node_modules/c for a context below the project root. null for a location outside the context that
-// is not in an ancestor's node_modules either (Yarn's global cache, a shared store): that path differs
+// and ../node_modules/c for a context below the project root, and a vendored copy in the context's tree (see
+// core/vendored.cjs: vendor/left-pad). null for a location outside the context that is not in an ancestor's
+// node_modules either (Yarn's global cache, a shared store, a vendored copy above the context): that path differs
 // between machines and must not end up in the lockfile.
 function locationKey(base, dir) {
   const rel = posix(path.relative(base, dir));
   if (path.isAbsolute(rel)) return null; // another drive
   const down = rel.replace(/^(\.\.\/)+/, '');
-  if (down !== rel && !down.startsWith('node_modules/')) return null;
-  return /(^|\/)node_modules\/[^/.]/.test(down) ? rel : null; // also null for '' and '..' (a context inside the package)
+  if (down !== rel) return down.startsWith('node_modules/') && /(^|\/)node_modules\/[^/.]/.test(down) ? rel : null;
+  if (!rel || rel === '..') return null; // a context inside the package
+  return /(^|\/)node_modules\//.test(rel) && !/(^|\/)node_modules\/[^/.]/.test(rel) ? null : rel; // not node_modules/.cache
 }
 
 // The key of a package at `location` (see locationKey) as npm lays packages out, where the key starts with

@@ -1,0 +1,7 @@
+/** rush.json is JSON with comments */
+{
+  // the projects
+  "projects": [
+    { "packageName": "rush-lib", "projectFolder": "rush/lib" }
+  ]
+}

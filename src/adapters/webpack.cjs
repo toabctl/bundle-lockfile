@@ -126,6 +126,13 @@ function bundledFiles(compilation) {
   return files;
 }
 
+// The source files of the compilation's entry modules (the package they are in is first-party, see core/vendored.cjs)
+function entryFiles(compilation) {
+  const files = new Set(), issuerOf = issuers(compilation);
+  for (const chunk of compilation.chunks) for (const m of entryModules(compilation, chunk)) { const f = sourceFile(m, issuerOf); if (f) files.add(f.split('?')[0]); }
+  return [...files];
+}
+
 // Compilers that write the same files are one writer of a shared lockfile: a new compiler for the same config
 // (a build restarted in the same process, or run again by another process) replaces the previous one's packages
 // instead of adding to them - in this process once the previous one is done: closed (webpack >= 5.17 has a shutdown
@@ -232,7 +239,8 @@ class BundleLockfilePlugin {
   lockfile(compilation, extra = []) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
-    return outputs.record(path.join(dir, this.file), compilerWriter(compiler), packages.packagesOfFiles([...bundled, ...extra]).all,
+    const build = { context: compiler.context, entries: entryFiles(compilation) }; // for vendored copies
+    return outputs.record(path.join(dir, this.file), compilerWriter(compiler), packages.packagesOfFiles([...bundled, ...extra], build).all,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler) });
   }
 

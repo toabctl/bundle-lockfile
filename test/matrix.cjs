@@ -183,6 +183,10 @@ const fixtures = {
   // the build run by turbo (its package manager field is required)
   'edge-turbo': edge('edge-turbo', { 'lodash-es': '4.18.1', turbo: '2.11.7' }, { packageJson: { packageManager: 'npm@11.21.0' } }),
   'edge-workspace': edge('edge-workspace', { '@acme/ui': '1.0.0' }, { packageJson: { workspaces: ['packages/*'] } }),
+  // vendored copies outside node_modules and inside an installed package (container: a file: dependency, copied into
+  // node_modules by the cases, see VENDORED_CMD), and first-party members of the monorepo (npm workspaces, pnpm,
+  // lerna, rush, Nx)
+  'edge-vendored': edge('edge-vendored', { ms: '2.1.3', container: 'file:./pkgs/container' }, { packageJson: { workspaces: ['ws/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
   // a directory of the project as a dependency (local-lib, which depends on ms): npm links file: (first-party), yarn 2+
   // and pnpm copy it into node_modules (a package); link: and portal: link it (first-party). ms is a direct dependency
@@ -245,6 +249,13 @@ const ROLLUP_API = ['lodash-es@4.18.1', 'nanoid@3.3.20'];
 // watch modes: the build, the rebuild without nanoid, the rebuild with it again
 const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
+// edge-vendored (src/index.js): the copies outside node_modules (left-pad by an alias, is-odd by resolve.modules,
+// vscode-languageclient with engines.vscode but no publisher, a copy of ms@2.1.3, the in-repo app-lib), container and
+// the copy inside it; not: the VS Code extension manifest (yaml), the name npm does not accept, private-lib, the
+// workspace members (npm, pnpm, lerna, rush, Nx)
+// container as an installed package (npm links a file: directory; Wolfi's npm 12 does so with install-links too)
+const VENDORED_CMD = 'rm -rf node_modules/container && cp -r pkgs/container node_modules/container && npm run -s build';
+const VENDORED = ['app-lib@1.0.0', 'container@1.0.0', 'inner-vendored@2.0.0', 'is-odd@3.0.1', 'left-pad@1.3.0', 'ms@2.1.3', 'vscode-languageclient@10.1.2'];
 // in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
 // the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
@@ -519,6 +530,21 @@ const cases = [
   // @vanilla-extract/css only runs at build time
   { name: 'edge: vanilla-extract virtual CSS (match resource)', fixture: 'edge-vanilla', cmd: 'npm run -s build',
     expectIncludes: ['lodash-es@4.18.1'], expectExcludes: ['@vanilla-extract/webpack-plugin@2.3.27', '@vanilla-extract/css@1.21.2'] },
+  // vendored copies: outside node_modules the innermost package.json of a package npm could have published (a name it
+  // accepts, a version, not private, no VS Code extension's) below the first-party boundaries; inside a package, one
+  // of another name; a package root without a package.json counts as the package around it. Hand-written: what is
+  // listed and how it is keyed (the copy of ms@2.1.3 next to the installed one, the copy inside container)
+  { name: 'edge: vendored copies (webpack 5)', fixture: 'edge-vendored', cmd: VENDORED_CMD, expect: VENDORED,
+    expectKeys: { 'node_modules/app-lib': 'app-lib@1.0.0', 'node_modules/container': 'container@1.0.0', 'node_modules/container/vendor/inner': 'inner-vendored@2.0.0',
+      'node_modules/is-odd': 'is-odd@3.0.1', 'node_modules/left-pad': 'left-pad@1.3.0', 'node_modules/ms': 'ms@2.1.3', 'node_modules/ms@2.1.3': 'ms@2.1.3',
+      'node_modules/vscode-languageclient': 'vscode-languageclient@10.1.2' },
+    // in any order: the note on a vendored copy, the warning on the package root without a package.json
+    expectOutput: /^(?=[\s\S]*note: \S*left-pad is a vendored copy of left-pad@1\.3\.0)(?=[\s\S]*no package\.json with name and version in \S*lib\/esm\/node_modules\/flat - its bundled files are listed as container@1\.0\.0)/ },
+  { name: 'edge: vendored copies, BUNDLE_LOCKFILE_FIRST_PARTY=lib/** (an in-repo library)', fixture: 'edge-vendored', cmd: VENDORED_CMD,
+    env: { BUNDLE_LOCKFILE_FIRST_PARTY: 'lib/**' }, expect: VENDORED.filter(p => p !== 'app-lib@1.0.0') },
+  { name: 'edge: vendored copies, BUNDLE_LOCKFILE_FIRST_PARTY=** (none outside node_modules)', fixture: 'edge-vendored', cmd: VENDORED_CMD,
+    env: { BUNDLE_LOCKFILE_FIRST_PARTY: '**' }, expect: ['container@1.0.0', 'inner-vendored@2.0.0', 'ms@2.1.3'],
+    expectKeys: { 'node_modules/container': 'container@1.0.0', 'node_modules/container/vendor/inner': 'inner-vendored@2.0.0', 'node_modules/ms': 'ms@2.1.3' } },
   { name: 'edge: externals are not listed', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_EXTERNALS: '1' },
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
   // webpack's context is a subdirectory: the packages are in ../node_modules, keyed without the ../ (Trivy reads only
@@ -801,10 +827,10 @@ const cases = [
   // with BUNDLE_LOCKFILE_INLINE=0 the island's lockfile is only in the export directory: it is found there
   { name: 'nested: Vite 8 island bundled by webpack 5, export dir only', fixture: 'nested-island-wp5', cmd: 'npm run -s build', exportOnly: true,
     expect: NESTED_EXPECT },
-  // the island's output vendored with cp into the app (vendor/island/dist, one level deeper): its lockfile is a copy's,
+  // the island's output vendored with cp into the app (copied/island/dist, one level deeper): its lockfile is a copy's,
   // whose packages are kept by name and version
   { name: 'nested: Vite 8 island copied (cp) into the app, bundled by webpack 5', fixture: 'nested-island-wp5', env: { NESTED_ENTRY: 'vendored' },
-    cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && mkdir -p vendor/island && cp -r island/dist vendor/island/dist && ./node_modules/.bin/webpack --config webpack.config.js',
+    cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && mkdir -p copied/island && cp -r island/dist copied/island/dist && ./node_modules/.bin/webpack --config webpack.config.js',
     expect: NESTED_EXPECT, expectKeys: { 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/nanoid': 'nanoid@3.3.20' },
     oracle: false },
   // a changed island file is not attributed (its hash no longer matches)

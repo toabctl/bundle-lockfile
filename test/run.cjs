@@ -50,7 +50,7 @@ function runCase(c) {
   const dir = path.join(FX, c.fixture);
   if (!fs.existsSync(dir)) throw new Error(`fixture ${c.fixture} missing in ${FX} (run gen.cjs)`);
   const outDir = path.join(dir, c.outDir || 'dist');
-  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', '.netlify', 'build-oracle', '.svelte-kit-oracle', 'out', 'vendor']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
+  for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', '.netlify', 'build-oracle', '.svelte-kit-oracle', 'out', 'copied']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
   const base = { ...process.env, ...(c.env || {}) };
   // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture

@@ -8,8 +8,8 @@
 //   (inlined into it, e.g. worker-loader's inline: 'no-fallback')
 // - assets whose info.sourceFilename (relative to the context) is a file in a package (copy-webpack-plugin)
 // - copied: more files in the output, found by the caller (copy-webpack-plugin 5, whose assets name no file)
-const fs = require('fs');
 const path = require('path');
+const owner = require('./owner.cjs');
 
 const STATS_OPTIONS = { modules: true, nestedModules: true, chunks: true, chunkModules: false, assets: true, children: true, depth: true, source: false };
 
@@ -65,24 +65,7 @@ function filesFromStats(json, context, copied = []) {
 
 function packagesFromStats(json, context, copied = []) {
   const files = filesFromStats(json, context, copied);
-  // package = directory directly below the last node_modules segment (npm's layout rule), at its real
-  // location; one that resolves out of node_modules (a symlinked workspace package) is first-party.
-  // Written out here rather than imported, so the oracle shares no code with the tool.
-  const pkgs = new Set();
-  for (const f of files) {
-    const parts = f.split(path.sep);
-    const i = parts.lastIndexOf('node_modules');
-    if (i < 0) continue;
-    let root = parts.slice(0, i + 1 + (parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1)).join(path.sep);
-    try { root = fs.realpathSync(root); } catch { /* e.g. a PnP zip path */ }
-    const parent = path.basename(path.dirname(root));
-    const inNodeModules = parent === 'node_modules' || (parent.startsWith('@') && path.basename(path.dirname(path.dirname(root))) === 'node_modules');
-    if (!inNodeModules) continue;
-    let p;
-    try { p = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { continue; } // BOM: valid, JSON.parse rejects it
-    if (p && typeof p.name === 'string' && p.name && typeof p.version === 'string' && p.version) pkgs.add(`${p.name}@${p.version}`);
-  }
-  return [...pkgs].sort();
+  return owner.packagesOf(files, { context }); // see owner.cjs
 }
 
 module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats };

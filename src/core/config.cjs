@@ -9,6 +9,8 @@
 //   BUNDLE_LOCKFILE_INLINE      0/false/off: do not write the lockfile into the output dir (only the export dir)
 //   BUNDLE_LOCKFILE_DEBUG       log what gets patched and applied to stderr (off if unset, empty, 0 or false)
 //   BUNDLE_LOCKFILE_DISABLE     comma-separated adapter names to skip, or "all" (case-insensitive)
+//   BUNDLE_LOCKFILE_FIRST_PARTY comma-separated globs of directories (relative to the working directory) that are
+//                               first-party, never vendored copies (see core/vendored.cjs); "**": none is
 
 const path = require('path');
 const env = process.env;
@@ -22,7 +24,10 @@ module.exports = {
   exportBase: dir(env.BUNDLE_LOCKFILE_EXPORT_BASE),
   inline: env.BUNDLE_LOCKFILE_INLINE === undefined || env.BUNDLE_LOCKFILE_INLINE.trim() === '' || on(env.BUNDLE_LOCKFILE_INLINE),
   isDisabled: (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
+  firstParty: (env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).filter(Boolean),
   debug: (...a) => { if (on(env.BUNDLE_LOCKFILE_DEBUG)) console.error('[bundle-lockfile]', ...a); },
   // always printed: a failing adapter must not break the build, but the missing lockfile must not go unnoticed
   warn: (...a) => console.error('[bundle-lockfile] WARNING:', ...a),
+  // always printed too: what a build lists that it might not expect (vendored copies, see core/vendored.cjs)
+  note: (...a) => console.error('[bundle-lockfile] note:', ...a),
 };
