@@ -73,11 +73,4 @@ function nestedByFile(files) {
   return out;
 }
 
-// The packages of nestedByFile, once each.
-function nestedPackages(files) {
-  const out = new Map();
-  for (const pkgs of nestedByFile(files).values()) for (const p of pkgs) out.set(p.path, p);
-  return [...out.values()];
-}
-
-module.exports = { nestedPackages, nestedByFile };
+module.exports = { nestedByFile };

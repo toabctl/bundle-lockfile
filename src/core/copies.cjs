@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
+const lru = require('./lru.cjs');
 
 const S = Symbol.for('bundle-lockfile.copies.v1');
 const MAX = 50000; // entries; a long-running process must not grow them forever
@@ -24,18 +25,13 @@ function abs(p) {
   } catch { return null; }
 }
 
-function put(map, key, value) {
-  map.delete(key);
-  map.set(key, value);
-  while (map.size > MAX) map.delete(map.keys().next().value);
-}
-
 function record(src, dest, dir) {
   const s = abs(src), d = abs(dest);
   if (!s || !d || !inPackage(s) || inPackage(d)) return;
-  put(dir ? state.dirs : state.files, d, s);
+  lru.set(dir ? state.dirs : state.files, d, s, MAX);
 }
 
+// Both are files with the same bytes.
 function sameBytes(a, b) {
   try {
     const sa = fs.statSync(a), sb = fs.statSync(b);
@@ -80,4 +76,4 @@ function install() {
   try { require('module').syncBuiltinESMExports(); } catch { /* named ESM imports keep the originals */ }
 }
 
-module.exports = { install, sourceOf, record };
+module.exports = { install, sourceOf, record, sameBytes };

@@ -2,7 +2,6 @@
 // Serializes packages as package-lock.json (lockfileVersion 3), the format syft's javascript-lock-cataloger reads.
 const fs = require('fs');
 const path = require('path');
-const { packagesForFiles } = require('./packages.cjs');
 
 // Code-unit order, not localeCompare: the output must not depend on the build machine's locale
 // (with LC_ALL=da_DK.UTF-8, "aa-utils" sorts after "zod").
@@ -147,9 +146,4 @@ function readMeta(json, dir) {
   };
 }
 
-// files: absolute paths of bundled source files; context: project root the keys are relative to.
-function lockfileForFiles(files, context) {
-  return toPackageLock(packagesForFiles(files), context);
-}
-
-module.exports = { cmp, toPackageLock, readMeta, lockfileForFiles };
+module.exports = { cmp, toPackageLock, readMeta };

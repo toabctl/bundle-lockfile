@@ -6,6 +6,7 @@
 // (vite-plugin-pwa's generateSW) generates sw.js and workbox-<hash>.js and writes them into dist/ with fs after the
 // build. In-process only: these builds run in the process of the build that uses their output.
 const crypto = require('crypto');
+const lru = require('./lru.cjs');
 
 const S = Symbol.for('bundle-lockfile.generated.v1');
 const MAX = 10000; // entries of each map; a long dev or watch session must not grow them forever
@@ -21,21 +22,15 @@ function hash(code) {
   return crypto.createHash('sha256').update(s.replace(SOURCE_MAP, '')).digest('hex');
 }
 
-function put(map, key, pkgs) {
-  map.delete(key); // re-inserted as the newest
-  map.set(key, pkgs);
-  while (map.size > MAX) map.delete(map.keys().next().value);
-}
-
 // A chunk of a generate-only build with its packages ([{ name, version, license, path }]).
 function addChunk(code, pkgs) {
   const h = hash(code);
-  if (h && pkgs.length) put(state.content, h, pkgs);
+  if (h && pkgs.length) lru.set(state.content, h, pkgs, MAX);
 }
 
 // The entry file of a generate-only build with the packages of all its chunks.
 function addEntry(file, pkgs) {
-  if (file && pkgs.length) put(state.entries, file, pkgs);
+  if (file && pkgs.length) lru.set(state.entries, file, pkgs, MAX);
 }
 
 // Packages of a generate-only chunk whose content (string, Buffer or Uint8Array) this is, or null.
