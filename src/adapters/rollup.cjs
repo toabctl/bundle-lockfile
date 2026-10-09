@@ -124,6 +124,44 @@ function copiedFrom(file, rel, cwd) {
   }
 }
 
+// The directories of the bundle's entry modules and the ones above them, nearest first.
+function entryDirs(bundle) {
+  const dirs = new Set();
+  for (const f of Object.values(bundle)) {
+    const entry = f.type === 'chunk' && f.isEntry && fileOf(f.facadeModuleId);
+    for (let d = entry && path.dirname(entry); d && !dirs.has(d); d = path.dirname(d) === d ? null : path.dirname(d)) dirs.add(d);
+  }
+  return [...dirs];
+}
+
+// The file has these bytes (a string as Rollup writes it, or a Buffer / Uint8Array).
+function hasBytes(file, data) {
+  if (data == null) return false;
+  try {
+    const buf = Buffer.from(data);
+    return fs.statSync(file).size === buf.length && fs.readFileSync(file).equals(buf);
+  } catch { return false; }
+}
+
+const once = (fn) => { let v; return () => (v === undefined ? (v = fn()) : v); };
+
+// The file an asset was emitted from, given its originalFileName (or null). Rollup leaves the name's base to the plugin
+// that emits the asset: Vite's are relative to its root, which is not always the working directory (root: 'web',
+// `vite build web`) and which this plugin, added to the build by bundle-lockfile, does not see. The asset is the file
+// with its bytes: the name relative to the working directory, else to an entry module's directory or one above it
+// (Vite's root holds its entries); without one, the file relative to the working directory if it exists (an asset
+// transformed on the way, e.g. a style sheet). bases(): those directories.
+function originalFile(name, source, cwd, bases) {
+  if (typeof name !== 'string') return null;
+  const own = path.resolve(cwd, name);
+  if (hasBytes(own, source)) return own;
+  for (const base of bases()) {
+    const file = path.resolve(base, name);
+    if (file !== own && hasBytes(file, source)) return file;
+  }
+  return fs.existsSync(own) ? own : null;
+}
+
 // Files another plugin wrote into the output directory after the build had written its bundle, e.g.
 // vite-plugin-pwa's sw.js and workbox-<hash>.js (workbox-build generates them with Rollup and writes them with fs in
 // closeBundle) or vite-plugin-static-copy's copies: their packages, or none. Only files changed since the build
@@ -220,16 +258,17 @@ function createPlugin(kind, inputOptions) {
           }
           const ids = new Set(modulesOf.get(out) || []);
           const sources = [], files = [], originals = new Map(); // asset -> its source files
+          const bases = once(() => entryDirs(bundle));
           for (const f of Object.values(bundle)) {
             files.push(path.join(dir, f.fileName));
             if (f.type === 'chunk') {
               for (const id of moduleIds(f)) ids.add(id);
             } else {
-              // assets emitted from a file (Vite: relative to its root, usually the working directory)
+              // assets emitted from a file (see originalFile)
               const own = [];
               for (const n of f.originalFileNames || (f.originalFileName ? [f.originalFileName] : [])) {
-                const p = path.resolve(cwd, n);
-                if (fs.existsSync(p)) own.push(p);
+                const p = originalFile(n, f.source, cwd, bases);
+                if (p) own.push(p);
               }
               originals.set(f, own);
               sources.push(...own);
