@@ -2,7 +2,7 @@
 // Settings, all from environment variables (the tool is injected into builds we do not control).
 //   BUNDLE_LOCKFILE_FILE        output path relative to the bundler's output dir
 //                               (default: bundle-lockfile/package-lock.json)
-//   BUNDLE_LOCKFILE_EXPORT_DIR  also write every lockfile below this directory (see core/outputs.cjs exportPath),
+//   BUNDLE_LOCKFILE_EXPORT_DIR  also write every lockfile below this directory (see core/paths.cjs exportPath),
 //                               for outputs that do not ship as files (embedded in a binary, a jar, copied away)
 //   BUNDLE_LOCKFILE_EXPORT_BASE output dirs below it are mirrored relative to it into the export dir (default: their
 //                               absolute path)

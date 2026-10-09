@@ -13,7 +13,8 @@ const Module = require('module');
 const path = require('path');
 require('../../src/register.cjs');
 const webpackAdapter = require('../../src/adapters/webpack.cjs');
-const { packageRoot, packagesForFiles } = require('../../src/core/packages.cjs');
+const { packagesForFiles } = require('../../src/core/packages.cjs');
+const { packageRoot } = require('../../src/core/paths.cjs');
 
 const cdxDir = process.env.BUNDLE_LOCKFILE_CDX_DIR;
 if (!cdxDir) throw new Error('inject-cyclonedx: set BUNDLE_LOCKFILE_CDX_DIR');

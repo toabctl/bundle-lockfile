@@ -631,7 +631,8 @@ src/esm-loader.mjs        loader thread) that replace entry modules by the wrapp
 src/esm-wrap.cjs
 src/adapters/webpack.cjs  webpack 4/5 and Next.js: which source files are in a compiler's emitted output
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
-src/core/packages.cjs   source files -> packages (package root, real path, package.json)
+src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
+src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path
 src/core/copies.cjs     files copied out of packages with fs in this process
 src/core/generated.cjs  packages of builds that write nothing themselves, by content and entry file
 src/core/nested.cjs     packages of bundled files another build wrote (output hashes in its lockfile)
