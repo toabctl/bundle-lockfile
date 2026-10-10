@@ -3,6 +3,8 @@
 // copied from node_modules by vite-plugin-static-copy.
 // PWA_INJECT=1: vite-plugin-pwa's injectManifest strategy instead: it builds src/sw.js (workbox-precaching, -routing,
 // -strategies) with a nested Vite build into dist/sw.js
+// VITE_PLUGIN=<path of src/adapters/rollup.cjs>: bundle-lockfile's plugin in the config, as without NODE_OPTIONS
+import { createRequire } from 'node:module';
 import legacy from '@vitejs/plugin-legacy';
 import { VitePWA } from 'vite-plugin-pwa';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
@@ -15,6 +17,7 @@ export default {
       ? { strategies: 'injectManifest', srcDir: 'src', filename: 'sw.js', injectManifest: { globPatterns } }
       : { registerType: 'autoUpdate', workbox: { globPatterns } }),
     viteStaticCopy({ targets: [{ src: 'node_modules/normalize.css/normalize.css', dest: 'vendor' }] }),
+    ...(process.env.VITE_PLUGIN ? [createRequire(import.meta.url)(process.env.VITE_PLUGIN).bundleLockfile('vite')] : []),
   ],
   build: { outDir: 'dist' },
 };

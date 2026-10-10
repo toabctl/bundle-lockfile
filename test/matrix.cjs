@@ -685,6 +685,20 @@ const cases = [
     cmd: 'npm run -s build', env: { PWA_INJECT: '1' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING })),
   { name: 'Vite 7.3.7 features, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite7-features', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
+  // bundle-lockfile's plugin in the Vite config and NODE_OPTIONS: the preload adds no second plugin, and hands the
+  // configured one the build rolldown() returns, which alone has the style sheets @imported from packages (Vite 8)
+  ...['8.3.3', '7.3.7'].map(v => ({ name: `Vite ${v} features, plugin in the config and NODE_OPTIONS`, fixture: `vite${v[0]}-features`,
+    cmd: 'npm run -s build', env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING })),
+  // the plugin in the config without NODE_OPTIONS: it adds itself to worker.plugins, with which Vite bundles the
+  // workers (nanoid; is-number inlined). Not reached without the preload, so not asserted: workbox-build's service
+  // worker (a build with plugins of its own), and on Vite 8 plugin-legacy's polyfills (their chunk, which it puts into
+  // the bundle, is no chunk of this build there) and the style sheets @imported from packages (Rolldown gives them
+  // only to the caller of rolldown()); the oracle, which sees all of them, is therefore not compared
+  { name: 'Vite 8.3.3 features, plugin in the config (no NODE_OPTIONS)', fixture: 'vite8-features', cmd: 'npm run -s build', inject: false,
+    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expectIncludes: ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'], oracle: false },
+  { name: 'Vite 7.3.7 features, plugin in the config (no NODE_OPTIONS)', fixture: 'vite7-features', cmd: 'npm run -s build', inject: false,
+    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') },
+    expectIncludes: ['bulma@1.0.4', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'], oracle: false },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
   { name: "Rollup 4 command line (rollup -c), yarn 4.18.1 Plug'n'Play", fixture: 'rollup-cli-yarn4-pnp', cmd: 'yarn build', expect: ROLLUP_API },
   { name: 'Rollup 4 command line, watch mode (rollup -c -w): every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-cli',

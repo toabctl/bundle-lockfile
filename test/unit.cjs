@@ -1419,6 +1419,63 @@ test('rollup adapter: Rolldown write() without dir and file: the lockfile in dis
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: a plugin from the Vite config adds itself to worker.plugins, and its worker builds count', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('w') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const names = (list) => list.map(p => p.name);
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    // no worker.plugins, a function (Vite 5+), an array (Vite 4's form), one that has bundle-lockfile's already
+    const cfg = {};
+    plugin.config(cfg);
+    assert.deepEqual(names(cfg.worker.plugins()), ['bundle-lockfile']);
+    const fn = { worker: { format: 'es', plugins: () => [{ name: 'user' }] } };
+    plugin.config(fn);
+    assert.equal(fn.worker.format, 'es');
+    assert.deepEqual(names(fn.worker.plugins()), ['user', 'bundle-lockfile']);
+    const arr = { worker: { plugins: [{ name: 'user' }] } };
+    plugin.config(arr);
+    assert.deepEqual(names(arr.worker.plugins()), ['user', 'bundle-lockfile']);
+    const has = { worker: { plugins: () => [[rollupAdapter.bundleLockfile('vite')]] } };
+    plugin.config(has);
+    assert.deepEqual(names(has.worker.plugins().flat()), ['bundle-lockfile']);
+    // only for Vite
+    assert.equal(rollupAdapter.bundleLockfile('rollup').config, undefined);
+    assert.equal(rollupAdapter.bundleLockfile('rolldown').config, undefined);
+
+    // the worker build (generate-only) with the plugin from worker.plugins, then the main build that emits its chunk
+    const worker = cfg.worker.plugins()[0];
+    await rollupBuild(worker, { outDir: J(root, 'dist'), chunks: [{ fileName: 'w.js', code: 'the worker', modules: [J(root, 'node_modules/w/i.js')], entry: J(root, 'src/w.js') }], isWrite: false });
+    await rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js')] }],
+      assets: [{ fileName: 'assets/w-1.js', source: 'the worker' }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'w']);
+  } finally { process.chdir(cwd); }
+});
+
+test('rollup adapter: the preload hands a plugin from the config the build rolldown() returns (its watch files)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('s') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    // Rolldown: the style sheets a style sheet @imports are watch files of the build rolldown() returns only
+    const build = { watchFiles: Promise.resolve([J(root, 'src/app.css'), J(root, 'node_modules/s/s.css')]) };
+    let got;
+    const rolldown = rollupAdapter.esmWrap('rolldown', 'rolldown', (options) => { got = options; return Promise.resolve(build); });
+    const options = { input: 'index.html', plugins: [{ name: 'vite:css' }, [plugin]] };
+    assert.equal(await rolldown(options), build);
+    assert.equal(got, options); // no second plugin
+    const ctx = { meta: { rolldownVersion: '1.2.13' } }; // no getWatchFiles in Rolldown's plugin context
+    await rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js'), J(root, 'src/app.css')] }], ctx });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 's']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: plugins configured by hand, two builds of different inputs into one directory: both writers', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });

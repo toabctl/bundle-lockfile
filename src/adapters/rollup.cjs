@@ -228,6 +228,19 @@ function createPlugin(kind, inputOptions) {
   return {
     name: NAME,
     api: { setBuild(b) { build = b; } },
+    // Vite bundles workers with the plugins of worker.plugins, not with the config's (the preload adds this plugin to
+    // every build itself): a plugin from the config adds a copy of itself there. Vite 5 and later take a function.
+    ...(kind === 'vite' && {
+      config(cfg) {
+        if (!cfg || typeof cfg !== 'object') return;
+        const prev = cfg.worker && cfg.worker.plugins;
+        const user = typeof prev === 'function' ? prev : Array.isArray(prev) ? () => prev : () => [];
+        cfg.worker = { ...cfg.worker, plugins(...args) {
+          const list = [].concat(user(...args) || []);
+          return flat(list).some(p => p.name === NAME) ? list : [...list, createPlugin(kind)];
+        } };
+      },
+    }),
     buildStart(options) {
       written.clear(); modulesOf.clear(); ordinals.clear();
       if (!inputOptions || inputOptions.input === undefined) input = options && options.input;
@@ -348,12 +361,12 @@ function attach(id, options) {
 const each = (id, v) => (Array.isArray(v) ? v.map(o => attach(id, o)) : attach(id, v));
 
 // rollup()/rolldown() with the plugin; the plugin gets the build the call returns (Rolldown's watch files, see
-// watchFilesOf).
+// watchFilesOf) - also one that was in the options already (configured by hand): only the caller of rolldown() has it.
 function wrapBuild(id, fn) {
   return function (options, ...rest) {
     const o = attach(id, options);
     const result = fn.call(this, o, ...rest);
-    const plugin = o !== options && flat(o.plugins).find(p => p.name === NAME && p.api && p.api.setBuild);
+    const plugin = o && typeof o === 'object' && !Array.isArray(o) && flat(o.plugins).find(p => p.name === NAME && p.api && p.api.setBuild);
     if (plugin && result && typeof result.then === 'function') result.then(b => plugin.api.setBuild(b), () => {});
     return result;
   };
