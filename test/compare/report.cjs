@@ -40,7 +40,7 @@ function explain(pkg, side, diag) {
   if (side === 'ours' && diag.compilers.length > 1 && diag.bundled.includes(pkg))
     return `in the emitted output of one of the ${diag.compilers.length} compilers writing to this directory (${diag.compilers.join(', ')}); CycloneDX writes one bom.json per compiler there, the last one wins`;
   if (side === 'cdx' && diag.firstParty.includes(pkg) && !diag.processed.includes(pkg)) return 'first-party package outside node_modules (e.g. a workspace package) - bundle-lockfile leaves those out by design';
-  if (side === 'cdx' && (diag.vendored || []).includes(pkg) && !diag.processed.includes(pkg)) return 'vendored inside another package (a nested package.json such as next/dist/compiled/...) - bundle-lockfile lists the package that contains it';
+  if (side === 'cdx' && (diag.vendored || []).includes(pkg) && !diag.processed.includes(pkg)) return 'a nested package.json inside another package that is no vendored copy (private, such as preact 10\'s preact/hooks) - bundle-lockfile lists the package that contains it';
   const processed = diag.processed.includes(pkg), bundled = diag.bundled.includes(pkg);
   if (side === 'cdx' && processed && !bundled) return 'processed by webpack but not in the emitted output (e.g. tree-shaken, or only executed at build time like css-loader)';
   if (side === 'ours' && bundled && !processed) return 'in the emitted output but not processed by the main compilation: from a child compilation (e.g. a worker) or copied verbatim';
