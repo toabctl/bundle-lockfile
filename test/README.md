@@ -98,8 +98,8 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
   sheets loaders inline from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent
   cache), vanilla-extract's virtual CSS modules
 - module federation (a host, a remote, a shared package), a DLL, nested and inlined worker-loader workers (webpack 4
-  and 5), a workbox service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin (5 and
-  6 on webpack 4, 14 on webpack 5)
+  and 5), a workbox service worker, html-webpack-plugin 4 and 5 templates, a package file and a package directory copied
+  by copy-webpack-plugin (5, 6.0 and 6.4 on webpack 4, 6.2 and 14 on webpack 5)
 - two compilers sharing an output directory (also with query strings in file names, configs that differ only in
   `resolve.alias`, and a failing watch rebuild); two compilers whose `output.path` with `[fullhash]` resolves to
   different directories; compression-webpack-plugin deleting the original assets (webpack 4 and 5, also of two

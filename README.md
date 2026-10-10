@@ -78,9 +78,9 @@ Also listed:
 - **webpack child compilations whose output is shipped**: workers (`worker-loader`, also inlined) and workbox's
   `InjectManifest` service worker. Child compilations that only run at build time (html-webpack-plugin's template,
   mini-css-extract-plugin's loader, vanilla-extract's compiler) are not.
-- **files copied verbatim into a webpack output** by copy-webpack-plugin 6.1 and later, whose assets record their
-  source. copy-webpack-plugin 5 (webpack 4) records none: its copies count if they have the bytes of a file in
-  `node_modules` among the compilation's file dependencies.
+- **files copied verbatim into a webpack output**, e.g. by copy-webpack-plugin, whose assets record their source from
+  6.3 on. Copies that record none (copy-webpack-plugin 5 and 6.0 – 6.2) count if they have the bytes of a package file
+  the compilation depends on: a file dependency, or a file in a copied directory.
 - **output of builds that write nothing themselves**: Vite's workers, @vitejs/plugin-legacy's polyfills,
   workbox-build's service worker (vite-plugin-pwa), and any `generate()` or `build.write: false` build. Their packages
   are listed where their bytes end up in a written output, or where a module imports their entry with
