@@ -35,6 +35,9 @@ const devdeps = (installer) => ({
 const WEBPACK = { webpack: '5.111.1', 'webpack-cli': '7.2.3' };
 const edge = (app, deps, extra = {}) => ({ app, installer: { type: 'npm' }, deps: { ...WEBPACK, ...deps }, ...extra });
 const WEBPACK4 = { webpack: '4.47.0', 'webpack-cli': '4.10.0' };
+// edge-copy: a package file (normalize.css) and a package directory (left-pad) copied into the output
+const COPIED = { 'normalize.css': '8.0.1', 'left-pad': '1.3.0', 'lodash-es': '4.18.1' };
+const COPIED_EXPECT = ['left-pad@1.3.0', 'lodash-es@4.18.1', 'normalize.css@8.0.1'];
 const WORKER = { 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9', 'is-number': '7.0.0' };
 const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/plugin-transform-runtime': '7.29.7', '@babel/runtime': '7.29.10', 'core-js': '3.50.0' };
 
@@ -201,11 +204,15 @@ const fixtures = {
   'edge-worker': edge('edge-worker', WORKER),
   'edge-worker-wp4': { app: 'edge-worker', installer: { type: 'npm' }, deps: { ...WEBPACK4, ...WORKER } },
   'edge-workbox': edge('edge-workbox', { 'workbox-webpack-plugin': '7.4.1', 'workbox-precaching': '7.4.1', 'lodash-es': '4.18.1', ...HTML }),
-  'edge-copy': edge('edge-copy', { 'copy-webpack-plugin': '14.0.0', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
+  'edge-copy': edge('edge-copy', { 'copy-webpack-plugin': '14.0.0', ...COPIED }),
   // copy-webpack-plugin 5 adds its files in webpack 4's emit hook, after the lockfile, without naming their source
-  'edge-copy5-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '5.1.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' } },
-  // copy-webpack-plugin 6 adds its files in webpack 4's additionalAssets hook
-  'edge-copy-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.4.1', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' } },
+  'edge-copy5-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '5.1.2', ...COPIED } },
+  // copy-webpack-plugin 6 adds its files in webpack 4's additionalAssets hook; 6.3 and later name their source
+  'edge-copy-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.4.1', ...COPIED } },
+  // 6.0 - 6.2 do not (6.1, 6.2: only info.copied), before the lockfile is rendered; 6.2 adds a copied directory only
+  // as a context dependency
+  'edge-copy60-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.0.4', ...COPIED } },
+  'edge-copy62': edge('edge-copy', { 'copy-webpack-plugin': '6.2.1', ...COPIED }),
   'edge-shared-output': edge('edge-shared-output', { debug: '2.6.9', ms: '2.1.3' }),
   // the build script overwrites NODE_OPTIONS with cross-env, as superset's, headlamp's, pgadmin4's (needs the node shim)
   'edge-crossenv': { app: 'webpack5', installer: { type: 'npm' }, deps: { ...WEBPACK, ...APP_DEPS, 'cross-env': '7.0.3' },
@@ -474,12 +481,18 @@ const cases = [
   { name: 'edge: workbox InjectManifest service worker', fixture: 'edge-workbox', cmd: 'npm run -s build',
     expectIncludes: ['workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'lodash-es@4.18.1'], expectExcludes: ['html-webpack-plugin@5.6.6', 'workbox-webpack-plugin@7.4.1'] },
   // copy-webpack-plugin: a package file copied verbatim into the output is shipped; copied first-party files are not packages
-  { name: 'edge: package file copied by copy-webpack-plugin', fixture: 'edge-copy', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
-  { name: 'edge: package file copied by copy-webpack-plugin 6, webpack 4', fixture: 'edge-copy-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
-    expectIncludes: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
-  // its copy is matched by content to the package file it was copied from
-  { name: 'edge: package file copied by copy-webpack-plugin 5, webpack 4', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
-    expectIncludes: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
+  { name: 'edge: package file and directory copied by copy-webpack-plugin', fixture: 'edge-copy', cmd: 'npm run -s build', expect: COPIED_EXPECT },
+  { name: 'edge: package file and directory copied by copy-webpack-plugin 6.4, webpack 4', fixture: 'edge-copy-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: COPIED_EXPECT },
+  // copies that do not name their source are matched by content to the package file they were copied from
+  { name: 'edge: package file and directory copied by copy-webpack-plugin 5, webpack 4', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: COPIED_EXPECT },
+  { name: 'edge: package file and directory copied by copy-webpack-plugin 6.0, webpack 4', fixture: 'edge-copy60-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    expectIncludes: COPIED_EXPECT },
+  // webpack 5 minimizes those copies (6.2 does not mark them as copied for the minimizers): matched before that; the
+  // oracle compares the output's bytes and so sees left-pad by its files that are not minimized, normalize.css not
+  { name: 'edge: package file and directory copied by copy-webpack-plugin 6.2', fixture: 'edge-copy62', cmd: 'npm run -s build', expect: COPIED_EXPECT,
+    oracleMissing: ['normalize.css@8.0.1'] },
   // two compilers write to dist/ in parallel: one lockfile with the packages of both
   { name: 'edge: two compilers, one output dir', fixture: 'edge-shared-output', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
   // the first compiler's asset names carry a query string ([name].js?[contenthash]): its files are still there

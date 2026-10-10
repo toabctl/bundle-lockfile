@@ -343,6 +343,77 @@ test('webpack adapter: chunks, concatenated modules, shipped child compilations 
   assert.deepEqual(lockedNames(plugin().lockfile(c)), ['chunk', 'copied', 'css', 'inner', 'nested', 'worker']);
 });
 
+test('webpack adapter: files copied before the lockfile without naming their source (copy-webpack-plugin 6.0 - 6.2)', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('file'), ...pj('dir'), ...pj('other'), ...pj('empty'), ...pj('img'),
+    'node_modules/file/f.css': 'body{}', 'node_modules/dir/lib/d.js': 'dir()', 'node_modules/other/o.css': 'BODY{}',
+    'node_modules/empty/e.css': '', 'node_modules/img/i.png': 'png', 'src/robots.txt': 'robots' });
+  const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
+  const shapes = {
+    // webpack 5 (copy-webpack-plugin 6.1, 6.2: info.copied only), with auxiliary files of chunks
+    'webpack 5': (assets) => {
+      const all = new Map(Object.entries(assets).map(([name, [content, info = {}]]) => [name, { name, source: src(content), info }]));
+      return { getAsset: (n) => all.get(n), getAssets: () => [...all.values()] };
+    },
+    // webpack 4 (copy-webpack-plugin 6.0): assets an object of sources, no asset info
+    'webpack 4': (assets) => ({ assets: Object.fromEntries(Object.entries(assets).map(([n, [content]]) => [n, src(content)])) }),
+  };
+  for (const [shape, assetsOf] of Object.entries(shapes)) {
+    const c = {
+      compiler: { context: root, outputPath: J(root, `dist-${++outputDirs}`) },
+      chunks: [{ files: shape === 'webpack 5' ? new Set(['main.js']) : ['main.js'], auxiliaryFiles: new Set(['img.png']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }],
+      // a module's own asset (webpack 4's file-loader: emitFile) with a package file's bytes: no copy
+      modules: [{ buildInfo: { assets: { 'emitted.png': {} } } }],
+      children: [],
+      fileDependencies: new Set([J(root, 'node_modules/a/i.js'), J(root, 'node_modules/file/f.css'), J(root, 'node_modules/other/o.css'),
+        J(root, 'node_modules/empty/e.css'), J(root, 'node_modules/img/i.png'), J(root, 'src/robots.txt')]),
+      // copy-webpack-plugin 6.2 adds a copied directory only as a context dependency
+      contextDependencies: new Set([J(root, 'node_modules/dir'), J(root, 'src')]),
+      ...assetsOf({
+        'main.js': ['main'],
+        'css/f.css': ['body{}', { copied: true }],          // a copied file: file/f.css's bytes
+        'vendor/dir/lib/d.js': ['dir()', { copied: true }], // a file of a copied directory
+        'o.css': ['XODY{}'],                                // other/o.css's size, not its bytes
+        'e.css': [''],                                      // empty: equals every empty file
+        'robots.txt': ['robots'],                           // a first-party file
+        'img.png': ['png'],                                 // a chunk's auxiliary file (webpack 5 asset module)
+        'emitted.png': ['png'],
+      }),
+    };
+    if (shape === 'webpack 4') delete c.chunks[0].auxiliaryFiles; // webpack 4 has none
+    const expected = shape === 'webpack 5' ? ['a', 'dir', 'file'] : ['a', 'dir', 'file', 'img']; // webpack 4: img.png is no chunk's file
+    assert.deepEqual(lockedNames(plugin().lockfile(c)), expected, shape);
+  }
+});
+
+test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched before the optimize stages', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/file/package.json': { name: 'file', version: '1.0.0' },
+    'node_modules/file/f.css': 'body {  margin: 0  }' });
+  const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'dist') });
+  compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
+  const p = new webpack.BundleLockfilePlugin(LOCK);
+  p.apply(compiler);
+  const build = (beforeOptimize) => {
+    const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
+    const assets = new Map([['main.js', { name: 'main.js', source: src('main'), info: {} }],
+      ['css/f.css', { name: 'css/f.css', source: src('body {  margin: 0  }'), info: { copied: true } }]]);
+    let stage, optimize;
+    const comp = {
+      compiler, chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }], children: [],
+      fileDependencies: new Set([J(root, 'node_modules/a/i.js'), J(root, 'node_modules/file/f.css')]),
+      getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()], emitAsset: () => {},
+      hooks: { processAssets: { tap: (o, fn) => { assert.equal(o.stage, 99); optimize = fn; } }, afterProcessAssets: { tap: (o, fn) => (stage = fn) } },
+    };
+    taps.thisCompilation(comp);
+    if (beforeOptimize) optimize();
+    assets.get('css/f.css').source = src('body{margin:0}'); // a minimizer at the optimize stages
+    stage();
+    return lockedNames(p.lockfile(comp));
+  };
+  assert.deepEqual(build(true), ['a', 'file']);
+  assert.deepEqual(build(false), ['a']); // after minimizing, the bytes are no package file's
+});
+
 test('webpack adapter: style sheets a shipped style module\'s loaders inlined from packages (Sass, Less, PostCSS)', () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('bulma'), ...pj('nless'), ...pj('rel'), ...pj('tw'), ...pj('notstyle'), ...pj('unshipped') });

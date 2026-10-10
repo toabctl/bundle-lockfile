@@ -144,10 +144,13 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   `worker-loader`, workbox's `InjectManifest` service worker) or inlined into a bundled module (`worker-loader`'s
   `inline: 'no-fallback'`). Child compilations that only run at build time (html-webpack-plugin's template,
   mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted.
-- **files copied verbatim into a webpack output**, e.g. by `copy-webpack-plugin` (6.1 and later), whose assets record
-  the file they were copied from. Those of copy-webpack-plugin 5 (webpack 4) do not: such a file counts as the file
-  among the compilation's file dependencies in `node_modules` with the same bytes (a copy that was transformed on the
-  way matches none).
+- **files copied verbatim into a webpack output**, e.g. by `copy-webpack-plugin`, whose assets record the file they
+  were copied from (`info.sourceFilename`, from 6.3 on). Those of copy-webpack-plugin 5 (webpack 4, in the emit hook,
+  after the lockfile) and 6.0 – 6.2 (before it) do not: such a file counts as the package file with the same bytes
+  that the compilation depends on — a file dependency, or a file below a context dependency in `node_modules` (6.2
+  adds a copied directory only as one). webpack 5 minimizes such copies like other assets, so they are matched just
+  before its optimize stages. An asset that is a chunk's or a module's file is no copy; a copy that was transformed
+  before that matches none.
 - **builds that write nothing themselves** (Vite, Rollup, Rolldown): Vite's worker bundles (emitted as files of the
   main build, or inlined with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker
   (vite-plugin-pwa), any build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write:

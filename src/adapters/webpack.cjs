@@ -19,6 +19,7 @@ const CLOSED = Symbol.for('bundle-lockfile.webpack.closed');   // compiler: its 
 const SOURCE = Symbol('bundle-lockfile.webpack.source');       // compilation: { src: lockfile content, early: asset names then, disk, asset }
 const BUNDLED = Symbol('bundle-lockfile.webpack.bundled');     // compilation: its bundledFiles()
 const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: files its latest build copied in the emit hook
+const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: copiedUnnamed() before the assets were optimized
 const NEXT_WEBPACK = /[\\/]next[\\/]dist[\\/]compiled[\\/]webpack[\\/]webpack(\.js)?$/;
 
 // Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (the path
@@ -99,6 +100,7 @@ function sourcesOf(compilation, modules, into = new Set()) {
 //   file that is no module of the parent (html-webpack-plugin 4's template).
 // - files copied into the output verbatim (copy-webpack-plugin): asset info.sourceFilename, relative to the
 //   compiler's context (webpack >= 4.40 has asset info). webpack's asset modules set it too; those are in a chunk anyway.
+//   Copies that do not name their source: see copiedUnnamed.
 function bundledFiles(compilation) {
   const files = new Set();
   const ship = (c, chunks) => {
@@ -122,6 +124,68 @@ function bundledFiles(compilation) {
 
   for (const { info } of compilation.getAssets ? compilation.getAssets() : []) {
     if (info && typeof info.sourceFilename === 'string') files.add(path.resolve(compilation.compiler.context, info.sourceFilename));
+  }
+  const unnamed = compilation[UNNAMED] || copiedUnnamed(compilation);
+  for (const [name, f] of unnamed) if (hasAsset(compilation, name)) files.add(f);
+  return files;
+}
+
+// Files in packages the compilation depends on, by size: its file dependencies, and the files below its context
+// dependencies in node_modules (copy-webpack-plugin 6.2 adds a copied directory only as one; at most MAX_CONTEXT_FILES
+// entries are looked at). Empty files are left out: they would equal every empty asset.
+const MAX_CONTEXT_FILES = 20000;
+function packageFilesBySize(compilation) {
+  const bySize = new Map(), seen = new Set();
+  const add = (f) => {
+    if (typeof f !== 'string' || seen.has(f)) return;
+    seen.add(f);
+    let size;
+    try { size = packageRoot(f) && fs.statSync(f).size; } catch { return; }
+    if (size) bySize.set(size, [...(bySize.get(size) || []), f]);
+  };
+  for (const f of compilation.fileDependencies || []) add(f);
+  let entries = 0;
+  const walk = (dir) => {
+    let list;
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of list) {
+      if (++entries > MAX_CONTEXT_FILES) return;
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f); else if (e.isFile()) add(f);
+    }
+  };
+  for (const d of compilation.contextDependencies || []) if (typeof d === 'string' && d.split(path.sep).includes('node_modules')) walk(d);
+  return bySize;
+}
+
+// Files copied into the output before the lockfile is rendered, without naming their source: copy-webpack-plugin
+// 6.0 - 6.2 add them while webpack processes the assets (additionalAssets), without info.sourceFilename (6.1, 6.2:
+// only info.copied; 6.3 names it). An asset that is no chunk's file and no module's, whose bytes are those of a
+// package file the compilation depends on (see packageFilesBySize), is a copy of it. webpack 5 then minimizes such
+// copies like any asset (they are not marked as minimized): the plugin looks at them before the optimize stages.
+// Returns Map(asset name -> package file).
+function copiedUnnamed(compilation) {
+  const own = new Set();
+  for (const chunk of compilation.chunks || []) for (const f of [...(chunk.files || []), ...(chunk.auxiliaryFiles || [])]) own.add(f);
+  for (const m of compilation.modules || []) if (m && m.buildInfo && m.buildInfo.assets) for (const n of Object.keys(m.buildInfo.assets)) own.add(n); // webpack 4: emitFile
+  const unnamed = [];
+  for (const name of assetNames(compilation)) {
+    const a = !own.has(name) && assetOf(compilation, name);
+    if (!a || (a.info && typeof a.info.sourceFilename === 'string')) continue;
+    let size;
+    try { size = a.source.size(); } catch { continue; }
+    if (size) unnamed.push({ a, size });
+  }
+  const files = new Map();
+  if (!unnamed.length) return files;
+  const bySize = packageFilesBySize(compilation);
+  for (const { a, size } of unnamed) {
+    const candidates = bySize.get(size);
+    if (!candidates) continue;
+    let buf;
+    try { const s = a.source.source(); buf = Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { continue; }
+    const copy = candidates.find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
+    if (copy) { files.set(a.name, copy); config.debug('webpack: asset', a.name, 'is a copy of', copy); }
   }
   return files;
 }
@@ -213,12 +277,7 @@ function copiedInEmit(compilation, early, previous, readAsset, done) {
   if (!unnamed.length && !previous.size) return done(files);
   const deps = new Set(compilation.fileDependencies || []);
   for (const [name, f] of previous) if (!hasAsset(compilation, name) && deps.has(f)) files.set(name, f);
-  const bySize = new Map(); // size -> dependencies in node_modules
-  for (const f of unnamed.length ? deps : []) {
-    let size;
-    try { size = packageRoot(f) && fs.statSync(f).size; } catch { continue; }
-    if (size) bySize.set(size, [...(bySize.get(size) || []), f]);
-  }
+  const bySize = unnamed.length ? packageFilesBySize(compilation) : new Map();
   if (!bySize.size) return done(files);
   let pending = unnamed.length;
   for (const name of unnamed) {
@@ -252,6 +311,13 @@ class BundleLockfilePlugin {
       if (compilation.emitAsset) compilation.emitAsset(this.file, src); else compilation.assets[this.file] = src;
     };
     compiler.hooks.thisCompilation.tap(NAME, (compilation) => {
+      // webpack 5: files copied without naming their source, before the optimize stages change their bytes
+      const C = compiler.webpack && compiler.webpack.Compilation;
+      if (compilation.hooks.processAssets && C && typeof C.PROCESS_ASSETS_STAGE_OPTIMIZE === 'number') {
+        compilation.hooks.processAssets.tap({ name: NAME, stage: C.PROCESS_ASSETS_STAGE_OPTIMIZE - 1 }, () => {
+          try { compilation[UNNAMED] = copiedUnnamed(compilation); } catch (e) { config.warn('webpack: could not check copied files:', e); }
+        });
+      }
       // After processAssets: its taps with additionalAssets: true also get the assets added in any later stage,
       // so compression-webpack-plugin with deleteOriginalAssets would replace the lockfile by a .gz no SBOM
       // tool reads. webpack 4's afterOptimizeAssets (in webpack 5 the same hook) runs after every plugin's
