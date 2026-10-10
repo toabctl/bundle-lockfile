@@ -87,8 +87,8 @@ Also listed:
   `?worker&inline`.
 - **style sheets `@import`ed from packages**, which are inlined and so are no modules: CSS, Sass, Less and Stylus in
   Vite, Rollup and Rolldown; Sass, Less, postcss-import and Tailwind through their webpack loaders. Not in Rolldown's
-  `build()` and `watch()` (which `vite build --watch` on Vite 8 calls), nor with a hand-configured plugin in a
-  Rolldown or Vite 8 build.
+  `build()` and `watch()` (which `vite build --watch` on Vite 8 calls), nor with a plugin from the config in a
+  Rolldown or Vite 8 build without the preload.
 - **files other plugins write into a Vite, Rollup or Rolldown output after the build**, e.g. vite-plugin-pwa's `sw.js`
   and vite-plugin-static-copy's copies (see [limits](docs/internals.md#files-written-after-the-build)).
 - **files copied out of packages** with fs's copy functions (`copyFile`, `cp`, also through fs-extra and graceful-fs)
@@ -231,11 +231,13 @@ const { bundleLockfile } = createRequire(import.meta.url)('/opt/bundle-lockfile/
 export default { plugins: [bundleLockfile('vite')] };
 ```
 
-With `NODE_OPTIONS` set too, such a build does not get the plugin a second time. Without the preload, files copied out
-of packages with fs are not recorded, and other builds — Vite's worker bundles, workbox-build's Rollup build,
-processes the build starts — do not get the plugin. In Rolldown builds (also Vite 8) a plugin from the config does not
-list style sheets `@import`ed from packages, even with `NODE_OPTIONS` set: Rolldown provides them only to the caller
-of `rolldown()`, and the preload adds no second plugin.
+With `NODE_OPTIONS` set too, such a build does not get the plugin a second time. The plugin from the Vite config adds
+itself to `worker.plugins`, so Vite's workers count. Without the preload:
+- files copied out of packages with fs are not recorded;
+- builds with plugins of their own (workbox-build's service worker, and on Vite 8 @vitejs/plugin-legacy's polyfills)
+  and processes the build starts do not get the plugin;
+- in Rolldown builds (also Vite 8), style sheets `@import`ed from packages are not listed: Rolldown provides them only
+  to the caller of `rolldown()`, which the preload wraps.
 
 ### Debug output and warnings
 

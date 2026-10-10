@@ -125,7 +125,7 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
 - `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite` (and `rollup,rolldown`, which leaves Vite hooked; with
   SvelteKit and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in
   Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS` (without and with the
-  node shim), the plugin in the config
+  node shim), the plugin in the config (also with workers, `@import`s and `NODE_OPTIONS`)
 - vite-plugin-singlefile, `build.write: false`, library mode with two formats, SSR builds (dependencies external, and
   bundled with `ssr.noExternal`), `vite build --app` (Vite 6 and 8), two `vite build` processes writing one output
   directory
