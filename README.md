@@ -1,178 +1,48 @@
 # bundle-lockfile
 
 Records which npm packages end up in a JavaScript bundle and writes them as a `package-lock.json` next to the build
-output — without changing the project's build config. Supports webpack 4 and 5 (also the copy inside Next.js), and
+output, without changing the project's build config. Supports webpack 4 and 5 (also the copy inside Next.js), and
 Vite, Rollup and Rolldown (also inside SvelteKit).
 
 A lockfile shipped with an application lists everything that was *installed* for the build: build tools, unused and
-tree-shaken packages included. `bundle-lockfile` lists only the packages whose files the bundler put into the output,
-so SBOM tools such as [syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report
-what is shipped. The file is npm's own lockfile format, in the part of it both read (see [Format](#format)).
+tree-shaken packages included. bundle-lockfile lists only the packages whose files the bundler put into the output, so
+SBOM tools such as [syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report
+what is shipped. The file is npm's own lockfile format, in the part of it both tools read ([format](docs/format.md)).
 
-## What is listed
-
-The bundler decides what is in the bundle, at build time: starting from the entry points it follows `import`,
-`require()` and `import()`, leaves out the modules it can drop — ES modules whose exports are unused and that have no
-side effects, declared with `sideEffects` in `package.json` (webpack 5, Rollup and Rolldown also analyze the code) —
-and writes the rest into output chunks. bundle-lockfile takes the modules of the chunks the build writes, maps each
-module's file to the npm package it belongs to, and lists those packages.
-
-That is *shipped* code, not necessarily *executed* code: lazily loaded chunks that are never opened, branches that
-never run, and a package of which only one function is used are all listed. A module that is in a chunk counts even
-if none of its code remains: `d3`, which only re-exports `d3-*`, was listed for GitLab (webpack 4) and LibreChat
-(Vite) although the source maps show none of its code, and so was `d3-drag` in GitLab, whose code the minifier
-removed.
-
-What is shipped depends on the import graph, not on whether a package is declared under `dependencies` or
-`devDependencies`. With this project (from the tests):
+What is shipped depends on the import graph, not on `dependencies` vs. `devDependencies`. A project from the tests
+declares:
 
 ```json
 "dependencies":    { "lodash-es": "4.18.1", "is-number": "7.0.0" },
 "devDependencies": { "webpack": "5.111.1", "webpack-cli": "7.2.3", "classnames": "2.5.1", "left-pad": "1.3.0" }
 ```
 
-where the source code imports only `lodash-es` and `classnames`:
+Its source code imports only `lodash-es` and `classnames`:
 
 | | reports |
 |---|---|
 | syft on the project's `package-lock.json` | `lodash-es`, `is-number` (not shipped) and the project itself — but not `classnames` (shipped; skipped as a devDependency) |
-| syft on `bundle-lockfile`'s output | `lodash-es`, `classnames` |
+| syft on bundle-lockfile's output | `lodash-es`, `classnames` |
 
-Besides the modules of the written chunks, a lockfile lists the packages of:
+## Quick start
 
-- **webpack child compilations whose output is shipped**: emitted next to the bundle (workers built by
-  `worker-loader`, workbox's `InjectManifest` service worker) or inlined into a bundled module (`worker-loader`'s
-  `inline: 'no-fallback'`). Child compilations that only run at build time (html-webpack-plugin's template,
-  mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted.
-- **files copied verbatim into a webpack output**, e.g. by `copy-webpack-plugin` (6.1 and later), whose assets record
-  the file they were copied from. Those of copy-webpack-plugin 5 (webpack 4) do not: such a file counts as the file among the
-  compilation's file dependencies in `node_modules` with the same bytes (a copy that was transformed on the way
-  matches none).
-- **builds that write nothing themselves** (Vite, Rollup, Rolldown): Vite's worker bundles (emitted as files of the main
-  build, or inlined with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker
-  (vite-plugin-pwa), any build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write: false`).
-  Their chunks' packages are kept in memory, in the process, and listed where the same bytes end up in a written output
-  (a chunk or JavaScript asset with that content), or where a module imports the build's entry file with a query
-  (`?worker&inline`).
-- **style sheets that a style sheet `@import`s from a package** (CSS, Sass, Less, Stylus; inlined into it, so they are
-  no modules): in Vite, Rollup and Rolldown builds the style files among the build's watch files. Rolldown provides
-  those only on the build object `rolldown()` returns, so Rolldown's `build()` and `watch()` functions — which `vite
-  build --watch` on Vite 8 calls — do not list them. In webpack builds the style files among the file dependencies of a
-  shipped style module, which its loaders record: Sass partials (sass-loader), Less `@import`s (less-loader),
-  postcss-import's and Tailwind's style sheets (postcss-loader).
-- **files other plugins write into a Vite, Rollup or Rolldown output after the build** (in a `closeBundle` hook that
-  runs before bundle-lockfile's): JavaScript files with the bytes of a chunk of a build that writes nothing itself
-  (vite-plugin-pwa's `sw.js` and `workbox-<hash>.js`), and copies of package files (vite-plugin-static-copy). Only
-  files modified since shortly before the build started count (2 s, for coarse file-system timestamps); at most
-  20,000 entries of the output directory are looked at, files over 20 MiB are compared only if this process copied
-  them with fs, and an output directory that contains the working directory is not looked at. Rollup runs
-  `closeBundle` on `bundle.close()` (Vite after the write): a programmatic build that never closes its bundle keeps
-  the lockfile written after its output.
-- **copies out of packages** (every bundler): `fs.copyFile`, `fs.copyFileSync`, `fs.cp`, `fs.cpSync` and their
-  `fs.promises` versions are wrapped to remember, in the process, which file in `node_modules` a file outside of it
-  was copied from (fs-extra and graceful-fs call them, so their copies count). A bundled file, or one written into a
-  Vite/Rollup/Rolldown output after the build, that still has the bytes of its source lists the source's package. A
-  file written into such an output after the build by another process counts if its path in the output contains
-  `node_modules/<package>/` and it has the bytes of that package's file there.
-- **nested bundles**: a bundled file outside `node_modules` that another Vite, Rollup or Rolldown build wrote, e.g.
-  GitLab's Vite-built "island" `ee/frontend_islands/apps/duo_next/dist/main.js` (Vue inlined), which webpack bundles
-  as part of its own code. See [Nested bundles](#nested-bundles).
-
-webpack: a module counts as the file webpack itself names it by (its `nameForCondition`: the path `module.rules`
-match it against, also used by `splitChunks` cache-group tests): its resource, or the match resource of a
-`<name>!=!<loaders>!<file>` request. Loaders that generate a module from a placeholder file name it that way:
-vanilla-extract's CSS reads a placeholder in `@vanilla-extract/webpack-plugin`, which is therefore not listed. A
-package file pulled in under a first-party match resource is not listed either.
-
-**Not listed**:
-- packages the bundler leaves out: externals, CDN scripts, unresolvable dynamic `require(variable)`
-- packages a server loads from `node_modules` at runtime instead of bundling them (see [Next.js](#nextjs),
-  [SvelteKit](#sveltekit))
-- files other build steps put into the output without going through the bundler, e.g. a
-  `cp node_modules/x/dist/x.js dist/` in a script
-- files copied out of a package by reading and writing them (not with fs's copy functions), or by another process
-  (into a Vite, Rollup or Rolldown output after the build: unless its path there contains `node_modules/<package>/`),
-  e.g. `public/` files taken from a package once, by hand
-- a package whose only use is a small constant that webpack (>= 5.108, `optimization.inlineExports`, on by default
-  in production) inlined at the use site, leaving its side-effect-free module in no chunk
-- npm packages vendored without a `package.json` of their own: inside another package (e.g.
-  `@grafana/google-sdk/dist/esm/node_modules/lodash`) their files count as that package, with a warning naming each;
-  outside `node_modules` (a copied `jquery.min.js`, Grafana's Jaeger UI components) they are first-party. Only their
-  code tells what they are (see [Output](#output) for vendored copies that have a `package.json`)
-- the bundler's own runtime code it generates into every bundle - webpack 5's runtime modules, Vite's preload helper
-  and modulepreload polyfill, Rolldown's runtime, @rollup/plugin-commonjs's helpers: they are virtual modules, no files
-  of a package, so `webpack`, `vite`, `rolldown` are not listed for them (webpack 4's `webpack/buildin/*` modules are
-  files of webpack: webpack 4 builds list it)
-- (listed although not shipped: a Sass partial with only variables that a style sheet `@import`s lists its package,
-  although it adds no bytes; a Vite SSR build lists the packages of the style sheets its modules import, although it
-  emits no CSS - plugins such as vite-plugin-css-injected-by-js put a build's CSS into its JavaScript, so a style
-  module counts also without a CSS file)
-
-## Usage
-
-Preload it into the build via `NODE_OPTIONS`; every supported bundler that runs in that process or in a process it
-starts (which inherits `NODE_OPTIONS`) is hooked automatically. No config changes, nothing to install into the
-project:
+Preload it into the build with `NODE_OPTIONS`. Every supported bundler in that process, or in a process it starts
+(which inherits `NODE_OPTIONS`), is hooked (on Node.js before 24.12, see [Vite, Rollup,
+Rolldown](#vite-rollup-rolldown)). Nothing is installed into the project.
 
 ```sh
-git clone --depth 1 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
+git clone --depth 1 --branch v0.1.1 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
 export NODE_OPTIONS="--require /opt/bundle-lockfile/src/register.cjs"
 
-npm run build                    # or any other way the build is started:
-yarn build                       # yarn 1, yarn 3/4 (also Plug'n'Play)
-pnpm run build
-npx webpack
-./node_modules/.bin/webpack
-npx vite build
-npx next build --webpack         # Next.js 16 (12-15 build with webpack by default)
+npm run build                    # or however the build is started: yarn build, pnpm run build, npx vite build,
+                                 # ./node_modules/.bin/webpack, npx next build --webpack (Next.js 16), ...
+
+syft scan dir:dist -q            # reads dist/bundle-lockfile/package-lock.json
 ```
 
-On Node.js before 24.12 (25.2 on 25), Vite — and Rollup and Rolldown imported as ES modules — are hooked only in
-processes whose main script belongs to a package that is or depends on `vite`, `rollup`, `rolldown` or
-`rolldown-vite`, or that have another loader-thread hook (Yarn Plug'n'Play's); a programmatic build from elsewhere needs
-`BUNDLE_LOCKFILE_ESM_HOOKS=async` (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)). Rollup's CommonJS build
-(`require('rollup')`, the `rollup` command line) is hooked in every process.
-
-### Keep existing `NODE_OPTIONS`
-
-Append instead of replacing, e.g. when the build already raises the heap limit:
-
-```sh
-export NODE_OPTIONS="--max-old-space-size=16384 --require /opt/bundle-lockfile/src/register.cjs"
-```
-
-Build scripts that set `NODE_OPTIONS` themselves keep the `--require` only if they pass the old value on: a
-default-if-unset script like `NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" webpack` does, a plain
-`NODE_OPTIONS=--max-old-space-size=10240 webpack` (or `cross-env NODE_OPTIONS=... webpack`) drops it. For such
-projects, also put the node shim first in `PATH`:
-
-```sh
-export PATH="/opt/bundle-lockfile/bin:$PATH"
-```
-
-`bin/node` puts the `--require` back into `NODE_OPTIONS`, keeping what else is set (a `--require` of the same file
-through another path, e.g. a symlinked install directory, also quoted with spaces, counts as there, and so does one of
-another copy of bundle-lockfile: one preload is enough, see Next.js below), and runs the real `node`: the first one
-in `PATH` that is neither this shim (nor a copy of it) nor a script it has already passed through on this start.
-Every `node` started through `PATH` — by npm, pnpm, yarn, bun, `cross-env` or a shell — then loads bundle-lockfile.
-In yarn's own process, `process.execPath` is the shim too: yarn runs scripts with a temporary `node` wrapper first in
-`PATH` that runs yarn's `process.execPath`, which leads back to the shim, which then skips the wrapper.
-Version managers whose `node` is a script (asdf's and nodenv's shims) are run like such a wrapper; nodenv and asdf
-also put the real `node`'s directory first in `PATH` for what they start, so a `node` started from there through
-`PATH` bypasses the shim and keeps the `NODE_OPTIONS` it gets. So does a `node` started by its absolute path.
-Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack) and npm (Vite).
-
-**Next.js 15.0 – 16.3: use a single `--require`.** These versions rewrite `NODE_OPTIONS` for their build workers and
-merge repeated flags: `--require a.cjs --require b.cjs` reaches the workers as the single path `"a.cjs b.cjs"` and the
-build fails; with `--require=a.cjs --require=b.cjs` only the last one reaches them
-([vercel/next.js#96582](https://github.com/vercel/next.js/issues/96582), fixed in 16.4.0 by
-[#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15). Next 12–14 do not parse the flags. If
-you need several preloads, require the others from one file.
-
-### Check the result with syft or Trivy
+For an app that bundles `debug`, `lodash-es`, `nanoid` and `yallist`:
 
 ```console
-$ syft scan dir:dist -q
 NAME       VERSION  TYPE
 debug      2.6.9    npm
 lodash-es  4.18.1   npm
@@ -182,29 +52,106 @@ nanoid     3.3.20   npm
 yallist    5.0.0    npm
 ```
 
+Pin a [release](https://github.com/toabctl/bundle-lockfile/releases): the build runs this code. Trivy reads the
+lockfile too: `trivy fs --format cyclonedx --output sbom.cdx.json dist`. bundle-lockfile's own failures are warnings
+that never fail the build, so check in CI that the lockfile was written (e.g. `test -f
+dist/bundle-lockfile/package-lock.json`).
+
+Tested on Linux (Wolfi) with Node.js 24 and 26, and with Node.js 22 for Vite, Rollup, Rolldown, SvelteKit, nested
+bundles and webpack 5 under Yarn Plug'n'Play. Other versions and systems are untested. The node shim needs a POSIX
+`sh`.
+
+## What is listed
+
+The bundler decides what is in the bundle. From the entry points it follows `import`, `require()` and `import()`,
+drops ES modules whose exports are unused and that have no side effects (declared with `sideEffects` in
+`package.json`; webpack 5, Rollup and Rolldown also analyze the code), and writes the rest into chunks.
+bundle-lockfile takes the modules of the chunks the build writes, maps each module's file to its npm package, and
+lists those packages.
+
+That is *shipped* code, not necessarily *executed* code. Lazily loaded chunks that are never opened, branches that
+never run, and a package of which only one function is used are all listed. A module in a chunk counts even if none of
+its code remains: `d3`, which only re-exports `d3-*`, was listed for GitLab (webpack 4) and LibreChat (Vite) although
+the source maps show none of its code.
+
+Also listed:
+- **webpack child compilations whose output is shipped**: workers (`worker-loader`, also inlined) and workbox's
+  `InjectManifest` service worker. Child compilations that only run at build time (html-webpack-plugin's template,
+  mini-css-extract-plugin's loader, vanilla-extract's compiler) are not.
+- **files copied verbatim into a webpack output** by copy-webpack-plugin 6.1 and later, whose assets record their
+  source. copy-webpack-plugin 5 (webpack 4) records none: its copies count if they have the bytes of a file in
+  `node_modules` among the compilation's file dependencies.
+- **output of builds that write nothing themselves**: Vite's workers, @vitejs/plugin-legacy's polyfills,
+  workbox-build's service worker (vite-plugin-pwa), and any `generate()` or `build.write: false` build. Their packages
+  are listed where their bytes end up in a written output, or where a module imports their entry with
+  `?worker&inline`.
+- **style sheets `@import`ed from packages**, which are inlined and so are no modules: CSS, Sass, Less and Stylus in
+  Vite, Rollup and Rolldown; Sass, Less, postcss-import and Tailwind through their webpack loaders. Not in Rolldown's
+  `build()` and `watch()` (which `vite build --watch` on Vite 8 calls), nor with a hand-configured plugin in a
+  Rolldown or Vite 8 build.
+- **files other plugins write into a Vite, Rollup or Rolldown output after the build**, e.g. vite-plugin-pwa's `sw.js`
+  and vite-plugin-static-copy's copies (see [limits](docs/internals.md#files-written-after-the-build)).
+- **files copied out of packages** with fs's copy functions (`copyFile`, `cp`, also through fs-extra and graceful-fs)
+  in the same process as the build, in every bundler, as long as the copy has the bytes of its source.
+- **vendored copies**: a package copied into another package or outside `node_modules`, with its own `package.json`
+  ([rules](docs/format.md#which-package-a-file-belongs-to)).
+- **nested bundles**: a bundled file that another Vite, Rollup or Rolldown build wrote brings that build's packages
+  ([details](docs/format.md#nested-bundles)).
+
+Not listed:
+- packages the bundler leaves out: externals, CDN scripts, an unresolvable `require(variable)`;
+- packages a server loads from `node_modules` at runtime (see [Next.js](#nextjs), [SvelteKit](#sveltekit));
+- files put into the output without the bundler, e.g. `cp node_modules/x/dist/x.js dist/` in a script; files copied
+  out of a package by reading and writing them, or in another process (except files written into a Vite, Rollup or
+  Rolldown output after the build whose path there contains `node_modules/<package>/`), e.g. `public/` files taken
+  from a package once, by hand;
+- a package file webpack pulls in under a first-party match resource (`<name>!=!<loaders>!<file>`), e.g.
+  vanilla-extract's placeholder in `@vanilla-extract/webpack-plugin`;
+- a package whose only use is a small constant that webpack 5.108+ inlined (`optimization.inlineExports`, on by
+  default in production), leaving its module in no chunk;
+- vendored code without a `package.json`: inside a package it counts as that package (with a warning), outside
+  `node_modules` (a copied `jquery.min.js`) as first-party;
+- workspace packages and other linked first-party packages (their dependencies are listed);
+- the bundler's runtime code (webpack 5's runtime modules, Vite's preload helper and modulepreload polyfill,
+  Rolldown's runtime, @rollup/plugin-commonjs's helpers), which is generated, not a package's file. webpack 4's
+  `webpack/buildin/*` are files of webpack, so webpack 4 builds list `webpack`.
+
+Listed although not shipped: the package of a Sass partial with only variables that a style sheet `@import`s (it adds
+no bytes), and the packages of the style sheets a Vite SSR build imports, although it emits no CSS (plugins such as
+vite-plugin-css-injected-by-js put CSS into JavaScript, so style modules count without a CSS file).
+
+## Usage
+
+### Keep existing `NODE_OPTIONS`
+
+Append to `NODE_OPTIONS` instead of replacing it, e.g. when the build already raises the heap limit:
+
 ```sh
-trivy fs --format cyclonedx --output sbom.cdx.json dist
+export NODE_OPTIONS="--max-old-space-size=16384 --require /opt/bundle-lockfile/src/register.cjs"
 ```
 
-### See what it does
+### Build scripts that overwrite `NODE_OPTIONS`
 
-```console
-$ BUNDLE_LOCKFILE_DEBUG=1 npm run build
-[bundle-lockfile] webpack: patched Compiler from /app/node_modules/webpack/lib/Compiler.js
-[bundle-lockfile] webpack: applying to compiler (unnamed) output /app/dist via /app/node_modules/webpack/lib/Compiler.js
-...
-[bundle-lockfile] webpack: wrote /app/dist/bundle-lockfile/package-lock.json
+A script that sets `NODE_OPTIONS` itself keeps the `--require` only if it passes the old value on.
+`NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" webpack` does; `NODE_OPTIONS=--max-old-space-size=10240
+webpack` and `cross-env NODE_OPTIONS=... webpack` drop it. For such projects, also put the node shim first in `PATH`:
+
+```sh
+export PATH="/opt/bundle-lockfile/bin:$PATH"
 ```
 
-(More `patched Compiler` lines come from other processes that inherit `NODE_OPTIONS` and load webpack, e.g. Next.js's
-build workers; a process that loads webpack but never compiles writes nothing.) Every process also logs how Vite,
-Rollup and Rolldown are hooked, e.g. `[bundle-lockfile] ESM hooks: sync (Node 24.21.0)`; a Vite 8 build logs
-`[bundle-lockfile] vite: adding the plugin to a rolldown() call` (Vite 7: `rollup()`).
+`bin/node` puts the `--require` back into `NODE_OPTIONS`, keeping everything else, and runs the real `node`. So every
+`node` started through `PATH` — by npm, pnpm, yarn, bun, `cross-env` or a shell — loads bundle-lockfile.
+- It adds nothing if `NODE_OPTIONS` already preloads bundle-lockfile: the same file through another path (e.g. a
+  symlinked install directory, also quoted with spaces), or another copy of it. One preload is enough.
+- The real `node` is the first one in `PATH` that is neither the shim (nor a copy of it) nor a wrapper script it has
+  already passed through. Yarn's temporary `node` wrapper and asdf's and nodenv's shims are such scripts.
+- Not covered: a `node` started by its absolute path, or through a `PATH` that a version manager put the real `node`'s
+  directory in front of (nodenv and asdf do, for what they start). Those keep the `NODE_OPTIONS` they get.
+- `BUNDLE_LOCKFILE_REGISTER` names the `register.cjs` to preload; by default the shim looks for `../src/register.cjs`
+  and `../register.cjs` next to itself.
 
-Warnings are always printed, also without `BUNDLE_LOCKFILE_DEBUG`, e.g. for bundled code from a directory in
-`node_modules` without a `package.json` with name and version (once per process), a lockfile that could not be
-written or locked, `BUNDLE_LOCKFILE_INLINE=0` without an export directory, and a failing adapter (which never fails
-the build).
+Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack), and npm (Vite).
 
 ### In a melange package build
 
@@ -221,26 +168,19 @@ pipeline:
       yarn install --frozen-lockfile
       yarn build
       # ship the output - the lockfile is inside it
-      mkdir -p ${{targets.destdir}}/usr/share/myapp
-      cp -r dist ${{targets.destdir}}/usr/share/myapp/
+      mkdir -p ${{targets.contextdir}}/usr/share/myapp
+      cp -r dist ${{targets.contextdir}}/usr/share/myapp/
 ```
 
-An SBOM tool scanning the package contents (e.g. `syft scan dir:`) then finds the bundled npm packages in
+`syft scan dir:` on the package then finds the bundled packages in
 `usr/share/myapp/dist/bundle-lockfile/package-lock.json`. If the package also ships the project's own lockfile
-(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), syft reports the packages of both. syft does not read lockfiles
-in image scans by default: scanning the resulting container image needs
-`--select-catalogers +javascript-lock-cataloger`. Trivy reads no lockfiles in image scans at all (only SBOM files in
-the image, such as the APK SBOMs in `/var/lib/db/sbom/`, which melange generates without npm packages): `trivy image`
-does not report the bundled packages.
-
-The lockfile is part of the build output: if that output is served by a web server (e.g. a `public/assets`
-directory), the lockfile is publicly readable too. Steps that process every file of the output process it as well
-(SvelteKit's adapter-static with `precompress` writes `package-lock.json.gz` and `.br` next to it).
+(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), syft reports the packages of both. For image scans, see [SBOM
+tools](#sbom-tools).
 
 When the output does not ship as files — embedded into a Go binary (`go:embed`), packed into a jar, gzipped, or copied
-away by a step that drops the `bundle-lockfile/` directory (e.g. Next.js' standalone output) — write the lockfiles to
-an export directory as well, or only there (`BUNDLE_LOCKFILE_INLINE=0`, which also keeps them out of served
-directories), and install that directory:
+away without the `bundle-lockfile/` directory (e.g. Next.js' standalone output) — write the lockfiles to an export
+directory too, and install that directory. `BUNDLE_LOCKFILE_INLINE=0` writes them only there, which also keeps them
+out of served directories:
 
 ```yaml
   environment:
@@ -256,13 +196,19 @@ pipeline:
       cp -r /home/build/bundle-lockfile-export/. ${{targets.contextdir}}/usr/share/myapp/bundle-lockfile/
 ```
 
-Each lockfile lands at `<export dir>/<its path>`: relative to `BUNDLE_LOCKFILE_EXPORT_BASE` when it is below it,
-else its absolute path without the leading `/`. Here `/home/build/ui/dist/bundle-lockfile/package-lock.json` becomes
+Each lockfile lands at `<export dir>/<its path>`: relative to `BUNDLE_LOCKFILE_EXPORT_BASE` when it is below it, else
+its absolute path without the leading `/`. Here `/home/build/ui/dist/bundle-lockfile/package-lock.json` becomes
 `usr/share/myapp/bundle-lockfile/ui/dist/bundle-lockfile/package-lock.json` in the package.
 
-### Without NODE_OPTIONS
+### Served outputs
 
-The plugins can also be added to a config by hand. webpack:
+The lockfile is part of the build output. If that output is served (e.g. from `public/assets`), the lockfile is
+publicly readable too; `BUNDLE_LOCKFILE_INLINE=0` with an export directory keeps it out. Steps that process every file
+of the output process it too (SvelteKit's adapter-static with `precompress` writes `package-lock.json.gz` and `.br`).
+
+### The plugin in the config
+
+The plugins can also be added to a config by hand, without `NODE_OPTIONS`. webpack:
 
 ```js
 const path = require('path');
@@ -285,219 +231,44 @@ const { bundleLockfile } = createRequire(import.meta.url)('/opt/bundle-lockfile/
 export default { plugins: [bundleLockfile('vite')] };
 ```
 
-A build that has the plugin in its config does not get it a second time when `NODE_OPTIONS` is set too. Without the
-preload, files copied out of packages with fs (see above) are not recorded. In Rolldown builds (also Vite 8) a plugin
-from the config does not list style sheets `@import`ed from packages, also with `NODE_OPTIONS`: Rolldown provides them
-only on the build object `rolldown()` returns, which only the plugin bundle-lockfile adds itself gets.
+With `NODE_OPTIONS` set too, such a build does not get the plugin a second time. Without the preload, files copied out
+of packages with fs are not recorded, and other builds — Vite's worker bundles, workbox-build's Rollup build,
+processes the build starts — do not get the plugin. In Rolldown builds (also Vite 8) a plugin from the config does not
+list style sheets `@import`ed from packages, even with `NODE_OPTIONS` set: Rolldown provides them only to the caller
+of `rolldown()`, and the preload adds no second plugin.
 
-## Output
+### Debug output and warnings
 
-Each output gets `<output dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE`): webpack writes one per
-top-level compiler, into its `output.path` (placeholders such as `[fullhash]` resolved); Vite, Rollup and Rolldown one
-per output of a build that writes, into its `dir` (or the directory of its `file`; Rolldown without either: `dist/`).
-Builds that write nothing themselves and outputs below `node_modules` (e.g. Vite's dependency pre-bundling) get none.
-E.g. for a webpack build that bundles `debug` 2.6.9 (with its own `ms` 2.0.0) and `ms` 2.1.3:
-
-```json
-{
-  "lockfileVersion": 3,
-  "requires": true,
-  "packages": {
-    "": {},
-    "node_modules/debug": { "name": "debug", "version": "2.6.9", "license": "MIT" },
-    "node_modules/debug/node_modules/ms": { "name": "ms", "version": "2.0.0", "license": "MIT" },
-    "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" }
-  },
-  "bundle-lockfile": {
-    "v": 1,
-    "context": "../..",
-    "self": "dist/bundle-lockfile",
-    "writers": [
-      { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
-        "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms"] }
-    ]
-  }
-}
+```console
+$ BUNDLE_LOCKFILE_DEBUG=1 npm run build
+[bundle-lockfile] webpack: patched Compiler from /app/node_modules/webpack/lib/Compiler.js
+[bundle-lockfile] webpack: applying to compiler (unnamed) output /app/dist via /app/node_modules/webpack/lib/Compiler.js
+...
+[bundle-lockfile] webpack: wrote /app/dist/bundle-lockfile/package-lock.json
 ```
 
-- every key starts with `node_modules/`, as in npm's lockfiles (Trivy skips any other key): a package's real location
-  (symlinks resolved) relative to webpack's `context` or, for Vite, Rollup and Rolldown, the working directory, so
-  nested duplicate versions and pnpm's layout stay distinct — with a context below the project root (e.g. GitLab's)
-  without the leading `../`: `../node_modules/debug` is keyed `node_modules/debug`. A package elsewhere — in Yarn
-  Plug'n'Play's `.yarn/cache/<zip>/node_modules/`, in a workspace's own `packages/<ws>/node_modules/`, at a location
-  whose key without `../` another package has — is keyed `node_modules/<name>`, or `node_modules/<name>@<version>`
-  (then `-2`, `-3`, …) if that is taken
-- the package a file belongs to is the directory directly below the last `node_modules` in its path
-  (`node_modules/<name>` or `node_modules/@scope/<name>`), unless a **vendored copy** inside that package holds the
-  file: a directory whose `package.json` has a valid package name (as Trivy reads names), a version, is not private, is no VS Code extension's
-  (`publisher` with `engines.vscode`, which VS Code requires of every extension) and has a name no `package.json`
-  further out has (Next.js' `next/dist/compiled/@edge-runtime/cookies` is listed as `@edge-runtime/cookies`). Other
-  `package.json` files inside a package (`dist/esm/package.json`, the private `preact/hooks/package.json`,
-  socket.io-client's `build/esm/package.json` with its own name) are not packages; a directory below a `node_modules`
-  without a `package.json` with name and version (VS Code's stripped `node_modules` inside `@gitlab/web-ide`, a
-  library build's `dist/esm/node_modules/rxjs`) counts as the package around it, with a warning once per process
-- a vendored copy **outside** `node_modules` is listed too, by the same `package.json` rule: the innermost such
-  directory around a bundled file — GitLab's `vendor/assets/javascripts/vue-virtual-scroller` (imported through an
-  alias), a `third_party/` module directory — unless a first-party directory comes first: the build's context (webpack)
-  or working directory (Vite, Rollup, Rolldown) and every directory above it, the package of an entry module, the
-  members of the monorepo (package manager workspaces, `pnpm-workspace.yaml`, `lerna.json`, `rush.json`, Nx's
-  `project.json`), a directory linked into `node_modules` (also Yarn Plug'n'Play's workspaces, portals and links), a
-  private `package.json`, or one `BUNDLE_LOCKFILE_FIRST_PARTY` names. Files another build produced (nested bundles)
-  are that build's output. A note names each vendored copy once per process. Listing a package too many is preferred
-  over missing one: an in-repo library that is not private, has a version and is none of those is listed —
-  `BUNDLE_LOCKFILE_FIRST_PARTY=lib/**` leaves it out. Vendored code without a `package.json` (a copied
-  `jquery.min.js`, Grafana's Jaeger UI components) is not found, here or by syft, Trivy and the CycloneDX plugin
-- so is a package outside the project — outside the context and not in an ancestor directory's `node_modules`, e.g. in
-  Yarn's global cache (Yarn 4's default), pnpm's global virtual store or a shared store — whose real path differs
-  between machines
-- a package whose real location is outside `node_modules` — a workspace package, a `link:` or `portal:` dependency,
-  a `file:` directory dependency installed by npm as a symlink — is first-party and not listed, also with webpack's
-  `resolve.symlinks: false`; its dependencies are listed. Yarn 2+ (packs it into its cache) and pnpm (hard-links it
-  into `node_modules/.pnpm`) put a `file:` directory dependency inside `node_modules` instead, which makes it a listed
-  package
-- `name`, `version` and `license` come from each package's own `package.json` (also the legacy `license: {type}` and
-  `licenses: [...]` forms). `license` is one string — syft reads no `{type}` objects, Trivy no arrays of strings
-  (Trivy 0.70 reads no package at all from a lockfile with one) — several licenses as an SPDX expression:
-  `licenses: [{type: "MIT"}, {type: "Apache-2.0"}]` is `"(MIT OR Apache-2.0)"`. A directory in `node_modules` whose
-  `package.json` has no name or version, and no package around it, cannot be listed; a warning names it once per
-  process (only a debug message for directories starting with a dot, such as `node_modules/.cache`, where tools
-  generate files)
-- entries are sorted by name, version and key in code-unit order, so the same build writes the same bytes on every
-  machine, whatever its locale
-- the root entry has no name, so syft does not report the application itself as a package
-- syft's `javascript-lock-cataloger` reads it — in directory and file scans by default, in image scans only when
-  selected — unless its path is below a `node_modules` directory, which syft skips for `package-lock.json`. syft
-  reads this format only from files named exactly `package-lock.json`
-- Trivy's npm analyzer reads it in `trivy fs` and `trivy repo` scans; `trivy image` and `trivy rootfs` read no
-  lockfiles (see [In a melange package build](#in-a-melange-package-build))
+Each process that inherits `NODE_OPTIONS` and loads webpack logs its own `patched Compiler` line (e.g. Next.js's build
+workers); a process that never compiles writes nothing. Every process logs how Vite, Rollup and Rolldown are hooked,
+e.g. `ESM hooks: sync (Node 24.21.0)`. A Vite 8 build logs `vite: adding the plugin to a rolldown() call` (Vite 7:
+`rollup()`).
 
-The `"bundle-lockfile"` field is bundle-lockfile's own record; tools that read `package-lock.json` (syft, npm) ignore
-it, and it has no machine-specific paths (paths are relative to the lockfile, ids are hashes of the configuration):
-- `context`: the directory the keys are relative to, relative to the lockfile's directory (both as configured, so a context reached through a symlink stays `../..`)
-- `self`: the lockfile's directory relative to the context. A copy of the lockfile somewhere else — at another depth
-  (SvelteKit's adapters copy Vite's output from `.svelte-kit/output/` to `build/`), in another directory, or vendored
-  into another project — has a `context` that is not the project; `self` from there does not lead back to the copy,
-  so a reader knows it is one
-- `locations` (only if there are any): the location, relative to the context, of each package whose key is not its
-  location (`"node_modules/debug": "../node_modules/debug"`), so that another process finds the same package
-- `writers`: per writer (a webpack compiler, a Vite/Rollup/Rolldown output) its `id`, its `packages` (keys), up to 20
-  of its output `files` and the `count` of all of them, and — for Vite, Rollup and Rolldown — `outputs`: the SHA-256 of up to 500
-  of its JavaScript and CSS files, and `contents`: the packages in each of them (indices into its `packages`), for
-  [nested bundles](#nested-bundles)
-- `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
-  same package does not list it a second time
-- `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or
-  no longer where a record said (upgraded in place, reinstalled elsewhere, removed). Such a package is the one with
-  its name and version that has another key, if there is one; else it has a key of its own, `node_modules/<name>` (or
-  `@<version>`), as long as a writer of it is listed
-
-A copy of a lockfile is read like this whenever bundle-lockfile reads a record: a build writing into a directory that
-holds one, and a build bundling a file of a copied output (nested bundles, whose hashes are paths in the output and
-work in a copy of it). A recorded package's path is the package only while its `package.json` there still has its name
-and version, also for the builds of this process; the lockfile's `context` is never a copy's. A lockfile copied with
-`fs` (`copyFile`, `cp` and their sync and promise versions) in a process bundle-lockfile is loaded in — as a file, or
-in a directory if this process wrote it — is rewritten for where the copy is, and written again whenever its lockfile is, as long as the copy is unchanged — SvelteKit's
-adapters copy that way, so their copies are right where they are, also when files written after the build added
-packages after the copy. A copy made otherwise (`cp`, rsync, an image build) keeps its bytes, which syft and Trivy read
-as before.
-
-### Format
-
-The lockfile is npm's `package-lock.json` with `lockfileVersion: 3`
-([npm's documentation](https://docs.npmjs.com/cli/v11/configuring-npm/package-lock-json); npm writes it in
-[arborist's `shrinkwrap.js`](https://github.com/npm/cli/blob/latest/workspaces/arborist/lib/shrinkwrap.js)), with the
-fields syft and Trivy read and in the forms both read the same way:
-
-| Field | Written | |
-|---|---|---|
-| `lockfileVersion` | `3` | npm 9 and later write it; syft reads 1–3 (not npm's newer `4`, for patched packages) |
-| `requires` | `true` | as npm writes it |
-| `packages[""]` | `{}` | npm puts the project's name and version here; without a name syft does not report the application as a package |
-| `packages[<key>]` | every package | the key starts with `node_modules/` (see above) |
-| `.name` | always | npm writes it only where the key does not end in the name (aliases); syft and Trivy prefer it over the key |
-| `.version` | always | |
-| `.license` | if the package declares one | one string, an SPDX expression for several |
-| `bundle-lockfile` | with every write | bundle-lockfile's record (see above), which syft, Trivy and npm ignore |
-
-Not written: `resolved` and `integrity` (an SBOM gets no download location or hash of a package), `dependencies`,
-`peerDependencies` and `optionalDependencies`, and the install-time fields (`dev`, `optional`, `link`, `bin`,
-`engines`, …). The lockfile is an inventory of what is shipped, for SBOM tools, not a dependency graph: SBOM tools
-report the packages without relationships between them (Trivy calls every one `indirect`, as for any lockfile whose
-root entry declares no dependencies).
-
-| Tool | Reads it in | Tested |
-|---|---|---|
-| syft (`javascript-lock-cataloger`) | `dir:` and `file:` scans; image scans with `--select-catalogers +javascript-lock-cataloger`; not below a `node_modules` directory; only files named `package-lock.json` | Wolfi's current (unpinned; last: 1.54.1) |
-| Trivy (npm analyzer) | `trivy fs`, `trivy repo`; not `trivy image`, `trivy rootfs`; not below a `node_modules` directory; only files named `package-lock.json` | Wolfi's current (unpinned; last: 0.75.0; 0.70.0 too) |
-
-[`test/contract.cjs`](test/contract.cjs) writes lockfiles with every kind of key and license and requires both tools to
-report exactly their packages and licenses; every matrix case checks its lockfiles with both (see [Tests](#tests)).
-Changes to the format are listed in the release notes. Before this layout, keys were the locations (also
-`../node_modules/…` and `.yarn/cache/…`), and there was no `locations`: bundle-lockfile still reads such a record, and
-a v0.0.3 or older writing into the same directory reads every key as a location — it keeps every package, some
-possibly at a second key.
-
-### Several writers, one lockfile
-
-Builds that write to the same directory share its lockfile: it lists the packages of all of them. In one process
-(e.g. a webpack config array whose app and service worker both go to `dist/`, or plugin-legacy's two outputs) they
-build in parallel or rebuild in watch mode; separate processes (e.g. two `webpack` or `vite build` commands run by
-`concurrently` or `run-p`) find each other's writers in the lockfile on disk and keep their packages as long as one of
-the files recorded for them is still there. Each read-merge-write of the lockfile runs under a lock
-(`package-lock.json.lock` next to it, or next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`; one older than a
-minute is taken over; after 30 s of waiting the write goes ahead without it, with a warning) and replaces the file
-atomically, so no process reads a partly written one.
-
-- A writer's packages count once its output is written: a rebuild that fails and is not emitted (webpack's default in
-  production) leaves the packages of its previous output in the lockfile.
-- A webpack compiler is recognized by its configuration: name, entry, target and file name templates, per output
-  directory. A new compiler for the same configuration (e.g. a build restarted in the same process, or run again)
-  replaces the previous one's packages — in the same process once that one is closed (webpack < 5.17, without a
-  shutdown hook: no longer running); until then both are listed. A Vite/Rollup/Rolldown output is recognized by the kind of build (Vite,
-  Rollup, Rolldown), its input, its format, its position among the build's outputs and its entry file name template
-  (if it is a string).
-- Writers whose files are all gone are left out: e.g. when a webpack compiler's `output.clean` deleted what the
-  others had written (on its first build, except paths matching `clean.keep`). If one of its files is left, all its
-  packages stay. After a configuration change, a build into a directory that is not cleaned therefore keeps the
-  previous build's packages as long as one of its recorded files is still there — also when this build wrote a file
-  of the same name: listing a package too many is safer than missing one.
-- Where the output is written to the real disk, the lockfile is not a webpack asset: it is written once webpack has
-  written the compiler's output (`afterEmit`), so webpack's stats do not list it and plugins that process or upload
-  the assets (compression-webpack-plugin, deploy plugins) do not get it. With an in-memory output file system (e.g.
-  webpack-dev-middleware's) it is an asset, added after webpack 5's `processAssets` stages (webpack 4:
-  `afterOptimizeAssets`); if a plugin deletes it later (compression-webpack-plugin's `deleteOriginalAssets` on
-  webpack 4, which runs in the `emit` hook), it is emitted again. In-memory outputs are not shared across processes.
-
-### Nested bundles
-
-Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its JavaScript and CSS files (`outputs`) and the
-packages in each (`contents`): a chunk's are its modules' (not those of style sheets Vite took out of it into a CSS
-file), a CSS file's those of the style sheets that went into it and of every style sheet the build `@import`s from packages
-(which style sheet imports which is not known). For every bundled file outside
-`node_modules` — also one of a first-party package linked into it, e.g. a workspace package built by Vite, at its
-real location, whether the bundler resolved the link or kept it (webpack's `resolve.symlinks: false`, Vite's
-`resolve.preserveSymlinks`) — bundle-lockfile looks at `<dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE`; or its copy
-in the export directory) in the file's directory and each directory above it; in the first lockfile that records the
-file, a matching hash adds the packages in that file to this build's (all of the writer's packages if the lockfile
-records none per file) — in webpack, Vite, Rollup and Rolldown builds. So a build that bundles only an island's
-style sheet gets the packages in it, not those of the island's JavaScript. A file
-changed after its build is not attributed. The record travels with the output, so this works across processes, separate
-commands and machines. webpack lockfiles record no hashes: a webpack-built bundle that another build bundles is not
-attributed.
+Warnings and notes are always printed: bundled code from a `node_modules` directory without a `package.json` with name
+and version and a vendored copy that is listed (each once per process), a lockfile that could not be written or
+locked, `BUNDLE_LOCKFILE_INLINE=0` without an export directory, and a failing adapter (which never fails the build).
 
 ## Settings
 
 | Variable | Default | |
 |---|---|---|
-| `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json` — syft and Trivy only read files with exactly that name, and none below a `node_modules` directory |
-| `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [In a melange package build](#in-a-melange-package-build)) |
+| `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json`, outside `node_modules`: syft and Trivy read only files named `package-lock.json`, and none below `node_modules` |
+| `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [melange](#in-a-melange-package-build)) |
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
-| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): do not write the lockfile into the output directory, only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written; a warning says so) |
+| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR`, nothing is written; a warning says so) |
 | `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (empty, `0`, `false` and `off` mean off) |
-| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory, that are first-party: never listed as vendored copies (see [Output](#output)); `**`: no vendored copies outside `node_modules` |
-| `BUNDLE_LOCKFILE_REGISTER` | `../src/register.cjs` or `../register.cjs` next to the shim | the `register.cjs` the node shim (`bin/node`) puts into `NODE_OPTIONS` |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory, that are first-party: never listed as [vendored copies](docs/format.md#which-package-a-file-belongs-to); `**`: no vendored copies outside `node_modules` |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack`; `vite` (builds with Vite's plugins), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all` |
-| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite/Rollup/Rolldown are hooked (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)): `sync`, `async` or `off` instead of choosing by Node.js version (`sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads). `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
+| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup and Rolldown are hooked: `sync`, `async` or `off` instead of choosing by Node.js version (see [below](#vite-rollup-rolldown)). `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
+| `BUNDLE_LOCKFILE_REGISTER` | next to the shim | the `register.cjs` the node shim preloads |
 
 ## Supported
 
@@ -505,384 +276,103 @@ attributed.
 |---|---|---|
 | webpack | 4, 5 | webpack < 4 is ignored |
 | Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
-| Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown 1.0 release candidates before 8.0.12) | also rolldown-vite (Vite 7 on Rolldown) |
-| SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node, adapter-netlify (edge functions only with adapter-netlify 7); see [SvelteKit](#sveltekit) |
-| Rollup, Rolldown | Rollup 4 (from 4.0, also `@rollup/wasm-node`), Rolldown 1 (from 1.0) | builds through their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line; not the `rolldown` command line yet |
+| Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown; 1.0 release candidates before 8.0.12) | also rolldown-vite (Vite 7 on Rolldown) |
+| SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node, adapter-netlify (edge functions only with adapter-netlify 7) |
+| Rollup, Rolldown | Rollup 4 (from 4.0, also `@rollup/wasm-node`), Rolldown 1 (from 1.0) | their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line |
 
-Tested on Node.js 24 and 26, and 22 for Vite, Rollup, Rolldown, nested bundles, SvelteKit and webpack 5 under Yarn
-Plug'n'Play (Wolfi's `nodejs-24`,
-`nodejs-26` and `nodejs-22`; Next.js 12 itself does not build on Node.js 25 and later, which removed the `SlowBuffer`
-its compiled `jsonwebtoken` uses), with npm 8/9/10/11 and the npm on `PATH` (Wolfi's `npm`), npx, `turbo run` (turbo passes `NODE_OPTIONS` to its tasks, also in its strict env mode), direct `node_modules/.bin`
-calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), pnpm
-8/9/10/11/12 (10 also with its global virtual store) and bun for webpack, and npm, npx, pnpm 9/10/11 (10 also with its
-global virtual store), yarn 1, yarn 4 (Plug'n'Play, also with the global cache, and node-modules linker), bun and npm
-workspaces (an app built in its own directory)
-for Vite — see [`test/matrix.cjs`](test/matrix.cjs). yarn 2 is not tested: it calls `util.isDate`, which Node.js 23
-removed, when it sets the times of zip entries from dates (e.g. for `file:` dependencies).
+Tested with npm, npx, yarn 1/3/4 (also Plug'n'Play), pnpm 8–12, bun, `turbo run` and npm workspaces, in combinations
+per bundler — see [test/README.md](test/README.md#environments).
 
-Not yet: rspack, esbuild, Turbopack, the Rolldown command line, Bun's own runtime (`bun --bun`).
+Not supported yet: rspack, esbuild, Parcel, Turbopack, the `rolldown` command line, Bun's own runtime (`bun --bun`)
+and `Bun.build`. `vite dev`, `vite preview` and Vitest write no lockfile.
 
 ### Vite, Rollup, Rolldown
 
-Vite imports Rollup (Vite 5–7) and Rolldown (Vite 8) as ES modules, which `Module._load` does not see. bundle-lockfile
-replaces their public entry modules (`rollup/dist/es/rollup.js`, `rolldown/dist/index.mjs`) with a Node.js ESM hook
-by a module that re-exports everything and wraps `rollup()` / `watch()` and `rolldown()` / `watch()` / `build()`, and
-patches Rollup's CommonJS build when it loads (`require('rollup')`, the `rollup` command line, workbox-build), so that
-every such call gets one more plugin, last, unless it has one already. That plugin records the modules of every chunk
-when it is rendered (also of chunks a plugin removes later, e.g. vite-plugin-singlefile) and writes the lockfile after
-the output is written. `vite dev`, `vite preview` and Vitest write no lockfile: they build nothing with Rollup or Rolldown that is written
-outside `node_modules` (Vite 8's dependency pre-bundling writes to `node_modules/.vite`; Vite 5–7 pre-bundle with
-esbuild).
+Rollup's CommonJS build (`require('rollup')`, the `rollup` command line) is hooked in every process. Vite imports
+Rollup and Rolldown as ES modules, which needs a Node.js ESM hook:
+- Node.js 24.12, 25.2 and later: hooked in every process.
+- Older versions: hooked only in processes whose main script belongs to a package that is or depends on `vite`,
+  `rollup`, `rolldown` or `rolldown-vite` (the `vite` command, a build script of a project using Vite), or that have
+  another loader hook (e.g. Yarn Plug'n'Play's). A programmatic build from elsewhere needs
+  `BUNDLE_LOCKFILE_ESM_HOOKS=async`.
 
-The ESM hook depends on the Node.js version:
-- Node.js 24.12, 25.2 and later: `module.registerHooks`, in the same thread, in every process. Before those versions,
-  in-thread hooks next to any loader-thread hook (Yarn Plug'n'Play's, tsx's) crash the process (fixed by
-  [nodejs/node#60380](https://github.com/nodejs/node/pull/60380)).
-- Older versions with `module.register` (18.19, 20.6 and later): a loader thread, only in processes whose main script
-  belongs to a package that is or depends on `vite`, `rollup`, `rolldown` or `rolldown-vite` — the `vite` command, a
-  build script of a project using Vite, tools such as `headlamp-plugin` — or that have another loader-thread hook
-  (`--experimental-loader`, `--loader` or `--import` in `NODE_OPTIONS` or on the command line, e.g. Yarn Plug'n'Play's,
-  see below), because a loader thread costs time and memory in every process. `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it
-  in every process, `off` in none.
-
-The ESM hooks also see CommonJS modules that `Module._load` does not: Node.js loads a CommonJS module without it, and
-everything that module `require()`s, when a loader-thread hook provided its source. Yarn Plug'n'Play's does for the
-files in its zip cache on Node.js 22.22.3 and later 22.x, 24.15 and later 24.x, 25.7 and later and 26.x: Yarn's
-workaround ([yarnpkg/berry#7070](https://github.com/yarnpkg/berry/pull/7070), extended to 24.15 and 22.22.3 by #7104
-and #7141) for Node.js versions whose `fstat` failed on its file descriptors after
-[nodejs/node#61769](https://github.com/nodejs/node/pull/61769) and related loader changes (fixed by
-[nodejs/node#62835](https://github.com/nodejs/node/pull/62835) in 22.23.3, 24.16 and 26.1; Yarn keeps providing the
-source there) — there, webpack, Next.js' webpack and Rollup's
-CommonJS build would not be hooked (webpack-cli 7 `import()`s webpack; with Plug'n'Play even the main script is loaded
-that way on Node.js 22). For the files the adapters patch (webpack's `Compiler`, Next.js' webpack, Rollup's CommonJS
-build), the ESM hook appends a line to such a provided source that reports the module once it has run, as `Module._load`
-would; other modules and sources are left as they are. A loader-thread hook that is registered after bundle-lockfile's
-(by an `--import` that comes after the `--require`) and provides the source without calling the next hook hides it.
-
-### SvelteKit
-
-`vite build` runs SvelteKit's client and server builds and builds the service worker with a nested Vite build; each
-writes its lockfile below `.svelte-kit/output/` (`client/`: the page code, the runtime and the service worker's
-packages; `server/`: what the server bundles). The adapter then fills `build/`:
-- adapter-static copies the client output, with its lockfile, to `build/`.
-- adapter-node copies it to `build/client/`. SvelteKit 3 copies the server output to `build/server/`, with its
-  lockfile; adapter-node 5 (SvelteKit 2) bundles the server output once more with Rollup into `build/`, whose lockfile
-  lists what is bundled there, including the server output's packages (as a nested bundle) and adapter-node's own
-  files, which it copies to `.svelte-kit/adapter-node/` before bundling them (see copies out of packages above).
-- adapter-netlify copies the client output, with its lockfile, to `build/` and, for a serverless function, the server
-  output, with its lockfile, to `.netlify/server/` (5 and 6, SvelteKit 2) or `.netlify/v1/server/` (7, SvelteKit 3). An edge
-  function (`edge: true`) bundles the server output with all its dependencies: adapter-netlify 7 with Rolldown, whose
-  lockfile in `.netlify/v1/edge-functions/` lists them and adapter-netlify's own files (copied, see above);
-  adapter-netlify 5 and 6 with esbuild, which is not supported (no lockfile).
-
-Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
-`dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile —
-ship that `node_modules` (with its `package.json` files, or `package-lock.json`) for the SBOM, as with Next.js.
+The details are in [docs/internals.md](docs/internals.md#vite-rollup-rolldown).
 
 ### Next.js
 
-Next runs several compilers, so a build writes one lockfile per compiler output (below `distDir`, `.next` by default):
-`.next/bundle-lockfile/` (client), `.next/server/chunks/bundle-lockfile/` (server) and `.next/server/bundle-lockfile/`
-(edge-server: middleware and routes with `runtime = 'edge'`; without packages if there are none). With the App
-Router, the server output uses the React Next vendors (`next/dist/compiled/react`), which is listed as `next`; the
-client output lists `react` and `react-dom`.
+Next runs several compilers, so a build writes one lockfile per compiler output, below `distDir` (`.next` by default):
 
-A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, not the lockfiles: `out/` has none.
-Ship `.next/bundle-lockfile/package-lock.json` with it, or write the lockfiles to an export directory
-(`BUNDLE_LOCKFILE_EXPORT_DIR`). In this mode a custom `distDir` names the export destination; Next builds into `.next`
-anyway, so that is where the lockfiles are.
+| Lockfile directory | Output |
+|---|---|
+| `.next/bundle-lockfile/` | client |
+| `.next/server/chunks/bundle-lockfile/` | server |
+| `.next/server/bundle-lockfile/` | edge server: middleware and routes with `runtime = 'edge'` (without packages if there are none) |
 
-Next does not bundle many packages into the **server** output (Pages Router dependencies, packages in
-`serverExternalPackages`); the server loads them from `node_modules` at runtime. Next records those runtime files in
-`.next/server/**/*.nft.json` (in the test fixture's build: `ms` is only in the client lockfile, and `index.js.nft.json`
-lists `ms`, `uuid`, `react`, `react-dom`, … from `node_modules`). Such packages are in no bundle-lockfile; if
-`node_modules` is shipped with the server, they are covered by the installed `package.json` files there.
+- With the App Router, the server output uses Next's vendored React (`next/dist/compiled/react`), which is listed as
+  `next`; the client output lists `react` and `react-dom`.
+- Next does not bundle many server dependencies (Pages Router dependencies, `serverExternalPackages`): the server
+  loads them from `node_modules` at runtime, and Next records them in `.next/server/**/*.nft.json`. They are in no
+  bundle-lockfile. Ship `node_modules` with the server, and its installed `package.json` files cover them.
+- A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, but not the lockfiles. Ship
+  `.next/bundle-lockfile/package-lock.json` with it, or use an export directory (`BUNDLE_LOCKFILE_EXPORT_DIR`). In
+  this mode a custom `distDir` names the export destination; the lockfiles are in `.next` anyway.
+- The standalone output (`output: 'standalone'`) leaves the lockfiles out: use an export directory.
+- **Next.js 15.0 – 16.3: use a single `--require`.** These versions merge repeated flags when they rewrite
+  `NODE_OPTIONS` for their build workers: `--require a.cjs --require b.cjs` reaches them as the single path `"a.cjs
+  b.cjs"` and the build fails; with `--require=a.cjs --require=b.cjs` only the last one reaches them
+  ([vercel/next.js#96582](https://github.com/vercel/next.js/issues/96582), fixed in 16.4.0 by
+  [#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15). Next 12–14 do not parse the flags. If
+  you need several preloads, require the others from one file.
 
-## How it works
+### SvelteKit
 
-### Getting into the build
+`vite build` runs SvelteKit's client and server builds, and builds the service worker with a nested Vite build. Each
+writes its lockfile below `.svelte-kit/output/`: `client/` (the page code, the runtime and the service worker's
+packages) and `server/` (what the server bundles). The adapter then fills its output:
 
-`register.cjs`, preloaded with `--require`, runs before the build tool's own code. It installs a hook on
-`Module._load` (every `require()`) and, depending on the Node.js version (see [Vite, Rollup,
-Rolldown](#vite-rollup-rolldown)), an ESM load hook. Each recognizes a bundler's module when it is loaded and patches
-it so that every build gets bundle-lockfile's plugin — without a config change.
+| Adapter | Client | Server |
+|---|---|---|
+| adapter-static | copied to `build/`, with its lockfile | — |
+| adapter-node 6 (SvelteKit 3) | copied to `build/client/` | copied to `build/server/`, with its lockfile (which lists adapter-node, bundled into the server build) |
+| adapter-node 5 (SvelteKit 2) | copied to `build/client/` | bundled again with Rollup into `build/`; its lockfile lists the server output's packages ([nested bundle](docs/format.md#nested-bundles)) and adapter-node's own files, which it copies to `.svelte-kit/adapter-node/` first |
+| adapter-netlify 7 (SvelteKit 3) | copied to `build/` | serverless: copied to `.netlify/v1/server/`, with its lockfile; edge function: bundled with all its dependencies by Rolldown, lockfile in `.netlify/v1/edge-functions/` (also lists adapter-netlify's own files) |
+| adapter-netlify 5, 6 (SvelteKit 2) | copied to `build/` | serverless: copied to `.netlify/server/`, with its lockfile; edge function: bundled by esbuild, no lockfile |
 
-```mermaid
-flowchart LR
-  subgraph start["process start"]
-    direction TB
-    nodeopts["NODE_OPTIONS=--require register.cjs"]
-    shim["bin/node shim, first in PATH:<br/>puts the --require back"]
-    shim --> nodeopts
-  end
-  nodeopts --> register["register.cjs"]
-  register --> cjs["Module._load hook<br/>(hooks.cjs)"]
-  register --> esm["ESM load hook (hooks.cjs)<br/>registerHooks, in-thread: Node ≥ 24.12 / 25.2<br/>(safe next to other loaders from there)<br/>module.register, loader thread (esm-loader.mjs):<br/>older, in bundler processes"]
-  register --> copies["fs copy functions wrapped<br/>(core/copies.cjs)"]
+Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
+`dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile.
+Ship that `node_modules` (with its `package.json` files, or a `package-lock.json`), as with Next.js.
 
-  cjs -- "webpack/lib/Compiler.js<br/>(webpack-cli, webpack 4/5)" --> wpatch["Compiler.prototype.compile patched"]
-  cjs -- "next/dist/compiled/webpack<br/>(Next.js)" --> wpatch
-  cjs -- "rollup/dist/shared/rollup.js<br/>(rollup command line, workbox-build)" --> rpatch["rollup() / rollupInternal() wrapped"]
-  esm -- "rollup/dist/es/rollup.js (Vite 5-7)<br/>rolldown/dist/index.mjs (Vite 8)" --> wrap["entry module replaced by a wrapper<br/>(esm-wrap.cjs): rollup() rolldown()<br/>watch() build() wrapped"]
+## SBOM tools
 
-  wpatch -- "every top-level compiler,<br/>on its first compile()" --> wplugin["BundleLockfilePlugin<br/>(adapters/webpack.cjs)"]
-  rpatch -- "every build" --> rplugin["bundle-lockfile Rollup plugin,<br/>appended last (adapters/rollup.cjs)"]
-  wrap -- "every build" --> rplugin
-```
+| | syft | Trivy |
+|---|---|---|
+| directory or file scans (`syft scan dir:` / `file:`, `trivy fs`, `trivy repo`) | yes | yes |
+| image scans (and `trivy rootfs`) | only with `--select-catalogers +javascript-lock-cataloger` | no: `trivy image` and `trivy rootfs` read no lockfiles (melange's APK SBOMs, which they read, carry no npm packages) |
+| a lockfile below `node_modules`, or not named `package-lock.json` | no | no |
 
-### What a build does
+The format, keys, licenses and bundle-lockfile's own record are described in [docs/format.md](docs/format.md).
 
-Both plugins answer the same question — which source files are in the output this build writes? — and hand the
-files to the core, which turns them into packages and the lockfile.
+## Troubleshooting: no lockfile
 
-```mermaid
-sequenceDiagram
-  participant B as webpack compiler
-  participant P as BundleLockfilePlugin
-  participant C as core
-  participant D as disk
-  B->>P: thisCompilation
-  B->>P: afterProcessAssets (webpack 4: afterOptimizeAssets)
-  P->>P: source files: modules of the chunks (also of shipped child compilations), copied assets
-  P->>C: packages of those files, record them for the output directory (not yet written)
-  B->>D: emit: writes the output files
-  B->>P: afterEmit
-  P->>P: files copied in the emit hook (copy-webpack-plugin 5)
-  P->>C: the build is written, drop writers whose files are gone
-  C->>D: under the lock: read the lockfile, merge, write it (and the export copy)
-```
+- Look for `[bundle-lockfile] WARNING:` on stderr: a lockfile that could not be written or locked, a failing adapter.
+- Check that `NODE_OPTIONS` reaches the bundler: `BUNDLE_LOCKFILE_DEBUG=1` logs each bundler it patches and each
+  lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
+  shim](#build-scripts-that-overwrite-node_options). `BUNDLE_LOCKFILE_DISABLE` may be set.
+- The bundler is not supported: Turbopack (Next.js 16's default; use `next build --webpack`), esbuild, the `rolldown`
+  command line, rspack.
+- A programmatic build that imports Vite, Rollup or Rolldown as ES modules, on Node.js before 24.12 (25.2 on 25), from
+  a package that does not depend on them, needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`.
+- Outputs below `node_modules`, builds that write nothing themselves, `vite dev`, `vite preview`, Vitest, and a
+  webpack build that failed and emitted nothing get no lockfile.
+- `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing.
+- A step after the build dropped it: Next.js' static export and standalone output, a copy of only some files. Use an
+  export directory.
 
-(This is the real disk; with an in-memory output file system the lockfile is a webpack asset, added in
-`afterProcessAssets`, and written again in `afterEmit` only if other writers share it or files were copied in the emit
-hook; the export copy is written after every build.)
+## More
 
-```mermaid
-sequenceDiagram
-  participant B as Rollup / Rolldown / Vite build
-  participant P as bundle-lockfile plugin
-  participant C as core
-  participant D as disk
-  B->>P: buildStart
-  B->>P: renderChunk, for every chunk of every output
-  P->>P: module ids of the chunk
-  B->>P: generateBundle (last)
-  alt only generates (worker, legacy polyfills, generate()) or output below node_modules
-    P->>C: keep each chunk's packages in memory, by content and by entry file
-  else writes
-    P->>P: source files: chunk modules, assets' original files, style files among the watch files
-    P->>C: packages, plus those of in-memory builds whose bytes are in this bundle or whose entry a module imports with a query, recorded with the hashes and packages of its JS and CSS files
-  end
-  B->>D: writes the output files
-  B->>P: writeBundle (last)
-  P->>C: the output is written, drop writers whose files are gone
-  C->>D: under the lock: read the lockfile, merge, write it (and the export copy)
-  B->>P: closeBundle (last, after the other plugins')
-  P->>P: files written into the output since the build started
-  P->>C: their packages, if any: record again
-  C->>D: write it again
-```
-
-### From files to packages
-
-```mermaid
-flowchart TD
-  file["bundled source file"] --> nm{"below a<br/>node_modules?"}
-  nm -- yes --> root["package root: the directory directly<br/>below the last node_modules"]
-  nm -- no --> copy{"copied out of a package<br/>in this process, same bytes?"}
-  nm -- no --> nested{"recorded with the same hash<br/>in the first lockfile above<br/>that records it?"}
-  copy -- yes --> root
-  nested -- yes --> theirs["that writer's packages"]
-  nm -- no --> vend{"in a vendored copy below<br/>the first-party boundaries?"}
-  vend -- yes --> copyof["the vendored copy"]
-  vend -- no --> first
-  root --> real{"real location<br/>below node_modules?"}
-  real -- "no: workspace, link:" --> vend
-  real -- yes --> pj{"package.json with<br/>name and version?"}
-  pj -- yes --> inner{"in a vendored copy<br/>inside the package?"}
-  inner -- yes --> copyof
-  inner -- no --> pkg["name, version, license<br/>at its real location"]
-  pj -- no --> around{"a package<br/>around it?"}
-  around -- yes --> pkg
-  around -- no --> warn["warning: not listed"]
-  first["first-party: not listed"]
-```
-
-A file outside `node_modules` that is neither a copy, nor recorded by another build, nor in a vendored copy is
-first-party and not listed (see [Output](#output) for what a vendored copy is and where the first-party boundaries
-are; `src/core/vendored.cjs`). Vite, Rollup and Rolldown builds add the packages of builds that write nothing
-themselves by the content of their chunks (see [What is listed](#what-is-listed)).
-
-### One lockfile, several writers
-
-```mermaid
-flowchart LR
-  subgraph p1["process 1"]
-    a["compiler app"] --> reg1["writers of dist/<br/>in this process"]
-    s["compiler sw"] --> reg1
-  end
-  subgraph p2["process 2"]
-    v["vite build output"] --> reg2["writers of dist/<br/>in this process"]
-  end
-  reg1 -- "lock, read, merge, write atomically" --> lock[("dist/bundle-lockfile/<br/>package-lock.json<br/>packages + bundle-lockfile.writers")]
-  reg2 -- "lock, read, merge, write atomically" --> lock
-  lock -. "other processes' writers whose<br/>recorded files are still there" .-> reg1
-  lock -. " " .-> reg2
-```
-
-Within a process, the writers of an output directory live in a registry shared by every copy of bundle-lockfile that
-is loaded (on `globalThis`); each has the packages of its last written build and of the build in progress. Every write
-of the lockfile renders their last written builds, plus the writers other processes recorded in the lockfile on disk.
-
-### Files
-
-```
-src/register.cjs        NODE_OPTIONS entry point: registers the adapters, installs the hooks and the fs copy wrappers
-bin/node                node shim for builds whose scripts overwrite NODE_OPTIONS
-src/hooks.cjs           module-load hooks shared by the adapters: Module._load, and the ESM hooks (in-thread, or the
-src/esm-loader.mjs        loader thread) that replace entry modules by the wrappers esm-wrap.cjs generates
-src/esm-wrap.cjs
-src/adapters/webpack.cjs  webpack 4/5 and Next.js: which source files are in a compiler's emitted output
-src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
-src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
-src/core/manifest.cjs   a package directory's package.json: name, version, license
-src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
-src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path
-src/core/copies.cjs     files copied with fs in this process: out of packages, and copies of lockfiles
-src/core/generated.cjs  packages of builds that write nothing themselves, by content and entry file
-src/core/nested.cjs     packages of bundled files another build wrote (output hashes in its lockfile)
-src/core/hashes.cjs     SHA-256 of output files, cached by size and mtime
-src/core/lru.cjs        bounded maps for the caches above
-src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
-src/core/lock.cjs       lock across processes, atomic writes
-src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see Format) and its "bundle-lockfile" record
-src/core/config.cjs     settings (environment variables), debug and warning output
-```
-
-Adapters must never break a build: their failures are reported on stderr and the build continues.
-
-To add a bundler: write `src/adapters/<name>.cjs` (a `name`, or `names` if it serves several bundlers; an
-`onCjsLoad(exports, request, resolve)` that recognizes and patches a CommonJS bundler, with `cjsFiles`, the files it
-patches, which the ESM hooks report when Node loads them without `Module._load`; or `esmEntries`, `esmWrap` and
-`esmPackages` (the packages whose processes get the loader-thread hooks) for an ES module one, see `src/hooks.cjs`;
-write through `core/outputs.cjs` so that shared output directories work), add it to `src/register.cjs`, add an app
-under `test/apps/`, an oracle under `test/oracles/` and rows to `test/matrix.cjs`.
-
-## Tests
-
-The unit tests run anywhere, in a few seconds (CI: on Node.js 22, 24 and 26):
-
-```sh
-node --test test/unit.cjs
-```
-
-The contract tests check the [format](#format) against syft and Trivy (both on `PATH`; CI: Wolfi's):
-
-```sh
-node --test test/contract.cjs
-```
-
-Besides the core, they cover in separate processes what timing decides in a real build: a webpack process that writes
-its output after another one has written the shared lockfile, processes writing one lockfile at once, and the node
-shim behind wrappers, version-manager shims and symlinked install directories, and a CommonJS bundler whose source
-another loader-thread hook provides (as Yarn Plug'n'Play's does), which Node.js loads without `Module._load`.
-
-The matrix runs in a Wolfi container (see `.github/workflows/test.yaml`):
-
-```sh
-node test/gen.cjs /tmp/fixtures      # installs fixtures (network)
-node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd arg: case-name regex
-```
-
-CI splits the matrix into shards that run as parallel jobs: `--shard=<i>/<n>` (for both scripts) selects the fixtures
-of shard `i` of `n` and their cases ([`test/lib/shard.cjs`](test/lib/shard.cjs)); `--fixtures=<regex>` (for both
-scripts) only the fixtures whose names match and their cases, which the Node.js 22 job uses for the Vite, Rollup,
-Rolldown, nested, SvelteKit, peer-dependency and mixed-output fixtures and webpack 5 under Yarn Plug'n'Play.
-
-Every case that expects a lockfile checks that it is valid for syft and Trivy (every key in `node_modules/`, no Yarn virtual path as a key, every license one string) and lists the expected packages (exactly, or
-including / excluding given ones), that it agrees exactly with an oracle — an independent build per bundler that
-derives the packages from the bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no
-code with the adapters; a case names the packages its oracle cannot see (CSS-only packages and copied files have no
-source maps), or says why it has none — and, if `syft` and `trivy` are on `PATH` (as in CI), that each reads exactly those packages, each with a license. The other
-cases check that no lockfile is written, or (Next.js 15 with a second preload) that the build fails with Next's error.
-
-The webpack cases cover, besides installers and versions (also webpack 4 with pnpm), a development build, watch-mode rebuilds (as in every watch case but the failing rebuild: one without an
-import, whose packages must leave the lockfile, then one with it again), warm builds from webpack's persistent
-cache (also with child compilers), `BUNDLE_LOCKFILE_FILE`, a failing adapter, npm aliases and one version at several
-paths, Yarn's global cache, packages with peer dependencies (Yarn Plug'n'Play's virtual paths, pnpm's peer-suffixed
-directories; also with Vite), Babel-injected helpers, CSS and asset modules from packages (also webpack 5's native CSS and `asset/inline`), module
-federation (a host, a remote, a shared package), style sheets loaders inline
-from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent cache), a DLL, two compilers sharing an
-output directory (also with query strings in file names, configs that differ only in `resolve.alias`, and a failing
-watch rebuild), two compilers whose `output.path` with `[fullhash]` resolves to different directories,
-compression-webpack-plugin deleting the original assets (webpack 4 and 5, also of two compilers sharing an output
-directory, one of them run again by another process), workspace packages (also with
-`resolve.symlinks: false`), project directories as dependencies (`file:` with npm, pnpm and yarn 4, `link:` with pnpm
-and yarn 4, `portal:`), subpath manifests, nested and inlined worker-loader workers (webpack 4 and 5), a workbox
-service worker, html-webpack-plugin 4 and 5 templates, files copied by copy-webpack-plugin (5 and 6 on webpack 4, 14 on
-webpack 5), vanilla-extract's virtual CSS modules, externals and a `context` below the project root; two webpack
-processes writing to one directory in parallel, with one rebuilt, one after the other with the second cleaning the
-first's files (also keeping them with `clean.keep`), and with the
-plugin in the config instead of `NODE_OPTIONS`, and a webpack and a Vite process writing to one directory; an in-memory output file system (memfs, as
-webpack-dev-middleware uses; also with compression-webpack-plugin 6 deleting the lockfile asset on webpack 4); the export directory with and without the inline lockfile (export only
-also for Next.js 16); and build scripts that overwrite `NODE_OPTIONS` (inline and with `cross-env`) with the node shim
-under npm, pnpm, yarn 1, yarn 4 and bun. The devDependencies case with npm also runs, when syft is on `PATH` (as in CI), a
-functional SBOM check: it stages the build output like a package would install it (`usr/share/app/dist/`), runs `syft
-scan dir:` with SPDX JSON output, and requires exactly the expected npm packages with name, version, purl, declared
-license and source file — once with only the build output, and once with the project's own `package-lock.json` shipped
-alongside.
-
-The Vite cases cover Vite 8 with npm, npx, pnpm 9, 10 (also its global virtual store) and 11, yarn 1, yarn 4
-(Plug'n'Play, also with the global cache, and node-modules linker), bun and an app of an npm workspaces monorepo, and
-Vite 7 with npm and yarn 4 Plug'n'Play, Vite 6 and 5 with npm (also their watch mode and vite-plugin-singlefile), the
-loader-thread hooks also on Node.js 24 and 26 (`BUNDLE_LOCKFILE_ESM_HOOKS=async`), a programmatic build from a package without a dependency on Vite (hooked on Node.js
-24 and 26, on 22 only with `BUNDLE_LOCKFILE_ESM_HOOKS=async`),
-`vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite` (and `rollup,rolldown`, which leaves Vite hooked; with SvelteKit
-and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS`
-(without and with the node shim), the plugin in the config, vite-plugin-singlefile, `build.write: false`, library mode with two formats, SSR builds
-(dependencies external, and bundled with `ssr.noExternal`), `vite build --app` (Vite 6 and 8), two `vite build` processes writing
-one output directory, a Vite-built island bundled by webpack 4 and 5 (also changed after its build; webpack 5 also an island built by Vite 7 and one
-built by Rolldown's API) and by Vite 8 (an
-island built by Vite 8) and Vite 7 (an island built by `rollup -c`), the island as a workspace package bundled by webpack 5
-(also with `resolve.symlinks: false`) and Vite 8 (with `resolve.preserveSymlinks`), the island's lockfile only in the export
-directory, an island of several chunks and a
-style sheet bundled whole by Vite 8 and in parts by Vite 8 (only its style sheet, only its JavaScript) and webpack 5 (only its JavaScript), and an app with a worker, an inlined worker, a
-CSS `@import`, a Sass partial and a Less `@import` from packages, @vitejs/plugin-legacy, vite-plugin-pwa (generateSW; injectManifest on Vite 7 and 8) and vite-plugin-static-copy (Vite 6, 7 and 8), Tailwind CSS 4 with @tailwindcss/vite, and a Vite root that is not the working directory, with a font from a package loaded by `url()` (Vite 7 and 8). The
-`rollup` command line has its own cases (also `rollup -c -w` and a TypeScript config), and so do builds through Rollup's and Rolldown's JavaScript APIs (`rollup()`,
-`rolldown()` (also its `write()` without `dir` or `file`), Rolldown's `build()`, `watch()` of both, two outputs of one build written into one directory at the same time, in a project directory with `#` in its name, two builds with the plugin in their options (no `NODE_OPTIONS`) into one directory, with `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked; also Rollup 4.0.2, Rolldown 1.0.0 and
-`@rollup/wasm-node`, its API and its command line), rolldown-vite 7 (also its watch mode); the
-`rolldown` command line writes no lockfile (not supported yet), nor do an rspack build and webpack and Vite builds in Bun's own runtime (`bun --bun`; the builds are not affected). SvelteKit 2 and 3, each with adapter-static,
-adapter-node and adapter-netlify (serverless and edge functions), are compared with an oracle (except SvelteKit 2's
-edge function, built by esbuild, which gets no lockfile, and adapter-node with `BUNDLE_LOCKFILE_DISABLE=vite`) that builds again with
-source maps into other directories and follows the maps of the files the adapters bundle again; a server dependency
-must not be listed (except in an edge function, which bundles it). Next.js 12–16 are compared
-per compiler output with webpack's stats: a Pages Router app on each, an App Router app with server and client
-components, an edge route handler and middleware on 15 and 16, a static export (`output: 'export'`), a standalone output
-(`output: 'standalone'`, which gets no lockfile) and a warm build from `.next/cache` on 16, and another
-`--require` preload next to bundle-lockfile's (Next 15 fails, as described above; 16.4 builds).
-
-### Comparison with the CycloneDX webpack plugin
-
-`test/compare/` attaches [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin) (5.3.3) to every
-webpack 5 compiler bundle-lockfile attaches to (no config changes) and reports, per compiler output, the packages only
-one of the two lists — each explained by what webpack processed vs. what is in the emitted output (the same files
-bundle-lockfile counts):
-
-```sh
-sh test/compare/fixtures.sh /tmp/fixtures     # the webpack 5 / Next.js fixtures it lists (19)
-```
-
-On the fixtures, every difference was explained in the last run (results are not kept in the repository):
-- CycloneDX lists packages that are not in the emitted output: tree-shaken `uuid`; `css-loader` and vanilla-extract's
-  plugin, which only run at build time
-- CycloneDX lists workspace packages, which bundle-lockfile leaves out as first-party, and manifests nested inside a
-  package that are no vendored copy (preact 10's private `preact/hooks` as `preact-hooks`), which bundle-lockfile
-  lists as the containing package
-- bundle-lockfile lists packages the main compilation never processed but that are shipped: those in workers
-  (worker-loader, workbox's service worker) and files copied by copy-webpack-plugin
-- with two compilers writing to one directory, CycloneDX's `bom.json` holds only the last one's packages
-
-`test/bigproject/superset.sh` runs the same comparison on Apache Superset's frontend, measures the build cost and
-compares syft's counts on the output with those on the project's lockfile.
+- [docs/format.md](docs/format.md): the lockfile, keys, vendored copies, several writers, nested bundles
+- [docs/internals.md](docs/internals.md): how it hooks the bundlers, source files, adding a bundler
+- [test/README.md](test/README.md): unit, contract and matrix tests, the comparison with the CycloneDX webpack plugin
 
 ## License
 

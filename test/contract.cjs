@@ -1,6 +1,6 @@
 'use strict';
 // The output format against the tools that read it: lockfiles with every kind of key and license bundle-lockfile
-// writes (see "Output format" in the README), read by syft and Trivy, which must both report exactly the packages and
+// writes (see docs/format.md), read by syft and Trivy, which must both report exactly the packages and
 // licenses in them. Needs syft and trivy on PATH (CI installs both); no network, no fixtures:
 //   node --test test/contract.cjs
 const test = require('node:test');
