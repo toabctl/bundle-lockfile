@@ -1027,9 +1027,9 @@ test('hooks: a throwing adapter is reported and does not break require()', () =>
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
   const script = `const M = require('module'); const before = M._load; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._load === before);`;
-  // the rollup adapter patches Module._load too (Rollup's CommonJS build): only off with all of its names
-  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite', 'true'],
-    ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false']]) {
+  // the rollup and rspack adapters patch Module._load too (Rollup's CommonJS build, rspack): only off with all names
+  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK', 'true'],
+    ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
     assert.equal(r.stdout.trim(), untouched, `BUNDLE_LOCKFILE_DISABLE=${disable}: ${r.stderr}`);
   }
@@ -2806,4 +2806,239 @@ test('strict: the loader thread makes an entry it cannot wrap fail when it is im
   assert.match(strict.source, /^throw new Error\("bundle-lockfile: could not wrap file:\/\/\/p\/x\.js: .* \(BUNDLE_LOCKFILE_STRICT=0 makes this a warning\)"\);/);
   const off = JSON.parse(nodeWith(strictEnv('0'), ['--input-type=module', '-e', script]).stdout);
   assert.equal(off.source, 'export const f = 1;');
+});
+
+// rspack (src/adapters/rspack.cjs and the rspack parts of webpack-family.cjs)
+const rspackAdapter = require('../src/adapters/rspack.cjs');
+const RSPACK_PATCHED = Symbol.for('bundle-lockfile.rspack.patched');
+const APPLIED_SYM = Symbol.for('bundle-lockfile.webpack.applied');
+// the export of @rspack/core: the rspack() function with its classes; its Compiler has no newCompilation
+function fakeRspack(rspackVersion) {
+  class Compiler {
+    compile(cb) { this.compiled = (this.compiled || 0) + 1; if (cb) cb(null); }
+    run() {} watch() {} isChild() { return false; } runAsChild() {} createChildCompiler() {}
+  }
+  return Object.assign(function rspack() {}, { Compiler, Compilation: class {}, version: '5.75.0', rspackVersion });
+}
+// an instance of it, as rspack() makes one: hooks the plugin taps (taps: what was tapped on thisCompilation)
+function rspackCompiler(exp, outputPath = '/p/dist') {
+  const c = new exp.Compiler();
+  const taps = [];
+  c.outputPath = outputPath;
+  c.hooks = { thisCompilation: { tap: (n, fn) => taps.push(fn) }, emit: { tap() {} }, afterEmit: { tapAsync() {} } };
+  c.webpack = { rspackVersion: exp.rspackVersion, sources: { RawSource: class { constructor(s) { this.s = s; } source() { return this.s; } } } };
+  return { c, taps };
+}
+
+test('rspack adapter: patches rspack\'s Compiler (not webpack\'s), once per class whatever path it is seen on', () => {
+  const exp = fakeRspack('2.2.8');
+  const orig = exp.Compiler.prototype.compile;
+  webpack.onCjsLoad(exp, '@rspack/core', () => '/p/node_modules/@rspack/core/dist/index.js');
+  assert.equal(exp.Compiler.prototype[PATCHED], undefined, 'webpack.cjs leaves rspack alone');
+  rspackAdapter.onCjsLoad(exp, '@rspack/core', () => '/p/node_modules/@rspack/core/dist/index.js');
+  assert.equal(exp.Compiler.prototype[RSPACK_PATCHED], true);
+  const patched = exp.Compiler.prototype.compile;
+  assert.notEqual(patched, orig);
+  // the same class through the ES module entry (rspack 2 imported and required in one process): not patched again
+  assert.equal(rspackAdapter.esmWrap('rspack', 'Compiler', exp.Compiler), exp.Compiler);
+  assert.equal(exp.Compiler.prototype.compile, patched);
+  assert.equal(rspackAdapter.esmWrap('rollup', 'rollup', () => {}), null);
+  // a second copy of @rspack/core (OHIF loads rspack 1 and 2): its own class, patched too
+  const other = fakeRspack('1.7.12');
+  assert.equal(rspackAdapter.esmWrap('rspack', 'Compiler', other.Compiler), other.Compiler);
+  assert.equal(other.Compiler.prototype[RSPACK_PATCHED], true);
+  // webpack's namespace and other functions: not rspack's
+  const W = fakeCompiler();
+  rspackAdapter.onCjsLoad(Object.assign(function webpack() {}, { Compiler: W, Compilation: class {}, version: '5.111.1' }), 'webpack', () => '/p/node_modules/webpack/lib/index.js');
+  assert.equal(W.prototype[RSPACK_PATCHED], undefined);
+  rspackAdapter.onCjsLoad(() => {}, 'x', () => '/p/x.js');
+});
+
+test('rspack adapter: every top-level compiler of rspack 1.1+ gets the plugin once; 1.0 fails its compilations, 0.x is left alone', async () => {
+  for (const strict of [true, false]) {
+    await withConfig({ strict }, () => {
+      problems.take();
+      const exp = fakeRspack('2.2.8');
+      rspackAdapter.onCjsLoad(exp, '@rspack/core', () => '/p/rspack.js');
+      const { c } = rspackCompiler(exp);
+      c.compile(); c.compile();
+      assert.equal(c[APPLIED_SYM], true);
+      assert.equal(c.compiled, 2);
+      const configured = rspackCompiler(exp).c; // the plugin in its config already (or copied there: MF tree shaking)
+      configured[APPLIED_SYM] = 'config';
+      configured.compile();
+      assert.equal(configured[APPLIED_SYM], 'config');
+      const child = rspackCompiler(exp).c;
+      child.isChild = () => true;
+      child.compile();
+      assert.equal(child[APPLIED_SYM], undefined);
+      // rspack 1.0: no inner modules of concatenated modules - each compilation fails (strict), or a warning
+      const old = fakeRspack('1.0.14');
+      rspackAdapter.onCjsLoad(old, '@rspack/core', () => '/p/rspack.js');
+      const { c: o, taps } = rspackCompiler(old, '/p/old');
+      const warned = warnings(() => o.compile());
+      assert.equal(o[APPLIED_SYM], undefined);
+      assert.equal(o.compiled, 1);
+      const comp = { errors: [] };
+      for (const fn of taps) fn(comp);
+      if (strict) {
+        assert.deepEqual(warned, []);
+        assert.match(comp.errors[0].message, /rspack 1\.0\.14 is not supported \(it needs 1\.1 or later\): no lockfile for \/p\/old/);
+      } else {
+        assert.deepEqual(comp.errors, []);
+        assert.match(warned.join(), /rspack 1\.0\.14 is not supported/);
+      }
+      const ancient = fakeRspack('0.7.5');
+      rspackAdapter.onCjsLoad(ancient, '@rspack/core', () => '/p/rspack.js');
+      const a = rspackCompiler(ancient).c;
+      assert.deepEqual(warnings(() => a.compile()), []);
+      assert.equal(a[APPLIED_SYM], undefined);
+      assert.equal(problems.pending(), false);
+    });
+  }
+});
+
+test('webpack adapter: never applies itself to an rspack compiler (Next.js with next-rspack loads both)', () => {
+  const W = fakeCompiler();
+  webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
+  const c = new W();
+  c.hooks = { thisCompilation: { tap() { throw new Error('tapped'); } } };
+  c.webpack = { rspackVersion: '2.0.4' };
+  c.compile();
+  assert.equal(c[APPLIED_SYM], undefined);
+});
+
+test('rspack: the plugin reads optional hooks without tripping rspack 2\'s hooks Proxy', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'out-proxy') });
+  compiler.webpack.rspackVersion = '2.2.8';
+  compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
+  const strictHooks = (o) => new Proxy(o, { get(t, k) { if (!(k in t)) throw new Error(`Compilation.hooks.${String(k)} is not supported in rspack`); return t[k]; } });
+  compiler.hooks = strictHooks(compiler.hooks);
+  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  const comp = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+  comp.compiler = compiler;
+  const stages = {};
+  comp.hooks = strictHooks({ processAssets: { tap: (o, fn) => (stages.copies = fn) }, afterProcessAssets: { tap: (o, fn) => (stages.after = fn) } });
+  taps.thisCompilation(comp);
+  stages.copies();
+  stages.after();
+  assert.equal(typeof stages.after, 'function');
+});
+
+test('esm-wrap: only ES modules are wrapped (rspack 1\'s CommonJS file at rspack 2\'s path goes on to cjsSource)', () => {
+  const { transform, CJS_LOADED } = require('../src/esm-wrap.cjs');
+  const entries = rspackAdapter.esmEntries, cjsFiles = rspackAdapter.cjsFiles;
+  const url = 'file:///p/node_modules/@rspack/core/dist/index.js';
+  const cjs = transform(url, { format: 'commonjs', source: 'module.exports = rspack;' }, entries, cjsFiles);
+  assert.equal(cjs.source, `module.exports = rspack;${CJS_LOADED}`);
+  // rspack 2's entry (its export statements; the bundle is 700 KB): Compiler and the default wrapped, "module.exports" re-exported by export *
+  const src = 'var src_rspack = function(){};\nexport default src_rspack;\nexport { Compiler_Compiler as Compiler, Compilation, MultiCompiler, src_rspack as "module.exports", src_rspack as rspack };\n';
+  const esm = transform(url, { format: 'module', source: src }, entries, cjsFiles);
+  assert.equal(esm.format, 'module');
+  assert.match(esm.source, /export \* from "file:\/\/\/p\/node_modules\/@rspack\/core\/dist\/index\.js\?bundle-lockfile-real";/);
+  assert.match(esm.source, /export \{ default \} from/);
+  assert.match(esm.source, /export const Compiler = api \? api\.wrap\("rspack", "Compiler", real\.Compiler\) : real\.Compiler;/);
+  assert.doesNotMatch(esm.source, /module\.exports/);
+});
+
+test('esm-wrap: withoutComments gives what the character-by-character version gave', () => {
+  const { withoutComments } = require('../src/esm-wrap.cjs');
+  const reference = (src) => { // the implementation before (one character at a time)
+    let out = '', i = 0;
+    while (i < src.length) {
+      const c = src[i], next = src[i + 1];
+      if (c === '/' && next === '/') { while (i < src.length && src[i] !== '\n') i++; out += ' '; continue; }
+      if (c === '/' && next === '*') { const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2; out += ' '; continue; }
+      if (c === '"' || c === "'" || c === '`') { let j = i + 1; while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1; out += src.slice(i, j + 1); i = j + 1; continue; }
+      out += c; i++;
+    }
+    return out;
+  };
+  const samples = ['', 'a', '//', '/*', '/* x */', 'a // c\nb', 'a /* c */ b /* unterminated', '"// no" // yes', "'a\\'b' /* c */", '`t ${x} // in` // out',
+    'export { a } /* export { b } */ // export { c }\nexport default x', '"unterminated', 'x = "\\\\"; // c', 'a/b/c', 'a / * b'];
+  for (const f of ['esm-wrap.cjs', 'hooks.cjs', 'adapters/rollup.cjs', 'adapters/webpack-family.cjs', 'esm-loader.mjs']) samples.push(fs.readFileSync(J(SRC, f), 'utf8'));
+  for (const s of samples) assert.equal(withoutComments(s), reference(s), JSON.stringify(s.slice(0, 40)));
+});
+
+// a compilation of rspack 2: chunks, assets with their bytes (assets: name -> { info, bytes }), file dependencies,
+// all modules, options
+function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, exportsUsed = () => false }) {
+  const c = compilation({ context: root, chunks, assets: Object.fromEntries(Object.entries(assets).map(([n, a]) => [n, a.info || {}])) });
+  c.compiler.webpack = { rspackVersion: '2.2.8' };
+  c.compiler.options = { optimization };
+  c.getAsset = (name) => (name in assets ? { name, info: assets[name].info || {}, source: { source: () => assets[name].bytes, size: () => Buffer.byteLength(assets[name].bytes) } } : undefined);
+  c.fileDependencies = fileDependencies;
+  c.modules = new Set([...chunks.flatMap(ch => ch.modules), ...modules]);
+  c.moduleGraph = { getIssuer: () => null, getExportsInfo: (m) => ({ isModuleUsed: () => exportsUsed(m) }) };
+  return c;
+}
+
+test('rspack: files CopyRspackPlugin copied are found among the file dependencies by name, path and bytes', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('left-pad'), ...pj('normalize.css'), ...pj('other'), ...pj('linked-real'), ...pj('glob'),
+    'node_modules/left-pad/index.js': 'pad', 'node_modules/left-pad/perf/O(n).js': 'perf', 'node_modules/other/index.js': 'other',
+    'node_modules/normalize.css/normalize.css': 'body{margin:0}', 'node_modules/glob/a.js': 'ga', 'src/index.js': 'app', 'static/hello.txt': 'hi',
+    'node_modules/.pnpm/linked-real@2.0.0/node_modules/linked-real/LICENSE': 'MIT text',
+    'node_modules/.pnpm/linked-real@2.0.0/node_modules/linked-real/package.json': { name: 'linked-real', version: '2.0.0' } });
+  fs.rmSync(J(root, 'node_modules/linked-real'), { recursive: true });
+  // pnpm: reached through a link into its store
+  fs.symlinkSync(J(root, 'node_modules/.pnpm/linked-real@2.0.0/node_modules/linked-real'), J(root, 'node_modules/linked-real'));
+  const deps = ['node_modules/left-pad/index.js', 'node_modules/left-pad/perf/O(n).js', 'node_modules/left-pad/package.json', 'node_modules/other/index.js',
+    'node_modules/normalize.css/normalize.css', 'node_modules/glob/a.js', 'src/index.js', 'static/hello.txt', 'node_modules/linked-real/LICENSE',
+    'node_modules/.pnpm/linked-real@2.0.0/node_modules/linked-real/LICENSE', 'node_modules/left-pad/index.js'].map(f => J(root, f)); // the real path too, and a duplicate (rspack 1)
+  const copy = (sourceFilename, bytes) => ({ info: { copied: true, sourceFilename }, bytes });
+  const lockOf = (assets) => lockedNames(plugin().lockfile(rspackCompilation(root, { chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'src/index.js') }] }], assets, fileDependencies: deps })));
+  // a copied file: its name only; a directory: the path in it; generic names (index.js) told apart by their bytes
+  assert.deepEqual(lockOf({ 'a/normalize.css': copy('normalize.css', 'body{margin:0}') }), ['normalize.css']);
+  assert.deepEqual(lockOf({ 'b/index.js': copy('index.js', 'pad'), 'b/perf/O(n).js': copy('perf/O(n).js', 'perf') }), ['left-pad']);
+  assert.deepEqual(lockOf({ 'x/index.js': copy('index.js', 'other') }), ['other']);
+  // through a symbolic link: the same file once (keyed by its real place, as pnpm's packages are)
+  assert.deepEqual(lockOf({ 'l/LICENSE': copy('LICENSE', 'MIT text') }), ['.pnpm/linked-real@2.0.0/node_modules/linked-real']);
+  // transformed on the way (no package file has its bytes): every package file it may be
+  assert.deepEqual(lockOf({ 'e/index.js': copy('index.js', '/* banner */ pad') }), ['left-pad', 'other']);
+  // first-party copies list nothing; a query is no part of the name
+  assert.deepEqual(lockOf({ 'hello.txt': copy('hello.txt', 'hi'), 'g/a.js': copy('a.js?v=1', 'ga') }), ['glob']);
+  // no file of that name among the dependencies: its bytes (rare: a copy plugin that does not add them)
+  assert.deepEqual(lockOf({ 'renamed.js': copy('gone.js', 'ga') }), ['glob']);
+});
+
+test('rspack: style sheets loaders inlined - per module from 1.3.14, from the file dependencies before', () => {
+  const root = project({ 'node_modules/bulma/package.json': { name: 'bulma', version: '1.0.4' }, 'node_modules/bulma/sass/_x.scss': '',
+    'node_modules/other/package.json': { name: 'other', version: '1.0.0' }, 'node_modules/other/i.js': '' });
+  const css = (buildInfo) => ({ nameForCondition: () => J(root, 'src/style.scss'), buildInfo });
+  const deps = [J(root, 'src/style.scss'), J(root, 'node_modules/bulma/sass/_x.scss'), J(root, 'node_modules/other/i.js')];
+  const lockOf = (m) => lockedNames(plugin().lockfile(rspackCompilation(root, { chunks: [{ files: ['main.css'], modules: [m] }], fileDependencies: deps })));
+  assert.deepEqual(lockOf(css({})), ['bulma']); // rspack < 1.3.14: buildInfo without fileDependencies
+  assert.deepEqual(lockOf(css({ fileDependencies: new Set([J(root, 'src/style.scss')]) })), []); // recorded: none from packages
+  assert.deepEqual(lockOf(css({ fileDependencies: new Set([J(root, 'node_modules/bulma/sass/_x.scss')]) })), ['bulma']);
+});
+
+test('rspack: the match resource names a module also where nameForCondition() does not (rspack before 1.7)', () => {
+  const m = { resource: '/p/src/a.css.ts', matchResource: '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js?x', nameForCondition: () => '/p/src/a.css.ts' };
+  assert.equal(webpack.sourceFile(m, () => null), '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js');
+  assert.equal(webpack.sourceFile({ resource: '/p/src/b.js', matchResource: '', nameForCondition: () => '/p/src/b.js' }, () => null), '/p/src/b.js');
+});
+
+test('rspack: modules whose exports were all inlined are listed (only with inlining on); tree-shaken ones not', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('shipped'), ...pj('consts'), ...pj('unused'), ...pj('inner') });
+  const mod = (name, id) => ({ resource: J(root, 'node_modules', name, 'i.js'), identifier: () => id });
+  const shipped = mod('shipped', 'a'), consts = mod('consts', 'b'), unused = mod('unused', 'c'), inner = mod('inner', 'd');
+  const concatenated = { identifier: () => 'a|concat', nameForCondition: () => J(root, 'src/index.js'), modules: [inner] };
+  const used = new Set([consts, inner, shipped]); // isModuleUsed: inlined exports still count as used
+  const lockOf = (optimization) => lockedNames(plugin().lockfile(rspackCompilation(root, {
+    chunks: [{ files: ['main.js'], modules: [shipped, concatenated] }], modules: [consts, unused, inner], optimization, exportsUsed: (m) => used.has(m) })));
+  assert.deepEqual(lockOf({ inlineExports: true, usedExports: true }), ['consts', 'inner', 'shipped']);
+  // no inlining, or no usage analysis (development: every module counts as used): nothing more
+  assert.deepEqual(lockOf({ inlineExports: false, usedExports: true }), ['inner', 'shipped']);
+  assert.deepEqual(lockOf({ inlineExports: true, usedExports: false }), ['inner', 'shipped']);
+});
+
+test('webpack adapter: the modules are not looked at for copies unless an asset names no source (costly in rspack)', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const c = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }], assets: { 'main.js': {} } });
+  c.getAsset = (name) => (name === 'main.js' ? { name, info: { sourceFilename: undefined }, source: { size: () => 0, source: () => '' } } : undefined);
+  Object.defineProperty(c, 'modules', { get() { throw new Error('compilation.modules read'); } });
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['a']);
 });

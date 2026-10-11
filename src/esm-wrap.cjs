@@ -14,21 +14,32 @@ function match(url, entries) {
 // The source without its comments (each replaced by a space), so that an export in a comment does not count: a
 // wrapper that re-exports a default the module does not have fails to link, and the build with it. Strings and
 // template literals are skipped over; regular expression literals are not parsed (the entry modules adapters wrap
-// re-export from other files).
+// re-export from other files, or are bundles without regular expressions that look like comments).
+// The text between comments is copied in runs (slice), not character by character: rspack 2's entry is one 700 KB
+// bundle, which every process that imports it scans.
 function withoutComments(src) {
-  let out = '', i = 0;
+  let out = '', i = 0, start = 0;
   while (i < src.length) {
-    const c = src[i], next = src[i + 1];
-    if (c === '/' && next === '/') { while (i < src.length && src[i] !== '\n') i++; out += ' '; continue; }
-    if (c === '/' && next === '*') { const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2; out += ' '; continue; }
-    if (c === '"' || c === "'" || c === '`') {
-      let j = i + 1;
-      while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1;
-      out += src.slice(i, j + 1); i = j + 1; continue;
+    const c = src.charCodeAt(i);
+    if (c === 47 && src.charCodeAt(i + 1) === 47) { // //
+      out += `${src.slice(start, i)} `;
+      while (i < src.length && src[i] !== '\n') i++;
+      start = i; continue;
     }
-    out += c; i++;
+    if (c === 47 && src.charCodeAt(i + 1) === 42) { // /*
+      out += `${src.slice(start, i)} `;
+      const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2;
+      start = i; continue;
+    }
+    if (c === 34 || c === 39 || c === 96) { // " ' `
+      const q = src[i];
+      let j = i + 1;
+      while (j < src.length && src[j] !== q) j += src[j] === '\\' ? 2 : 1;
+      i = j + 1; continue;
+    }
+    i++;
   }
-  return out;
+  return out + src.slice(start);
 }
 
 // Names a module exports, from `export { a, b as c }` (also `... from '...'`) and `export function|class|const x`.
@@ -66,7 +77,9 @@ function source(url, realSrc, entry) {
 // whose fstat fails on their file descriptors) are not loaded through Module._load: Node evaluates them with a require()
 // of its own, also every module they require - the CommonJS hook (hooks.cjs) never sees them. For the files the adapters
 // patch when they load (cjsFiles), a line appended to that source reports the module to the hook once it has run, as
-// Module._load would. Only when a hook provided the source: else Node loads it through Module._load.
+// Module._load would. Only when a hook provided the source. On Node.js 24.12+ the in-thread hook also gets the source of
+// a CommonJS file an ES module imports (Rsbuild 1 importing rspack 1), which Node then also passes through Module._load:
+// such a module is reported twice, and the adapters patch it once.
 const CJS_LOADED = "\n;{ const f = globalThis[Symbol.for('bundle-lockfile.cjs-loaded')]; if (typeof f === 'function') f(module, __filename); }\n";
 function cjsSource(url, result, files) {
   if (!result || result.format !== 'commonjs' || result.source == null || typeof url !== 'string' || !url.startsWith('file:')) return null;
@@ -80,7 +93,9 @@ function cjsSource(url, result, files) {
 // result of the next hook: the wrapper of an entry module, a cjsFiles module's source with the line appended, or the
 // result as it is.
 function transform(url, result, entries, cjsFiles) {
-  const entry = match(url, entries);
+  // only ES modules are wrapped: rspack 1's CommonJS dist/index.js has the path of rspack 2's entry, and must go on to
+  // cjsSource (under Yarn Plug'n'Play Node.js evaluates it without Module._load)
+  const entry = result && result.format === 'module' ? match(url, entries) : null;
   if (!entry) {
     const cjs = cjsSource(url, result, cjsFiles);
     return cjs ? { ...result, source: cjs } : result;
@@ -89,4 +104,4 @@ function transform(url, result, entries, cjsFiles) {
   return src ? { format: 'module', source: src, shortCircuit: true } : result;
 }
 
-module.exports = { MARK, match, exportedNames, source, cjsSource, CJS_LOADED, transform };
+module.exports = { MARK, match, withoutComments, exportedNames, source, cjsSource, CJS_LOADED, transform };
