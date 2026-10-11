@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
+const problems = require('./problems.cjs');
 const { cmp, toPackageLock, readMeta, reanchor, unknownPackage } = require('./lockfile.cjs');
 const { readPackage } = require('./manifest.cjs');
 const { exportPath } = require('./paths.cjs');
@@ -213,7 +214,7 @@ function follow(target, content) {
       if (json === null) { outputs.copies.delete(copy); continue; }
       writeAtomic(copy, json);
       c.content = json;
-    } catch (e) { outputs.copies.delete(copy); config.warn('could not write the copy', copy, 'of', target, ':', e); }
+    } catch (e) { outputs.copies.delete(copy); problems.problem(`could not write the copy ${copy} of ${target}`, e); }
   }
 }
 
@@ -222,12 +223,10 @@ function writeDisk(file) {
   return (content, cb) => { try { writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
 }
 
-// BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR: there is nowhere to write; said once per process
-let toldNowhere = false;
+// BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR: there is nowhere to write - a problem of every build
+// (core/problems.cjs), a warning once per process with BUNDLE_LOCKFILE_STRICT=0
 function nowhere() {
-  if (toldNowhere) return;
-  toldNowhere = true;
-  config.warn('BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written');
+  problems.problem('BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written', null, { once: 'nowhere' });
 }
 
 // Parallel compilers can finish writing in any order, so one that wrote before another recorded its packages

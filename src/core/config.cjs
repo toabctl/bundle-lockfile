@@ -11,6 +11,8 @@
 //   BUNDLE_LOCKFILE_DISABLE     comma-separated adapter names to skip, or "all" (case-insensitive)
 //   BUNDLE_LOCKFILE_FIRST_PARTY comma-separated globs of directories (relative to the working directory) that are
 //                               first-party, never vendored copies (see core/vendored.cjs); "**": none is
+//   BUNDLE_LOCKFILE_STRICT      0/false/off: a lockfile that cannot be written, or would be incomplete, is a warning;
+//                               by default it fails the build (see core/problems.cjs)
 
 const path = require('path');
 const env = process.env;
@@ -25,9 +27,13 @@ module.exports = {
   inline: env.BUNDLE_LOCKFILE_INLINE === undefined || env.BUNDLE_LOCKFILE_INLINE.trim() === '' || on(env.BUNDLE_LOCKFILE_INLINE),
   isDisabled: (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
   firstParty: (env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).filter(Boolean),
+  strict: env.BUNDLE_LOCKFILE_STRICT === undefined || env.BUNDLE_LOCKFILE_STRICT.trim() === '' || on(env.BUNDLE_LOCKFILE_STRICT),
   debug: (...a) => { if (on(env.BUNDLE_LOCKFILE_DEBUG)) console.error('[bundle-lockfile]', ...a); },
-  // always printed: a failing adapter must not break the build, but the missing lockfile must not go unnoticed
+  // always printed: what is wrong but does not fail the build (with BUNDLE_LOCKFILE_STRICT=0: also what makes a
+  // lockfile missing or incomplete, see core/problems.cjs)
   warn: (...a) => console.error('[bundle-lockfile] WARNING:', ...a),
+  // what fails the build (see core/problems.cjs)
+  error: (...a) => console.error('[bundle-lockfile] ERROR:', ...a),
   // always printed too: what a build lists that it might not expect (vendored copies, see core/vendored.cjs)
   note: (...a) => console.error('[bundle-lockfile] note:', ...a),
 };

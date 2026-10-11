@@ -8,6 +8,7 @@ const { createRequire } = require('module');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
+const problems = require('../core/problems.cjs');
 const { posix, packageRoot, exportPath } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -259,6 +260,20 @@ const assetNames = (compilation) => (compilation.getAssets ? compilation.getAsse
 const assetOf = (compilation, name) => (compilation.getAsset ? compilation.getAsset(name)
   : compilation.assets[name] && { name, source: compilation.assets[name], info: {} }); // webpack < 4.40: no asset info
 
+// Fails the compilation with what core/problems.cjs has recorded, in strict mode: as a compilation error, also after
+// emit - webpack (4, 5), rspack, Rsbuild and Next.js report it like any other, the build fails (exit code 1,
+// stats.hasErrors()), before emit with emitOnErrors: false (the production default) nothing is written, and watch mode
+// keeps running and recovers. Not as a callback error (webpack-cli and rspack-cli exit with 2 and stop watching, the
+// watch API stops rebuilding) and never as a throw from a tap (webpack 4 exits 0 then, Next.js 16 hangs).
+// webpack >= 5.1 and rspack have WebpackError (hideStack: no stack in the output, the message says where); webpack 4
+// and 5.0 (no compiler.webpack) take any Error.
+function compilationError(compiler, err) {
+  const E = compiler && compiler.webpack && compiler.webpack.WebpackError;
+  if (typeof E !== 'function') return err;
+  try { const e = new E(err.message); e.hideStack = true; e.stack = err.stack; return e; } catch { return err; }
+}
+const failCompilation = (compilation) => problems.failIfAny((err) => compilation.errors.push(compilationError(compilation.compiler, err)));
+
 // Files copied into the output in the emit hook, after the lockfile was emitted (copy-webpack-plugin 5, for
 // webpack 4). An asset with info.sourceFilename names its file. copy-webpack-plugin 5's do not, but it adds the
 // files it copied to the compilation's file dependencies (in its afterEmit): an asset whose bytes are those of
@@ -315,7 +330,7 @@ class BundleLockfilePlugin {
       const C = compiler.webpack && compiler.webpack.Compilation;
       if (compilation.hooks.processAssets && C && typeof C.PROCESS_ASSETS_STAGE_OPTIMIZE === 'number') {
         compilation.hooks.processAssets.tap({ name: NAME, stage: C.PROCESS_ASSETS_STAGE_OPTIMIZE - 1 }, () => {
-          try { compilation[UNNAMED] = copiedUnnamed(compilation); } catch (e) { config.warn('webpack: could not check copied files:', e); }
+          try { compilation[UNNAMED] = copiedUnnamed(compilation); } catch (e) { problems.problem(`webpack: could not check the files copied into ${outputDir(compilation)}`, e); }
         });
       }
       // After processAssets: its taps with additionalAssets: true also get the assets added in any later stage,
@@ -333,7 +348,8 @@ class BundleLockfilePlugin {
           const disk = onDisk(compiler);
           compilation[SOURCE] = { src, early: new Set([...assetNames(compilation), this.file]), disk, asset: config.inline && !disk };
           if (compilation[SOURCE].asset) add(compilation, src); // else written in afterEmit (inline and export copy)
-        } catch (e) { config.warn('webpack: could not write lockfile:', e); }
+        } catch (e) { problems.problem(`webpack: could not collect the packages of ${outputDir(compilation)}`, e); }
+        failCompilation(compilation);
       });
     });
     // Plugins that delete assets in the emit hook (compression-webpack-plugin <= 6 with deleteOriginalAssets
@@ -350,6 +366,8 @@ class BundleLockfilePlugin {
     compiler.hooks.afterEmit.tapAsync({ name: NAME, stage: 1000 }, (compilation, callback) => {
       const dir = outputDir(compilation), file = path.join(dir, this.file);
       const writer = compilerWriter(compiler);
+      // the end of this hook: what went wrong fails the build (a compilation error, see failCompilation)
+      const done = () => { failCompilation(compilation); callback(); };
       const fsys = compiler.outputFileSystem;
       const readAsset = (name, cb) => {
         try { const s = assetOf(compilation, name).source.source(); return cb(Buffer.isBuffer(s) ? s : Buffer.from(s)); } catch { /* see below */ }
@@ -364,7 +382,7 @@ class BundleLockfilePlugin {
         compiler[COPIED] = copied;
         let write = false;
         if (copied.size) {
-          try { this.lockfile(compilation, [...copied.values()]); write = true; } catch (e) { config.warn('webpack: could not write lockfile:', e); }
+          try { this.lockfile(compilation, [...copied.values()]); write = true; } catch (e) { problems.problem(`webpack: could not collect the packages of ${dir}`, e); }
         }
         // the files webpack wrote: assets the emit hook deleted or added (compression-webpack-plugin <= 6 with
         // deleteOriginalAssets on webpack 4 replaces main.js by main.js.gz) were not known when the lockfile was rendered
@@ -376,7 +394,7 @@ class BundleLockfilePlugin {
         const inline = config.inline && (disk || write || outputs.isShared(file));
         if (!inline && !exportPath(file)) {
           if (!config.inline) outputs.nowhere();
-          return callback();
+          return done();
         }
         // lstat: a symbolic link asset (webpack >= 5.111) is there also if what it points at is not.
         // webpack 4's output file system has neither (nor output.clean). Anything but "not found" counts as
@@ -389,15 +407,15 @@ class BundleLockfilePlugin {
         outputs.prune(file, writer, exists, () => {
           const writeFile = !inline ? null : disk ? outputs.writeDisk(file) : (json, done) => fsys.writeFile(file, json, done);
           outputs.rewrite(file, writeFile, (err) => {
-            if (err) config.warn('webpack: could not write lockfile:', err);
+            if (err) problems.problem(`webpack: could not write ${file}`, err);
             else if (inline) config.debug('webpack: wrote', file);
-            callback();
+            done();
           });
         });
       };
       if (!compilation[SOURCE]) return land(new Map());
       try { copiedInEmit(compilation, compilation[SOURCE].early, compiler[COPIED] || new Map(), readAsset, land); } catch (e) {
-        config.warn('webpack: could not check files copied in the emit hook:', e);
+        problems.problem(`webpack: could not check the files copied into ${dir} in the emit hook`, e);
         land(new Map());
       }
     });
@@ -421,12 +439,22 @@ function patchCompiler(Compiler, where) {
   p[PATCHED] = true;
   const orig = p.compile;
   p.compile = function (...args) {
+    let failedCompile = null;
     // compile() runs for run(), watch() and child compilers; webpack < 4 has no hooks and is ignored
     if (!this[SEEN] && this.hooks && this.hooks.thisCompilation && !this.isChild()) {
       this[SEEN] = true;
       for (const fn of listeners) {
-        try { fn(this, where); } catch (e) { config.warn('webpack: could not apply plugin:', e); }
+        try { fn(this, where); } catch (e) { problems.problem(`webpack: could not attach to the compiler of ${this.outputPath || '(no output path)'}`, e); }
       }
+      // without the plugin this compiler would write no lockfile: its compilations fail (strict mode) - an error in each
+      // of them (see failCompilation), or, if even that cannot be tapped, the compile callback's
+      problems.failIfAny((err) => {
+        try { this.hooks.thisCompilation.tap(NAME, (c) => { c.errors.push(compilationError(this, err)); }); } catch {
+          const callback = args[args.length - 1];
+          if (typeof callback === 'function') { failedCompile = err; callback(err); }
+        }
+      });
+      if (failedCompile) return undefined;
     }
     return orig.apply(this, args);
   };
@@ -442,7 +470,7 @@ function patchNext(exp, where) {
   const init = exp.init;
   exp.init = function (...args) {
     const r = init.apply(this, args);
-    try { if (exp.webpack) patchCompiler(exp.webpack.Compiler, where); } catch (e) { config.warn('webpack: could not patch Next.js webpack:', e); }
+    try { if (exp.webpack) patchCompiler(exp.webpack.Compiler, where); } catch (e) { problems.problem(`webpack: could not patch Next.js' webpack (${where})`, e); }
     return r;
   };
   exp.init[PATCHED] = true;
@@ -457,13 +485,17 @@ module.exports = {
   sourceFile,
   onCompiler,
   onCjsLoad(exp, request, resolve) {
+    // recognizing a module only reads it (a failure there is hooks.cjs's warning); failing to patch one that is webpack
+    // means its builds write no lockfile: a problem (core/problems.cjs)
+    let patch = null;
     if (typeof exp === 'function') {
       // only probe functions: probing plain objects can trigger circular-dependency warnings
-      if (exp.name === 'Compiler') patchCompiler(exp, resolve());                                    // webpack/lib/Compiler.js
-      else if (exp.Compiler && exp.Compilation && exp.version) patchCompiler(exp.Compiler, resolve()); // webpack namespace
+      if (exp.name === 'Compiler') patch = () => patchCompiler(exp, resolve());                                    // webpack/lib/Compiler.js
+      else if (exp.Compiler && exp.Compilation && exp.version) patch = () => patchCompiler(exp.Compiler, resolve()); // webpack namespace
     } else if (exp && typeof exp === 'object' && request.includes('webpack')) {
       const where = resolve();
-      if (NEXT_WEBPACK.test(where)) patchNext(exp, where);
+      if (NEXT_WEBPACK.test(where)) patch = () => patchNext(exp, where);
     }
+    if (patch) try { patch(); } catch (e) { problems.problem(`webpack: could not patch ${resolve()}`, e); }
   },
 };
