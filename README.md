@@ -4,13 +4,12 @@ Records which npm packages end up in a JavaScript bundle and writes them as a `p
 output, without changing the project's build config. Supports webpack 4 and 5 (also the copy inside Next.js), and
 Vite, Rollup and Rolldown (also inside SvelteKit).
 
-A lockfile shipped with an application lists everything that was *installed* for the build: build tools, unused and
-tree-shaken packages included. bundle-lockfile lists only the packages whose files the bundler put into the output, so
-SBOM tools such as [syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report
-what is shipped. The file is npm's own lockfile format, in the part of it both tools read ([format](docs/format.md)).
+## The problem
 
-What is shipped depends on the import graph, not on `dependencies` vs. `devDependencies`. A project from the tests
-declares:
+A lockfile shipped with an application lists everything that was *installed* for the build: build tools, unused and
+tree-shaken packages included. An SBOM made from it is wrong both ways: it lists packages that are not shipped, and
+it misses shipped ones, because what is shipped depends on the import graph, not on `dependencies` vs.
+`devDependencies`. A project from the tests declares:
 
 ```json
 "dependencies":    { "lodash-es": "4.18.1", "is-number": "7.0.0" },
@@ -23,6 +22,24 @@ Its source code imports only `lodash-es` and `classnames`:
 |---|---|
 | syft on the project's `package-lock.json` | `lodash-es`, `is-number` (not shipped) and the project itself — but not `classnames` (shipped; skipped as a devDependency) |
 | syft on bundle-lockfile's output | `lodash-es`, `classnames` |
+
+bundle-lockfile lists only the packages whose files the bundler put into the output, so SBOM tools such as
+[syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report what is shipped.
+
+## How it works
+
+1. `register.cjs`, preloaded with `NODE_OPTIONS="--require ..."`, hooks Node.js's module loading. When the build
+   loads webpack, Rollup or Rolldown, it patches the bundler so that every build gets bundle-lockfile's plugin. The
+   project's config and dependencies stay as they are.
+2. After the bundler has decided what goes into the output, the plugin takes the source files of the modules in the
+   chunks the build writes, and the package files that reach the output otherwise: shipped workers, copied files,
+   style sheets `@import`ed from packages ([what is listed](#what-is-listed)).
+3. It maps each file to the npm package it belongs to ([rules](docs/format.md#which-package-a-file-belongs-to)) and
+   writes those packages to `<output dir>/bundle-lockfile/package-lock.json`.
+4. syft and Trivy read that file like any npm lockfile: it is npm's own format, in the part of it both tools read
+   ([format](docs/format.md)).
+
+The details are in [docs/internals.md](docs/internals.md).
 
 ## Quick start
 
