@@ -35,7 +35,9 @@ node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd ar
 CI splits the matrix into shards that run as parallel jobs. Both scripts take:
 - `--shard=<i>/<n>`: the fixtures of shard `i` of `n` and their cases ([`lib/shard.cjs`](lib/shard.cjs));
 - `--fixtures=<regex>`: only the fixtures whose names match, and their cases. The Node.js 22 job uses it for the Vite,
-  Rollup, Rolldown, nested, SvelteKit, peer-dependency and mixed-output fixtures and webpack 5 under Yarn Plug'n'Play.
+  Rollup, Rolldown, nested, SvelteKit, peer-dependency and mixed-output fixtures, rspack 2 and Rsbuild 2 (ES modules,
+  hooked through the loader thread there), the two copies of rspack, and webpack 5 and rspack 1.7 under Yarn
+  Plug'n'Play.
 
 ### Environments
 
@@ -47,6 +49,8 @@ CI splits the matrix into shards that run as parallel jobs. Both scripts take:
   virtual store) and bun.
 - Vite: npm, npx, pnpm 9/10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play, also with the
   global cache, and node-modules linker), bun and npm workspaces (an app built in its own directory).
+- rspack: npm, npx, pnpm 10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play and node-modules
+  linker) and bun; Rsbuild: npm, bun, yarn 4 (Plug'n'Play).
 - yarn 2 is not tested: it calls `util.isDate`, which Node.js 23 removed, when it sets the times of zip entries from
   dates (e.g. for `file:` dependencies).
 
@@ -162,8 +166,32 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
   time; a project directory with `#` in its name; two builds with the plugin in their options (no `NODE_OPTIONS`) into
   one directory; `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked
 - Rollup 4.0.2, Rolldown 1.0.0 and `@rollup/wasm-node` (its API and its command line)
-- no lockfile from the `rolldown` command line (not supported yet), an rspack build, and webpack and Vite builds in
-  Bun's own runtime (`bun --bun`; the builds are not affected)
+- no lockfile from the `rolldown` command line (not supported yet), and webpack and Vite builds in Bun's own runtime
+  (`bun --bun`; the builds are not affected)
+
+**rspack** (the `rspack` app is webpack 5's, with `rspack.config.js`) and **Rsbuild**, compared with an oracle that
+builds again through rspack's or Rsbuild's API without bundle-lockfile, without minimizing (so that copies keep their
+bytes) and without inlining exports (so that the modules of packages whose constants rspack inlines stay in chunks),
+and reads the stats:
+- rspack 1.1, 1.2, 1.3, 1.5, 1.6, 1.7, 2.0, 2.1 and 2.2 with npm; 1.7 and 2.2 also with pnpm 10, yarn 1, yarn 4
+  (Plug'n'Play and node-modules linker) and bun; 2.2 also with pnpm 11 and pnpm 10's global virtual store; rspack 1.0
+  fails the build (with `BUNDLE_LOCKFILE_STRICT=0`: a warning, no lockfile)
+- `npx rspack`, `node_modules/.bin/rspack`, `rspack()` from a CommonJS and from an ES module script, and from a package
+  that does not depend on rspack (hooked on Node.js 24.12+, on 22 only with `BUNDLE_LOCKFILE_ESM_HOOKS=async`)
+- activation (`BUNDLE_LOCKFILE_DISABLE=rspack`, `=webpack` leaving rspack hooked, existing `NODE_OPTIONS`,
+  `BUNDLE_LOCKFILE_FILE`), a failing adapter, a development build, watch-mode rebuilds, warm builds from the persistent
+  cache, externals
+- native CSS and extracted CSS from packages (with a Sass partial and a Less `@import`: per module from rspack 1.3.14,
+  from the file dependencies before), an asset from a package, a worker, `CopyRspackPlugin` copying a package file, a
+  package directory and first-party files, packages whose constants rspack inlines (1.7 and 2.x)
+- two compilers into one directory; two processes into one directory (in parallel, then one again, the second
+  cleaning it, also keeping the other's file); the plugin in the config; an rspack and a webpack process into one
+  directory; an in-memory output file system; the export directory with and without the inline lockfile; build
+  scripts overwriting `NODE_OPTIONS` with the node shim (npm, pnpm, yarn 1, yarn 4, bun; also `cross-env`); a lockfile
+  that cannot be written and a package that cannot be listed (strict mode)
+- two copies of `@rspack/core` in one process (OHIF's shape: rspack 1 for the config's plugins, rspack 2 for the
+  compiler)
+- Rsbuild 1.1, 1.2, 1.7 and 2.2 (npm; 2.2 also with bun and yarn 4 Plug'n'Play), with `output.copy`
 
 **SvelteKit** 2 and 3, each with adapter-static, adapter-node and adapter-netlify (serverless and edge functions), are
 compared with an oracle that builds again with source maps into other directories and follows the maps of the files

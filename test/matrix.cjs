@@ -88,7 +88,25 @@ const nestedWorkspace = { app: 'nested-island', bundler: 'nested', installer: { 
   packageJson: { workspaces: ['island'], scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } };
 const nestedVite = (island, vite, deps = {}) => ({ app: 'nested-island', bundler: 'nested-vite', installer: { type: 'npm' },
   deps: { ...ISLAND, vite, ...deps }, packageJson: { type: 'module', scripts: { build: `${island} && vite build` } } });
+// rspack: the webpack5 app (test/apps/rspack) built by `rspack build` (@rspack/cli of the same version)
+const RSPACK_SCRIPTS = { build: 'rspack build', 'build-reset': 'NODE_OPTIONS=--max-old-space-size=3072 rspack build' };
+const rspack = (version, installer = { type: 'npm' }, extra = {}, scripts = {}) => ({ app: 'rspack', bundler: 'rspack', installer,
+  deps: { '@rspack/core': version, '@rspack/cli': version, ...APP_DEPS, ...extra }, packageJson: { scripts: { ...RSPACK_SCRIPTS, ...scripts } } });
+// rspack's own features (test/apps/rspack-features): native CSS, CssExtractRspackPlugin with Sass and Less, an asset, a
+// worker, CopyRspackPlugin, packages whose exports rspack inlines (consts-only, consts-default: file: dependencies, copied
+// into node_modules by the cases, see RSPACK_FEATURES_CMD)
+const RSPACK_FEATURES_DEPS = { 'css-loader': '7.1.5', sass: '1.105.1', 'sass-loader': '17.0.1', bulma: '1.0.4', less: '4.9.1', 'less-loader': '13.0.0',
+  'normalize.less': '1.0.0', 'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.1', 'is-number': '7.0.0', 'left-pad': '1.3.0', 'sanitize.css': '13.0.0',
+  'lodash-es': '4.18.1', 'consts-only': 'file:./pkgs/consts-only', 'consts-default': 'file:./pkgs/consts-default' };
+const rspackFeatures = (version) => ({ app: 'rspack-features', bundler: 'rspack', installer: { type: 'npm' },
+  deps: { '@rspack/core': version, '@rspack/cli': version, ...RSPACK_FEATURES_DEPS }, packageJson: { scripts: { build: 'rspack build' } } });
+// Rsbuild: the webpack5 app (test/apps/rsbuild, src/index.js) built by `rsbuild build`, with normalize.css copied
+const rsbuild = (version, installer = { type: 'npm' }) => ({ app: 'rsbuild', bundler: 'rsbuild', installer,
+  deps: { '@rsbuild/core': version, ...APP_DEPS, 'normalize.css': '8.0.1' }, packageJson: { scripts: { build: 'rsbuild build' } } });
 
+// fixture fields: app (test/apps/<app>), bundler (the oracle, test/oracles/<bundler>.cjs; default webpack), installer,
+// deps, devDeps, packageJson (more package.json fields), postInstall (a command run in the fixture after the install,
+// with network)
 const fixtures = {
   'vite8-npm': vite('8.3.3'),
   'vite7-npm': vite('7.3.7'),
@@ -236,8 +254,36 @@ const fixtures = {
   // a webpack build (ms) and a Vite build (nanoid) into one dist/, as separate processes
   'mixed-output': { app: 'mixed-output', bundler: 'mixed', installer: { type: 'npm' },
     deps: { ...WEBPACK, vite: '8.3.3', ms: '2.1.3', nanoid: '3.3.20' } },
-  'rspack2': { app: 'rspack', bundler: 'rspack', installer: { type: 'npm' }, deps: { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8', 'lodash-es': '4.18.1' },
-    packageJson: { scripts: { build: 'rspack build' } } },
+  ...Object.fromEntries(['1.0.14', '1.1.8', '1.2.8', '1.3.15', '1.5.8', '1.6.8', '1.7.12', '2.0.8', '2.1.10']
+    .map(v => [`rspack${v.split('.').slice(0, 2).join('.')}-npm`, rspack(v)])),
+  // (webpack: a webpack process writing to rspack's output dir; memfs: test/lib/memfs-build.cjs; cross-env: build-crossenv)
+  'rspack2.2-npm': rspack('2.2.8', { type: 'npm' }, { ...WEBPACK, memfs: '4.80.0', 'cross-env': '7.0.3' },
+    { 'build-crossenv': 'cross-env NODE_OPTIONS=--max-old-space-size=3072 rspack build' }),
+  ...Object.fromEntries([['1.7', '1.7.12'], ['2.2', '2.2.8']].flatMap(([line, v]) => [
+    [`rspack${line}-pnpm10`, rspack(v, { type: 'pnpm', version: '10.34.6' })],
+    [`rspack${line}-yarn1`, rspack(v, { type: 'yarn1' })],
+    [`rspack${line}-yarn4-pnp`, rspack(v, { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' })],
+    [`rspack${line}-yarn4-node-modules`, rspack(v, { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' })],
+    [`rspack${line}-bun`, rspack(v, { type: 'bun' })]])),
+  'rspack2.2-pnpm11': rspack('2.2.8', { type: 'pnpm', version: '11.28.5' }),
+  'rspack2.2-pnpm10-global-store': rspack('2.2.8', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
+  'rspack-features1.2': rspackFeatures('1.2.8'),
+  'rspack-features1.7': rspackFeatures('1.7.12'),
+  'rspack-features2.2': rspackFeatures('2.2.8'),
+  // OHIF's shape (test/apps/rspack-copies): the project's rspack 1.7 (the config's CopyRspackPlugin) and @rspack/cli 2
+  // with its own rspack 2, which builds. npm does not install that (the command line's peer dependency on rspack 2
+  // conflicts with the project's rspack 1, also with an override): installed without peer dependencies (the app's
+  // .npmrc), then rspack 2 below the command line's directory
+  'rspack-copies': { app: 'rspack-copies', bundler: 'rspack', installer: { type: 'npm' },
+    deps: { '@rspack/core': '1.7.12', '@rspack/cli': '2.2.8', ...APP_DEPS, 'normalize.css': '8.0.1' },
+    postInstall: 'cd node_modules/@rspack/cli && npm install -q --no-audit --no-fund --no-save @rspack/core@2.2.8',
+    packageJson: { scripts: { build: 'node node_modules/@rspack/cli/bin/rspack.js build' } } },
+  'rsbuild1.1-npm': rsbuild('1.1.10'),
+  'rsbuild1.2-npm': rsbuild('1.2.19'),
+  'rsbuild1.7-npm': rsbuild('1.7.6'),
+  'rsbuild2.2-npm': rsbuild('2.2.12'),
+  'rsbuild2.2-bun': rsbuild('2.2.12', { type: 'bun' }),
+  'rsbuild2.2-yarn4-pnp': rsbuild('2.2.12', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
@@ -321,6 +367,23 @@ const WARM = 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/
 // worker-loader workers: lodash-es in main.js, ms@2.1.3 in a worker, debug + its ms@2.0.0 in a worker inside it,
 // is-number in a worker inlined into main.js - with worker-loader's runtime that starts it from a Blob
 const WORKERS = ['debug@2.6.9', 'is-number@7.0.0', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'worker-loader@3.0.8'];
+// rspack's two compilers (app, sw; RSPACK_SHARED) as two processes at the same time
+const RSPACK_BIN = './node_modules/.bin/rspack';
+const PARALLEL_RSPACK = `${RSPACK_BIN} build --config-name app & a=$!; ${RSPACK_BIN} build --config-name sw & b=$!; wait $a && wait $b`;
+// the packages of app (ms@2.1.3) and sw (debug and its ms@2.0.0) of edge-shared-output and the rspack app
+const SHARED = ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'];
+// consts-only and consts-default as installed packages (npm links a file: directory)
+const RSPACK_CONSTS = 'rm -rf node_modules/consts-only node_modules/consts-default && cp -r pkgs/consts-only pkgs/consts-default node_modules/';
+const RSPACK_FEATURES_CMD = `${RSPACK_CONSTS} && npm run -s build`;
+// rspack-features: the font, the style sheets' packages (bulma's partial, normalize.less, normalize.css @imported by
+// app.css and by normalize.less), the worker's is-number, the copies (left-pad's file, sanitize.css' directory), the
+// packages whose exports rspack 1.7 and later inline (consts-only; consts-default only rspack 2)
+const RSPACK_FEATURES = ['bootstrap-icons@1.13.1', 'bulma@1.0.4', 'consts-default@1.0.0', 'consts-only@1.0.0', 'is-number@7.0.0', 'left-pad@1.3.0',
+  'lodash-es@4.18.1', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'];
+// style sheets loaders inline (no modules, and the stats have no file dependencies)
+const RSPACK_STYLE_MISSING = ['bulma@1.0.4', 'normalize.less@1.0.0'];
+// the webpack5 app and a copied normalize.css (Rsbuild's output.copy, rspack-copies' CopyRspackPlugin)
+const W5_COPY = [...W5, 'normalize.css@8.0.1'].sort();
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle
 function nextCase(fixture, version, react, flags = '') {
@@ -946,8 +1009,127 @@ const cases = [
   // Bun's own runtime (bun --bun) does not load NODE_OPTIONS' --require: not supported (yet), no lockfile
   { name: 'bun --bun (Bun\'s runtime, unsupported: no lockfile), webpack', fixture: 'wp5-bun', cmd: 'bun --bun run build', expect: null },
   { name: 'bun --bun (Bun\'s runtime, unsupported: no lockfile), Vite 8.3.3', fixture: 'vite8-bun', cmd: 'bun --bun run build', expect: null },
-  // rspack, which bundle-lockfile does not support (yet): not hooked, the build is not affected
-  { name: 'rspack 2.2.8 (unsupported: no lockfile)', fixture: 'rspack2', cmd: 'npm run -s build', expect: null },
+  // rspack: hooked through its Compiler, with webpack's plugin; the oracle builds again and reads rspack's stats
+  // activation
+  { name: 'rspack 2.2.8: not active without NODE_OPTIONS', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', inject: false, expect: null },
+  { name: 'rspack 2.2.8: BUNDLE_LOCKFILE_DISABLE=rspack', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'rspack' }, expect: null },
+  { name: 'rspack 2.2.8: BUNDLE_LOCKFILE_DISABLE=webpack: still hooked', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'webpack' },
+    expect: W5 },
+  { name: 'rspack 2.2.8: existing NODE_OPTIONS are preserved', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', nodeOptions: '--max-old-space-size=3072', heapMB: 3072,
+    expect: W5 },
+  { name: 'rspack 2.2.8: BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' }, lockfile: 'sbom/package-lock.json', expect: W5 },
+  ...[['1.7.12', 'rspack1.7-npm'], ['2.2.8', 'rspack2.2-npm']].flatMap(([v, fixture]) => [
+    { name: `strict: failing adapter fails the build (rspack ${v})`, fixture, cmd: 'npm run -s build', nodeOptions: FAULT,
+      expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack: could not collect the packages of \S*dist: injected fault/ },
+    { name: `STRICT=0: failing adapter does not break the build (rspack ${v})`, fixture, cmd: 'npm run -s build', nodeOptions: FAULT,
+      env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null,
+      expectOutput: /\[bundle-lockfile\] WARNING: rspack: could not collect the packages of \S*dist: Error: injected fault/ }]),
+  // versions: what rspack bundles of the app is what webpack 5 does
+  ...['1.1.8', '1.2.8', '1.3.15', '1.5.8', '1.6.8', '1.7.12', '2.0.8', '2.1.10', '2.2.8'].map(v => (
+    { name: `rspack ${v}`, fixture: `rspack${v.split('.').slice(0, 2).join('.')}-npm`, cmd: 'npm run -s build', expect: W5 })),
+  // rspack 1.0 lacks what the plugin needs: its builds fail, with STRICT=0 they succeed without the lockfile
+  { name: 'strict: rspack 1.0.14 is not supported, fails the build', fixture: 'rspack1.0-npm', cmd: 'npm run -s build',
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack 1\.0\.14 is not supported/ },
+  { name: 'STRICT=0: rspack 1.0.14 is not supported, a warning', fixture: 'rspack1.0-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: rspack 1\.0\.14 is not supported/ },
+  // runners / installers
+  { name: 'rspack 2.2.8: npx rspack build', fixture: 'rspack2.2-npm', cmd: 'npx rspack build', expect: W5 },
+  { name: 'rspack 2.2.8: direct node_modules/.bin/rspack', fixture: 'rspack2.2-npm', cmd: `${RSPACK_BIN} build`, expect: W5 },
+  ...[['1.7.12', '1.7'], ['2.2.8', '2.2']].flatMap(([v, line]) => [
+    { name: `rspack ${v}, pnpm 10.34.6`, fixture: `rspack${line}-pnpm10`, cmd: '$PNPM run build', expect: W5 },
+    { name: `rspack ${v}, yarn 1.22`, fixture: `rspack${line}-yarn1`, cmd: 'yarn --offline -s build', expect: W5 },
+    // the packages are in .yarn/cache/<zip>/node_modules/: keyed as those in a global cache
+    { name: `rspack ${v}, yarn 4.18.1 Plug'n'Play`, fixture: `rspack${line}-yarn4-pnp`, cmd: 'yarn build', expect: W5, expectKeys: OUTSIDE_KEYS_W5 },
+    { name: `rspack ${v}, yarn 4.18.1 node-modules linker`, fixture: `rspack${line}-yarn4-node-modules`, cmd: 'yarn build', expect: W5 },
+    { name: `rspack ${v}, bun`, fixture: `rspack${line}-bun`, cmd: 'bun run build', expect: W5 }]),
+  { name: 'rspack 2.2.8, pnpm 11.28.5', fixture: 'rspack2.2-pnpm11', cmd: '$PNPM run build', expect: W5 },
+  { name: 'rspack 2.2.8, pnpm 10.34.6, global virtual store', fixture: 'rspack2.2-pnpm10-global-store', cmd: '$PNPM run build', expect: W5,
+    expectKeys: OUTSIDE_KEYS_W5 },
+  // programmatic builds through rspack's JavaScript API
+  ...[['1.7.12', '1.7'], ['2.2.8', '2.2']].flatMap(([v, line]) => [
+    { name: `rspack ${v}: programmatic build, require()`, fixture: `rspack${line}-npm`, cmd: 'node build.cjs', expect: W5 },
+    { name: `rspack ${v}: programmatic build, import`, fixture: `rspack${line}-npm`, cmd: 'node build.mjs', expect: W5 }]),
+  // from a package without a dependency on rspack (tools/build.mjs), which imports rspack 2 only as an ES module:
+  // hooked with the in-thread hooks; older Node versions install the loader-thread ones there only with
+  // BUNDLE_LOCKFILE_ESM_HOOKS=async (CI's Node 22 job)
+  { name: `rspack 2.2.8: programmatic build from a package without rspack (Node ${process.versions.node}: ${SYNC_HOOKS ? 'hooked' : 'not hooked'})`,
+    fixture: 'rspack2.2-npm', cmd: 'node tools/build.mjs', expect: SYNC_HOOKS ? W5 : null },
+  { name: 'rspack 2.2.8: programmatic build from a package without rspack, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'rspack2.2-npm',
+    cmd: 'node tools/build.mjs', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: W5 },
+  // build modes
+  ...[['1.7.12', '1.7'], ['2.2.8', '2.2']].flatMap(([v, line]) => [
+    { name: `rspack ${v}, development mode`, fixture: `rspack${line}-npm`, cmd: 'npm run -s build', env: { RSPACK_MODE: 'development' }, expect: W5 },
+    // rebuilt without the async chunk's import('nanoid'), then with it: nanoid leaves the lockfile and comes back
+    { name: `rspack ${v}, watch mode: every rebuild writes the lockfile, with the packages of that build`, fixture: `rspack${line}-npm`,
+      cmd: `${WATCH} src/index.js "import('nanoid')"`, expect: W5, watchBuilds: [W5, W5.filter(p => !p.startsWith('nanoid@')), W5] },
+    { name: `rspack ${v}, persistent cache: warm build = cold build`, fixture: `rspack${line}-npm`, env: { RSPACK_CACHE: '1' }, cmd: WARM, expect: W5 }]),
+  { name: 'rspack 2.2.8: externals are not listed', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_EXTERNALS: '1' },
+    expect: W5.filter(p => !p.startsWith('lodash-es@')) },
+  // what reaches the output besides the chunks' JavaScript modules (test/apps/rspack-features); the oracle builds without
+  // inlining exports, so the modules of consts-only and consts-default are in its chunks, and matches the copies by bytes
+  ...[['1.2.8', '1.2'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports`, fixture: `rspack-features${line}`,
+      cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_STYLE_MISSING })),
+  // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages)
+  { name: 'rspack 2.2.8: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, persistent cache: warm build = cold build',
+    fixture: 'rspack-features2.2', env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_STYLE_MISSING },
+  // outputs: two compilers writing to dist/ (one process and two), as edge-shared-output's
+  { name: 'rspack 2.2.8: two compilers, one output dir', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: '1' }, expect: SHARED },
+  { name: 'rspack 2.2.8: two rspack processes, one output dir, in parallel', fixture: 'rspack2.2-npm', cmd: PARALLEL_RSPACK, env: { RSPACK_SHARED: '1' },
+    expect: SHARED },
+  { name: 'rspack 2.2.8: two rspack processes, one output dir, then one of them again', fixture: 'rspack2.2-npm',
+    cmd: `${PARALLEL_RSPACK} && ${RSPACK_BIN} build --config-name app`, env: { RSPACK_SHARED: '1' }, expect: SHARED },
+  // the plugin configured by hand (no NODE_OPTIONS). No oracle: it would build with the plugin as well (RSPACK_PLUGIN
+  // reaches it); the list is the one the oracle checks in the cases above
+  { name: 'rspack 2.2.8: plugin in the config (no NODE_OPTIONS), two rspack processes, one output dir, in parallel', fixture: 'rspack2.2-npm',
+    cmd: PARALLEL_RSPACK, inject: false, env: { RSPACK_SHARED: '1', RSPACK_PLUGIN: path.join(__dirname, '../src/adapters/rspack.cjs') }, expect: SHARED,
+    oracle: false },
+  // app's output.clean deletes sw's files: sw's packages are dropped. The oracle builds both configs in one process,
+  // where app's clean does not delete the files of sw building next to it
+  { name: 'rspack 2.2.8: two rspack processes, one output dir, the second one cleans it', fixture: 'rspack2.2-npm', env: { RSPACK_SHARED: 'clean' },
+    cmd: `${RSPACK_BIN} build --config-name sw && ${RSPACK_BIN} build --config-name app`, expect: ['ms@2.1.3'], oracle: false },
+  { name: 'rspack 2.2.8: two rspack processes, one output dir, the second one cleans it but keeps the first one\'s file', fixture: 'rspack2.2-npm',
+    env: { RSPACK_SHARED: 'clean-keep' }, cmd: `${RSPACK_BIN} build --config-name sw && ${RSPACK_BIN} build --config-name app`, expect: SHARED },
+  // an rspack (app) and a webpack process (sw, webpack.config.js) writing to one dir, each run again: one lockfile with
+  // both. The oracle: rspack's (both configs) and webpack's
+  { name: 'rspack 2.2.8: an rspack and a webpack process, one output dir, then each of them again', fixture: 'rspack2.2-npm', env: { RSPACK_SHARED: '1' },
+    cmd: `${RSPACK_BIN} build --config-name app && ${WEBPACK_BIN} && ${RSPACK_BIN} build --config-name app && ${WEBPACK_BIN}`, expect: SHARED,
+    oracleScript: 'mixed', oracleArgs: 'rspack.cjs webpack.cjs' },
+  { name: 'rspack 2.2.8: in-memory output file system (memfs): the lockfile is an asset', fixture: 'rspack2.2-npm', cmd: MEMFS, expect: W5 },
+  { name: 'rspack 2.2.8, export: BUNDLE_LOCKFILE_EXPORT_DIR and the inline lockfile', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', exportDir: true, expect: W5 },
+  { name: 'rspack 2.2.8, export: BUNDLE_LOCKFILE_EXPORT_DIR only (BUNDLE_LOCKFILE_INLINE=0)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', exportOnly: true,
+    expect: W5 },
+  // NODE_OPTIONS overwritten by the build script: no lockfile, unless the node shim is first in PATH
+  { name: 'rspack 2.2.8, shim: a script overwriting NODE_OPTIONS drops the --require (no shim)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-reset', expect: null },
+  ...[['npm', 'rspack2.2-npm', 'npm run -s build-reset'], ['pnpm 10', 'rspack2.2-pnpm10', '$PNPM run build-reset'],
+    ['yarn 1', 'rspack2.2-yarn1', 'yarn --offline -s build-reset'], ['yarn 4 (node-modules)', 'rspack2.2-yarn4-node-modules', 'yarn build-reset'],
+    ['bun', 'rspack2.2-bun', 'bun run build-reset']].map(([what, fixture, cmd]) => (
+    { name: `rspack 2.2.8, shim: ${what}, script overwriting NODE_OPTIONS`, fixture, cmd, shim: true, expect: W5 })),
+  { name: 'rspack 2.2.8, shim: cross-env NODE_OPTIONS=... (no shim)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-crossenv', expect: null },
+  { name: 'rspack 2.2.8, shim: cross-env NODE_OPTIONS=...', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-crossenv', shim: true, expect: W5 },
+  // strict mode: a lockfile that cannot be written (main.js is a file), a bundled package that cannot be listed
+  { name: 'strict: a lockfile that cannot be written fails the build (rspack 2.2.8)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json' },
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack: could not write \S*dist\/main\.js\/package-lock\.json/ },
+  { name: 'STRICT=0: a lockfile that cannot be written is a warning (rspack 2.2.8)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json', BUNDLE_LOCKFILE_STRICT: '0' }, lockfile: 'main.js/package-lock.json', expect: null,
+    expectOutput: /\[bundle-lockfile\] WARNING: rspack: could not write/ },
+  // no oracle: it names packages by their package.json too, and finds none for naked
+  { name: 'strict: a bundled package that cannot be listed fails the build (rspack 2.2.8)', fixture: 'rspack2.2-npm', env: { RSPACK_NAKED: '1' }, cmd: NAKED,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*no package\.json with name and version in \S*node_modules\/naked - its bundled files are not listed/ },
+  { name: 'STRICT=0: a bundled package that cannot be listed is a warning (rspack 2.2.8)', fixture: 'rspack2.2-npm', env: { RSPACK_NAKED: '1', BUNDLE_LOCKFILE_STRICT: '0' },
+    cmd: NAKED, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: no package\.json with name and version in \S*node_modules\/naked - its bundled files are not listed/,
+    oracle: false },
+  // OHIF's shape: rspack 2 builds, the config's copy plugin is rspack 1's: one lockfile, with the copy (the oracle builds
+  // with the command line's rspack)
+  { name: 'rspack 1.7.12 and 2.2.8 in one process (OHIF: the config\'s CopyRspackPlugin from rspack 1, built by @rspack/cli 2)', fixture: 'rspack-copies',
+    cmd: 'npm run -s build', expect: W5_COPY, oracleArgs: '--from node_modules/@rspack/cli' },
+  // Rsbuild: its rspack compiler, the file copied by output.copy
+  ...[['1.1.10', 'rsbuild1.1-npm', 'npm run -s build'], ['1.2.19', 'rsbuild1.2-npm', 'npm run -s build'], ['1.7.6', 'rsbuild1.7-npm', 'npm run -s build'],
+    ['2.2.12', 'rsbuild2.2-npm', 'npm run -s build'], ['2.2.12, bun', 'rsbuild2.2-bun', 'bun run build'],
+    ['2.2.12, yarn 4.18.1 Plug\'n\'Play', 'rsbuild2.2-yarn4-pnp', 'yarn build']].map(([what, fixture, cmd]) => (
+    { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV, expect: null },
 ];
