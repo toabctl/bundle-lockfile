@@ -219,6 +219,22 @@ Each lockfile lands at `<export dir>/<its path>`: relative to `BUNDLE_LOCKFILE_E
 its absolute path without the leading `/`. Here `/home/build/ui/dist/bundle-lockfile/package-lock.json` becomes
 `usr/share/myapp/bundle-lockfile/ui/dist/bundle-lockfile/package-lock.json` in the package.
 
+Some build tools do not pass these variables on: turbo's strict env mode (its default) passes `NODE_OPTIONS` and
+`PATH` to its tasks, but not `BUNDLE_LOCKFILE_*`; others start the build with an environment of their own (Metabase's
+build passes `PATH` and `HOME` only, so only the [node shim](#build-scripts-that-overwrite-node_options) gets the
+preload back). Put the settings into a settings file instead: `config.json` next to `register.cjs` (in the package's
+directory; `src/` in a checkout), which the preload finds next to itself:
+
+```yaml
+pipeline:
+  - runs: |
+      cat > /usr/lib/bundle-lockfile/config.json <<'EOF'
+      { "BUNDLE_LOCKFILE_EXPORT_DIR": "/home/build/bundle-lockfile-export", "BUNDLE_LOCKFILE_EXPORT_BASE": "/home/build",
+        "BUNDLE_LOCKFILE_INLINE": "0" }
+      EOF
+      npm run build              # turbo run build, a build that clears the environment, ...
+```
+
 ### Served outputs
 
 The lockfile is part of the build output. If that output is served (e.g. from `public/assets`), the lockfile is
@@ -286,6 +302,12 @@ Errors, warnings and notes are always printed:
 
 ## Settings
 
+Environment variables, or the same names in a settings file (a JSON object), for builds whose tools do not pass the
+variables on: `config.json` next to `register.cjs` (`src/config.json` in a checkout), or the file
+`BUNDLE_LOCKFILE_CONFIG` names. A variable that is set wins over the file; the processes the build starts get the
+file's settings as variables. A settings file that cannot be read fails the build (with `BUNDLE_LOCKFILE_STRICT=0`:
+a warning).
+
 | Variable | Default | |
 |---|---|---|
 | `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json`, outside `node_modules`: syft and Trivy read only files named `package-lock.json`, and none below `node_modules` |
@@ -298,6 +320,7 @@ Errors, warnings and notes are always printed:
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack`; `rspack`; `vite` (builds with Vite's plugins), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all` |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked: `sync`, `async` or `off` instead of choosing by Node.js version (see [below](#vite-rollup-rolldown)). `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
 | `BUNDLE_LOCKFILE_REGISTER` | next to the shim | the `register.cjs` the node shim preloads |
+| `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | the settings file (only from the environment) |
 
 ## Supported
 
