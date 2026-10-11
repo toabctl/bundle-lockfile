@@ -418,6 +418,9 @@ function nextCase(fixture, version, react, flags = '') {
 //   shim       put bin/ (the node shim) first in PATH
 //   oracle     false: no oracle comparison (the case's shape cannot be built by the oracle)
 //   oracleScript  the oracle (test/oracles/<name>.cjs) if not the fixture's bundler's
+//   settingsFile  bundle-lockfile from a copy with a settings file (config.json, see src/core/config.cjs): true - the
+//              case's BUNDLE_LOCKFILE_* settings (exportDir included) moved there out of the environment; a string -
+//              that file content, the environment as it is
 //   maxNode    the newest Node.js major the build tool runs on: skipped (and reported) on newer ones (say why at the case)
 //   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
@@ -451,6 +454,18 @@ const cases = [
   // turbo passes NODE_OPTIONS to its tasks, also in its default strict env mode (no turbo cache: the task runs)
   { name: 'turbo run build (turbo 2.11.7)', fixture: 'edge-turbo', cmd: './node_modules/.bin/turbo run build --cache=local:,remote:',
     env: { TURBO_TELEMETRY_DISABLED: '1' }, expect: ['lodash-es@4.18.1'] },
+  // settings that do not reach the build through the environment: turbo's strict env mode passes NODE_OPTIONS and PATH
+  // to its tasks, not BUNDLE_LOCKFILE_* (without the settings file the export copy is missing), and a build started with
+  // an environment of its own (Metabase's) - the preload (or the node shim) finds the settings file next to itself
+  { name: 'settings file: the export directory through turbo, whose strict env mode drops BUNDLE_LOCKFILE_*', fixture: 'edge-turbo',
+    cmd: './node_modules/.bin/turbo run build --cache=local:,remote:', env: { TURBO_TELEMETRY_DISABLED: '1' }, exportDir: true, settingsFile: true,
+    expect: ['lodash-es@4.18.1'] },
+  { name: 'settings file: a build in an environment of its own (env -i) through the node shim, export directory only', fixture: 'wp5-npm',
+    cmd: 'env -i PATH="$PATH" HOME="$HOME" npm run -s build', shim: true, exportOnly: true, settingsFile: true, expect: W5 },
+  { name: 'strict: a settings file that cannot be read fails the build', fixture: 'wp5-npm', cmd: 'npm run -s build', settingsFile: '{not json',
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*could not read the settings file \S*\.bl\/src\/config\.json/ },
+  { name: 'STRICT=0: a settings file that cannot be read is a warning', fixture: 'wp5-npm', cmd: 'npm run -s build', settingsFile: '{not json',
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: could not read the settings file \S*\.bl\/src\/config\.json/ },
   { name: 'yarn 1.22 (yarn.lock)', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build', expect: W5 },
   { name: "yarn 3.8.7 Plug'n'Play", fixture: 'wp5-yarn3-pnp', cmd: 'yarn build', expect: W5 },
   // the packages are in .yarn/cache/<zip>/node_modules/: keyed node_modules/<name>[@<version>], as those in a global cache
