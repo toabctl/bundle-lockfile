@@ -3,12 +3,12 @@
 // read-merge-write, and atomic replacement, so that readers without the lock never see a partial file.
 const fs = require('fs');
 const path = require('path');
-const config = require('./config.cjs');
+const problems = require('./problems.cjs');
 
 // Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
 // it. A lock older than a minute (staleAfter) is from a process that died; one that cannot be taken in 30 s (wait) is
-// skipped with a warning (the write goes ahead: a stalled build would be worse than a lockfile missing another
-// process's packages).
+// skipped (the write goes ahead: a stalled build would be worse) - a problem (core/problems.cjs): the lockfile may miss
+// the packages of another process writing it at the same time.
 function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
   const l = `${file}.lock`;
   const deadline = Date.now() + wait;
@@ -23,7 +23,10 @@ function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
     let st;
     try { st = fs.statSync(l); } catch { continue; } // released meanwhile
     if (Date.now() - st.mtimeMs > staleAfter) { takeStale(l, st); continue; }
-    if (Date.now() > deadline) { config.warn('could not lock', file, '- writing it without the lock'); return () => {}; }
+    if (Date.now() > deadline) {
+      problems.problem(`could not lock ${file} - writing it without the lock (it may miss the packages of another process writing it at the same time)`);
+      return () => {};
+    }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
 }

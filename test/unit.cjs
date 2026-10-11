@@ -1,6 +1,10 @@
 'use strict';
 // Unit tests for the bundler-agnostic core and the adapter's detection logic. No network, no fixtures:
 //   node --test test/unit.cjs
+// Most tests check what is collected and written, with BUNDLE_LOCKFILE_STRICT=0 (problems are warnings, as they were
+// before strict mode): set here, before config.cjs is loaded, and inherited by the child processes they start. The
+// tests of strict mode (the default) set it themselves; see "strict:" below.
+process.env.BUNDLE_LOCKFILE_STRICT = '0';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -2556,4 +2560,250 @@ test('vendored: a bundled file another build produced is its output, no vendored
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */'); // no longer that build's output: island's own package.json
     assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'island/dist/main.js')], elsewhere).all), ['island@1.0.0']);
   } finally { process.chdir(cwd); }
+});
+
+// strict: BUNDLE_LOCKFILE_STRICT unset (the default) - what would leave a lockfile missing or incomplete fails the build
+// (core/problems.cjs). In this process config.strict is toggled with withConfig; child processes get the variable.
+const problems = require('../src/core/problems.cjs');
+const strictEnv = (v) => { const env = { ...process.env }; if (v === undefined) delete env.BUNDLE_LOCKFILE_STRICT; else env.BUNDLE_LOCKFILE_STRICT = v; return env; };
+const nodeWith = (env, args) => spawnSync(process.execPath, args, { encoding: 'utf8', env });
+
+test('strict: BUNDLE_LOCKFILE_STRICT is on unless 0, false or off', () => {
+  const read = (v) => nodeWith(strictEnv(v), ['-e', `console.log(require(${JSON.stringify(J(SRC, 'core/config.cjs'))}).strict)`]).stdout.trim();
+  for (const v of [undefined, '', ' ', '1', 'true', 'on', 'yes']) assert.equal(read(v), 'true', JSON.stringify(v));
+  for (const v of ['0', 'false', 'off', 'OFF', ' False ']) assert.equal(read(v), 'false', JSON.stringify(v));
+});
+
+test('strict: a problem is recorded for the build to fail; without strict mode it is a warning (once per key)', () => withConfig({ strict: false }, async () => {
+  problems.take();
+  const warned = warnings(() => {
+    problems.problem('a', new Error('cause'));
+    problems.problem('b', null, { once: 'k' });
+    problems.problem('b', null, { once: 'k' });
+  });
+  assert.deepEqual(warned, ['a: Error: cause', 'b']);
+  assert.equal(problems.pending(), false);
+  assert.equal(problems.failIfAny(() => assert.fail('nothing to fail')), false);
+  await withConfig({ strict: true }, () => {
+    assert.deepEqual(warnings(() => { problems.problem('x', new Error('cause')); problems.problem('y', null, { once: 'k' }); problems.problem('y', null, { once: 'k' }); }), []);
+    let failed = null;
+    assert.equal(problems.failIfAny((e) => { failed = e; }), true);
+    assert.equal(problems.isFailure(failed), true);
+    assert.equal(problems.isFailure(new Error('x')), false);
+    assert.deepEqual(failed.problems, ['x: cause', 'y', 'y']); // in strict mode every build with it fails
+    assert.match(failed.message, /^bundle-lockfile: the lockfile would be missing or incomplete \(BUNDLE_LOCKFILE_STRICT=0 makes this a warning\):\n {2}x: cause\n {2}y\n {2}y$/);
+    // no stack, only the first line and a newline: what the rollup command line strips off (else it prints the message twice)
+    assert.equal(failed.stack, `Error: ${failed.message}\n`);
+    assert.equal(problems.pending(), false); // taken: one build fails with them
+  });
+}));
+
+test('strict: problems no build took make the process exit with 1 (also after process.exit(0)), and keep another exit code', () => {
+  const P = JSON.stringify(J(SRC, 'core/problems.cjs'));
+  const run = (tail) => nodeWith(strictEnv(undefined), ['-e', `require(${P}).problem('could not write x', new Error('EACCES')); ${tail}`]);
+  for (const tail of ['', 'process.exit(0)', 'setTimeout(() => {}, 10)']) {
+    const r = run(tail);
+    assert.equal(r.status, 1, `${tail}: ${r.stderr}`);
+    assert.match(r.stderr, /\[bundle-lockfile\] ERROR: could not write x: EACCES\n\[bundle-lockfile\] ERROR: the process fails because a lockfile would be missing or incomplete \(BUNDLE_LOCKFILE_STRICT=0 makes this a warning\)/);
+  }
+  assert.equal(run('process.exitCode = 3').status, 3);
+  assert.equal(run(`require(${P}).take()`).status, 0); // a build took it (and failed with it)
+  const off = nodeWith(strictEnv('0'), ['-e', `require(${P}).problem('could not write x')`]);
+  assert.equal(off.status, 0);
+  assert.match(off.stderr, /\[bundle-lockfile\] WARNING: could not write x/);
+});
+
+test('strict: nowhere to write (INLINE off, no export dir) and a lock that cannot be taken are problems of every build', () => withConfig({ strict: true }, () => {
+  problems.take();
+  outputs.nowhere(); outputs.nowhere();
+  assert.deepEqual(problems.take(), ['BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written',
+    'BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written']);
+  const { lock } = require('../src/core/lock.cjs');
+  const root = project({ 'dist/l.json.lock': 'held' });
+  const release = lock(J(root, 'dist/l.json'), { wait: 100 });
+  release();
+  const [p, ...rest] = problems.take();
+  assert.deepEqual(rest, []);
+  assert.match(p, /^could not lock .*l\.json - writing it without the lock \(it may miss the packages of another process writing it at the same time\)$/);
+}));
+
+test('strict: a bundled package that cannot be listed fails every build; one listed as the package around it is a warning', () => withConfig({ strict: true }, () => {
+  problems.take();
+  const root = project({
+    'node_modules/noversion/package.json': { name: 'noversion' },
+    'node_modules/container/package.json': { name: 'container', version: '1.0.0' },
+    'node_modules/container/lib/node_modules/flat/i.js': '',
+  });
+  for (let i = 0; i < 2; i++) {
+    const warned = warnings(() => packagesForFiles([J(root, 'node_modules/noversion/i.js'), J(root, 'node_modules/container/lib/node_modules/flat/i.js')]));
+    if (i === 0) { assert.equal(warned.length, 1); assert.match(warned[0], /flat - its bundled files are listed as container@1\.0\.0/); }
+    else assert.deepEqual(warned, []); // the container's: once per process
+    const taken = problems.take();
+    assert.equal(taken.length, 1, `build ${i + 1}`);
+    assert.match(taken[0], /no package\.json with name and version in .*noversion - its bundled files are not listed/);
+  }
+}));
+
+test('strict: the webpack plugin fails the compilation when collecting or writing fails', async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const build = async ({ webpackError, blockWrite, throwCollect }) => {
+    const outputPath = J(root, `out-${webpackError}-${!!blockWrite}-${!!throwCollect}`);
+    fs.mkdirSync(outputPath, { recursive: true });
+    if (blockWrite) fs.writeFileSync(J(outputPath, 'bundle-lockfile'), 'a file where the directory must be');
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
+    compiler.outputFileSystem.gracefulify = () => {}; // the real disk
+    if (webpackError) compiler.webpack.WebpackError = class WebpackError extends Error {};
+    new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }], assets: { 'main.js': {} } });
+    comp.compiler = compiler;
+    comp.errors = [];
+    comp.hooks = { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } };
+    const orig = packages.packagesOfFiles;
+    if (throwCollect) packages.packagesOfFiles = () => { throw new Error('injected'); };
+    try {
+      taps.thisCompilation(comp);
+      comp.stage();
+      fs.writeFileSync(J(outputPath, 'main.js'), '');
+      await new Promise(resolve => taps.afterEmit(comp, resolve));
+    } finally { packages.packagesOfFiles = orig; }
+    return comp.errors;
+  };
+  await withConfig({ strict: true }, async () => {
+    problems.take();
+    assert.deepEqual(await build({}), []);
+    for (const webpackError of [false, true]) {
+      const [e, ...rest] = await build({ webpackError, throwCollect: true });
+      assert.deepEqual(rest, []);
+      assert.equal(e.constructor.name, webpackError ? 'WebpackError' : 'Error');
+      if (webpackError) assert.equal(e.hideStack, true);
+      assert.match(e.stack, /^Error: bundle-lockfile: the lockfile would be missing or incomplete/);
+      assert.match(e.message, /webpack: could not collect the packages of .*: injected/);
+    }
+    const [w] = await build({ blockWrite: true });
+    assert.match(w.message, /webpack: could not write .*bundle-lockfile.package-lock\.json/);
+    assert.equal(problems.pending(), false);
+  });
+  await withConfig({ strict: false }, async () => {
+    let errors;
+    const warned = warnings(() => { errors = build({ throwCollect: true }); });
+    assert.deepEqual(await errors, []);
+    assert.match(warned[0], /webpack: could not collect the packages of .*: Error: injected/);
+  });
+});
+
+test('strict: a compiler the plugin cannot be applied to fails its compilations (or, if not even that, its compile())', async () => {
+  for (const strict of [true, false]) {
+    await withConfig({ strict }, () => {
+      problems.take();
+      const W = fakeCompiler();
+      let compiled = 0;
+      W.prototype.compile = function (cb) { compiled++; cb(null); };
+      webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
+      // apply() throws at emit.tap; thisCompilation can be tapped: each compilation fails, watch mode keeps running
+      const c = new W();
+      c.outputPath = '/p/dist';
+      const tapped = [];
+      c.hooks = { thisCompilation: { tap: (n, fn) => tapped.push(fn) } };
+      let got;
+      warnings(() => c.compile((err) => { got = err; }));
+      assert.equal(compiled, 1);
+      assert.equal(got, null);
+      const comp = { errors: [] };
+      for (const fn of tapped) { try { fn(comp); } catch { /* the plugin's own taps on a fake compilation */ } }
+      if (strict) assert.match(comp.errors.map(e => e.message).join(), /webpack: could not attach to the compiler of \/p\/dist/);
+      else assert.deepEqual(comp.errors, []);
+      // not even thisCompilation can be tapped: compile() calls back with the error instead of compiling
+      const d = new W();
+      d.outputPath = '/p/dist2';
+      d.hooks = { thisCompilation: {} };
+      got = undefined;
+      warnings(() => d.compile((err) => { got = err; }));
+      if (strict) { assert.equal(compiled, 1); assert.match(got.message, /webpack: could not attach to the compiler of \/p\/dist2/); }
+      else { assert.equal(compiled, 2); assert.equal(got, null); }
+      assert.equal(problems.pending(), false);
+    });
+  }
+});
+
+test('strict: the Rollup plugin fails the build when collecting or writing fails', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  const chunks = [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js')] }];
+  const ctx = { error(e) { throw e; } };
+  try {
+    await withConfig({ strict: true }, async () => {
+      problems.take();
+      const orig = packages.packagesOfFiles;
+      packages.packagesOfFiles = () => { throw new Error('injected'); };
+      try {
+        await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'dist-c'), chunks, ctx }),
+          (e) => problems.isFailure(e) && /rollup: could not collect the bundled packages of .*dist-c: injected/.test(e.message));
+      } finally { packages.packagesOfFiles = orig; }
+      fs.mkdirSync(J(root, 'dist-w'));
+      fs.writeFileSync(J(root, 'dist-w/bundle-lockfile'), 'a file where the directory must be');
+      await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'dist-w'), chunks, ctx }),
+        (e) => problems.isFailure(e) && /rollup: could not write .*dist-w.bundle-lockfile.package-lock\.json/.test(e.message));
+      assert.equal(problems.pending(), false);
+      // closeBundle: a problem there fails the build by a throw, except in watch mode, where a throw would crash
+      // `vite build --watch`: printed then
+      const plugin = rollupAdapter.bundleLockfile('rollup');
+      problems.problem('late');
+      await assert.rejects(plugin.closeBundle.handler.call({ meta: {} }), (e) => problems.isFailure(e) && /\n {2}late$/.test(e.message));
+      problems.problem('late');
+      const origError = config.error, printed = [];
+      config.error = (...a) => printed.push(a.join(' '));
+      try { await plugin.closeBundle.handler.call({ meta: { watchMode: true } }); } finally { config.error = origError; }
+      assert.match(printed.join('\n'), /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*\n {2}late/);
+      assert.equal(problems.pending(), false);
+    });
+    await withConfig({ strict: false }, async () => {
+      fs.mkdirSync(J(root, 'dist-s'));
+      fs.writeFileSync(J(root, 'dist-s/bundle-lockfile'), 'x');
+      await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'dist-s'), chunks, ctx }); // resolves, with a warning
+    });
+  } finally { process.chdir(cwd); }
+});
+
+test('strict: an adapter that throws while wrapping an ESM entry makes the process fail', () => {
+  const script = `const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+    process.env.BUNDLE_LOCKFILE_ESM_HOOKS = 'off';
+    hooks.register({ name: 'boom', esmEntries: [{ id: 'x', suffixes: ['/x.js'], wrap: ['f'] }], esmWrap() { throw new Error('boom'); } });
+    hooks.install();
+    const f = () => 42;
+    console.log(globalThis[Symbol.for('bundle-lockfile.esm')].wrap('x', 'f', f) === f);`;
+  const r = nodeWith(strictEnv(undefined), ['-e', script]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(r.stdout.trim(), 'true');
+  assert.match(r.stderr, /\[bundle-lockfile\] ERROR: boom adapter failed to wrap x f: boom/);
+});
+
+test('strict: ESM hooks that cannot be installed fail a bundler process, and only warn elsewhere', { skip: typeof require('module').registerHooks !== 'function' }, () => {
+  const root = project({ 'package.json': { name: 'app', devDependencies: { vite: '8.0.0' } }, 'build.cjs': '', 'other/package.json': { name: 'other' }, 'other/x.cjs': '' });
+  const script = (main) => `require('module').registerHooks = () => { throw new Error('no hooks'); };
+    process.env.BUNDLE_LOCKFILE_ESM_HOOKS = 'sync'; process.argv[1] = ${JSON.stringify(main)};
+    const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+    hooks.register({ name: 'v', esmEntries: [{ id: 'x', suffixes: ['/x.js'], wrap: ['f'] }], esmPackages: ['vite'] });
+    hooks.install();`;
+  const bundler = nodeWith(strictEnv(undefined), ['-e', script(J(root, 'build.cjs'))]);
+  assert.equal(bundler.status, 1, bundler.stderr);
+  assert.match(bundler.stderr, /\[bundle-lockfile\] ERROR: could not install the ESM hooks: no hooks/);
+  const other = nodeWith(strictEnv(undefined), ['-e', script(J(root, 'other/x.cjs'))]);
+  assert.equal(other.status, 0, other.stderr);
+  assert.match(other.stderr, /\[bundle-lockfile\] WARNING: could not install the ESM hooks/);
+});
+
+test('strict: the loader thread makes an entry it cannot wrap fail when it is imported', () => {
+  const loader = JSON.stringify(pathToFileURLHref(J(SRC, 'esm-loader.mjs')));
+  const script = `const { initialize, load } = await import(${loader});
+    initialize({ entries: [{ id: 'x', suffixes: null, wrap: ['f'] }] }); // suffixes.some throws
+    const r = await load('file:///p/x.js', {}, async () => ({ format: 'module', source: 'export const f = 1;' }));
+    console.log(JSON.stringify(r));`;
+  const strict = JSON.parse(nodeWith(strictEnv(undefined), ['--input-type=module', '-e', script]).stdout);
+  assert.equal(strict.format, 'module');
+  assert.match(strict.source, /^throw new Error\("bundle-lockfile: could not wrap file:\/\/\/p\/x\.js: .* \(BUNDLE_LOCKFILE_STRICT=0 makes this a warning\)"\);/);
+  const off = JSON.parse(nodeWith(strictEnv('0'), ['--input-type=module', '-e', script]).stdout);
+  assert.equal(off.source, 'export const f = 1;');
 });

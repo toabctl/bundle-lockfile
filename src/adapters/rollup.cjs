@@ -9,6 +9,7 @@ const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
+const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
 const copies = require('../core/copies.cjs');
@@ -199,6 +200,14 @@ function filesWrittenAfter(w, since, cwd) {
   return found;
 }
 
+// closeBundle's failure (strict mode): thrown, which fails the build - except in watch mode, where a throw there
+// crashes `vite build --watch` (Vite 5 - 8) and Rolldown's watch() unless its caller catches result.close(): printed
+// then, and the next rebuild tries again.
+function failClose(ctx, err) {
+  if (ctx && ctx.meta && ctx.meta.watchMode) { config.error(err.message); return; }
+  throw err;
+}
+
 function createPlugin(kind, inputOptions) {
   const cwd = realCwd();
   const buildOf = (bundle) => ({ context: cwd, entries: Object.values(bundle).filter(f => f.type === 'chunk' && f.isEntry).map(f => fileOf(f.facadeModuleId)).filter(Boolean) });
@@ -213,17 +222,20 @@ function createPlugin(kind, inputOptions) {
   // (as given, see attach), else - a plugin configured by hand - from the options Rollup and Rolldown pass to buildStart
   let input = inputOptions && inputOptions.input;
   let since = 0;
-  const write = (w) => new Promise((resolve) => {
+  // writes the lockfile of an output; in strict mode rejects with what went wrong (core/problems.cjs), which fails the
+  // build: a hook's rejection is the build's error
+  const write = (w) => new Promise((resolve, reject) => {
+    const end = () => { if (!problems.failIfAny(reject)) resolve(); };
     try {
       outputs.emitted(w.target, w.writer);
       const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
       outputs.prune(w.target, w.writer, exists, () => {
         outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
-          if (err) config.warn(`${kind}: could not write lockfile:`, err);
-          resolve();
+          if (err) problems.problem(`${kind}: could not write ${w.target}`, err);
+          end();
         });
       });
-    } catch (e) { config.warn(`${kind}: could not write lockfile:`, e); resolve(); }
+    } catch (e) { problems.problem(`${kind}: could not write ${w.target}`, e); end(); }
   });
   return {
     name: NAME,
@@ -308,7 +320,9 @@ function createPlugin(kind, inputOptions) {
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
           outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents });
-        } catch (e) { config.warn(`${kind}: could not collect the bundled packages:`, e); }
+        } catch (e) { problems.problem(`${kind}: could not collect the bundled packages of ${out.dir || out.file || 'a build that writes nothing itself'}`, e); }
+        // what went wrong fails the build (strict mode, see core/problems.cjs): this.error throws the build's error
+        problems.failIfAny((err) => this.error(err));
       },
     },
     writeBundle: {
@@ -339,8 +353,12 @@ function createPlugin(kind, inputOptions) {
             for (const l of late) w.files.add(l.file);
             outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents });
             await write(w);
-          } catch (e) { config.warn(`${kind}: could not add the files written after the build:`, e); }
+          } catch (e) {
+            if (problems.isFailure(e)) { failClose(this, e); return; } // from write()
+            problems.problem(`${kind}: could not add the files written into ${w.dir} after the build`, e);
+          }
         }
+        problems.failIfAny((err) => failClose(this, err));
       },
     },
   };
@@ -398,11 +416,13 @@ module.exports = {
     // the request first: reading a missing property of a module in a circular require() makes Node warn
     if (!request.endsWith('rollup.js') || !exp || typeof exp !== 'object' || typeof exp.rollupInternal !== 'function' || exp[PATCHED]) return;
     if (!CJS_ROLLUP.test(resolve())) return;
-    exp[PATCHED] = true;
-    const rollup = exp.rollup, internal = exp.rollupInternal;
-    if (typeof rollup === 'function') exp.rollup = wrapBuild('rollup', rollup);
-    exp.rollupInternal = wrapBuild('rollup', internal); // (options, watcher hooks)
-    config.debug('rollup: patched its CommonJS build', resolve());
+    try {
+      exp[PATCHED] = true;
+      const rollup = exp.rollup, internal = exp.rollupInternal;
+      if (typeof rollup === 'function') exp.rollup = wrapBuild('rollup', rollup);
+      exp.rollupInternal = wrapBuild('rollup', internal); // (options, watcher hooks)
+      config.debug('rollup: patched its CommonJS build', resolve());
+    } catch (e) { problems.problem(`rollup: could not patch ${resolve()}`, e); } // its builds would write no lockfile
   },
   bundleLockfile: (kind = 'rollup', options = {}) => createPlugin(kind, options), // for a rollup/vite config, without injection
   attach,

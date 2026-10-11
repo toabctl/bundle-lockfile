@@ -15,6 +15,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const wt = require('worker_threads');
 const config = require('./core/config.cjs');
+const problems = require('./core/problems.cjs');
 const esmWrap = require('./esm-wrap.cjs');
 const { ancestors } = require('./core/paths.cjs');
 
@@ -115,7 +116,8 @@ function installEsm(entries, cjsFiles) {
     wrap(id, name, fn) {
       for (const a of adapters) {
         if (!a.esmWrap) continue;
-        try { const w = a.esmWrap(id, name, fn); if (w) return w; } catch (e) { config.warn(`${a.name} adapter failed to wrap ${id} ${name}:`, e); }
+        // the entry module is the bundler's: without the wrapped function its builds write no lockfile
+        try { const w = a.esmWrap(id, name, fn); if (w) return w; } catch (e) { problems.problem(`${a.name} adapter failed to wrap ${id} ${name}`, e); }
       }
       return fn;
     },
@@ -127,14 +129,19 @@ function installEsm(entries, cjsFiles) {
       Module.registerHooks({
         load(url, context, nextLoad) {
           const result = nextLoad(url, context);
-          try { return esmWrap.transform(url, result, entries, cjsFiles); } catch (e) { config.warn('could not wrap', url, e); return result; }
+          try { return esmWrap.transform(url, result, entries, cjsFiles); } catch (e) { problems.problem(`could not wrap ${url}`, e); return result; }
         },
       });
     } else if (mode === 'async') {
       Module.register(pathToFileURL(path.join(__dirname, 'esm-loader.mjs')).href,
         { parentURL: pathToFileURL(__filename).href, data: { entries, cjsFiles } });
     }
-  } catch (e) { config.warn('could not install the ESM hooks:', e); }
+  } catch (e) {
+    // Vite, Rollup, Rolldown builds in this process would write no lockfile: a problem in a bundler process (it fails
+    // at exit, core/problems.cjs); elsewhere (npm, any script) there is nothing it would miss
+    if (bundlerProcess([...new Set(adapters.flatMap(a => a.esmPackages || []))])) problems.problem('could not install the ESM hooks', e);
+    else config.warn('could not install the ESM hooks:', e);
+  }
 }
 
 module.exports = { register, install, syncHooksSafe, bundlerProcess, otherLoader, esmMode };

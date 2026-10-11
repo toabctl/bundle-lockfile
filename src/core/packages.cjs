@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
+const problems = require('./problems.cjs');
 const copies = require('./copies.cjs');
 const nested = require('./nested.cjs');
 const vendored = require('./vendored.cjs');
@@ -13,12 +14,14 @@ const { packageRoot, realRoot, unvirtual } = require('./paths.cjs');
 // CSS handling (Vite's CSS plugin, sass-loader, less-loader, postcss-import, Tailwind) and are no modules of their own
 const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
 
-// Bundled code from a package the lockfile cannot list as itself must not go unnoticed. Directories such as
+// Bundled code from a package the lockfile cannot list as itself must not go unnoticed: listed as the package around
+// it, a warning; listed as nothing, a problem (core/problems.cjs) - the lockfile would miss it. Directories such as
 // node_modules/.cache are no packages: tools generate files there, so they are skipped quietly.
 const warned = new Set();
 function unlisted(root, container) {
   const msg = `no package.json with name and version in ${root} - its bundled files are ${container ? `listed as ${container.name}@${container.version}, the package around it` : 'not listed'}`;
   if (path.basename(root).startsWith('.')) { config.debug(msg); return; }
+  if (!container) return problems.problem(msg, null, { once: root }); // with strict mode: on every build
   if (warned.has(root)) return; // once per process, not on every watch rebuild
   warned.add(root);
   config.warn(msg);
