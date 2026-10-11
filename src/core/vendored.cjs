@@ -134,7 +134,7 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
   // the package of each entry module (also a build started from another directory)
   for (const e of entries) {
     if (typeof e !== 'string' || !path.isAbsolute(e) || packageRoot(e)) continue;
-    const own = ancestors(path.dirname(real(e))).find(d => manifest(d));
+    const own = [...ancestors(path.dirname(real(e)))].find(d => manifest(d)); // (iterator helpers: Node.js 22)
     if (own) for (const d of ancestors(own)) boundary.add(d);
   }
   const monorepos = [...boundary].map(membersOf).filter(Boolean);

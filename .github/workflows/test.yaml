@@ -16,7 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         # 22: loader-thread ESM hooks; 24 and 26: in-thread ones (26 deprecates module.register)
-        node: [22, 24, 26]
+        # 20: the oldest Node.js rspack 2 runs on (20.19)
+        node: [20, 22, 24, 26]
     name: unit (Node ${{ matrix.node }})
     steps:
       - name: Install tools
