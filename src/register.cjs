@@ -17,6 +17,11 @@ const YARN = /[\\/]bin[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-\d[^\\/]*\.c?js$|[\\/]
 delete process.env.BUNDLE_LOCKFILE_NODE_SEEN;
 
 if (!config.isDisabled('all')) {
+  // a settings file that is there but cannot be used: its settings (an export directory) would be missing - a problem
+  // (the first build fails with it, or the process, see core/problems.cjs)
+  const { file: settings, error } = config.settingsFile;
+  if (error) require('./core/problems.cjs').problem(`could not read the settings file ${settings}`, error);
+  else if (settings) config.debug('settings from', settings);
   // With the node shim (bin/node), yarn still runs scripts with a temporary `node` first in PATH that runs yarn's
   // own process.execPath, bypassing the shim. In yarn's process, and only there (others derive paths from it, e.g.
   // node-gyp's headers), process.execPath is the shim, which runs the real node.

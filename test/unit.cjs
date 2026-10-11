@@ -2807,3 +2807,55 @@ test('strict: the loader thread makes an entry it cannot wrap fail when it is im
   const off = JSON.parse(nodeWith(strictEnv('0'), ['--input-type=module', '-e', script]).stdout);
   assert.equal(off.source, 'export const f = 1;');
 });
+
+// settings file (src/core/config.cjs): bundle-lockfile from a copy with src/config.json; prints what the
+// settings are in a child process
+function withSettingsFile(content, env = {}) {
+  const root = project({});
+  for (const d of ['src', 'bin']) fs.cpSync(J(__dirname, '..', d), J(root, d), { recursive: true });
+  if (content !== null) fs.writeFileSync(J(root, 'src/config.json'), typeof content === 'string' ? content : JSON.stringify(content));
+  const script = `const c = require(${JSON.stringify(J(root, 'src/core/config.cjs'))});
+    console.log(JSON.stringify({ file: c.file, exportDir: c.exportDir, strict: c.strict, settings: c.settingsFile.file, error: c.settingsFile.error && c.settingsFile.error.message,
+      other: process.env.OTHER_SETTING, child: require('child_process').execSync('node -p process.env.BUNDLE_LOCKFILE_EXPORT_DIR', { encoding: 'utf8' }).trim() }));`;
+  const e = { ...process.env };
+  for (const k of ['BUNDLE_LOCKFILE_EXPORT_DIR', 'BUNDLE_LOCKFILE_FILE', 'BUNDLE_LOCKFILE_CONFIG']) delete e[k];
+  Object.assign(e, env);
+  const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: e });
+  assert.equal(r.status, 0, r.stderr);
+  return { root, ...JSON.parse(r.stdout) };
+}
+
+test('settings file: config.json next to register.cjs sets what the environment does not; only BUNDLE_LOCKFILE_* keys', () => {
+  const s = withSettingsFile({ BUNDLE_LOCKFILE_EXPORT_DIR: '/x/export', BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json', OTHER_SETTING: 'no',
+    BUNDLE_LOCKFILE_CONFIG: '/elsewhere.json', BUNDLE_LOCKFILE_INLINE: 0 });
+  assert.equal(s.settings, J(s.root, 'src/config.json'));
+  assert.equal(s.exportDir, '/x/export');
+  assert.equal(s.file, 'sbom/package-lock.json');
+  assert.equal(s.other, undefined);
+  assert.equal(s.child, '/x/export'); // processes the build starts get them
+  assert.equal(s.error, null);
+  // the environment wins, also set to '' (the file's value is not used)
+  assert.equal(withSettingsFile({ BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' }, { BUNDLE_LOCKFILE_FILE: 'env/package-lock.json' }).file, 'env/package-lock.json');
+  assert.equal(withSettingsFile({ BUNDLE_LOCKFILE_EXPORT_DIR: '/x/export' }, { BUNDLE_LOCKFILE_EXPORT_DIR: '' }).exportDir, null);
+  // none: nothing to say
+  const none = withSettingsFile(null);
+  assert.deepEqual([none.settings, none.error, none.exportDir], [null, null, null]);
+});
+
+test('settings file: BUNDLE_LOCKFILE_CONFIG names it; one that cannot be used is an error the build fails with', () => {
+  const named = J(project({ 's.json': { BUNDLE_LOCKFILE_EXPORT_DIR: '/named' } }), 's.json');
+  const s = withSettingsFile({ BUNDLE_LOCKFILE_EXPORT_DIR: '/default' }, { BUNDLE_LOCKFILE_CONFIG: named });
+  assert.deepEqual([s.settings, s.exportDir], [named, '/named']);
+  assert.match(withSettingsFile(null, { BUNDLE_LOCKFILE_CONFIG: '/does/not/exist.json' }).error, /ENOENT/);
+  assert.match(withSettingsFile('{not json').error, /JSON/);
+  assert.equal(withSettingsFile('[1]').error, 'not a JSON object');
+  // register.cjs reports it: strict mode fails the process (no build took it), BUNDLE_LOCKFILE_STRICT=0 warns
+  const root = withSettingsFile('{not json').root;
+  const reg = J(root, 'src/register.cjs');
+  const strict = nodeWith(strictEnv(undefined), ['--require', reg, '-e', '0']);
+  assert.equal(strict.status, 1, strict.stderr);
+  assert.match(strict.stderr, /\[bundle-lockfile\] ERROR: could not read the settings file .*config\.json: .*JSON/);
+  const off = nodeWith(strictEnv('0'), ['--require', reg, '-e', '0']);
+  assert.equal(off.status, 0, off.stderr);
+  assert.match(off.stderr, /\[bundle-lockfile\] WARNING: could not read the settings file/);
+});

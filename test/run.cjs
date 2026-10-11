@@ -56,12 +56,29 @@ function runCase(c) {
   // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture
   const exportDir = (c.exportDir || c.exportOnly) && path.join(dir, '.export');
   if (exportDir) Object.assign(base, { BUNDLE_LOCKFILE_EXPORT_DIR: exportDir, BUNDLE_LOCKFILE_EXPORT_BASE: dir, BUNDLE_LOCKFILE_INLINE: c.exportOnly ? '0' : '1' });
-  if (c.shim) base.PATH = `${path.resolve(__dirname, '../bin')}${path.delimiter}${base.PATH}`; // the node shim first
+  // settingsFile: bundle-lockfile from a copy (.bl/bin, .bl/src) with a settings file, .bl/src/config.json: true - the
+  // case's BUNDLE_LOCKFILE_* settings, moved there out of the environment; a string - that content (settings stay)
+  let register = REGISTER, bin = path.resolve(__dirname, '../bin');
+  if (c.settingsFile) {
+    const bl = path.join(dir, '.bl');
+    fs.rmSync(bl, { recursive: true, force: true });
+    for (const d of ['bin', 'src']) fs.cpSync(path.resolve(__dirname, '..', d), path.join(bl, d), { recursive: true });
+    let content = c.settingsFile;
+    if (content === true) {
+      const settings = Object.fromEntries(Object.entries(base).filter(([k]) => k.startsWith('BUNDLE_LOCKFILE_')));
+      for (const k of Object.keys(settings)) delete base[k];
+      content = JSON.stringify(settings);
+    }
+    fs.writeFileSync(path.join(bl, 'src/config.json'), content);
+    register = path.join(bl, 'src/register.cjs');
+    bin = path.join(bl, 'bin');
+  }
+  if (c.shim) base.PATH = `${bin}${path.delimiter}${base.PATH}`; // the node shim first
   // vendored package manager releases of the fixture: $PNPM / $NPM in the case's cmd
   for (const [file, name] of [['.pnpm-bin', 'PNPM'], ['.npm-bin', 'NPM']]) {
     if (fs.existsSync(path.join(dir, file))) base[name] = `node ${path.join(dir, fs.readFileSync(path.join(dir, file), 'utf8').trim())}`;
   }
-  const nodeOptions = [c.nodeOptions, c.inject === false ? '' : `--require ${REGISTER}`].filter(Boolean).join(' ');
+  const nodeOptions = [c.nodeOptions, c.inject === false ? '' : `--require ${register}`].filter(Boolean).join(' ');
   const env = { ...base, NODE_OPTIONS: nodeOptions };
   const notes = [];
 

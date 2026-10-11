@@ -262,7 +262,7 @@ src/core/outputs.cjs    writers of each lockfile, in this process and others; wr
 src/core/lock.cjs       lock across processes, atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record
 src/core/problems.cjs   what makes a lockfile missing or incomplete: fails the build (strict mode) or is a warning
-src/core/config.cjs     settings (environment variables), debug, warning and error output
+src/core/config.cjs     settings (environment variables, the settings file), debug, warning and error output
 ```
 
 ## Failing closed

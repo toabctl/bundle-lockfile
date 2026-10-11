@@ -1,5 +1,6 @@
 'use strict';
-// Settings, all from environment variables (the tool is injected into builds we do not control).
+// Settings, from environment variables (the tool is injected into builds we do not control), and from a settings file
+// for builds whose tools do not pass them on (see readSettingsFile).
 //   BUNDLE_LOCKFILE_FILE        output path relative to the bundler's output dir
 //                               (default: bundle-lockfile/package-lock.json)
 //   BUNDLE_LOCKFILE_EXPORT_DIR  also write every lockfile below this directory (see core/paths.cjs exportPath),
@@ -13,14 +14,42 @@
 //                               first-party, never vendored copies (see core/vendored.cjs); "**": none is
 //   BUNDLE_LOCKFILE_STRICT      0/false/off: a lockfile that cannot be written, or would be incomplete, is a warning;
 //                               by default it fails the build (see core/problems.cjs)
+//   BUNDLE_LOCKFILE_CONFIG      the settings file (default: config.json next to register.cjs: src/ in a checkout,
+//                               the installed directory in a package)
 
+const fs = require('fs');
 const path = require('path');
 const env = process.env;
+
+// The settings file: { "BUNDLE_LOCKFILE_EXPORT_DIR": "/x", ... }. Some build tools pass on NODE_OPTIONS and PATH but
+// not these variables (turbo's strict env mode), or start the build with an environment of their own (Metabase's
+// build): the preload, or the node shim through PATH, still gets there, and finds the file next to register.cjs. Its
+// settings go into process.env where the variable is not set (a variable set, also to '', wins), so that the
+// processes the build starts get them too. Only BUNDLE_LOCKFILE_* keys, and only from bundle-lockfile's own directory or
+// the file BUNDLE_LOCKFILE_CONFIG names: never from the project, which must not redirect a package build's lockfiles.
+// Returns { file, error } (error: the file could not be used; core/problems.cjs reports it, see register.cjs).
+function readSettingsFile() {
+  const named = env.BUNDLE_LOCKFILE_CONFIG && env.BUNDLE_LOCKFILE_CONFIG.trim();
+  const file = named ? path.resolve(named) : path.join(__dirname, '..', 'config.json');
+  let settings;
+  try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
+    if (e.code === 'ENOENT' && !named) return { file: null, error: null }; // no settings file: none
+    return { file, error: e };
+  }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { file, error: new Error('not a JSON object') };
+  for (const [k, v] of Object.entries(settings)) {
+    if (!k.startsWith('BUNDLE_LOCKFILE_') || k === 'BUNDLE_LOCKFILE_CONFIG') continue;
+    if (env[k] === undefined && v !== null && typeof v !== 'object') env[k] = String(v);
+  }
+  return { file, error: null };
+}
+const settingsFile = readSettingsFile();
 const disabled = new Set((env.BUNDLE_LOCKFILE_DISABLE || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const on = (v) => !!v && !/^(0|false|off)$/i.test(v.trim());
 const dir = (v) => (v && v.trim() ? path.resolve(v.trim()) : null);
 
 module.exports = {
+  settingsFile, // { file: the settings file read, or null; error: why it could not be used, or null }
   file: env.BUNDLE_LOCKFILE_FILE || 'bundle-lockfile/package-lock.json',
   exportDir: dir(env.BUNDLE_LOCKFILE_EXPORT_DIR),
   exportBase: dir(env.BUNDLE_LOCKFILE_EXPORT_BASE),
