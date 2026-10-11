@@ -109,8 +109,9 @@ Every key starts with `node_modules/`, as in npm's lockfiles; Trivy skips any ot
   socket.io-client's `build/esm/package.json` with its own name.
 - The package directory has no `package.json` with name and version (VS Code's stripped `node_modules` inside
   `@gitlab/web-ide`, a library build's `dist/esm/node_modules/rxjs`): its files count as the package around it, with a
-  warning once per process. Without a package around it, it cannot be listed; a warning names it (only a debug message
-  for directories starting with a dot, such as `node_modules/.cache`, where tools generate files).
+  warning once per process. Without a package around it, it cannot be listed: the build fails naming it (with
+  `BUNDLE_LOCKFILE_STRICT=0`: a warning; only a debug message for directories starting with a dot, such as
+  `node_modules/.cache`, where tools generate files).
 
 **Outside `node_modules`**, a file is first-party (not listed) unless it is in a vendored copy. The same
 `package.json` rule applies: the innermost such directory around the file counts — GitLab's
@@ -200,7 +201,8 @@ Builds that write to the same directory share its lockfile: it lists the package
 
 Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one.
 The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`). A
-lock older than a minute is taken over; after 30 s of waiting the write goes ahead without it, with a warning.
+lock older than a minute is taken over; after 30 s of waiting the write goes ahead without it, and the build fails
+(another process's packages may be missing; with `BUNDLE_LOCKFILE_STRICT=0`: a warning).
 
 - A writer's packages count once its output is written: a rebuild that fails and is not emitted (webpack's default in
   production) leaves the packages of its previous output in the lockfile.

@@ -261,10 +261,35 @@ src/core/lru.cjs        bounded maps for the caches above
 src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
 src/core/lock.cjs       lock across processes, atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record
-src/core/config.cjs     settings (environment variables), debug and warning output
+src/core/problems.cjs   what makes a lockfile missing or incomplete: fails the build (strict mode) or is a warning
+src/core/config.cjs     settings (environment variables), debug, warning and error output
 ```
 
-Adapters must never break a build: their failures are reported on stderr and the build continues.
+## Failing closed
+
+A build whose lockfile cannot be written, or would be incomplete, fails (`src/core/problems.cjs`); with
+`BUNDLE_LOCKFILE_STRICT=0` the same is a warning and the build goes on. Code that hits such a problem records it with
+`problem()` - collecting packages, writing a lockfile or its export copy, taking the lock, a bundled package without a
+`package.json`, patching or wrapping a bundler, installing the ESM hooks in a bundler process - and the adapter of the
+build takes the recorded problems at the end of its hooks:
+
+| Bundler | Before the output is written | After |
+|---|---|---|
+| webpack 4/5, Next.js | a compilation error (webpack 5: `WebpackError` without stack): webpack reports it, emits nothing (`emitOnErrors: false`, the production default) and the build fails with exit code 1 | a compilation error, from `afterEmit` (its callback gets no error) |
+| a compiler the plugin cannot be applied to | a compilation error in each of its compilations (if not even `thisCompilation` can be tapped: `compile()` calls back with the error) | – |
+| Rollup, Rolldown, Vite | `this.error()` in `generateBundle` | `writeBundle` rejects; `closeBundle` throws, except in watch mode, where it prints the error |
+| no build (a bundler that could not be hooked) | the process exits with code 1 (unless it already fails) | |
+
+Never a callback error or a throw from a webpack hook: webpack-cli and rspack-cli exit with 2 and stop watching then,
+the watch API stops rebuilding, a throw in webpack 4's `afterOptimizeAssets` exits with 0 and Next.js 16 hangs.
+Never a throw from Vite's `closeBundle` in watch mode: it crashes `vite build --watch`. The error's stack is its first
+line and a newline: the `rollup` command line strips exactly that before it prints a stack, Vite 5 - 7 print only the
+stack.
+
+In the loader thread (Node.js before 24.12) an entry module that cannot be wrapped becomes a module that throws, so its
+import fails with the reason. Problems are taken process-wide: a compiler may fail with another one's problem - a build
+fails either way. Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that
+is a bundler counts.
 
 To add a bundler:
 1. Write `src/adapters/<name>.cjs` (the interface is described at the top of `src/hooks.cjs`):
