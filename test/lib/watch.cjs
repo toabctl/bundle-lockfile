@@ -1,9 +1,9 @@
 'use strict';
-// Watch-mode build through webpack's Node API (cwd = fixture): builds, rebuilds with the lines of <file> that contain
-// <text> removed (an import whose packages must leave the lockfile), rebuilds with the file restored (they must come
-// back), then exits. usage: node watch.cjs <file> <text>. Fails if a build reports errors (e.g. the lockfile emitted
-// twice with different content) or does not write the lockfile; prints the package list of every build as JSON on the
-// last line. The file is restored also when this fails.
+// Watch-mode build through webpack's Node API, or rspack's if the fixture has an rspack.config.js (cwd = fixture):
+// builds, rebuilds with the lines of <file> that contain <text> removed (an import whose packages must leave the
+// lockfile), rebuilds with the file restored (they must come back), then exits. usage: node watch.cjs <file> <text>.
+// Fails if a build reports errors (e.g. the lockfile emitted twice with different content) or does not write the
+// lockfile; prints the package list of every build as JSON on the last line. The file is restored also when this fails.
 // The lockfile is deleted before every build: on the real disk it is no asset (written in afterEmit), so only the
 // file itself shows that this build wrote it.
 const fs = require('fs');
@@ -19,8 +19,9 @@ const without = source.split('\n').filter(l => !l.includes(text)).join('\n');
 if (without === source) { console.error(`watch: no line of ${file} contains ${text}`); process.exit(2); }
 
 const req = createRequire(path.join(process.cwd(), 'package.json'));
-const webpack = req('webpack');
-const compiler = webpack(req('./webpack.config.js'));
+const rspack = fs.existsSync('rspack.config.js');
+const webpack = req(rspack ? '@rspack/core' : 'webpack');
+const compiler = webpack(req(rspack ? './rspack.config.js' : './webpack.config.js'));
 const lockfile = path.join(compiler.outputPath, ASSET);
 const builds = [];
 fs.rmSync(lockfile, { force: true });

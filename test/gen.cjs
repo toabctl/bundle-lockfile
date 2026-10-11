@@ -98,6 +98,7 @@ for (const [name, fx] of Object.entries(fixtures)) {
     ...fx.packageJson, // extra fields, e.g. workspaces
   }, null, 2) + '\n');
   installers[fx.installer.type](dir, fx.installer);
+  if (fx.postInstall) sh(fx.postInstall, dir);
   if (fx.installer.type === 'pnpm') fs.writeFileSync(path.join(dir, '.pnpm-bin'), path.relative(dir, pnpmBin(fx.installer.version)) + '\n');
   if (fx.installer.type === 'npm' && fx.installer.version) fs.writeFileSync(path.join(dir, '.npm-bin'), path.relative(dir, npmBin(fx.installer.version)) + '\n');
 }

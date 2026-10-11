@@ -1,3 +1,35 @@
-// rspack: its API is webpack's, but bundle-lockfile does not support it (yet) - its Compiler is no webpack Compiler
+// The webpack5 app built by rspack (src/index.js), with switches as the edge apps have. It does not load rspack itself
+// (tools/build.mjs imports it as an ES module only): the version comes from its package.json
 const path = require('path');
-module.exports = { mode: 'production', entry: './src/index.js', output: { path: path.join(__dirname, 'dist'), filename: 'main.js' } };
+const major = Number(require('@rspack/core/package.json').version.split('.')[0]);
+const out = path.join(__dirname, 'dist');
+// RSPACK_CACHE=1: the persistent cache, so a second build restores the modules instead of building them (rspack 1:
+// experiments.cache, 2: cache)
+const persistent = { type: 'persistent', storage: { type: 'filesystem', directory: path.join(__dirname, '.cache-test') } };
+const cache = major >= 2 ? { cache: persistent } : { cache: true, experiments: { cache: persistent } };
+const app = {
+  // RSPACK_MODE=development: a development build (no unused-export analysis, no inlined exports)
+  // RSPACK_NAKED=1: also node_modules/naked (no package.json, made by the case), which the lockfile cannot list
+  mode: process.env.RSPACK_MODE || 'production', entry: process.env.RSPACK_NAKED ? ['./src/index.js', 'naked'] : './src/index.js',
+  output: { path: out, filename: 'main.js' },
+  ...(process.env.RSPACK_CACHE && cache),
+  // RSPACK_EXTERNALS=1: lodash-es comes from a global at runtime (e.g. a CDN script), not from the bundle
+  ...(process.env.RSPACK_EXTERNALS && { externals: { 'lodash-es': 'lodashEs' } }),
+};
+// RSPACK_SHARED: two compilers (app, sw) writing to dist/, as edge-shared-output's: 1 (both), clean (app empties the
+// directory before writing, output.clean), clean-keep (... but keeps sw.js; rspack tests keep against the absolute
+// path, webpack against the one relative to the output dir)
+const shared = () => {
+  const clean = { clean: { clean: true }, 'clean-keep': { clean: { keep: /[\\/]sw\.js$/ } } }[process.env.RSPACK_SHARED] || {};
+  return [
+    { name: 'app', mode: 'production', entry: './src/app.js', output: { path: out, filename: 'app.js', ...clean } },
+    { name: 'sw', mode: 'production', target: 'webworker', entry: './src/sw.js', output: { path: out, filename: 'sw.js' } },
+  ];
+};
+// RSPACK_PLUGIN=<path of src/adapters/rspack.cjs>: the plugin in the config, as without NODE_OPTIONS
+const withPlugin = (c) => {
+  if (!process.env.RSPACK_PLUGIN) return c;
+  const { BundleLockfilePlugin } = require(process.env.RSPACK_PLUGIN);
+  return { ...c, plugins: [...(c.plugins || []), new BundleLockfilePlugin('bundle-lockfile/package-lock.json')] };
+};
+module.exports = process.env.RSPACK_SHARED ? shared().map(withPlugin) : withPlugin(app);

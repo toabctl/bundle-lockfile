@@ -7,7 +7,9 @@
 //   are among the child's own assets while its entry module (depth 0) is a shipped module of its parent
 //   (inlined into it, e.g. worker-loader's inline: 'no-fallback')
 // - assets whose info.sourceFilename (relative to the context) is a file in a package (copy-webpack-plugin)
-// - copied: more files in the output, found by the caller (copy-webpack-plugin 5, whose assets name no file)
+// - copied: more files in the output, found by the caller (copy-webpack-plugin 5, whose assets name no file; rspack's
+//   copies, see rspackCopies)
+const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
 
@@ -68,4 +70,19 @@ function packagesFromStats(json, context, copied = []) {
   return owner.packagesOf(files, { context }); // see owner.cjs
 }
 
-module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats };
+// rspack: the package files copied into the output (assets with info.copied: CopyRspackPlugin, Rsbuild's output.copy),
+// for packagesFromStats' copied - those in packages the compilation depends on whose bytes are the copy's (built with
+// optimization.minimize off). A copy's sourceFilename is relative to its copy pattern, not to the context: removed from
+// the stats JSON
+function rspackCopies(compilation, json, outputPath) {
+  const inPackages = (f) => path.isAbsolute(f) && f.split(path.sep).includes('node_modules');
+  const deps = [...new Set(compilation.fileDependencies)].filter(inPackages);
+  const sizeOf = (f) => { try { const s = fs.statSync(f); return s.isFile() ? s.size : -1; } catch { return -1; } };
+  return (json.assets || []).filter(a => a.info && a.info.copied).flatMap((a) => {
+    delete a.info.sourceFilename;
+    const bytes = fs.readFileSync(path.join(outputPath, a.name));
+    return bytes.length ? deps.filter(f => sizeOf(f) === bytes.length && fs.readFileSync(f).equals(bytes)) : [];
+  });
+}
+
+module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats, rspackCopies };
