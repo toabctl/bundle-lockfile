@@ -296,6 +296,8 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 // every lockfile below .next and its packages (the files they record differ: Next's build id is new on every build)
 const NEXT_LOCKS = `node ${path.join(__dirname, 'lib/locks.cjs')} .next`;
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+// node_modules/naked: bundled code in node_modules without a package.json (webpack5 app with EDGE_NAKED=1), removed afterwards
+const NAKED = "mkdir -p node_modules/naked && echo \"console.log('naked')\" > node_modules/naked/index.js && npm run -s build; s=$?; rm -rf node_modules/naked; exit $s";
 const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // another preload, which does nothing
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
@@ -579,14 +581,46 @@ const cases = [
   // argo-cd's shape: the recipe overwrites NODE_OPTIONS and the output is embedded into a Go binary
   { name: 'shim + export only: yarn 1, NODE_OPTIONS overwritten, output not shipped as files', fixture: 'wp5-yarn1', cmd: 'yarn --offline -s build-reset',
     shim: true, exportOnly: true, expect: W5 },
-  { name: 'edge: failing adapter does not break the build', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT,
-    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write lockfile/ },
-  // the same for the Rollup adapter, in each kind of build it hooks: the build succeeds, no lockfile, a warning
+  // strict mode (the default): what would leave the lockfile missing or incomplete fails the build, with the reason;
+  // with BUNDLE_LOCKFILE_STRICT=0 the build succeeds without it and a warning says why (see core/problems.cjs)
+  { name: 'strict: failing adapter fails the build (webpack 5)', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*webpack: could not collect the packages of \S*dist: injected fault/ },
+  { name: 'STRICT=0: failing adapter does not break the build (webpack 5)', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not collect the packages of \S*dist: Error: injected fault/ },
+  // the same for the Rollup adapter, in each kind of build it hooks
   ...[['Vite 8.3.3', 'vite8-npm', 'npm run -s build', 'vite'], ['Vite 7.3.7', 'vite7-npm', 'npm run -s build', 'vite'],
     ['Rollup 4 command line', 'rollup-cli', 'npm run -s build', 'rollup'], ['Rollup 4 JavaScript API', 'rollup-api', 'node build.mjs rollup', 'rollup'],
-    ['Rolldown 1 JavaScript API', 'rollup-api', 'node build.mjs rolldown', 'rolldown']].map(([what, fixture, cmd, kind]) => (
-    { name: `${what}: failing adapter does not break the build`, fixture, cmd, nodeOptions: FAULT, expect: null,
-      expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not collect the bundled packages`) })),
+    ['Rolldown 1 JavaScript API', 'rollup-api', 'node build.mjs rolldown', 'rolldown']].flatMap(([what, fixture, cmd, kind]) => [
+    { name: `strict: failing adapter fails the build (${what})`, fixture, cmd, nodeOptions: FAULT,
+      // (Vite 8 fails already when it bundles its config with Rolldown: a build that writes nothing itself)
+      expectError: new RegExp(`bundle-lockfile: the lockfile would be missing or incomplete[\\s\\S]*${kind}: could not collect the bundled packages of .+: injected fault`) },
+    { name: `STRICT=0: failing adapter does not break the build (${what})`, fixture, cmd, nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null,
+      expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not collect the bundled packages`) }]),
+  // a lockfile that cannot be written: a file is where its directory must go (main.js / index.html, the build's own)
+  ...[['webpack 5', 'wp5-npm', 'main.js', 'webpack'], ['Vite 8.3.3', 'vite8-npm', 'index.html', 'vite'], ['Rollup 4 command line', 'rollup-cli', 'main.js', 'rollup']]
+    .flatMap(([what, fixture, file, kind]) => [
+      { name: `strict: a lockfile that cannot be written fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: `${file}/package-lock.json` },
+        expectError: new RegExp(`bundle-lockfile: the lockfile would be missing or incomplete[\\s\\S]*${kind}: could not write \\S*dist/${file.replace('.', '\\.')}/package-lock\\.json`) },
+      { name: `STRICT=0: a lockfile that cannot be written is a warning (${what})`, fixture, cmd: 'npm run -s build',
+        env: { BUNDLE_LOCKFILE_FILE: `${file}/package-lock.json`, BUNDLE_LOCKFILE_STRICT: '0' }, lockfile: `${file}/package-lock.json`, expect: null,
+        expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not write`) }]),
+  // an export directory that cannot be written (a file); the inline lockfile is written, the export copy not
+  { name: 'strict: an export directory that cannot be written fails the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORT_DIR: 'package.json' },
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*webpack: could not write \S*bundle-lockfile\/package-lock\.json/ },
+  { name: 'STRICT=0: an export directory that cannot be written is a warning', fixture: 'wp5-npm', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_EXPORT_DIR: 'package.json', BUNDLE_LOCKFILE_STRICT: '0' }, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write/ },
+  // nowhere to write: BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR
+  ...[['webpack 5', 'wp5-npm'], ['Vite 8.3.3', 'vite8-npm']].flatMap(([what, fixture]) => [
+    { name: `strict: INLINE=0 without an export directory fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_INLINE: '0' },
+      expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set/ },
+    { name: `STRICT=0: INLINE=0 without an export directory is a warning (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_INLINE: '0', BUNDLE_LOCKFILE_STRICT: '0' },
+      expect: null, expectOutput: /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set/ }]),
+  // a bundled package without a package.json and no package around it (node_modules/naked, made by the case): it
+  // cannot be listed. No oracle: it names packages by their package.json too, and finds none for naked
+  { name: 'strict: a bundled package that cannot be listed fails the build', fixture: 'wp5-npm', env: { EDGE_NAKED: '1' }, cmd: NAKED,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*no package\.json with name and version in \S*node_modules\/naked - its bundled files are not listed/ },
+  { name: 'STRICT=0: a bundled package that cannot be listed is a warning', fixture: 'wp5-npm', env: { EDGE_NAKED: '1', BUNDLE_LOCKFILE_STRICT: '0' }, cmd: NAKED,
+    expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: no package\.json with name and version in \S*node_modules\/naked - its bundled files are not listed/, oracle: false },
   // Vite (rolldown: 8, rollup: 7). The oracle reads Vite's source maps, which do not cover CSS-only packages
   { name: 'Vite 8.3.3 (rolldown)', fixture: 'vite8-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7 (rollup)', fixture: 'vite7-npm', cmd: 'npm run -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },

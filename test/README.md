@@ -71,8 +71,23 @@ A case that expects a lockfile checks every lockfile the build writes:
 Cases can also require exact keys, the notes and warnings in the build output, and the packages after each watch
 rebuild.
 
-The other cases check that no lockfile is written, or (Next.js 15 with a second preload) that the build fails with
-Next's error.
+The other cases check that no lockfile is written, or that the build fails with a given error: bundle-lockfile's
+(strict mode, below) or Next's (Next.js 15 with a second preload).
+
+**Strict mode.** Each of these cases fails the build with bundle-lockfile's reason (the default), and with
+`BUNDLE_LOCKFILE_STRICT=0` the build succeeds with a warning instead:
+- a failing adapter: webpack 5, Vite 7 and 8, the `rollup` command line, the Rollup and Rolldown APIs;
+- a lockfile that cannot be written: webpack 5, Vite 8, the `rollup` command line;
+- an export directory that cannot be written;
+- `BUNDLE_LOCKFILE_INLINE=0` without an export directory: webpack 5, Vite 8;
+- a bundled package without a `package.json`.
+
+All other cases run in strict mode, so a problem there would fail them. The unit tests cover the remaining paths:
+- a lock that cannot be taken;
+- a compiler the plugin cannot be applied to;
+- an ESM entry that cannot be wrapped, in the thread and in the loader thread;
+- ESM hooks that cannot be installed, in a bundler process and elsewhere;
+- the exit code of a process with problems no build took.
 
 ### Cases
 
