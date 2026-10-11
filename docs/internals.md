@@ -25,10 +25,13 @@ flowchart LR
 
   cjs -- "webpack/lib/Compiler.js<br/>(webpack-cli, webpack 4/5)" --> wpatch["Compiler.prototype.compile patched"]
   cjs -- "next/dist/compiled/webpack<br/>(Next.js)" --> wpatch
+  cjs -- "@rspack/core/dist/index.js<br/>(rspack 1; require() of rspack 2)" --> rspatch["rspack's Compiler.prototype.compile<br/>patched (each copy once)"]
+  esm -- "@rspack/core/dist/index.js<br/>(rspack 2: @rspack/cli, Rsbuild)" --> rspatch
   cjs -- "rollup/dist/shared/rollup.js<br/>(rollup command line, workbox-build)" --> rpatch["rollup() / rollupInternal() wrapped"]
   esm -- "rollup/dist/es/rollup.js (Vite 5-7)<br/>rolldown/dist/index.mjs (Vite 8)" --> wrap["entry module replaced by a wrapper<br/>(esm-wrap.cjs): rollup() rolldown()<br/>watch() build() wrapped"]
 
-  wpatch -- "every top-level compiler,<br/>on its first compile()" --> wplugin["BundleLockfilePlugin<br/>(adapters/webpack.cjs)"]
+  wpatch -- "every top-level compiler,<br/>on its first compile()" --> wplugin["BundleLockfilePlugin<br/>(adapters/webpack-family.cjs)"]
+  rspatch -- "every top-level compiler<br/>of rspack 1.1+" --> wplugin
   rpatch -- "every build" --> rplugin["bundle-lockfile Rollup plugin,<br/>appended last (adapters/rollup.cjs)"]
   wrap -- "every build" --> rplugin
 ```
@@ -231,6 +234,43 @@ ESM hook appends a line to a provided source that reports the module once it has
 modules and sources are left as they are. A loader-thread hook registered after bundle-lockfile's (an `--import` after
 the `--require`) that provides the source without calling the next hook hides it.
 
+## rspack
+
+rspack implements webpack's plugin API, so its compilers get webpack's `BundleLockfilePlugin`
+(`src/adapters/webpack-family.cjs`), which tells their compilations apart (`compiler.webpack.rspackVersion`) where
+rspack differs. `src/adapters/rspack.cjs` only hooks rspack:
+
+- `@rspack/core` is one bundled file, `dist/index.js`: no per-file module to recognize (as webpack's
+  `lib/Compiler.js`). Its export is the `rspack()` function with `rspackVersion` and `Compiler` (its `version` is
+  always `5.75.0`, the webpack API it implements). rspack 1's file is CommonJS: `require()` and `import()` of it go
+  through `Module._load` (onCjsLoad), and under Yarn Plug'n'Play on recent Node.js versions through the line
+  `cjsSource` appends (`cjsFiles`). rspack 2's is an ES module: `@rspack/cli` 2 and Rsbuild 2 `import` it, which only
+  the ESM hook sees (`esmEntries`; its wrapper wraps `Compiler`, and `esmWrap` patches the class); `require()` of it
+  (require(esm), a CommonJS config) goes through `Module._load` too. Only ES modules are wrapped: rspack 1's file has
+  the same path.
+- Its `Compiler.prototype.compile` is patched as webpack's; rspack's Compiler has no `newCompilation`, so the
+  webpack adapter does not take it (and refuses compilers that name an rspack version: Next.js with next-rspack
+  assigns rspack's exports to its vendored webpack). A process can load several copies (OHIF: rspack 1 for the config's
+  plugins, rspack 2 for the compiler) and see one copy on several paths (on Node.js 24.12+, the in-thread ESM hook
+  and `Module._load`): each class is patched once, marked on its prototype.
+- rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module
+  graph: its compilers get a problem instead of the plugin (`core/problems.cjs`: the build fails).
+
+Where rspack's compilations differ:
+
+| | webpack | rspack |
+|---|---|---|
+| copies (copy-webpack-plugin / CopyRspackPlugin) | `info.sourceFilename`, relative to the context | relative to the copy pattern's context (a copied file: its name): matched among the file dependencies by that name, the same file through several paths once, by bytes before the optimize stages (minimizers change copies), else every package file with that name (a copy transformed on the way) |
+| style sheets loaders inline | in the module's `buildInfo` (`fileDependencies`, or its snapshot) | `buildInfo.fileDependencies` from 1.3.14; before, every style sheet below `node_modules` among the compilation's file dependencies |
+| inlined constants (`optimization.inlineExports`) | webpack 5.108+: such a module is in no chunk, not listed | listed: modules in no chunk whose exports info says they are used (`isModuleUsed`), when the options inline exports and analyse their use (else every module counts as used); the options are read after rspack filled in its defaults |
+| the match resource | `nameForCondition()` | the same from 1.7; before, `matchResource` is taken first |
+| hooks | an unknown hook is `undefined` | rspack 2's hooks objects throw on reading an unknown hook: optional hooks are read with `in` first |
+| `compilation.modules` | cheap | each module becomes a JavaScript object when read (about 45 µs and 20 KB each): read only where needed |
+| output file system | webpack's (graceful-fs), Node's fs, or memfs | graceful-fs before 1.6, Node's fs after; dev servers swap in memfs when the compilation starts |
+
+A compilation of rspack 2.2 is partly gone after the next watch rebuild (reading its modules throws): nothing keeps
+one beyond its build.
+
 ## webpack: which file a module is
 
 A module counts as the file webpack itself names it by (its `nameForCondition`: the path `module.rules` match it
@@ -247,7 +287,9 @@ bin/node                node shim for builds whose scripts overwrite NODE_OPTION
 src/hooks.cjs           module-load hooks shared by the adapters: Module._load, and the ESM hooks (in-thread, or the
 src/esm-loader.mjs        loader thread) that replace entry modules by the wrappers esm-wrap.cjs generates
 src/esm-wrap.cjs
-src/adapters/webpack.cjs  webpack 4/5 and Next.js: which source files are in a compiler's emitted output
+src/adapters/webpack.cjs  webpack 4/5 and Next.js: hooks webpack's Compiler
+src/adapters/rspack.cjs   rspack: hooks rspack's Compiler (every copy loaded)
+src/adapters/webpack-family.cjs  webpack and rspack: which source files are in a compiler's emitted output (the plugin)
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
