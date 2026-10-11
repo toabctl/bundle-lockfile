@@ -70,9 +70,10 @@ yallist    5.0.0    npm
 ```
 
 Pin a [release](https://github.com/toabctl/bundle-lockfile/releases): the build runs this code. Trivy reads the
-lockfile too: `trivy fs --format cyclonedx --output sbom.cdx.json dist`. bundle-lockfile's own failures are warnings
-that never fail the build, so check in CI that the lockfile was written (e.g. `test -f
-dist/bundle-lockfile/package-lock.json`).
+lockfile too: `trivy fs --format cyclonedx --output sbom.cdx.json dist`. If bundle-lockfile cannot write a correct
+lockfile for a build it is attached to, that build fails with the reason (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)).
+A bundler it does not hook writes no lockfile and does not fail, so still check in CI that the lockfile was written
+(e.g. `test -f dist/bundle-lockfile/package-lock.json`).
 
 Tested on Linux (Wolfi) with Node.js 24 and 26, and with Node.js 22 for Vite, Rollup, Rolldown, SvelteKit, nested
 bundles and webpack 5 under Yarn Plug'n'Play. Other versions and systems are untested. The node shim needs a POSIX
@@ -271,9 +272,16 @@ workers); a process that never compiles writes nothing. Every process logs how V
 e.g. `ESM hooks: sync (Node 24.21.0)`. A Vite 8 build logs `vite: adding the plugin to a rolldown() call` (Vite 7:
 `rollup()`).
 
-Warnings and notes are always printed: bundled code from a `node_modules` directory without a `package.json` with name
-and version and a vendored copy that is listed (each once per process), a lockfile that could not be written or
-locked, `BUNDLE_LOCKFILE_INLINE=0` without an export directory, and a failing adapter (which never fails the build).
+Errors, warnings and notes are always printed:
+- Errors fail the build (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)):
+  - a lockfile or its export copy that could not be written, or locked;
+  - `BUNDLE_LOCKFILE_INLINE=0` without an export directory;
+  - bundled code from a `node_modules` directory without a `package.json` with name and version, and no package around
+    it;
+  - an adapter that failed to collect the packages or to hook a bundler.
+- With `BUNDLE_LOCKFILE_STRICT=0` these are warnings instead, and the build goes on.
+- Always warnings or notes, once per process: such bundled code that is listed as the package around it, and a vendored
+  copy that is listed.
 
 ## Settings
 
@@ -282,7 +290,8 @@ locked, `BUNDLE_LOCKFILE_INLINE=0` without an export directory, and a failing ad
 | `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json`, outside `node_modules`: syft and Trivy read only files named `package-lock.json`, and none below `node_modules` |
 | `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [melange](#in-a-melange-package-build)) |
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
-| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR`, nothing is written; a warning says so) |
+| `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written, and the build fails, or warns with `BUNDLE_LOCKFILE_STRICT=0`) |
+| `BUNDLE_LOCKFILE_STRICT` | on | a build whose lockfile cannot be written or would be incomplete fails (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)); `0`, `false` or `off` (any case): only warn, and let the build go on (e.g. for local experiments or dev servers) |
 | `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (empty, `0`, `false` and `off` mean off) |
 | `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory, that are first-party: never listed as [vendored copies](docs/format.md#which-package-a-file-belongs-to); `**`: no vendored copies outside `node_modules` |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack`; `vite` (builds with Vite's plugins), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all` |
@@ -371,9 +380,28 @@ Ship that `node_modules` (with its `package.json` files, or a `package-lock.json
 
 The format, keys, licenses and bundle-lockfile's own record are described in [docs/format.md](docs/format.md).
 
+## Troubleshooting: the build fails with `[bundle-lockfile] ERROR`
+
+The build failed because its lockfile would be missing or incomplete; the message says why. webpack reports it as a
+compilation error (`bundle-lockfile: the lockfile would be missing or incomplete …`), Vite and Rollup as an error of
+the `bundle-lockfile` plugin. A problem outside any build (a bundler that could not be hooked) makes the process exit
+with code 1 after printing `[bundle-lockfile] ERROR: …`.
+
+| Message | Cause | What to do |
+|---|---|---|
+| `could not write <lockfile>` | the output directory or the export directory is not writable, or a file is where the `bundle-lockfile/` directory must go | fix the permissions or the paths (`BUNDLE_LOCKFILE_FILE`, `BUNDLE_LOCKFILE_EXPORT_DIR`) |
+| `could not lock <lockfile>` | another process held the lock for more than 30 s | look for a hanging build writing the same output directory |
+| `BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set` | nowhere to write | set `BUNDLE_LOCKFILE_EXPORT_DIR`, or leave the inline lockfile on |
+| `no package.json with name and version in <dir> - its bundled files are not listed` | bundled code in `node_modules` that belongs to no package (a package without `version`, files a tool put there) | install the package properly; a directory whose name starts with a dot (`node_modules/.cache`) is skipped |
+| `<adapter>: could not collect …`, `could not patch …`, `could not wrap …`, `could not install the ESM hooks` | a bug or an unexpected bundler version | report it with `BUNDLE_LOCKFILE_DEBUG=1` output |
+
+`BUNDLE_LOCKFILE_STRICT=0` turns these into warnings and lets the build go on without a correct lockfile. Leave strict
+mode on where the SBOM matters (package builds).
+
 ## Troubleshooting: no lockfile
 
-- Look for `[bundle-lockfile] WARNING:` on stderr: a lockfile that could not be written or locked, a failing adapter.
+- Look for `[bundle-lockfile] WARNING:` on stderr (with `BUNDLE_LOCKFILE_STRICT=0`: a lockfile that could not be
+  written or locked, a failing adapter).
 - Check that `NODE_OPTIONS` reaches the bundler: `BUNDLE_LOCKFILE_DEBUG=1` logs each bundler it patches and each
   lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
   shim](#build-scripts-that-overwrite-node_options). `BUNDLE_LOCKFILE_DISABLE` may be set.
@@ -383,7 +411,8 @@ The format, keys, licenses and bundle-lockfile's own record are described in [do
   a package that does not depend on them, needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`.
 - Outputs below `node_modules`, builds that write nothing themselves, `vite dev`, `vite preview`, Vitest, and a
   webpack build that failed and emitted nothing get no lockfile.
-- `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing.
+- `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing (and fails the build unless
+  `BUNDLE_LOCKFILE_STRICT=0`).
 - A step after the build dropped it: Next.js' static export and standalone output, a copy of only some files. Use an
   export directory.
 
