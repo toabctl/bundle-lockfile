@@ -48,7 +48,7 @@ Preload it into the build with `NODE_OPTIONS`. Every supported bundler in that p
 Rolldown](#vite-rollup-rolldown)). Nothing is installed into the project.
 
 ```sh
-git clone --depth 1 --branch v0.2.0 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
+git clone --depth 1 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
 export NODE_OPTIONS="--require /opt/bundle-lockfile/src/register.cjs"
 
 npm run build                    # or however the build is started: yarn build, pnpm run build, npx vite build,
@@ -69,8 +69,7 @@ nanoid     3.3.20   npm
 yallist    5.0.0    npm
 ```
 
-It is a git checkout: there is no npm package, and no Wolfi package yet. Pin a
-[release](https://github.com/toabctl/bundle-lockfile/releases): the build runs this code. Trivy reads the
+It is a git checkout of `main`: there is no npm package, and no Wolfi package yet. Trivy reads the
 lockfile too: `trivy fs --format cyclonedx --output sbom.cdx.json dist`. If bundle-lockfile cannot write a correct
 lockfile for a build it is attached to, that build fails with the reason (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)).
 A bundler it does not hook writes no lockfile and does not fail, so still check in CI that the lockfile was written
