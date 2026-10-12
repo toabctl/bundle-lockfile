@@ -15,15 +15,24 @@ const app = {
   ...(process.env.RSPACK_CACHE && cache),
   // RSPACK_EXTERNALS=1: lodash-es comes from a global at runtime (e.g. a CDN script), not from the bundle
   ...(process.env.RSPACK_EXTERNALS && { externals: { 'lodash-es': 'lodashEs' } }),
+  // RSPACK_HTML=1: HtmlRspackPlugin writes index.html (rspack loaded only then, see above)
+  ...(process.env.RSPACK_HTML && { plugins: [new (require('@rspack/core').HtmlRspackPlugin)()] }),
+  // RSPACK_WRITE_TO_DISK=1: rspack serve writes its output to disk too
+  ...(process.env.RSPACK_WRITE_TO_DISK && { devServer: { devMiddleware: { writeToDisk: true } } }),
 };
 // RSPACK_SHARED: two compilers (app, sw) writing to dist/, as edge-shared-output's: 1 (both), clean (app empties the
 // directory before writing, output.clean), clean-keep (... but keeps sw.js; rspack tests keep against the absolute
-// path, webpack against the one relative to the output dir)
+// path, webpack against the one relative to the output dir), query (app's file names carry a query string, which rspack
+// does not write to disk; sw is built after it), apart (dist/a and dist/b), fullhash (output.path 'dist/[fullhash]': the
+// same setting, but different directories)
 const shared = () => {
-  const clean = { clean: { clean: true }, 'clean-keep': { clean: { keep: /[\\/]sw\.js$/ } } }[process.env.RSPACK_SHARED] || {};
+  const v = process.env.RSPACK_SHARED;
+  const clean = { clean: { clean: true }, 'clean-keep': { clean: { keep: /[\\/]sw\.js$/ } } }[v] || {};
+  const dir = (sub) => ({ apart: path.join(out, sub), fullhash: path.join(out, '[fullhash]') }[v] || out);
   return [
-    { name: 'app', mode: 'production', entry: './src/app.js', output: { path: out, filename: 'app.js', ...clean } },
-    { name: 'sw', mode: 'production', target: 'webworker', entry: './src/sw.js', output: { path: out, filename: 'sw.js' } },
+    { name: 'app', mode: 'production', entry: './src/app.js', output: { path: dir('a'), filename: v === 'query' ? '[name].js?[contenthash]' : 'app.js', ...clean } },
+    { name: 'sw', mode: 'production', target: 'webworker', entry: './src/sw.js', output: { path: dir('b'), filename: 'sw.js' },
+      ...(v === 'query' && { dependencies: ['app'] }) },
   ];
 };
 // RSPACK_PLUGIN=<path of src/adapters/rspack.cjs>: the plugin in the config, as without NODE_OPTIONS

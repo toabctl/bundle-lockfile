@@ -85,4 +85,21 @@ function rspackCopies(compilation, json, outputPath) {
   });
 }
 
-module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats, rspackCopies };
+// rspack's stats (also a MultiCompiler's) of a build into oracleDist: {"<compiler output dir relative to oracleDist>":
+// [name@version, ...]}; compilers sharing an output dir share its lockfile, so their packages are merged. sources: a Set
+// that gets the absolute path of every emitted source file (for oracles/nested.cjs)
+function rspackResult(stats, oracleDist, sources = new Set()) {
+  const result = {};
+  for (const s of stats.stats || [stats]) {
+    const outputPath = s.compilation.getPath(s.compilation.outputOptions.path, {});
+    const rel = path.relative(oracleDist, outputPath).split(path.sep).join('/');
+    const json = s.toJson(STATS_OPTIONS);
+    const copied = rspackCopies(s.compilation, json, outputPath);
+    const pkgs = packagesFromStats(json, s.compilation.compiler.context, copied);
+    result[rel] = [...new Set([...(result[rel] || []), ...pkgs])].sort();
+    for (const f of filesFromStats(json, s.compilation.compiler.context, copied)) sources.add(f);
+  }
+  return result;
+}
+
+module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats, rspackCopies, rspackResult };

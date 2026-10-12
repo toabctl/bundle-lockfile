@@ -97,7 +97,8 @@ const rspack = (version, installer = { type: 'npm' }, extra = {}, scripts = {}) 
 // into node_modules by the cases, see RSPACK_FEATURES_CMD)
 const RSPACK_FEATURES_DEPS = { 'css-loader': '7.1.5', sass: '1.105.1', 'sass-loader': '17.0.1', bulma: '1.0.4', less: '4.9.1', 'less-loader': '13.0.0',
   'normalize.less': '1.0.0', 'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.1', 'is-number': '7.0.0', 'left-pad': '1.3.0', 'sanitize.css': '13.0.0',
-  'lodash-es': '4.18.1', 'consts-only': 'file:./pkgs/consts-only', 'consts-default': 'file:./pkgs/consts-default' };
+  'lodash-es': '4.18.1', 'consts-only': 'file:./pkgs/consts-only', 'consts-default': 'file:./pkgs/consts-default', 'escape-html': '1.0.3',
+  'reset-css': '5.0.2', 'modern-normalize': '3.0.1' };
 const rspackFeatures = (version) => ({ app: 'rspack-features', bundler: 'rspack', installer: { type: 'npm' },
   deps: { '@rspack/core': version, '@rspack/cli': version, ...RSPACK_FEATURES_DEPS }, packageJson: { scripts: { build: 'rspack build' } } });
 // Rsbuild: the webpack5 app (test/apps/rsbuild, src/index.js) built by `rsbuild build`, with normalize.css copied
@@ -257,7 +258,8 @@ const fixtures = {
   ...Object.fromEntries(['1.0.14', '1.1.8', '1.2.8', '1.3.15', '1.5.8', '1.6.8', '1.7.12', '2.0.8', '2.1.10']
     .map(v => [`rspack${v.split('.').slice(0, 2).join('.')}-npm`, rspack(v)])),
   // (webpack: a webpack process writing to rspack's output dir; memfs: test/lib/memfs-build.cjs; cross-env: build-crossenv)
-  'rspack2.2-npm': rspack('2.2.8', { type: 'npm' }, { ...WEBPACK, memfs: '4.80.0', 'cross-env': '7.0.3' },
+  // (@rspack/dev-server: rspack serve)
+  'rspack2.2-npm': rspack('2.2.8', { type: 'npm' }, { ...WEBPACK, memfs: '4.80.0', 'cross-env': '7.0.3', '@rspack/dev-server': '2.2.1' },
     { 'build-crossenv': 'cross-env NODE_OPTIONS=--max-old-space-size=3072 rspack build' }),
   ...Object.fromEntries([['1.7', '1.7.12'], ['2.2', '2.2.8']].flatMap(([line, v]) => [
     [`rspack${line}-pnpm10`, rspack(v, { type: 'pnpm', version: '10.34.6' })],
@@ -284,6 +286,12 @@ const fixtures = {
   'rsbuild2.2-npm': rsbuild('2.2.12'),
   'rsbuild2.2-bun': rsbuild('2.2.12', { type: 'bun' }),
   'rsbuild2.2-yarn4-pnp': rsbuild('2.2.12', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
+  // a Vite-built island bundled by rspack (test/apps/nested-island, rspack.config.js)
+  'nested-island-rspack': { ...nested({ '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }),
+    packageJson: { scripts: { build: 'vite build --config island/vite.config.mjs && rspack build' } } },
+  // an npm workspace package (test/apps/edge-workspace, rspack.config.js)
+  'rspack-workspace2.2': { app: 'edge-workspace', bundler: 'rspack', installer: { type: 'npm' },
+    deps: { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8', '@acme/ui': '1.0.0' }, packageJson: { workspaces: ['packages/*'], scripts: { build: 'rspack build' } } },
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
@@ -372,18 +380,31 @@ const RSPACK_BIN = './node_modules/.bin/rspack';
 const PARALLEL_RSPACK = `${RSPACK_BIN} build --config-name app & a=$!; ${RSPACK_BIN} build --config-name sw & b=$!; wait $a && wait $b`;
 // the packages of app (ms@2.1.3) and sw (debug and its ms@2.0.0) of edge-shared-output and the rspack app
 const SHARED = ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'];
+// the rspack app's two compilers into dist/[fullhash] (RSPACK_SHARED=fullhash): exactly two directories, app.js next
+// to a lockfile with app's packages, sw.js next to one with sw's
+const RSPACK_FULLHASH = `npm run -s build && test "$(for d in dist/*/; do echo "$(cd "$d" && ls app.js sw.js 2>/dev/null) $(node ${path.join(__dirname, 'lib/locks.cjs')} "$d")"; done | sort)" = "$(printf 'app.js .: ms@2.1.3\\nsw.js .: debug@2.6.9 ms@2.0.0')"`;
 // consts-only and consts-default as installed packages (npm links a file: directory)
 const RSPACK_CONSTS = 'rm -rf node_modules/consts-only node_modules/consts-default && cp -r pkgs/consts-only pkgs/consts-default node_modules/';
-const RSPACK_FEATURES_CMD = `${RSPACK_CONSTS} && npm run -s build`;
+// (and the copy of modern-normalize.css was minimized: not the package file's bytes)
+const RSPACK_FEATURES_CMD = `${RSPACK_CONSTS} && npm run -s build && ! cmp -s dist/copied/modern-normalize.css node_modules/modern-normalize/modern-normalize.css`;
 // rspack-features: the font, the style sheets' packages (bulma's partial, normalize.less, normalize.css @imported by
 // app.css and by normalize.less), the worker's is-number, the copies (left-pad's file, sanitize.css' directory), the
-// packages whose exports rspack 1.7 and later inline (consts-only; consts-default only rspack 2)
-const RSPACK_FEATURES = ['bootstrap-icons@1.13.1', 'bulma@1.0.4', 'consts-default@1.0.0', 'consts-only@1.0.0', 'is-number@7.0.0', 'left-pad@1.3.0',
-  'lodash-es@4.18.1', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'];
-// style sheets loaders inline (no modules, and the stats have no file dependencies)
-const RSPACK_STYLE_MISSING = ['bulma@1.0.4', 'normalize.less@1.0.0'];
+// packages whose exports rspack 1.7 and later inline (consts-only; consts-default only rspack 2), the glob's copy
+// (escape-html), the transformed copy (reset-css), the minimized copy (modern-normalize)
+const RSPACK_FEATURES = ['bootstrap-icons@1.13.1', 'bulma@1.0.4', 'consts-default@1.0.0', 'consts-only@1.0.0', 'escape-html@1.0.3', 'is-number@7.0.0',
+  'left-pad@1.3.0', 'lodash-es@4.18.1', 'modern-normalize@3.0.1', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'reset-css@5.0.2', 'sanitize.css@13.0.0'];
+// style sheets loaders inline (no modules, and the stats have no file dependencies), and the transformed copy (the
+// oracle matches copies by their bytes)
+const RSPACK_FEATURES_MISSING = ['bulma@1.0.4', 'normalize.less@1.0.0', 'reset-css@5.0.2'];
 // the webpack5 app and a copied normalize.css (Rsbuild's output.copy, rspack-copies' CopyRspackPlugin)
 const W5_COPY = [...W5, 'normalize.css@8.0.1'].sort();
+// dev-server.cjs [--on-disk] <command>: the lockfile a dev server serves from memory, or writes to dist/
+const DEV_SERVER = `node ${path.join(__dirname, 'lib/dev-server.cjs')}`;
+// what rspack serve's first build bundles of the webpack5 app: it compiles dynamic imports lazily (lazyCompilation
+// imports: true, its default for web apps), so nanoid's chunk is not built until the page asks for it; and it adds its
+// client to the entries (HMR runtime from @rspack/core, the dev server's client)
+const DEV_W5 = W5.filter(p => !p.startsWith('nanoid@'));
+const DEV_RSPACK2 = [...DEV_W5, '@rspack/core@2.2.8', '@rspack/dev-server@2.2.1'];
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle
 function nextCase(fixture, version, react, flags = '') {
@@ -1085,10 +1106,10 @@ const cases = [
   // inlining exports, so the modules of consts-only and consts-default are in its chunks, and matches the copies by bytes
   ...[['1.2.8', '1.2'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
     { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports`, fixture: `rspack-features${line}`,
-      cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_STYLE_MISSING })),
+      cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
   // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages)
   { name: 'rspack 2.2.8: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, persistent cache: warm build = cold build',
-    fixture: 'rspack-features2.2', env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_STYLE_MISSING },
+    fixture: 'rspack-features2.2', env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING },
   // outputs: two compilers writing to dist/ (one process and two), as edge-shared-output's
   { name: 'rspack 2.2.8: two compilers, one output dir', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: '1' }, expect: SHARED },
   { name: 'rspack 2.2.8: two rspack processes, one output dir, in parallel', fixture: 'rspack2.2-npm', cmd: PARALLEL_RSPACK, env: { RSPACK_SHARED: '1' },
@@ -1147,6 +1168,27 @@ const cases = [
     { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV, expect: null },
+  // rspack serve with writeToDisk: the dev build writes its lockfile to dist/, as watch mode does
+  // (test/lib/dev-server.cjs). No oracle: it builds the config alone, without the dev server's entries and lazy
+  // compilation (see DEV_W5)
+  { name: 'rspack 2.2.8: rspack serve with writeToDisk writes the lockfile to dist/', fixture: 'rspack2.2-npm', cmd: `${DEV_SERVER} --on-disk ${RSPACK_BIN} serve`,
+    env: { RSPACK_MODE: 'development', RSPACK_WRITE_TO_DISK: '1' }, expect: DEV_RSPACK2, oracle: false },
+  // more outputs: HtmlRspackPlugin's child compilation adds no packages and no lockfile
+  ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm']].map(([v, fixture]) => (
+    { name: `rspack ${v}: HtmlRspackPlugin`, fixture, cmd: 'npm run -s build', env: { RSPACK_HTML: '1' }, expect: W5 })),
+  { name: 'rspack 2.2.8: two compilers, two output dirs', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: 'apart' },
+    expectIn: { a: ['ms@2.1.3'], b: ['debug@2.6.9', 'ms@2.0.0'] } },
+  // output.path 'dist/[fullhash]': each compiler's own directory. No oracle: it builds without minimizing, which changes
+  // the hashes, so its directories have other names; RSPACK_FULLHASH checks which compiler's file each lockfile is next to
+  { name: 'rspack 2.2.8: two compilers, output.path with [fullhash]', fixture: 'rspack2.2-npm', cmd: RSPACK_FULLHASH, env: { RSPACK_SHARED: 'fullhash' },
+    expectIncludes: SHARED, oracle: false },
+  // the first compiler's asset names carry a query string ([name].js?[contenthash]): its files are still there
+  { name: 'rspack 2.2.8: two compilers, one output dir, file names with a query string', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
+    env: { RSPACK_SHARED: 'query' }, expect: SHARED },
+  // nested: rspack's lockfile has the island's packages, found by the island's output hash in its lockfile
+  { name: 'nested: Vite 8 island bundled by rspack 2.2.8', fixture: 'nested-island-rspack', cmd: 'npm run -s build', oracleArgs: 'rspack', expect: NESTED_EXPECT },
+  ...[['', {}], [', resolve.symlinks=false', { EDGE_RESOLVE_SYMLINKS: 'false' }]].map(([what, env]) => (
+    { name: `rspack 2.2.8: npm workspace package${what}`, fixture: 'rspack-workspace2.2', cmd: 'npm run -s build', env, expect: ['ms@2.1.3'] })),
 ];
 
 module.exports = { fixtures, cases };
