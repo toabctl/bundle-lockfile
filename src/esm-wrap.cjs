@@ -74,11 +74,11 @@ function source(url, realSrc, entry) {
 }
 
 // CommonJS modules whose source a loader hook provides (Yarn Plug'n'Play's for files in its zip cache, on Node versions
-// whose fstat fails on their file descriptors) are not loaded through Module._load: Node evaluates them with a require()
+// whose fstat fails on their file descriptors) do not go through Module._extensions' handlers: Node evaluates them with a require()
 // of its own, also every module they require - the CommonJS hook (hooks.cjs) never sees them. For the files the adapters
 // patch when they load (cjsFiles), a line appended to that source reports the module to the hook once it has run, as
-// Module._load would. Only when a hook provided the source. On Node.js 24.12+ the in-thread hook also gets the source of
-// a CommonJS file an ES module imports (Rsbuild 1 importing rspack 1), which Node then also passes through Module._load:
+// the CommonJS hook (hooks.cjs) would. Only when a hook provided the source. On Node.js 24.12+ the in-thread hook also gets the source of
+// a CommonJS file an ES module imports (Rsbuild 1 importing rspack 1), which Node then also loads through Module._extensions:
 // such a module is reported twice, and the adapters patch it once.
 const CJS_LOADED = "\n;{ const f = globalThis[Symbol.for('bundle-lockfile.cjs-loaded')]; if (typeof f === 'function') f(module, __filename); }\n";
 function cjsSource(url, result, files) {
@@ -94,7 +94,7 @@ function cjsSource(url, result, files) {
 // result as it is.
 function transform(url, result, entries, cjsFiles) {
   // only ES modules are wrapped: rspack 1's CommonJS dist/index.js has the path of rspack 2's entry, and must go on to
-  // cjsSource (under Yarn Plug'n'Play Node.js evaluates it without Module._load)
+  // cjsSource (under Yarn Plug'n'Play Node.js evaluates it without the CommonJS hook)
   const entry = result && result.format === 'module' ? match(url, entries) : null;
   if (!entry) {
     const cjs = cjsSource(url, result, cjsFiles);

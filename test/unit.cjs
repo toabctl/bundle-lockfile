@@ -1015,19 +1015,20 @@ test('webpack adapter: every top-level compiler gets the listeners once; child c
 });
 
 test('hooks: a throwing adapter is reported and does not break require()', () => {
+  const root = project({ 'lib.js': "module.exports = (a, b) => a + '/' + b;" });
   const script = `const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
     hooks.register({ name: 'boom', onCjsLoad() { throw new Error('boom'); } });
     hooks.install(); hooks.install();
-    console.log(require('path').join('a', 'b'));`;
+    console.log(require(${JSON.stringify(J(root, 'lib.js'))})('a', 'b'));`;
   const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), J('a', 'b'));
-  assert.match(r.stderr, /\[bundle-lockfile\] WARNING: boom adapter failed while inspecting path/);
+  assert.equal(r.stdout.trim(), 'a/b');
+  assert.match(r.stderr, /\[bundle-lockfile\] WARNING: boom adapter failed while inspecting \S*lib\.js/);
 });
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
-  const script = `const M = require('module'); const before = M._load; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._load === before);`;
-  // the rollup and rspack adapters patch Module._load too (Rollup's CommonJS build, rspack): only off with all names
+  const script = `const M = require('module'); const before = M._extensions['.js']; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._extensions['.js'] === before);`;
+  // the rollup and rspack adapters hook CommonJS modules too (Rollup's CommonJS build, rspack): only off with all names
   for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK', 'true'],
     ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
@@ -3093,4 +3094,19 @@ test('settings file: BUNDLE_LOCKFILE_CONFIG names it; one that cannot be used is
   const off = nodeWith(strictEnv('0'), ['--require', reg, '-e', '0']);
   assert.equal(off.status, 0, off.stderr);
   assert.match(off.stderr, /\[bundle-lockfile\] WARNING: could not read the settings file/);
+});
+
+test('hooks: a package\'s require() of a deprecated built-in module warns as without bundle-lockfile (Node decides by the caller)', () => {
+  // punycode (DEP0040): Node warns only when the first frame that is not its own is outside node_modules - the
+  // Module._load wrapper must not be that frame. Builds that exit on any warning (OpenSearch Dashboards') failed.
+  const root = project({ 'node_modules/a/index.js': "require('punycode'); module.exports = 1;", 'app.js': "require('punycode');",
+    'main.js': "process.on('warning', (w) => console.log('warning', w.code)); require(process.argv[2]); setTimeout(() => {}, 20);" });
+  const run = (target, preload) => spawnSync(process.execPath, [...(preload ? ['--require', J(SRC, 'register.cjs')] : []), J(root, 'main.js'), target],
+    { encoding: 'utf8', cwd: root, env: { ...process.env, NODE_OPTIONS: '' } }).stdout.trim();
+  for (const target of ['a', J(root, 'app.js')]) assert.equal(run(target, true), run(target, false), target);
+  // where this Node.js warns at all (21+), first-party code still does with bundle-lockfile
+  if (Number(process.versions.node.split('.')[0]) >= 22) {
+    assert.equal(run('a', true), '');
+    assert.match(run(J(root, 'app.js'), true), /warning DEP0040/);
+  }
 });

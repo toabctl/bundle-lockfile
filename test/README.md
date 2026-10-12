@@ -20,7 +20,7 @@ Besides the core, the unit tests cover in separate processes what timing decides
 - processes writing one lockfile at once;
 - the node shim behind wrappers, version-manager shims and symlinked install directories;
 - a CommonJS bundler whose source another loader-thread hook provides (as Yarn Plug'n'Play's does), which Node.js
-  loads without `Module._load`.
+  loads without its CommonJS module handlers (`Module._extensions`).
 
 ## Matrix
 

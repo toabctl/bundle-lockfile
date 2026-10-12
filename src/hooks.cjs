@@ -2,10 +2,10 @@
 // Module-load hooks shared by all adapters.
 //
 // An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, esmEntries?, esmPackages?, esmWrap?(id, name, fn) }.
-// - onCjsLoad is called for every CommonJS module that gets loaded and patches the bundler when it recognizes it.
-//   resolve() returns the module's resolved filename; it is lazy because resolving every require() would slow down
-//   large builds. cjsFiles (RegExps of file paths): the modules onCjsLoad patches, which the ESM hooks report also when
-//   Node loads them without Module._load (see esm-wrap.cjs cjsSource).
+// - onCjsLoad(exports, request, resolve) is called for every CommonJS module once it has run (and an ES module that
+//   require() loads), and patches the bundler when it recognizes it. request is the module's file name, as resolve()
+//   returns it. cjsFiles (RegExps of file paths): the modules onCjsLoad patches, which the ESM hooks report also when
+//   Node loads them without the CommonJS hook (see esm-wrap.cjs cjsSource).
 // - esmEntries ({ id, suffixes, wrap }, see esm-wrap.cjs) are ESM modules replaced by a wrapper whose functions in
 //   `wrap` go through esmWrap(id, name, fn), which returns the function to use instead. esmPackages: npm packages
 //   whose use makes a process a bundler process (see esmMode).
@@ -42,19 +42,24 @@ function onCjsLoad(exp, request, resolve) {
   }
 }
 
+// Every CommonJS module once it has run: the handlers of Module._extensions (.js, .cjs) load a module's file - also an
+// ES module that require() loads (require(esm): module.exports is its namespace, or its "module.exports" export).
+// Not Module._load: a wrapper of it is on the stack between a module and the built-in module it requires, and Node
+// decides whether to warn about some deprecated ones (punycode, DEP0040) by the caller, the first frame of the stack that
+// is not its own, looking at 10 frames: one more frame put a package's caller out of reach, and its require('punycode')
+// warned - which fails builds that exit on any warning (OpenSearch Dashboards', Kibana's). A handler of the module being
+// loaded is below that module's code on the stack. A module from the cache runs no handler: it was seen when it loaded.
 function installCjs() {
-  const origLoad = Module._load;
-  Module._load = function (request, parent, isMain) {
-    const exp = origLoad.apply(this, arguments);
-    let resolved;
-    const resolve = () => {
-      if (resolved === undefined) { try { resolved = Module._resolveFilename(request, parent); } catch { resolved = request; } }
-      return resolved;
+  for (const ext of ['.js', '.cjs']) {
+    const handler = Module._extensions[ext];
+    if (typeof handler !== 'function') continue;
+    Module._extensions[ext] = function (module, filename) {
+      const r = handler.apply(this, arguments);
+      onCjsLoad(module.exports, filename, () => filename);
+      return r;
     };
-    onCjsLoad(exp, request, resolve);
-    return exp;
-  };
-  // a cjsFiles module Node evaluated without Module._load reports itself here once it has run (esm-wrap.cjs cjsSource)
+  }
+  // a cjsFiles module Node evaluated without the CommonJS hook reports itself here once it has run (esm-wrap.cjs cjsSource)
   globalThis[Symbol.for('bundle-lockfile.cjs-loaded')] = (module, filename) => onCjsLoad(module.exports, filename, () => filename);
 }
 
@@ -105,7 +110,7 @@ function esmMode(packages) {
 }
 
 // Another loader-thread hook is configured (Yarn Plug'n'Play's --experimental-loader .pnp.loader.mjs, an --import that
-// registers one): it can provide the source of CommonJS modules, which Node then loads without Module._load - only the
+// registers one): it can provide the source of CommonJS modules, which Node then loads without the CommonJS hook - only the
 // ESM hooks see them (esm-wrap.cjs cjsSource).
 function otherLoader(argv = [process.env.NODE_OPTIONS || '', ...process.execArgv]) {
   return /(^|\s)--(?:experimental-loader|loader|import)(?:[=\s]|$)/.test(argv.join(' '));

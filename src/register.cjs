@@ -40,7 +40,7 @@ if (!config.isDisabled('all')) {
     enabled++;
   }
   if (enabled) {
-    hooks.install(); // nothing to do: leave Module._load alone
+    hooks.install(); // nothing to do: leave Node's module loading alone
     require('./core/copies.cjs').install(); // fs copies out of packages, see there
   }
 }

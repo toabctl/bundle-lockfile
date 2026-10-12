@@ -5,9 +5,10 @@ For maintainers. What gets listed, and how to use it, is in the [README](../READ
 
 ## Getting into the build
 
-`register.cjs`, preloaded with `--require`, runs before the build tool's own code. It installs a hook on
-`Module._load` (every `require()`) and, depending on the Node.js version (see [Vite, Rollup,
-Rolldown](#vite-rollup-rolldown)), an ESM load hook. Each recognizes a bundler's module when it is loaded and patches
+`register.cjs`, preloaded with `--require`, runs before the build tool's own code. It installs a hook on the CommonJS
+module handlers (`Module._extensions['.js']`, `['.cjs']`: every CommonJS module once it has run; not `Module._load`,
+whose wrapper would be the caller of every built-in module for Node's deprecation warnings) and, depending on the
+Node.js version (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)), an ESM load hook. Each recognizes a bundler's module when it is loaded and patches
 it so that every build gets bundle-lockfile's plugin — without a config change.
 
 ```mermaid
@@ -19,7 +20,7 @@ flowchart LR
     shim --> nodeopts
   end
   nodeopts --> register["register.cjs"]
-  register --> cjs["Module._load hook<br/>(hooks.cjs)"]
+  register --> cjs["CommonJS hook: Module._extensions<br/>(hooks.cjs)"]
   register --> esm["ESM load hook (hooks.cjs)<br/>registerHooks, in-thread: Node ≥ 24.12 / 25.2<br/>(safe next to other loaders from there)<br/>module.register, loader thread (esm-loader.mjs):<br/>older, in bundler processes"]
   register --> copies["fs copy functions wrapped<br/>(core/copies.cjs)"]
 
@@ -192,7 +193,7 @@ the write; a programmatic build that never closes its bundle keeps the lockfile 
 
 ## Vite, Rollup, Rolldown
 
-Vite imports Rollup (5–7) and Rolldown (8) as ES modules, which `Module._load` does not see. An ESM hook therefore
+Vite imports Rollup (5–7) and Rolldown (8) as ES modules, which the CommonJS hook does not see. An ESM hook therefore
 replaces their entry modules (`rollup/dist/es/rollup.js`, `@rollup/wasm-node/dist/es/rollup.js`,
 `rolldown/dist/index.mjs`) with a wrapper that re-exports everything and wraps `rollup()`, `rolldown()`, `watch()` and
 `build()`. Rollup's CommonJS build is patched when it loads (`require('rollup')`, the `rollup` command line,
@@ -217,7 +218,7 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
 
 ### CommonJS modules a loader hook provides
 
-Node.js loads a CommonJS module without `Module._load` — and everything that module `require()`s — when a
+Node.js loads a CommonJS module without its module handlers (`Module._extensions`) — and everything that module `require()`s — when a
 loader-thread hook provided its source. Only the ESM hooks see such modules.
 
 Yarn Plug'n'Play's loader does this for the files in its zip cache on Node.js 22.22.3+, 24.15+, 25.7+ and 26.x
@@ -230,7 +231,7 @@ build would not be hooked: webpack-cli 7 `import()`s webpack, and on Node.js 22 
 that way.
 
 So for the files the adapters patch (`cjsFiles`: webpack's `Compiler`, Next.js' webpack, Rollup's CommonJS build), the
-ESM hook appends a line to a provided source that reports the module once it has run, as `Module._load` would. Other
+ESM hook appends a line to a provided source that reports the module once it has run, as the CommonJS hook would. Other
 modules and sources are left as they are. A loader-thread hook registered after bundle-lockfile's (an `--import` after
 the `--require`) that provides the source without calling the next hook hides it.
 
@@ -243,16 +244,16 @@ rspack differs. `src/adapters/rspack.cjs` only hooks rspack:
 - `@rspack/core` is one bundled file, `dist/index.js`: no per-file module to recognize (as webpack's
   `lib/Compiler.js`). Its export is the `rspack()` function with `rspackVersion` and `Compiler` (its `version` is
   always `5.75.0`, the webpack API it implements). rspack 1's file is CommonJS: `require()` and `import()` of it go
-  through `Module._load` (onCjsLoad), and under Yarn Plug'n'Play on recent Node.js versions through the line
+  through the CommonJS hook (onCjsLoad), and under Yarn Plug'n'Play on recent Node.js versions through the line
   `cjsSource` appends (`cjsFiles`). rspack 2's is an ES module: `@rspack/cli` 2 and Rsbuild 2 `import` it, which only
   the ESM hook sees (`esmEntries`; its wrapper wraps `Compiler`, and `esmWrap` patches the class); `require()` of it
-  (require(esm), a CommonJS config) goes through `Module._load` too. Only ES modules are wrapped: rspack 1's file has
+  (require(esm), a CommonJS config) goes through the CommonJS hook too. Only ES modules are wrapped: rspack 1's file has
   the same path.
 - Its `Compiler.prototype.compile` is patched as webpack's; rspack's Compiler has no `newCompilation`, so the
   webpack adapter does not take it (and refuses compilers that name an rspack version: Next.js with next-rspack
   assigns rspack's exports to its vendored webpack). A process can load several copies (OHIF: rspack 1 for the config's
   plugins, rspack 2 for the compiler) and see one copy on several paths (on Node.js 24.12+, the in-thread ESM hook
-  and `Module._load`): each class is patched once, marked on its prototype.
+  and the CommonJS hook): each class is patched once, marked on its prototype.
 - rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module
   graph: its compilers get a problem instead of the plugin (`core/problems.cjs`: the build fails).
 
@@ -284,7 +285,7 @@ package file pulled in under a first-party match resource is not listed either.
 ```
 src/register.cjs        NODE_OPTIONS entry point: registers the adapters, installs the hooks and the fs copy wrappers
 bin/node                node shim for builds whose scripts overwrite NODE_OPTIONS
-src/hooks.cjs           module-load hooks shared by the adapters: Module._load, and the ESM hooks (in-thread, or the
+src/hooks.cjs           module-load hooks shared by the adapters: Module._extensions, and the ESM hooks (in-thread, or the
 src/esm-loader.mjs        loader thread) that replace entry modules by the wrappers esm-wrap.cjs generates
 src/esm-wrap.cjs
 src/adapters/webpack.cjs  webpack 4/5 and Next.js: hooks webpack's Compiler
@@ -337,7 +338,7 @@ To add a bundler:
 1. Write `src/adapters/<name>.cjs` (the interface is described at the top of `src/hooks.cjs`):
    - `name` (or `names`, if it serves several bundlers, for `BUNDLE_LOCKFILE_DISABLE`);
    - for a CommonJS bundler: `onCjsLoad(exports, request, resolve)`, which recognizes and patches it, and `cjsFiles`,
-     the files it patches, which the ESM hooks report when Node loads them without `Module._load`;
+     the files it patches, which the ESM hooks report when Node loads them without the CommonJS hook;
    - for an ES module one: `esmEntries`, `esmWrap` and `esmPackages` (the packages whose processes get the
      loader-thread hooks);
    - write through `core/outputs.cjs`, so that shared output directories work.
