@@ -140,7 +140,6 @@ Real builds of seven Chainguard packages with rspack and Rsbuild are compared wi
 - **Outputs that move:** Next.js' static export and standalone output, and any step that copies only some files,
   leave the lockfiles behind: use an [export directory](#in-a-melange-package-build).
 - **Next.js 15.0 – 16.3** break with a second `--require` in `NODE_OPTIONS` ([details](#nextjs)).
-- **Two copies of bundle-lockfile** preloaded into one process: the first one does all the work.
 
 ## What is listed
 
@@ -376,7 +375,8 @@ Errors, warnings and notes are always printed:
     it;
   - an adapter that failed to collect the packages or to hook a bundler;
   - rspack 1.0;
-  - a settings file that cannot be read;
+  - a setting that is not recognized or cannot work, a settings file that cannot be read, another copy of
+    bundle-lockfile preloaded too ([settings](#settings));
   - a node shim that finds no `register.cjs` (it exits with 1 before `node` runs).
 - In watch mode of Vite, Rollup and Rolldown, an error after the output is written is printed, and the watcher goes
   on.
@@ -389,26 +389,38 @@ Errors, warnings and notes are always printed:
 
 Environment variables, or the same names in a settings file (a JSON object), for builds whose tools do not pass the
 variables on: `config.json` next to `register.cjs` (`src/config.json` in a checkout), or the file
-`BUNDLE_LOCKFILE_CONFIG` names. Only `BUNDLE_LOCKFILE_*` keys with string, number or boolean values count. A variable
-that is set, also to an empty value, wins over the file; the processes the build starts get the file's settings as
-variables. A settings file that cannot be read, or a file `BUNDLE_LOCKFILE_CONFIG` names that does not exist, fails
-every process that preloads bundle-lockfile: its first build, or else the process itself at exit, also `npm ci`
-(with `BUNDLE_LOCKFILE_STRICT=0`: a warning). A missing `config.json` is no error. Paths are resolved against each
-process's working directory: use absolute ones.
+`BUNDLE_LOCKFILE_CONFIG` names. A variable that is set, also to an empty value, wins over the file; the processes the
+build starts get the file's settings as variables. A missing `config.json` is no error.
+
+A setting that bundle-lockfile does not recognize, or that cannot work, fails every process that preloads
+bundle-lockfile: its first build, or else the process itself at exit, also `npm ci` (with `BUNDLE_LOCKFILE_STRICT=0`: a
+warning). A build must not go on without doing what was asked of it. That is:
+- a `BUNDLE_LOCKFILE_*` variable that is none of the table's (e.g. a misspelled `BUNDLE_LOCKFILE_EXPORTDIR`), and in the
+  settings file any other key, a key only the environment can set, or a value that is no string, number or boolean;
+- a value the setting does not take: on/off settings take `1`, `true` or `on` and `0`, `false` or `off` (any case;
+  empty means the default), `BUNDLE_LOCKFILE_DISABLE` and `BUNDLE_LOCKFILE_ESM_HOOKS` the names below;
+- a relative `BUNDLE_LOCKFILE_EXPORT_DIR`, `BUNDLE_LOCKFILE_EXPORT_BASE` or `BUNDLE_LOCKFILE_CONFIG` (each process
+  would resolve it in its own working directory), and `BUNDLE_LOCKFILE_EXPORT_BASE` without an export directory;
+- a `BUNDLE_LOCKFILE_FILE` that syft and Trivy would not read;
+- a settings file that cannot be read, or a file `BUNDLE_LOCKFILE_CONFIG` names that does not exist;
+- another copy of bundle-lockfile preloaded into the same process (only the first one would run).
+
+With `BUNDLE_LOCKFILE_DISABLE=all` nothing is checked. A plugin added to a config by hand, without the preload, does
+not check the settings.
 
 | Variable | Default | |
 |---|---|---|
-| `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory. Keep the file name `package-lock.json`, outside `node_modules`: syft and Trivy read only files named `package-lock.json`, and none below `node_modules` |
-| `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | also write every lockfile below this directory, at `<dir>/<its path>` (see [melange](#in-a-melange-package-build)) |
-| `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
+| `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | output path, relative to the bundler's output directory and inside it, named `package-lock.json` and not below a `node_modules` directory: syft and Trivy read only files named `package-lock.json`, and none below `node_modules` |
+| `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | an absolute path: also write every lockfile below this directory, at `<dir>/<its path>` (see [melange](#in-a-melange-package-build)) |
+| `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | an absolute path, with `BUNDLE_LOCKFILE_EXPORT_DIR`: lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
 | `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written, and the build fails, or warns with `BUNDLE_LOCKFILE_STRICT=0`) |
 | `BUNDLE_LOCKFILE_STRICT` | on | a build whose lockfile cannot be written or would be incomplete fails (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)); `0`, `false` or `off` (any case): only warn, and let the build go on (e.g. for local experiments or dev servers) |
-| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (empty, `0`, `false` and `off`, any case, mean off) |
+| `BUNDLE_LOCKFILE_DEBUG` | off | `1`, `true` or `on`: log what gets patched and applied to stderr |
 | `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory (or absolute), that are first-party: never listed as [vendored copies](docs/format.md#which-package-a-file-belongs-to). A glob names directories, not what is below them: `lib/**` for `lib/` and everything in it; `**`: no vendored copies outside `node_modules` |
-| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack` (also Next.js); `rspack` (also Rsbuild, Rslib, next-rspack); `vite` (builds with Vite's plugins, also SvelteKit), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all`. Other names are ignored, and plugins added to a config by hand still run |
-| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked (and webpack and rspack 1 when a loader hook such as Yarn Plug'n'Play's provides their code): `sync`, `async` or `off` instead of choosing by Node.js version (see [below](#vite-rollup-rolldown)); other values mean `auto`. `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
+| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack` (also Next.js); `rspack` (also Rsbuild, Rslib, next-rspack); `vite` (builds with Vite's plugins, also SvelteKit), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all`. Plugins added to a config by hand still run |
+| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked (and webpack and rspack 1 when a loader hook such as Yarn Plug'n'Play's provides their code): `sync`, `async` or `off` instead of choosing by Node.js version (see [below](#vite-rollup-rolldown)). `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
 | `BUNDLE_LOCKFILE_REGISTER` | `../src/register.cjs` or `../register.cjs` from the shim | the `register.cjs` the node shim preloads (only from the environment) |
-| `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | the settings file (only from the environment) |
+| `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | an absolute path: the settings file (only from the environment) |
 
 `BUNDLE_LOCKFILE_NODE_SHIM` and `BUNDLE_LOCKFILE_NODE_SEEN` are set by the node shim for the processes it starts; do
 not set them.
@@ -536,6 +548,8 @@ loads unchanged, without a warning).
 | `could not write the copy <copy> of <lockfile>` | a copy of a lockfile made with fs (e.g. SvelteKit's adapters' in `build/`) could not be rewritten for its place | fix the permissions of the copy |
 | `could not read the settings file <file>` | `config.json` next to `register.cjs`, or the file `BUNDLE_LOCKFILE_CONFIG` names, is no JSON object, cannot be read, or (named) does not exist | fix the file or `BUNDLE_LOCKFILE_CONFIG` ([settings](#settings)) |
 | `rspack <version> is not supported (it needs 1.1 or later)` | rspack 1.0 | upgrade rspack |
+| `BUNDLE_LOCKFILE_… is set, but is no setting of bundle-lockfile`, `… is not recognized`, `… is none of …`, `… is not an absolute path`, `… without BUNDLE_LOCKFILE_EXPORT_DIR`, `the settings file … sets …` | a setting bundle-lockfile does not recognize, or that cannot work ([settings](#settings)) | fix the name or the value |
+| `another copy of bundle-lockfile is preloaded too: <register.cjs>` | two `--require`s of bundle-lockfile (e.g. one in the environment, one added by the recipe) | preload one |
 | `node shim: no register.cjs next to …`, `node shim: BUNDLE_LOCKFILE_REGISTER names no file: …` | the [node shim](#build-scripts-that-overwrite-node_options) was copied without bundle-lockfile's `src/`, or `BUNDLE_LOCKFILE_REGISTER` is wrong | install `bin/` and `src/` together, or set `BUNDLE_LOCKFILE_REGISTER` to the absolute path of `register.cjs` |
 | `BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set` | nowhere to write | set `BUNDLE_LOCKFILE_EXPORT_DIR`, or leave the inline lockfile on |
 | `no package.json with name and version in <dir> - its bundled files are not listed` | bundled code in `node_modules` that belongs to no package (a package without `version`, files a tool put there) | install the package properly; a directory whose name starts with a dot (`node_modules/.cache`) is skipped |
@@ -550,8 +564,7 @@ mode on where the SBOM matters (package builds).
   written or locked, a failing adapter).
 - Check that `NODE_OPTIONS` reaches the bundler: `BUNDLE_LOCKFILE_DEBUG=1` logs each bundler it patches and each
   lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
-  shim](#build-scripts-that-overwrite-node_options). `BUNDLE_LOCKFILE_DISABLE` may be set. A process that preloads
-  another copy of bundle-lockfile first uses that copy.
+  shim](#build-scripts-that-overwrite-node_options). `BUNDLE_LOCKFILE_DISABLE` may be set.
 - The bundler is not supported: Turbopack (Next.js 16's default; use `next build --webpack`), esbuild, the `rolldown`
   command line.
 - A programmatic build that imports Vite, Rollup, Rolldown or rspack 2 as ES modules, on Node.js before 24.12 (25.2 on

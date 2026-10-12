@@ -7,7 +7,7 @@
 //   rolldown-nodir  rolldown() + write() without dir or file (Rolldown writes to dist/)
 //   rollup-outputs, rolldown-outputs  two outputs into dist/ at the same time (main.js, main.min.js), as the rollup
 //                   command line writes them; fails unless the lockfile records each with its own file
-//   rollup-plugin, rolldown-plugin  the plugin in the build's options (BUNDLE_LOCKFILE_PLUGIN: adapters/rollup.cjs, no
+//   rollup-plugin, rolldown-plugin  the plugin in the build's options (BLTEST_PLUGIN: adapters/rollup.cjs, no
 //                   NODE_OPTIONS), two builds into dist/: src/main.js, then src/second.js; the lockfile must keep both
 //   rollup-watch, rolldown-watch  watch(): builds, rebuilds without src/main.js's nanoid lines (nanoid must leave the
 //                   lockfile), rebuilds with them (it must come back); the lockfile is deleted before every build;
@@ -49,7 +49,7 @@ if (mode === 'rollup' || mode === 'rollup-wasm') {
   const got = JSON.stringify(writers.map(w => [w.files, Object.keys(w.outputs || {})]).sort());
   if (got !== JSON.stringify([[['../main.js'], ['../main.js']], [['../main.min.js'], ['../main.min.js']]])) fail(`${mode}: writers ${got}`);
 } else if (mode === 'rollup-plugin' || mode === 'rolldown-plugin') {
-  const { bundleLockfile } = createRequire(import.meta.url)(process.env.BUNDLE_LOCKFILE_PLUGIN);
+  const { bundleLockfile } = createRequire(import.meta.url)(process.env.BLTEST_PLUGIN);
   const rollup = mode === 'rollup-plugin';
   for (const entry of [input, 'src/second.js']) {
     const options = rollup ? await rollupOptions() : { ...rolldownOptions, plugins: [] };

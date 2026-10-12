@@ -1835,9 +1835,10 @@ test('copies: a file copied out of a package into the output after the build (st
   } finally { process.chdir(cwd); }
 });
 
-test('config: BUNDLE_LOCKFILE_DEBUG is off when unset, empty, 0 or false', () => {
+test('config: BUNDLE_LOCKFILE_DEBUG is on with 1, true or on; off when unset, empty (also only spaces), 0, false, off or not recognized', () => {
   const script = `require(${JSON.stringify(J(SRC, 'core/config.cjs'))}).debug('on');`;
-  for (const [value, on] of [[undefined, false], ['', false], ['0', false], ['false', false], ['FALSE', false], ['1', true], ['yes', true]]) {
+  for (const [value, on] of [[undefined, false], ['', false], ['  ', false], ['0', false], ['false', false], ['FALSE', false], ['off', false],
+    ['1', true], ['true', true], [' ON ', true], ['yes', false]]) {
     const env = { ...process.env };
     delete env.BUNDLE_LOCKFILE_DEBUG;
     if (value !== undefined) env.BUNDLE_LOCKFILE_DEBUG = value;
@@ -3115,7 +3116,7 @@ function withSettingsFile(content, env = {}) {
   if (content !== null) fs.writeFileSync(J(root, 'src/config.json'), typeof content === 'string' ? content : JSON.stringify(content));
   const script = `const c = require(${JSON.stringify(J(root, 'src/core/config.cjs'))});
     console.log(JSON.stringify({ file: c.file, exportDir: c.exportDir, strict: c.strict, settings: c.settingsFile.file, error: c.settingsFile.error && c.settingsFile.error.message,
-      other: process.env.OTHER_SETTING, child: require('child_process').execSync('node -p process.env.BUNDLE_LOCKFILE_EXPORT_DIR', { encoding: 'utf8' }).trim() }));`;
+      other: process.env.OTHER_SETTING, invalid: c.invalid, child: require('child_process').execSync('node -p process.env.BUNDLE_LOCKFILE_EXPORT_DIR', { encoding: 'utf8' }).trim() }));`;
   const e = { ...process.env };
   for (const k of ['BUNDLE_LOCKFILE_EXPORT_DIR', 'BUNDLE_LOCKFILE_FILE', 'BUNDLE_LOCKFILE_CONFIG']) delete e[k];
   Object.assign(e, env);
@@ -3133,12 +3134,100 @@ test('settings file: config.json next to register.cjs sets what the environment 
   assert.equal(s.other, undefined);
   assert.equal(s.child, '/x/export'); // processes the build starts get them
   assert.equal(s.error, null);
+  // keys it cannot set are not used, and are invalid (register.cjs reports them)
+  assert.deepEqual(s.invalid, [`the settings file ${s.settings} sets OTHER_SETTING, which is no setting of bundle-lockfile`,
+    `the settings file ${s.settings} sets BUNDLE_LOCKFILE_CONFIG, which only the environment can set`]);
+  const odd = withSettingsFile({ BUNDLE_LOCKFILE_EXPORT_DIR: { dir: '/x' }, BUNDLE_LOCKFILE_FILE: null, BUNDLE_LOCKFILE_REGISTER: '/r.cjs', BUNDLE_LOCKFILE_EXPORTDIR: '/x' });
+  assert.equal(odd.exportDir, null);
+  assert.deepEqual(odd.invalid.map(m => m.replace(odd.settings, 'F')), ['the settings file F sets BUNDLE_LOCKFILE_EXPORT_DIR to {"dir":"/x"}: not a string, number or boolean',
+    'the settings file F sets BUNDLE_LOCKFILE_FILE to null: not a string, number or boolean', 'the settings file F sets BUNDLE_LOCKFILE_REGISTER, which only the environment can set',
+    'the settings file F sets BUNDLE_LOCKFILE_EXPORTDIR, which is no setting of bundle-lockfile']);
+  assert.deepEqual(withSettingsFile({ BUNDLE_LOCKFILE_EXPORT_DIR: '/x/export', BUNDLE_LOCKFILE_INLINE: 0, BUNDLE_LOCKFILE_STRICT: true }).invalid, []);
   // the environment wins, also set to '' (the file's value is not used)
   assert.equal(withSettingsFile({ BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' }, { BUNDLE_LOCKFILE_FILE: 'env/package-lock.json' }).file, 'env/package-lock.json');
   assert.equal(withSettingsFile({ BUNDLE_LOCKFILE_EXPORT_DIR: '/x/export' }, { BUNDLE_LOCKFILE_EXPORT_DIR: '' }).exportDir, null);
   // none: nothing to say
   const none = withSettingsFile(null);
   assert.deepEqual([none.settings, none.error, none.exportDir], [null, null, null]);
+});
+
+// what config.cjs finds invalid for an environment (BUNDLE_LOCKFILE_* variables of this process removed first)
+function invalidFor(vars) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_')));
+  const r = spawnSync(process.execPath, ['-e', `const c = require(${JSON.stringify(J(SRC, 'core/config.cjs'))}); console.log(JSON.stringify({ invalid: c.invalid, strict: c.strict, inline: c.inline }))`],
+    { env: { ...env, ...vars }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+test('config: a setting that is not recognized or cannot work is invalid', () => {
+  assert.deepEqual(invalidFor({}).invalid, []);
+  // every setting with a value it takes
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json', BUNDLE_LOCKFILE_EXPORT_DIR: '/x', BUNDLE_LOCKFILE_EXPORT_BASE: '/y',
+    BUNDLE_LOCKFILE_INLINE: 'OFF', BUNDLE_LOCKFILE_STRICT: ' true ', BUNDLE_LOCKFILE_DEBUG: '', BUNDLE_LOCKFILE_FIRST_PARTY: 'lib/**',
+    BUNDLE_LOCKFILE_DISABLE: ' Vite , rolldown', BUNDLE_LOCKFILE_ESM_HOOKS: 'Async', BUNDLE_LOCKFILE_REGISTER: '/r.cjs',
+    BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
+  const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
+  assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
+  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown or all');
+  assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
+  for (const k of ['INLINE', 'STRICT', 'DEBUG']) {
+    for (const v of ['yes', 'no', '2', 'disabled']) assert.equal(one({ [`BUNDLE_LOCKFILE_${k}`]: v }), `BUNDLE_LOCKFILE_${k}=${v} is not recognized (1, true or on; 0, false or off)`);
+  }
+  // a value not recognized: the default (strict stays on, and the build fails for the value)
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_STRICT: 'no', BUNDLE_LOCKFILE_INLINE: 'no' }).strict, true);
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_INLINE: 'no' }).inline, true);
+  assert.match(one({ BUNDLE_LOCKFILE_EXPORT_DIR: 'out/export' }), /^BUNDLE_LOCKFILE_EXPORT_DIR is not an absolute path: out\/export/);
+  assert.match(one({ BUNDLE_LOCKFILE_EXPORT_DIR: '/x', BUNDLE_LOCKFILE_EXPORT_BASE: '.' }), /^BUNDLE_LOCKFILE_EXPORT_BASE is not an absolute path: \./);
+  assert.equal(one({ BUNDLE_LOCKFILE_EXPORT_BASE: '/y' }), 'BUNDLE_LOCKFILE_EXPORT_BASE is set without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect');
+  assert.match(one({ BUNDLE_LOCKFILE_CONFIG: 'config.json' }), /^BUNDLE_LOCKFILE_CONFIG is not an absolute path: config\.json/); // (and the file is missing: settingsFile.error)
+  // the lockfile only where syft and Trivy read it
+  for (const v of ['sbom/lock.json', '/abs/package-lock.json', '../package-lock.json', 'a/../../package-lock.json', 'node_modules/x/package-lock.json', 'package-lock.json/x']) {
+    assert.match(one({ BUNDLE_LOCKFILE_FILE: v }), /^BUNDLE_LOCKFILE_FILE=.* is not a relative path inside the output directory to a file named package-lock\.json outside node_modules/, v);
+  }
+  for (const v of ['package-lock.json', 'a/b/package-lock.json', 'main.js/package-lock.json']) assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: v }).invalid, [], v);
+});
+
+test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
+  const names = ['webpack', 'rollup', 'rspack'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
+  assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
+});
+
+test('register: invalid settings fail the process (BUNDLE_LOCKFILE_STRICT=0: warnings; BUNDLE_LOCKFILE_DISABLE=all: nothing is checked)', () => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_')));
+  const run = (vars) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), '-e', '0'], { env: { ...env, ...vars }, encoding: 'utf8' });
+  const strict = run({ BUNDLE_LOCKFILE_EXPORTDIR: '/x', BUNDLE_LOCKFILE_DEBUG: 'yes' });
+  assert.equal(strict.status, 1, strict.stderr);
+  assert.match(strict.stderr, /\[bundle-lockfile\] ERROR: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile\n\[bundle-lockfile\] ERROR: BUNDLE_LOCKFILE_DEBUG=yes is not recognized/);
+  const off = run({ BUNDLE_LOCKFILE_EXPORTDIR: '/x', BUNDLE_LOCKFILE_STRICT: '0' });
+  assert.equal(off.status, 0, off.stderr);
+  assert.match(off.stderr, /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/);
+  const all = run({ BUNDLE_LOCKFILE_EXPORTDIR: '/x', BUNDLE_LOCKFILE_DISABLE: 'all' });
+  assert.deepEqual([all.status, all.stderr], [0, '']);
+  assert.deepEqual([run({}).status, run({}).stderr], [0, '']);
+});
+
+test('register: another copy of bundle-lockfile preloaded too fails the process, whichever comes first; the same one through a link does not', () => {
+  const root = project({ 'other/note.txt': '' });
+  for (const d of ['src', 'bin']) fs.cpSync(J(__dirname, '..', d), J(root, 'copy', d), { recursive: true });
+  fs.symlinkSync(J(__dirname, '..'), J(root, 'link'));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_') && k !== 'NODE_OPTIONS'));
+  const run = (nodeOptions, args = []) => spawnSync(process.execPath, [...args, '-e', '0'], { env: { ...env, NODE_OPTIONS: nodeOptions }, encoding: 'utf8' });
+  const ours = J(SRC, 'register.cjs'), copy = J(root, 'copy/src/register.cjs');
+  for (const opts of [`--require ${ours} --require ${copy}`, `--require=${copy} --require=${ours}`, `-r "${copy}" -r ${ours}`]) {
+    const r = run(opts);
+    assert.equal(r.status, 1, `${opts}: ${r.stderr}`);
+    assert.match(r.stderr, /\[bundle-lockfile\] ERROR: another copy of bundle-lockfile is preloaded too: \S*register\.cjs \(only the first one runs; preload one\)/, opts);
+  }
+  // on the command line
+  const cli = run(`--require ${ours}`, ['--require', copy]);
+  assert.equal(cli.status, 1, cli.stderr);
+  // one copy, also through a symbolic link to it, and a register.cjs of something else
+  fs.writeFileSync(J(root, 'other/register.cjs'), '// ts-node style\n');
+  for (const opts of [`--require ${ours}`, `--require ${ours} --require ${J(root, 'link/src/register.cjs')}`, `--require ${ours} --require ${J(root, 'other/register.cjs')}`]) {
+    const r = run(opts);
+    assert.deepEqual([r.status, r.stderr], [0, ''], opts);
+  }
 });
 
 test('settings file: BUNDLE_LOCKFILE_CONFIG names it; one that cannot be used is an error the build fails with', () => {

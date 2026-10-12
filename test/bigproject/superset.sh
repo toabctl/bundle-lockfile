@@ -22,7 +22,7 @@ cd "$FE"
 
 CDX=$W/cyclonedx
 [ -d "$CDX/node_modules/@cyclonedx/webpack-plugin" ] || { mkdir -p "$CDX"; (cd "$CDX" && echo '{"private":true}' > package.json && npm install -q --no-audit --no-fund @cyclonedx/webpack-plugin@5.3.3 >/dev/null); }
-export BUNDLE_LOCKFILE_CDX_DIR=$CDX
+export BLTEST_CDX_DIR=$CDX
 
 MEASURE="--require $REPO/test/bigproject/measure.cjs"
 TOOL="--require $REPO/src/register.cjs"

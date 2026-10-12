@@ -52,7 +52,8 @@ function runCase(c) {
   const outDir = path.join(dir, c.outDir || 'dist');
   for (const d of [outDir, 'dist-oracle', '.next-oracle', '.oracle-stats', '.sbom-root', '.sbom.spdx.json', '.cold.json', '.export', 'island/dist', 'island/dist-oracle', '.svelte-kit/output', '.netlify', 'build-oracle', '.svelte-kit-oracle', 'out', 'copied']) fs.rmSync(path.resolve(dir, d), { recursive: true, force: true });
 
-  const base = { ...process.env, ...(c.env || {}) };
+  // {fixture} in a case's env: the fixture's directory (settings that must be absolute paths)
+  const base = { ...process.env, ...Object.fromEntries(Object.entries(c.env || {}).map(([k, v]) => [k, String(v).split('{fixture}').join(dir)])) };
   // the lockfiles also (exportDir) or only (exportOnly) in an export dir, mirrored relative to the fixture
   const exportDir = (c.exportDir || c.exportOnly) && path.join(dir, '.export');
   if (exportDir) Object.assign(base, { BUNDLE_LOCKFILE_EXPORT_DIR: exportDir, BUNDLE_LOCKFILE_EXPORT_BASE: dir, BUNDLE_LOCKFILE_INLINE: c.exportOnly ? '0' : '1' });

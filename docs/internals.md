@@ -323,7 +323,8 @@ A build whose lockfile cannot be written, or would be incomplete, fails (`src/co
 `problem()` - collecting packages, checking the files copied into a webpack or rspack output, writing a lockfile, its
 export copy or a copy of it, taking the lock, nowhere to write (`BUNDLE_LOCKFILE_INLINE=0` without an export
 directory), a bundled package without a `package.json`, patching or wrapping a bundler, attaching to a compiler, an
-unsupported rspack (1.0), installing the ESM hooks in a bundler process, a settings file that cannot be read - and the
+unsupported rspack (1.0), installing the ESM hooks in a bundler process, a settings file that cannot be read, a
+setting that is not recognized or cannot work (`config.invalid`), another copy of bundle-lockfile preloaded too - and the
 adapter of the
 build takes the recorded problems at the end of its hooks:
 

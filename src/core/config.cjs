@@ -7,8 +7,9 @@
 //                               for outputs that do not ship as files (embedded in a binary, a jar, copied away)
 //   BUNDLE_LOCKFILE_EXPORT_BASE output dirs below it are mirrored relative to it into the export dir (default: their
 //                               absolute path)
-//   BUNDLE_LOCKFILE_INLINE      0/false/off: do not write the lockfile into the output dir (only the export dir)
-//   BUNDLE_LOCKFILE_DEBUG       log what gets patched and applied to stderr (off if unset, empty, 0, false or off)
+//   BUNDLE_LOCKFILE_INLINE      0/false/off: do not write the lockfile into the output dir (only the export dir);
+//                               on/off settings take 1/true/on and 0/false/off (any case), anything else is invalid
+//   BUNDLE_LOCKFILE_DEBUG       log what gets patched and applied to stderr (1/true/on; off if unset or empty)
 //   BUNDLE_LOCKFILE_DISABLE     comma-separated adapter names to skip, or "all" (case-insensitive)
 //   BUNDLE_LOCKFILE_FIRST_PARTY comma-separated globs of directories (relative to the working directory) that are
 //                               first-party, never vendored copies (see core/vendored.cjs); "**": none is
@@ -16,20 +17,36 @@
 //                               by default it fails the build (see core/problems.cjs)
 //   BUNDLE_LOCKFILE_CONFIG      the settings file (default: config.json next to register.cjs: src/ in a checkout,
 //                               the installed directory in a package)
+//   BUNDLE_LOCKFILE_ESM_HOOKS   auto/sync/async/off (read by hooks.cjs)
+// Any other BUNDLE_LOCKFILE_* variable, or a value that is not recognized, is invalid: reported by register.cjs.
 
 const fs = require('fs');
 const path = require('path');
 const env = process.env;
 
+// Every BUNDLE_LOCKFILE_* variable bundle-lockfile reads. A name that is not one of them is a mistake (a typo such as
+// BUNDLE_LOCKFILE_EXPORTDIR would leave the export directory unset): it is reported, as are values that are not
+// recognized (see invalid). FROM_FILE: those a settings file may set (CONFIG names the file; REGISTER is read by the
+// node shim, a shell script, which does not read the file; NODE_SHIM and NODE_SEEN are the shim's own).
+const NAMES = ['FILE', 'EXPORT_DIR', 'EXPORT_BASE', 'INLINE', 'STRICT', 'DEBUG', 'FIRST_PARTY', 'DISABLE', 'ESM_HOOKS',
+  'REGISTER', 'CONFIG', 'NODE_SHIM', 'NODE_SEEN'].map(n => `BUNDLE_LOCKFILE_${n}`);
+const FROM_FILE = NAMES.filter(n => !/_(CONFIG|REGISTER|NODE_SHIM|NODE_SEEN)$/.test(n));
+// The names BUNDLE_LOCKFILE_DISABLE takes: the adapters' names (src/adapters/*.cjs name, names), and all
+const ADAPTER_NAMES = ['webpack', 'rspack', 'vite', 'rollup', 'rolldown'];
+const ESM_HOOKS = ['auto', 'sync', 'async', 'off'];
+const invalid = []; // what is set but not recognized, or cannot work: register.cjs reports each (core/problems.cjs)
+
 // The settings file: { "BUNDLE_LOCKFILE_EXPORT_DIR": "/x", ... }. Some build tools pass on NODE_OPTIONS and PATH but
 // not these variables (turbo's strict env mode), or start the build with an environment of their own (Metabase's
 // build): the preload, or the node shim through PATH, still gets there, and finds the file next to register.cjs. Its
 // settings go into process.env where the variable is not set (a variable set, also to '', wins), so that the
-// processes the build starts get them too. Only BUNDLE_LOCKFILE_* keys, and only from bundle-lockfile's own directory or
-// the file BUNDLE_LOCKFILE_CONFIG names: never from the project, which must not redirect a package build's lockfiles.
+// processes the build starts get them too. Only BUNDLE_LOCKFILE_* settings it may set, with string, number or boolean
+// values: any other key or value is invalid. Only from bundle-lockfile's own directory or the file
+// BUNDLE_LOCKFILE_CONFIG names: never from the project, which must not redirect a package build's lockfiles.
 // Returns { file, error } (error: the file could not be used; core/problems.cjs reports it, see register.cjs).
 function readSettingsFile() {
   const named = env.BUNDLE_LOCKFILE_CONFIG && env.BUNDLE_LOCKFILE_CONFIG.trim();
+  if (named && !path.isAbsolute(named)) invalid.push(`BUNDLE_LOCKFILE_CONFIG is not an absolute path: ${named} (each process would look for it in its own working directory)`);
   const file = named ? path.resolve(named) : path.join(__dirname, '..', 'config.json');
   let settings;
   try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
@@ -38,26 +55,68 @@ function readSettingsFile() {
   }
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { file, error: new Error('not a JSON object') };
   for (const [k, v] of Object.entries(settings)) {
-    if (!k.startsWith('BUNDLE_LOCKFILE_') || k === 'BUNDLE_LOCKFILE_CONFIG') continue;
-    if (env[k] === undefined && v !== null && typeof v !== 'object') env[k] = String(v);
+    if (!FROM_FILE.includes(k)) {
+      invalid.push(`the settings file ${file} sets ${k}, which ${NAMES.includes(k) ? 'only the environment can set' : 'is no setting of bundle-lockfile'}`);
+    } else if (v === null || typeof v === 'object') {
+      invalid.push(`the settings file ${file} sets ${k} to ${JSON.stringify(v)}: not a string, number or boolean`);
+    } else if (env[k] === undefined) env[k] = String(v);
   }
   return { file, error: null };
 }
 const settingsFile = readSettingsFile();
-const disabled = new Set((env.BUNDLE_LOCKFILE_DISABLE || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
-const on = (v) => !!v && !/^(0|false|off)$/i.test(v.trim());
-const dir = (v) => (v && v.trim() ? path.resolve(v.trim()) : null);
+for (const k of Object.keys(env)) {
+  if (k.startsWith('BUNDLE_LOCKFILE_') && !NAMES.includes(k)) invalid.push(`${k} is set, but is no setting of bundle-lockfile`);
+}
+
+const value = (k) => (env[k] === undefined ? '' : env[k].trim());
+// an on/off setting: unset or empty - the default; 1, true, on / 0, false, off (any case); anything else is invalid
+// (the default then: BUNDLE_LOCKFILE_STRICT=yes stays strict, and fails the build for the invalid value)
+function flag(k, dflt) {
+  const v = value(k);
+  if (!v) return dflt;
+  if (/^(1|true|on)$/i.test(v)) return true;
+  if (/^(0|false|off)$/i.test(v)) return false;
+  invalid.push(`${k}=${env[k]} is not recognized (1, true or on; 0, false or off)`);
+  return dflt;
+}
+// an absolute directory, or null: a relative one would resolve against each process's working directory
+function dir(k) {
+  const v = value(k);
+  if (!v) return null;
+  if (!path.isAbsolute(v)) invalid.push(`${k} is not an absolute path: ${v} (each process would resolve it in its own working directory)`);
+  return path.resolve(v);
+}
+// the lockfile's path below an output directory: relative, inside it, named package-lock.json and not below a
+// node_modules directory - the only files syft and Trivy read
+function lockfilePath() {
+  const v = env.BUNDLE_LOCKFILE_FILE || 'bundle-lockfile/package-lock.json';
+  const parts = v.split(/[\\/]/);
+  if (path.isAbsolute(v) || parts.includes('..') || parts[parts.length - 1] !== 'package-lock.json' || parts.includes('node_modules')) {
+    invalid.push(`BUNDLE_LOCKFILE_FILE=${v} is not a relative path inside the output directory to a file named package-lock.json outside node_modules (the only files syft and Trivy read)`);
+  }
+  return v;
+}
+
+const disabled = new Set(value('BUNDLE_LOCKFILE_DISABLE').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+for (const n of disabled) if (n !== 'all' && !ADAPTER_NAMES.includes(n)) invalid.push(`BUNDLE_LOCKFILE_DISABLE names ${n}, which is none of ${ADAPTER_NAMES.join(', ')} or all`);
+const esmHooks = value('BUNDLE_LOCKFILE_ESM_HOOKS').toLowerCase() || 'auto';
+if (!ESM_HOOKS.includes(esmHooks)) invalid.push(`BUNDLE_LOCKFILE_ESM_HOOKS=${env.BUNDLE_LOCKFILE_ESM_HOOKS} is none of ${ESM_HOOKS.join(', ')}`);
+const exportDir = dir('BUNDLE_LOCKFILE_EXPORT_DIR'), exportBase = dir('BUNDLE_LOCKFILE_EXPORT_BASE');
+if (exportBase && !exportDir) invalid.push('BUNDLE_LOCKFILE_EXPORT_BASE is set without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect');
+const debugOn = flag('BUNDLE_LOCKFILE_DEBUG', false);
 
 module.exports = {
   settingsFile, // { file: the settings file read, or null; error: why it could not be used, or null }
-  file: env.BUNDLE_LOCKFILE_FILE || 'bundle-lockfile/package-lock.json',
-  exportDir: dir(env.BUNDLE_LOCKFILE_EXPORT_DIR),
-  exportBase: dir(env.BUNDLE_LOCKFILE_EXPORT_BASE),
-  inline: env.BUNDLE_LOCKFILE_INLINE === undefined || env.BUNDLE_LOCKFILE_INLINE.trim() === '' || on(env.BUNDLE_LOCKFILE_INLINE),
+  invalid, // settings that are set but not recognized, or cannot work (messages)
+  ADAPTER_NAMES,
+  file: lockfilePath(),
+  exportDir,
+  exportBase,
+  inline: flag('BUNDLE_LOCKFILE_INLINE', true),
   isDisabled: (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
   firstParty: (env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).filter(Boolean),
-  strict: env.BUNDLE_LOCKFILE_STRICT === undefined || env.BUNDLE_LOCKFILE_STRICT.trim() === '' || on(env.BUNDLE_LOCKFILE_STRICT),
-  debug: (...a) => { if (on(env.BUNDLE_LOCKFILE_DEBUG)) console.error('[bundle-lockfile]', ...a); },
+  strict: flag('BUNDLE_LOCKFILE_STRICT', true),
+  debug: (...a) => { if (debugOn) console.error('[bundle-lockfile]', ...a); },
   // always printed: what is wrong but does not fail the build (with BUNDLE_LOCKFILE_STRICT=0: also what makes a
   // lockfile missing or incomplete, see core/problems.cjs)
   warn: (...a) => console.error('[bundle-lockfile] WARNING:', ...a),

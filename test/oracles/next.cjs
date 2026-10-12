@@ -13,8 +13,8 @@ const r = spawnSync(path.resolve('node_modules/.bin/next'), ['build', ...process
   stdio: ['ignore', 'ignore', 'inherit'],
   env: {
     ...process.env,
-    BUNDLE_LOCKFILE_ORACLE_PLUGIN: path.join(__dirname, 'next-stats-plugin.cjs'),
-    BUNDLE_LOCKFILE_ORACLE_OUT: out,
+    BLTEST_ORACLE_PLUGIN: path.join(__dirname, 'next-stats-plugin.cjs'),
+    BLTEST_ORACLE_OUT: out,
   },
 });
 if (r.status !== 0) { console.error(`oracle: next build exited ${r.status}`); process.exit(1); }
