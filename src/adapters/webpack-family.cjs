@@ -120,6 +120,7 @@ function styleFallback(compilation) {
 // chunk, but used (its exports info says so, unlike one that was tree-shaken). Only when exports were inlined at all: in
 // a build without usage analysis (development, usedExports: false) every module counts as used. The options are read
 // here, after rspack filled in the defaults (not yet when plugins are applied). shipped: the modules in its chunks.
+// Failing to look is a problem (core/problems.cjs): such a package would be missing from the lockfile.
 function inlinedModules(compilation, shipped) {
   const o = (compilation.compiler && compilation.compiler.options && compilation.compiler.options.optimization) || {};
   const out = [];
@@ -133,7 +134,7 @@ function inlinedModules(compilation, shipped) {
       if (!f || !path.isAbsolute(f) || !packageRoot(f.split('?')[0])) continue;
       if (compilation.moduleGraph.getExportsInfo(m).isModuleUsed(undefined) === true) out.push(f);
     }
-  } catch (e) { config.debug('rspack: could not look for modules whose exports were inlined:', e); }
+  } catch (e) { problems.problem(`rspack: could not collect the modules whose exports were inlined into ${outputDir(compilation)}`, e); }
   return out;
 }
 
