@@ -98,7 +98,8 @@ see [Supported](#supported)), nothing else for the preload. The node shim needs 
   24.12, 25.2 and later in every process; before, only in processes that build with them (see [Vite, Rollup,
   Rolldown](#vite-rollup-rolldown)).
 - **Watch mode** (webpack, rspack, Rollup, Rolldown, `vite build --watch`) writes the lockfile after every rebuild.
-  Dev servers of webpack and rspack (`webpack serve`, `rspack serve`, `rsbuild dev`) serve it from memory.
+  The dev servers of rspack (`rspack serve`, `rsbuild dev`) serve it from memory (webpack's dev server goes the same
+  way, through its in-memory output file system, but is not tested).
 - **Node.js:** builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite, Rollup,
   Rolldown, SvelteKit, rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn
   Plug'n'Play; the unit tests also run on 20. Node.js 25 and Linux distributions other than Wolfi are not tested.
@@ -110,7 +111,7 @@ Package managers tested ([details](test/README.md#environments)):
 
 | | |
 |---|---|
-| webpack | npm 8 – 11, npx, pnpm 8 – 12, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, node-modules), bun, `turbo run`, npm workspaces |
+| webpack | npm 8 – 12, npx, pnpm 8 – 12, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, node-modules), bun, `turbo run`, npm workspaces |
 | rspack | npm, npx, pnpm 10 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules), bun, npm workspaces |
 | Rsbuild | npm, bun, yarn 4 (Plug'n'Play) |
 | Vite | npm, npx, pnpm 9 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules), bun, npm workspaces |
@@ -131,9 +132,9 @@ Real builds of seven Chainguard packages with rspack and Rsbuild are compared wi
   `cp`, another process), vendored code without a `package.json`, and in webpack 5.108+ a package of which only
   inlined constants are used.
 - **Node.js before 24.12 (25.2 on 25):** ES-module bundlers (Vite, Rolldown, rspack 2, Rollup through `import`) are
-  hooked only in processes whose main script's package depends on them, or with `BUNDLE_LOCKFILE_ESM_HOOKS=async`,
-  and not in worker threads. Their loader thread costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on
-  Node.js 22 (about 2 % with the in-thread hooks).
+  hooked only in processes whose main script's package is or depends on one of them, or that have another loader
+  hook (e.g. Yarn Plug'n'Play's), or with `BUNDLE_LOCKFILE_ESM_HOOKS=async`, and not in worker threads. Their loader
+  thread costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on Node.js 22.
 - **Rolldown's `build()` and `watch()`** (also `vite build --watch` on Vite 8) list no style sheets `@import`ed from
   packages.
 - **Dev servers** list what they compiled so far: not the packages of lazily compiled dynamic imports.
@@ -234,8 +235,8 @@ export PATH="/opt/bundle-lockfile/bin:$PATH"
 - `BUNDLE_LOCKFILE_REGISTER` names the `register.cjs` to preload; by default the shim looks for `../src/register.cjs`
   (a checkout, as in `/opt/bundle-lockfile` here) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
   next to its `register.cjs`), from its own directory with symlinks resolved. Set it in the environment: the shim is a
-  shell script, which does not read the [settings file](#settings) (only `node` processes that a preloaded one starts
-  get the file's settings). Without a `register.cjs` (none found, or `BUNDLE_LOCKFILE_REGISTER` names no file), the
+  shell script, which does not read the [settings file](#settings) (a shim started by a preloaded process sees the
+  file's settings as variables; the first one, which starts the build, does not). Without a `register.cjs` (none found, or `BUNDLE_LOCKFILE_REGISTER` names no file), the
   shim fails without running `node`, as bundle-lockfile fails a build it cannot write a lockfile for; with
   `BUNDLE_LOCKFILE_STRICT=0` in the environment it warns and runs `node` without the preload, with
   `BUNDLE_LOCKFILE_DISABLE=all` it just runs `node`.
@@ -526,7 +527,8 @@ the `bundle-lockfile` plugin. A problem outside any build (a bundler that could 
 cannot be read) makes the process exit with code 1 after printing `[bundle-lockfile] ERROR: …` and `the process fails
 because a lockfile would be missing or incomplete`. In the watch mode of Vite, Rollup and Rolldown, an error after the
 output is written is printed and the watcher goes on. On Node.js before 24.12 (25.2 on 25), a bundler that cannot be
-wrapped fails its own import with `bundle-lockfile: could not wrap <file>: …`.
+wrapped fails its own import with `bundle-lockfile: could not wrap <file URL>: …` (with `BUNDLE_LOCKFILE_STRICT=0` it
+loads unchanged, without a warning).
 
 | Message | Cause | What to do |
 |---|---|---|
