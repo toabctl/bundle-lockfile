@@ -235,8 +235,10 @@ export PATH="/opt/bundle-lockfile/bin:$PATH"
   (a checkout, as in `/opt/bundle-lockfile` here) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
   next to its `register.cjs`), from its own directory with symlinks resolved. Set it in the environment: the shim is a
   shell script, which does not read the [settings file](#settings) (only `node` processes that a preloaded one starts
-  get the file's settings). Without a `register.cjs`, the shim prints `bundle-lockfile node shim: register.cjs not
-  found …` and runs `node` without the preload: no lockfile.
+  get the file's settings). Without a `register.cjs` (none found, or `BUNDLE_LOCKFILE_REGISTER` names no file), the
+  shim fails without running `node`, as bundle-lockfile fails a build it cannot write a lockfile for; with
+  `BUNDLE_LOCKFILE_STRICT=0` in the environment it warns and runs `node` without the preload, with
+  `BUNDLE_LOCKFILE_DISABLE=all` it just runs `node`.
 
 Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack and rspack 2), npm (Vite),
 and a build that starts with an environment of its own (`env -i`) with a settings file.
@@ -374,7 +376,8 @@ Errors, warnings and notes are always printed:
     it;
   - an adapter that failed to collect the packages or to hook a bundler;
   - rspack 1.0;
-  - a settings file that cannot be read.
+  - a settings file that cannot be read;
+  - a node shim that finds no `register.cjs` (it exits with 1 before `node` runs).
 - In watch mode of Vite, Rollup and Rolldown, an error after the output is written is printed, and the watcher goes
   on.
 - With `BUNDLE_LOCKFILE_STRICT=0` these are warnings instead, and the build goes on.
@@ -532,6 +535,7 @@ wrapped fails its own import with `bundle-lockfile: could not wrap <file>: …`.
 | `could not write the copy <copy> of <lockfile>` | a copy of a lockfile made with fs (e.g. SvelteKit's adapters' in `build/`) could not be rewritten for its place | fix the permissions of the copy |
 | `could not read the settings file <file>` | `config.json` next to `register.cjs`, or the file `BUNDLE_LOCKFILE_CONFIG` names, is no JSON object, cannot be read, or (named) does not exist | fix the file or `BUNDLE_LOCKFILE_CONFIG` ([settings](#settings)) |
 | `rspack <version> is not supported (it needs 1.1 or later)` | rspack 1.0 | upgrade rspack |
+| `node shim: no register.cjs next to …`, `node shim: BUNDLE_LOCKFILE_REGISTER names no file: …` | the [node shim](#build-scripts-that-overwrite-node_options) was copied without bundle-lockfile's `src/`, or `BUNDLE_LOCKFILE_REGISTER` is wrong | install `bin/` and `src/` together, or set `BUNDLE_LOCKFILE_REGISTER` to the absolute path of `register.cjs` |
 | `BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set` | nowhere to write | set `BUNDLE_LOCKFILE_EXPORT_DIR`, or leave the inline lockfile on |
 | `no package.json with name and version in <dir> - its bundled files are not listed` | bundled code in `node_modules` that belongs to no package (a package without `version`, files a tool put there) | install the package properly; a directory whose name starts with a dot (`node_modules/.cache`) is skipped |
 | `<adapter>: could not collect …`, `could not patch …`, `could not attach to the compiler …`, `could not check the files copied …`, `could not add the files written … after the build`, `could not wrap …`, `<adapter> adapter failed to wrap …`, `could not install the ESM hooks` | a bug or an unexpected bundler version | report it with `BUNDLE_LOCKFILE_DEBUG=1` output |
@@ -555,7 +559,6 @@ mode on where the SBOM matters (package builds).
 - Vite, Rollup and Rolldown outputs below `node_modules`, builds that write nothing themselves, `vite dev`, `vite
   preview`, Vitest, and a webpack build that failed and emitted nothing get no lockfile. (webpack and rspack outputs
   below `node_modules` get one, which syft and Trivy do not read.)
-- The node shim found no `register.cjs`: it says so on stderr (set `BUNDLE_LOCKFILE_REGISTER`).
 - Another plugin removed a webpack or rspack output directory after the build: only the export copy is written.
 - `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing (and fails the build unless
   `BUNDLE_LOCKFILE_STRICT=0`).

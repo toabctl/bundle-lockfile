@@ -12,14 +12,21 @@
 #    back here and is skipped then; asdf's and nodenv's shims run their node by its path. The scripts passed through
 #    are in BUNDLE_LOCKFILE_NODE_SEEN, which register.cjs clears, so that the processes node starts begin anew.
 #    Looked up on every start: PATH can change (nvm).
+# Without a register.cjs (none next to the shim, or BUNDLE_LOCKFILE_REGISTER names no file) node would build without
+# bundle-lockfile, silently missing lockfiles: it fails instead, as bundle-lockfile does (BUNDLE_LOCKFILE_STRICT=0: a
+# warning, and node runs without it; BUNDLE_LOCKFILE_DISABLE=all: node runs). Read from the environment only: this
+# script does not read the settings file.
 set -f # word splitting below, never globbing
 self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
-reg=${BUNDLE_LOCKFILE_REGISTER:-}
+reg=${BUNDLE_LOCKFILE_REGISTER:-} missing=
 if [ -z "$reg" ]; then
   d=$(dirname "$self")
   for r in "$d/../src/register.cjs" "$d/../register.cjs"; do
     [ -f "$r" ] && { reg=$(readlink -f "$r" 2>/dev/null || printf '%s' "$r"); break; }
   done
+  [ -n "$reg" ] || missing="no register.cjs next to $self (../src/register.cjs or ../register.cjs)"
+elif [ ! -f "$reg" ]; then
+  missing="BUNDLE_LOCKFILE_REGISTER names no file: $reg"; reg=
 fi
 if [ -n "$reg" ]; then
   have=
@@ -49,7 +56,20 @@ if [ -n "$reg" ]; then
   fi
   BUNDLE_LOCKFILE_NODE_SHIM=$self; export BUNDLE_LOCKFILE_NODE_SHIM
 else
-  echo "bundle-lockfile node shim: register.cjs not found next to $self; set BUNDLE_LOCKFILE_REGISTER" >&2
+  # the values as bundle-lockfile reads them (core/config.cjs): case-insensitive, spaces around them ignored
+  oifs=$IFS; IFS=" $(printf '\t')"
+  n=0; for w in ${BUNDLE_LOCKFILE_STRICT:-}; do n=$((n + 1)); v=$w; done # the whole value, trimmed: one word
+  strict=1; [ "$n" = 1 ] && case "$v" in 0|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) strict= ;; esac
+  IFS=" ,$(printf '\t')"
+  all=; for w in ${BUNDLE_LOCKFILE_DISABLE:-}; do case "$w" in [Aa][Ll][Ll]) all=1 ;; esac; done
+  IFS=$oifs
+  if [ -z "$all" ]; then
+    if [ -n "$strict" ]; then
+      echo "[bundle-lockfile] ERROR: node shim: $missing; set BUNDLE_LOCKFILE_REGISTER (BUNDLE_LOCKFILE_STRICT=0 makes this a warning)" >&2
+      exit 1
+    fi
+    echo "[bundle-lockfile] WARNING: node shim: $missing - node runs without bundle-lockfile" >&2
+  fi
 fi
 oifs=$IFS; IFS=:
 for dir in $PATH; do

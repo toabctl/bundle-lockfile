@@ -1151,6 +1151,45 @@ test('node shim: runs version managers\' script shims, skips itself and scripts 
   assert.match(none.stderr, /no node binary in PATH/);
 });
 
+test('node shim: without a register.cjs it fails (BUNDLE_LOCKFILE_STRICT=0: warns and runs node; BUNDLE_LOCKFILE_DISABLE=all: runs node)', { skip: process.platform === 'win32' }, () => {
+  const SHIM = J(__dirname, '../bin/node');
+  const root = project({ 'probe.cjs': `console.log(JSON.stringify({ loaded: !!globalThis[Symbol.for('bundle-lockfile.hooks-installed')], options: process.env.NODE_OPTIONS || '' }));` });
+  fs.mkdirSync(J(root, 'bin')); fs.copyFileSync(SHIM, J(root, 'bin/node')); fs.chmodSync(J(root, 'bin/node'), 0o755); // no ../src/register.cjs, no ../register.cjs
+  const realDir = path.dirname(fs.realpathSync(process.execPath));
+  const run = (vars) => {
+    const env = { ...process.env, PATH: [J(root, 'bin'), realDir, '/usr/bin', '/bin'].join(':') };
+    for (const k of ['NODE_OPTIONS', 'BUNDLE_LOCKFILE_NODE_SHIM', 'BUNDLE_LOCKFILE_NODE_SEEN', 'BUNDLE_LOCKFILE_REGISTER', 'BUNDLE_LOCKFILE_STRICT', 'BUNDLE_LOCKFILE_DISABLE']) delete env[k];
+    Object.assign(env, vars);
+    return spawnSync(J(root, 'bin/node'), [J(root, 'probe.cjs')], { env, encoding: 'utf8', timeout: 20000 });
+  };
+  // strict (the default, also for values that are not 0, false or off): node is not run
+  for (const strict of [undefined, '', '1', 'yes', '0 1']) {
+    const r = run(strict === undefined ? {} : { BUNDLE_LOCKFILE_STRICT: strict });
+    assert.equal(r.status, 1, `${JSON.stringify(strict)}: ${r.stderr}`);
+    assert.equal(r.stdout, '');
+    assert.match(r.stderr, /^\[bundle-lockfile\] ERROR: node shim: no register\.cjs next to .*bin\/node \(\.\.\/src\/register\.cjs or \.\.\/register\.cjs\); set BUNDLE_LOCKFILE_REGISTER \(BUNDLE_LOCKFILE_STRICT=0 makes this a warning\)\n$/);
+  }
+  // a BUNDLE_LOCKFILE_REGISTER that names no file
+  const named = run({ BUNDLE_LOCKFILE_REGISTER: J(root, 'gone/register.cjs') });
+  assert.equal(named.status, 1);
+  assert.match(named.stderr, /ERROR: node shim: BUNDLE_LOCKFILE_REGISTER names no file: .*gone\/register\.cjs;/);
+  // BUNDLE_LOCKFILE_STRICT=0 (any case, spaces around it): a warning, node runs without bundle-lockfile
+  for (const strict of ['0', 'false', ' OFF ']) {
+    const r = run({ BUNDLE_LOCKFILE_STRICT: strict });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /^\[bundle-lockfile\] WARNING: node shim: no register\.cjs next to .* - node runs without bundle-lockfile\n$/);
+    assert.deepEqual(JSON.parse(r.stdout), { loaded: false, options: '' });
+  }
+  // bundle-lockfile disabled: nothing to preload, nothing to say
+  for (const disable of ['all', 'webpack, ALL']) {
+    const r = run({ BUNDLE_LOCKFILE_DISABLE: disable });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '');
+    assert.deepEqual(JSON.parse(r.stdout), { loaded: false, options: '' });
+  }
+  assert.equal(run({ BUNDLE_LOCKFILE_DISABLE: 'webpack' }).status, 1); // not all of it
+});
+
 test('esm-wrap: finds the entry, its exports, and wraps only the functions it exports', () => {
   const esmWrap = require('../src/esm-wrap.cjs');
   const rollupEntry = { id: 'rollup', suffixes: ['/rollup/dist/es/rollup.js'], wrap: ['rollup', 'watch'] };
@@ -3047,6 +3086,18 @@ test('rspack: modules whose exports were all inlined are listed (only with inlin
   assert.deepEqual(lockOf({ inlineExports: false, usedExports: true }), ['inner', 'shipped']);
   assert.deepEqual(lockOf({ inlineExports: true, usedExports: false }), ['inner', 'shipped']);
 });
+
+test('strict: modules whose exports were inlined that cannot be looked for fail the build (a package would be missing)', () => withConfig({ strict: true }, () => {
+  problems.take();
+  const root = project({ 'node_modules/shipped/package.json': { name: 'shipped', version: '1.0.0' }, 'node_modules/consts/package.json': { name: 'consts', version: '1.0.0' } });
+  const shipped = { resource: J(root, 'node_modules/shipped/i.js'), identifier: () => 'a' }, consts = { resource: J(root, 'node_modules/consts/i.js'), identifier: () => 'b' };
+  const c = rspackCompilation(root, { chunks: [{ files: ['main.js'], modules: [shipped] }], modules: [consts], optimization: { inlineExports: true, usedExports: true },
+    exportsUsed: () => { throw new Error('module graph gone'); } });
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['shipped']); // the chunks' packages are still collected
+  const taken = problems.take();
+  assert.equal(taken.length, 1);
+  assert.match(taken[0], /^rspack: could not collect the modules whose exports were inlined into .*: module graph gone$/);
+}));
 
 test('webpack adapter: the modules are not looked at for copies unless an asset names no source (costly in rspack)', () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
