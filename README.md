@@ -236,10 +236,10 @@ export PATH="/opt/bundle-lockfile/bin:$PATH"
   (a checkout, as in `/opt/bundle-lockfile` here) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
   next to its `register.cjs`), from its own directory with symlinks resolved. Set it in the environment: the shim is a
   shell script, which does not read the [settings file](#settings) (a shim started by a preloaded process sees the
-  file's settings as variables; the first one, which starts the build, does not). Without a `register.cjs` (none found, or `BUNDLE_LOCKFILE_REGISTER` names no file), the
-  shim fails without running `node`, as bundle-lockfile fails a build it cannot write a lockfile for; with
-  `BUNDLE_LOCKFILE_STRICT=0` in the environment it warns and runs `node` without the preload, with
-  `BUNDLE_LOCKFILE_DISABLE=all` it just runs `node`.
+  file's settings as variables; the first one, which starts the build, does not). Without a `register.cjs` (none
+  found, or `BUNDLE_LOCKFILE_REGISTER` names no file), the shim fails without running `node`, as bundle-lockfile fails
+  a build it cannot write a lockfile for; with `BUNDLE_LOCKFILE_STRICT=0` in the environment it warns and runs `node`
+  without the preload, with `BUNDLE_LOCKFILE_DISABLE=all` it just runs `node`.
 
 Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack and rspack 2), npm (Vite),
 and a build that starts with an environment of its own (`env -i`) with a settings file.
