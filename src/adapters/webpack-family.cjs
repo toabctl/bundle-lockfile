@@ -252,11 +252,14 @@ function copiedUnnamed(compilation) {
 // Files CopyRspackPlugin copied into the output (assets with info.copied, also those of copy-webpack-plugin if it ran):
 // their info.sourceFilename is relative to the copy pattern's context (a copied file: its name; a directory: the path in
 // it), not to the compiler's. Every copied file is among the compilation's file dependencies, as it was given (through
-// a symbolic link, not its real path): the package files whose path ends with the name, the same file reached by several
-// paths once (the one below the context first). Of those the one with the asset's bytes - before the optimize stages,
-// which minimize copies (the plugin looks at them then) -, else all of them (a copy transformed on the way; one
-// package too many rather than one missing). A copy whose name no package file ends with is matched by its bytes
-// alone, as copiedUnnamed does. Returns Map(asset name -> [package files]).
+// a symbolic link, not its real path): those whose path ends with the name are the candidates, the same file reached
+// by several paths once (the one below the context first). The candidate with the asset's bytes - before the optimize
+// stages, which minimize copies (the plugin looks at them then) - is its source: a package file, or a first-party
+// file (public/config.js copied as app-config.js), which lists nothing. Without one (a copy transformed on the way),
+// every package file with that name: one package too many rather than one missing. A copy whose name no file ends
+// with is matched by its bytes alone, as copiedUnnamed does. The candidates are looked up by their file name, so the
+// cost is that of one pass over the dependencies (OHIF copies hundreds of files, and depends on thousands).
+// Returns Map(asset name -> [package files]).
 function copiedRspack(compilation) {
   const files = new Map();
   const copied = [];
@@ -266,24 +269,30 @@ function copiedRspack(compilation) {
   }
   if (!copied.length) return files;
   const context = compilation.compiler.context;
-  const deps = [...new Set(compilation.fileDependencies || [])].filter(f => typeof f === 'string' && packageRoot(f));
+  const byName = new Map(); // file name -> [{ file, path: posix }] of the file dependencies
+  for (const f of new Set(compilation.fileDependencies || [])) {
+    if (typeof f !== 'string') continue;
+    const p = posix(f), name = p.slice(p.lastIndexOf('/') + 1);
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push({ file: f, path: p });
+  }
   const realOf = (f) => { try { return fs.realpathSync(f); } catch { return f; } };
   const bytesOf = (a) => { try { const s = a.source.source(); return Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { return null; } };
   let bySize = null; // packageFilesBySize, if needed
   for (const a of copied) {
-    const tail = `/${posix(a.info.sourceFilename.split('?')[0])}`;
+    const rel = posix(a.info.sourceFilename.split('?')[0]), tail = `/${rel}`;
     const byReal = new Map();
-    for (const f of deps) {
-      if (!posix(f).endsWith(tail)) continue;
+    for (const { file: f, path: p } of byName.get(rel.slice(rel.lastIndexOf('/') + 1)) || []) {
+      if (!p.endsWith(tail)) continue;
       const r = realOf(f), prev = byReal.get(r);
       if (!prev || (!prev.startsWith(context + path.sep) && f.startsWith(context + path.sep))) byReal.set(r, f);
     }
     const candidates = [...byReal.values()];
     const buf = bytesOf(a);
     const same = (f) => { try { return buf && fs.statSync(f).size === buf.length && buf.equals(fs.readFileSync(f)); } catch { return false; } };
-    let list = candidates.filter(same);
-    if (!list.length) list = candidates;
-    if (!list.length && buf && buf.length) {
+    const sources = candidates.filter(same);
+    let list = (sources.length ? sources : candidates).filter(f => packageRoot(f));
+    if (!candidates.length && buf && buf.length) {
       if (!bySize) bySize = packageFilesBySize(compilation);
       const copy = (bySize.get(buf.length) || []).find(f => same(f));
       if (copy) list = [copy];
@@ -514,7 +523,7 @@ class BundleLockfilePlugin {
           const writeFile = !inline ? null : disk ? outputs.writeDisk(file) : (json, done) => fsys.writeFile(file, json, done);
           outputs.rewrite(file, writeFile, (err) => {
             if (err) problems.problem(`${kindOf(compiler)}: could not write ${file}`, err);
-            else if (inline) config.debug('webpack: wrote', file);
+            else if (inline || exportPath(file)) config.debug(`${kindOf(compiler)}: wrote`, [inline && file, exportPath(file)].filter(Boolean).join(' and '));
             done();
           });
         });
