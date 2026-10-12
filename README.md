@@ -238,6 +238,12 @@ pipeline:
       npm run build              # turbo run build, a build that clears the environment, ...
 ```
 
+With turbo, `turbo run build --env-mode=loose` passes every variable on, and needs no settings file. With bun as the
+package manager, `bun run` starts the bundlers' command lines with `node` (their `#!/usr/bin/env node`), so keep
+`nodejs` in the build environment; `bun --bun` is not supported. Since a bundler bundle-lockfile does not hook stays
+silent, end the build with a check for every lockfile the package should ship (`test -f .../package-lock.json`).
+Real builds that do all this, with their numbers, are in [test/README.md](test/README.md#rspack-on-real-projects).
+
 ### Served outputs
 
 The lockfile is part of the build output. If that output is served (e.g. from `public/assets`), the lockfile is
