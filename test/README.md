@@ -224,6 +224,40 @@ the adapters bundle again — except SvelteKit 2's edge function (built by esbui
 - another `--require` preload next to bundle-lockfile's (Next 15 fails, see the [README](../README.md#nextjs); 16.4
   builds)
 
+## rspack on real projects
+
+`test/compare/rspack-stats.cjs` (a preload that loads bundle-lockfile) records, for every rspack compiler
+bundle-lockfile attaches to, the packages of rspack's own stats: the oracles' code (`oracles/stats.cjs`, `owner.cjs`),
+which shares nothing with the adapter's collection. `test/compare/report-rspack.cjs` compares them with the lockfiles,
+per output directory:
+
+```sh
+NODE_OPTIONS="--require <repo>/test/compare/rspack-stats.cjs" BUNDLE_LOCKFILE_TRUTH_DIR=/tmp/truth <build command>
+node <repo>/test/compare/report-rspack.cjs /tmp/truth [<export dir> <export base>]
+```
+
+Run on the seven Chainguard packages that build with rspack (2026-10-12; recipe versions and steps, Wolfi, strict
+mode). Every build passed; no lockfile missed a package of the stats; syft and Trivy read exactly the lockfiles'
+packages; the build output was byte-identical with and without bundle-lockfile:
+
+| Project | rspack / Rsbuild | Node.js, package manager | Lockfile = stats | Only in the lockfile | Build time |
+|---|---|---|---|---|---|
+| redpanda-console 3.12 | 2.2.1 / 2.2.1 | 22, bun (node shim, export directory) | 307 of 309 | tailwindcss, tw-animate-css (inlined by @tailwindcss/postcss) | +8.7 % (Node.js 22's loader thread) |
+| redpanda-console 2.8 | 1.2.8 / 1.2.19 | 22, bun (node shim, export directory) | 398 of 400 | the same (tw-animate-css 1.2.4 emits nothing: one too many) | +1.6 % |
+| calico-whisker (calico 3.32) | 1.1.8 / 1.1.10 | 24, yarn 1 | 94 of 95 | tailwindcss (inlined) | +0.7 % |
+| calico-whisker (calico 3.30) | 1.7.8 / 1.7.3 | 24, yarn 1 | 71 of 71 | – | +0.1 % |
+| kiali 2.33 | 2.2.7 / 2.2.9 | 26, yarn 4 (export directory) | 271 of 271 | – | rsbuild +4.5 %, the build command +0.3 % |
+| perses 0.54 | 2.0.1 | 26, npm, turbo (`--env-mode=loose` or the settings file; export directory) | 155 of 155 | – | about +3 % |
+| ohif-viewer 3.13 | 2.0.3 (and 1.7.11: three copies of `@rspack/core`) | 26, pnpm (node shim: cross-env) | 269 of 269 | – | +1.9 % |
+| opensearch-dashboards 3.8 | 2.0.8 (31 optimizer workers, 61 bundles) | 22, yarn 1 | 1,201 of 1,250 in 63 outputs | the OUI theme's and @elastic/charts' Sass partials, css-loader's runtime (shipped; rspack's stats call it an orphan) | none measurable |
+| metabase 0.63 | 2.0.3 (two compilers, a second process) | 22, bun, Clojure (node shim and the settings file: the build replaces the environment) | 413 of 413, 4 of 4 | – | none measurable |
+
+What they found, fixed since: a package's `require('punycode')` warned with the preload (OpenSearch Dashboards
+exits on any warning), a first-party copy named like a package file was attributed to that package, matching copies
+by name cost seconds on OHIF, and an output directory another plugin removed after the build was recreated for its
+lockfile (Metabase). Not found by any tool: third-party code committed into a project's own directories without a
+`package.json` (OHIF's `public/es6-shim.min.js`).
+
 ## Comparison with the CycloneDX webpack plugin
 
 `test/compare/` attaches [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin) (5.3.3)
