@@ -3,7 +3,7 @@
 // compiler hook (rspack adapter onCompiler: the same compilers it attaches to), records for every top-level rspack
 // compiler what rspack's stats say is in its output - computed by the oracles' code (test/oracles/stats.cjs, owner.cjs),
 // which shares nothing with the adapter's collection:
-//   NODE_OPTIONS="--require <repo>/test/compare/rspack-stats.cjs" BUNDLE_LOCKFILE_TRUTH_DIR=<dir>
+//   NODE_OPTIONS="--require <repo>/test/compare/rspack-stats.cjs" BLTEST_TRUTH_DIR=<dir>
 // Per compiler and build: <dir>/<pid>-<n>.json { outputPath, context, name, packages, copies } (packages: name@version
 // from the stats' modules, child compilations and the copies matched by their bytes). report-rspack.cjs compares them
 // with the lockfiles. Stats cannot see what loaders inline (style partials) nor modules whose exports rspack inlined;
@@ -14,8 +14,8 @@ require('../../src/register.cjs');
 const rspackAdapter = require('../../src/adapters/rspack.cjs');
 const { STATS_OPTIONS, packagesFromStats, rspackCopies } = require('../oracles/stats.cjs');
 
-const dir = process.env.BUNDLE_LOCKFILE_TRUTH_DIR;
-if (!dir) throw new Error('rspack-stats: set BUNDLE_LOCKFILE_TRUTH_DIR');
+const dir = process.env.BLTEST_TRUTH_DIR;
+if (!dir) throw new Error('rspack-stats: set BLTEST_TRUTH_DIR');
 fs.mkdirSync(dir, { recursive: true });
 let n = 0;
 

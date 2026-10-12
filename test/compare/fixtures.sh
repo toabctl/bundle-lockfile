@@ -8,7 +8,7 @@ CDX=$FX/.tools/cyclonedx
 if [ ! -d "$CDX/node_modules/@cyclonedx/webpack-plugin" ]; then
   mkdir -p "$CDX" && (cd "$CDX" && echo '{"private":true}' > package.json && npm install -q --no-audit --no-fund @cyclonedx/webpack-plugin@5.3.3 >/dev/null)
 fi
-export BUNDLE_LOCKFILE_CDX_DIR=$CDX NEXT_TELEMETRY_DISABLED=1
+export BLTEST_CDX_DIR=$CDX NEXT_TELEMETRY_DISABLED=1
 INJ="--require $REPO/test/compare/inject-cyclonedx.cjs" # loads bundle-lockfile too
 
 run() { # fixture outdir build-cmd...

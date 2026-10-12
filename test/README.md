@@ -232,7 +232,7 @@ which shares nothing with the adapter's collection. `test/compare/report-rspack.
 per output directory:
 
 ```sh
-NODE_OPTIONS="--require <repo>/test/compare/rspack-stats.cjs" BUNDLE_LOCKFILE_TRUTH_DIR=/tmp/truth <build command>
+NODE_OPTIONS="--require <repo>/test/compare/rspack-stats.cjs" BLTEST_TRUTH_DIR=/tmp/truth <build command>
 node <repo>/test/compare/report-rspack.cjs /tmp/truth [<export dir> <export base>]
 ```
 

@@ -4,7 +4,7 @@
 // compiler hook (onCompiler), so both see the same compilers. It loads bundle-lockfile too, so one --require is enough (Next.js 15.0-16.3 mangle several:
 // "--require A --require B" reaches its build workers as the single path "A B"):
 //   NODE_OPTIONS="--require <repo>/test/compare/inject-cyclonedx.cjs"
-//   BUNDLE_LOCKFILE_CDX_DIR=<dir whose node_modules contains @cyclonedx/webpack-plugin>
+//   BLTEST_CDX_DIR=<dir whose node_modules contains @cyclonedx/webpack-plugin>
 // Per compiler output it writes cyclonedx/bom.json (the plugin's default) and
 // bundle-lockfile-compare/diag-<compiler>.json: packages of all modules webpack processed vs. those in the emitted
 // output (one file per compiler: several can write to one output directory).
@@ -16,8 +16,8 @@ const webpackAdapter = require('../../src/adapters/webpack.cjs');
 const { packagesForFiles } = require('../../src/core/packages.cjs');
 const { packageRoot } = require('../../src/core/paths.cjs');
 
-const cdxDir = process.env.BUNDLE_LOCKFILE_CDX_DIR;
-if (!cdxDir) throw new Error('inject-cyclonedx: set BUNDLE_LOCKFILE_CDX_DIR');
+const cdxDir = process.env.BLTEST_CDX_DIR;
+if (!cdxDir) throw new Error('inject-cyclonedx: set BLTEST_CDX_DIR');
 const { CycloneDxWebpackPlugin } = Module.createRequire(path.join(path.resolve(cdxDir), 'package.json'))('@cyclonedx/webpack-plugin');
 
 const fileOf = (m) => (typeof m.nameForCondition === 'function' ? m.nameForCondition() : m.resource) || null;

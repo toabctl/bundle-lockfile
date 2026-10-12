@@ -1,7 +1,7 @@
 // Plain config for normal builds; NEXT_RSPACK_APP=1 wraps it with next-rspack, which builds with rspack instead of
 // webpack (fixtures next15-rspack, next16-rspack). Only oracle builds (test/oracles/next.cjs) add a webpack hook - a
 // webpack() key is not added otherwise, because Next 16 refuses a webpack config when building with Turbopack.
-const oraclePlugin = process.env.BUNDLE_LOCKFILE_ORACLE_PLUGIN;
+const oraclePlugin = process.env.BLTEST_ORACLE_PLUGIN;
 // With output: 'export' (NEXT_EXPORT=1) a custom distDir is where Next exports to, it builds into .next anyway
 // (next/dist/export/utils.js getBuildDistDir): the oracle builds there too, after the case's lockfiles have been read
 const distDir = oraclePlugin && !process.env.NEXT_EXPORT ? '.next-oracle' : '.next';
@@ -14,7 +14,7 @@ const config = {
   ...(oraclePlugin && {
     webpack(config) {
       const Plugin = require(oraclePlugin);
-      config.plugins.push(new Plugin(process.env.BUNDLE_LOCKFILE_ORACLE_OUT, distDir));
+      config.plugins.push(new Plugin(process.env.BLTEST_ORACLE_OUT, distDir));
       return config;
     },
   }),

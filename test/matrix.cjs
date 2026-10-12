@@ -750,10 +750,20 @@ const cases = [
         env: { BUNDLE_LOCKFILE_FILE: `${file}/package-lock.json`, BUNDLE_LOCKFILE_STRICT: '0' }, lockfile: `${file}/package-lock.json`, expect: null,
         expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not write`) }]),
   // an export directory that cannot be written (a file); the inline lockfile is written, the export copy not
-  { name: 'strict: an export directory that cannot be written fails the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORT_DIR: 'package.json' },
+  { name: 'strict: an export directory that cannot be written fails the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORT_DIR: '{fixture}/package.json' },
     expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*webpack: could not write \S*bundle-lockfile\/package-lock\.json/ },
   { name: 'STRICT=0: an export directory that cannot be written is a warning', fixture: 'wp5-npm', cmd: 'npm run -s build',
-    env: { BUNDLE_LOCKFILE_EXPORT_DIR: 'package.json', BUNDLE_LOCKFILE_STRICT: '0' }, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write/ },
+    env: { BUNDLE_LOCKFILE_EXPORT_DIR: '{fixture}/package.json', BUNDLE_LOCKFILE_STRICT: '0' }, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write/ },
+  // settings that are set but not recognized (a misspelled name, a value bundle-lockfile does not know) or cannot work:
+  // the build would not do what was asked of it
+  ...[['webpack 5', 'wp5-npm'], ['Vite 8.3.3', 'vite8-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].flatMap(([what, fixture]) => [
+    { name: `strict: a misspelled setting fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export' },
+      expectError: /BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ },
+    { name: `strict: a value that is not recognized fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'rsbuild' },
+      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown or all/ }]),
+  ...[['webpack 5', 'wp5-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].map(([what, fixture]) => (
+    { name: `STRICT=0: a misspelled setting is a warning (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export', BUNDLE_LOCKFILE_STRICT: '0' },
+      expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ })),
   // nowhere to write: BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR
   ...[['webpack 5', 'wp5-npm'], ['Vite 8.3.3', 'vite8-npm']].flatMap(([what, fixture]) => [
     { name: `strict: INLINE=0 without an export directory fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_INLINE: '0' },
@@ -956,7 +966,7 @@ const cases = [
   { name: 'Rolldown 1 JavaScript API: two outputs into one directory at the same time', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-outputs', expect: ROLLUP_API },
   // the plugin in the build's options, no NODE_OPTIONS: two builds of different inputs into one directory, both kept
   ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => ({ name: `${what} JavaScript API, plugin in the options (no NODE_OPTIONS): two builds into one directory`,
-    fixture: 'rollup-api', cmd: `node build.mjs ${mode}-plugin`, inject: false, env: { BUNDLE_LOCKFILE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: ROLLUP_API })),
+    fixture: 'rollup-api', cmd: `node build.mjs ${mode}-plugin`, inject: false, env: { BLTEST_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: ROLLUP_API })),
   { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
