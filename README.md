@@ -168,7 +168,9 @@ export PATH="/opt/bundle-lockfile/bin:$PATH"
 - Not covered: a `node` started by its absolute path, or through a `PATH` that a version manager put the real `node`'s
   directory in front of (nodenv and asdf do, for what they start). Those keep the `NODE_OPTIONS` they get.
 - `BUNDLE_LOCKFILE_REGISTER` names the `register.cjs` to preload; by default the shim looks for `../src/register.cjs`
-  and `../register.cjs` next to itself.
+  (a checkout, as in `/opt/bundle-lockfile` here) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
+  next to its `register.cjs`). The shim reads it from the environment only: it is a shell script, which does not read
+  the [settings file](#settings).
 
 Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack), and npm (Vite).
 
@@ -178,7 +180,8 @@ Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env`
 environment:
   contents:
     packages:
-      - bundle-lockfile          # a package that installs src/ to /usr/lib/bundle-lockfile/ (not in Wolfi yet)
+      - bundle-lockfile          # a package that installs src/ to /usr/lib/bundle-lockfile/ and the node shim to
+                                 # /usr/lib/bundle-lockfile/bin/node (not in Wolfi yet)
   environment:
     NODE_OPTIONS: "--max-old-space-size=16384 --require /usr/lib/bundle-lockfile/register.cjs"
 

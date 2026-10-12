@@ -506,7 +506,12 @@ class BundleLockfilePlugin {
         // the inline file on the real disk after every build; in memory again if late copies added packages or
         // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
         const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler);
-        const inline = config.inline && (disk || write || outputs.isShared(file));
+        // an output directory on disk that is gone by now was removed by another plugin's afterEmit after it took the
+        // files away (Metabase's embed build: copied into app/, then rm -rf): the lockfile is not put back there, which
+        // would recreate the directory with only it (and ship it in Metabase's jar); the export copy is still written
+        const gone = disk && config.inline && !fs.existsSync(dir);
+        if (gone) config.debug(`${kindOf(compiler)}: ${dir} was removed after the build wrote it: its lockfile is not written there`);
+        const inline = config.inline && !gone && (disk || write || outputs.isShared(file));
         if (!inline && !exportPath(file)) {
           if (!config.inline) outputs.nowhere();
           return done();
