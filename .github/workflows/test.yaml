@@ -61,7 +61,7 @@ jobs:
       - name: Run matrix
         run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
 
-  # Node < 24.12 uses the loader-thread ESM hooks (src/hooks.cjs): the Vite, Rollup, Rolldown, nested and SvelteKit cases on Wolfi's Node 22
+  # Node < 24.12 uses the loader-thread ESM hooks (src/hooks.cjs): the Vite, Rollup, Rolldown, nested, SvelteKit, rspack 2 and Rsbuild 2 cases on Wolfi's Node 22
   # (e.g. GitLab and Coder build with it)
   node22:
     runs-on: ubuntu-latest

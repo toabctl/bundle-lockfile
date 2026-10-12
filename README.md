@@ -44,11 +44,11 @@ The details are in [docs/internals.md](docs/internals.md).
 ## Quick start
 
 Preload it into the build with `NODE_OPTIONS`. Every supported bundler in that process, or in a process it starts
-(which inherits `NODE_OPTIONS`), is hooked (on Node.js before 24.12, see [Vite, Rollup,
+(which inherits `NODE_OPTIONS`), is hooked (on Node.js before 24.12, 25.2 on 25, see [Vite, Rollup,
 Rolldown](#vite-rollup-rolldown)). Nothing is installed into the project.
 
 ```sh
-git clone --depth 1 --branch v0.1.1 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
+git clone --depth 1 --branch v0.2.0 https://github.com/toabctl/bundle-lockfile /opt/bundle-lockfile
 export NODE_OPTIONS="--require /opt/bundle-lockfile/src/register.cjs"
 
 npm run build                    # or however the build is started: yarn build, pnpm run build, npx vite build,
@@ -69,15 +69,78 @@ nanoid     3.3.20   npm
 yallist    5.0.0    npm
 ```
 
-Pin a [release](https://github.com/toabctl/bundle-lockfile/releases): the build runs this code. Trivy reads the
+It is a git checkout: there is no npm package, and no Wolfi package yet. Pin a
+[release](https://github.com/toabctl/bundle-lockfile/releases): the build runs this code. Trivy reads the
 lockfile too: `trivy fs --format cyclonedx --output sbom.cdx.json dist`. If bundle-lockfile cannot write a correct
 lockfile for a build it is attached to, that build fails with the reason (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)).
 A bundler it does not hook writes no lockfile and does not fail, so still check in CI that the lockfile was written
 (e.g. `test -f dist/bundle-lockfile/package-lock.json`).
 
-Tested on Linux (Wolfi) with Node.js 24 and 26, and with Node.js 22 for Vite, Rollup, Rolldown, SvelteKit, nested
-bundles and webpack 5 under Yarn Plug'n'Play. Other versions and systems are untested. The node shim needs a POSIX
-`sh`.
+Requirements: Node.js 20 or later (builds are tested on Linux with Node.js 22, 24 and 26, the unit tests also on 20;
+see [Supported](#supported)), nothing else for the preload. The node shim needs a POSIX `sh` with `readlink -f` and
+`head -c` (GNU coreutils, BusyBox and macOS have them).
+
+## Supported
+
+| Bundler | Versions | Tested (matrix) | Hooked through | Notes |
+|---|---|---|---|---|
+| webpack | 4, 5 | 4.0, 4.47, 5.0, 5.60, 5.111 | CommonJS: webpack's `Compiler` | webpack < 4 is not hooked |
+| Next.js | 12 – 16 | 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | Next 16 only with `next build --webpack`; [details](#nextjs) |
+| Next.js with next-rspack | 15, 16 | 15.5 (rspack 1.4), 16.4 (rspack 2.0) | as rspack | the same lockfiles as with webpack |
+| rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 fails the build, 0.x is not hooked; [details](#rspack-rsbuild) |
+| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
+| Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; [details](#vite-rollup-rolldown) |
+| SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
+| Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
+| Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
+
+- **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook: on Node.js
+  24.12, 25.2 and later in every process; before, only in processes that build with them (see [Vite, Rollup,
+  Rolldown](#vite-rollup-rolldown)).
+- **Watch mode** (webpack, rspack, Rollup, Rolldown, `vite build --watch`) writes the lockfile after every rebuild.
+  Dev servers of webpack and rspack (`webpack serve`, `rspack serve`, `rsbuild dev`) serve it from memory.
+- **Node.js:** builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite, Rollup,
+  Rolldown, SvelteKit, rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn
+  Plug'n'Play; the unit tests also run on 20. Node.js 25 and Linux distributions other than Wolfi are not tested.
+  Next.js 12 does not build on Node.js 25 and later.
+- **SBOM tools:** every lockfile of the matrix is read by syft and Trivy (Wolfi's current versions; [which
+  scans](#sbom-tools)).
+
+Package managers tested ([details](test/README.md#environments)):
+
+| | |
+|---|---|
+| webpack | npm 8 – 11, npx, pnpm 8 – 12, yarn 1, yarn 3 (Plug'n'Play), yarn 4 (Plug'n'Play, node-modules), bun, `turbo run`, npm workspaces |
+| rspack | npm, npx, pnpm 10 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules), bun, npm workspaces |
+| Rsbuild | npm, bun, yarn 4 (Plug'n'Play) |
+| Vite | npm, npx, pnpm 9 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules), bun, npm workspaces |
+| Next.js, SvelteKit, Rollup, Rolldown, Rslib | npm (the `rollup` command line also yarn 4 Plug'n'Play) |
+
+Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
+[test/README.md](test/README.md#rspack-on-real-projects).
+
+### Known limitations
+
+- **Not hooked** — no lockfile, and no failure: esbuild, Parcel, Turbopack (Next.js 16's default build), the
+  `rolldown` command line, Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not
+  installed), webpack < 4, rspack 0.x, a bundler in a process that `NODE_OPTIONS` (or the [node
+  shim](#build-scripts-that-overwrite-node_options)) does not reach. Check in CI that every lockfile the package
+  should ship exists.
+- **Not in the lockfile** ([what is listed](#what-is-listed)): packages a server loads from `node_modules` at runtime
+  (externals, Next.js' and SvelteKit's server dependencies), files put into the output without the bundler (a shell
+  `cp`, another process), vendored code without a `package.json`, and in webpack 5.108+ a package of which only
+  inlined constants are used.
+- **Node.js before 24.12 (25.2 on 25):** ES-module bundlers (Vite, Rolldown, rspack 2, Rollup through `import`) are
+  hooked only in processes whose main script's package depends on them, or with `BUNDLE_LOCKFILE_ESM_HOOKS=async`,
+  and not in worker threads. Their loader thread costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on
+  Node.js 22 (about 2 % with the in-thread hooks).
+- **Rolldown's `build()` and `watch()`** (also `vite build --watch` on Vite 8) list no style sheets `@import`ed from
+  packages.
+- **Dev servers** list what they compiled so far: not the packages of lazily compiled dynamic imports.
+- **Outputs that move:** Next.js' static export and standalone output, and any step that copies only some files,
+  leave the lockfiles behind: use an [export directory](#in-a-melange-package-build).
+- **Next.js 15.0 – 16.3** break with a second `--require` in `NODE_OPTIONS` ([details](#nextjs)).
+- **Two copies of bundle-lockfile** preloaded into one process: the first one does all the work.
 
 ## What is listed
 
@@ -128,8 +191,9 @@ Not listed:
 - a package whose only use is a small constant that webpack 5.108+ inlined (`optimization.inlineExports`, on by
   default in production), leaving its module in no chunk (rspack builds list such packages, see
   [rspack](#rspack-rsbuild));
-- vendored code without a `package.json`: inside a package it counts as that package (with a warning), outside
-  `node_modules` (a copied `jquery.min.js`) as first-party;
+- vendored code without a `package.json`: inside a package it counts as that package (a `node_modules/<name>`
+  directory without one: as the package around it, with a warning), outside `node_modules` (a copied
+  `jquery.min.js`) as first-party;
 - workspace packages and other linked first-party packages (their dependencies are listed);
 - the bundler's runtime code (webpack 5's runtime modules, Vite's preload helper and modulepreload polyfill,
   Rolldown's runtime, @rollup/plugin-commonjs's helpers), which is generated, not a package's file. webpack 4's
@@ -169,10 +233,13 @@ export PATH="/opt/bundle-lockfile/bin:$PATH"
   directory in front of (nodenv and asdf do, for what they start). Those keep the `NODE_OPTIONS` they get.
 - `BUNDLE_LOCKFILE_REGISTER` names the `register.cjs` to preload; by default the shim looks for `../src/register.cjs`
   (a checkout, as in `/opt/bundle-lockfile` here) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
-  next to its `register.cjs`). The shim reads it from the environment only: it is a shell script, which does not read
-  the [settings file](#settings).
+  next to its `register.cjs`), from its own directory with symlinks resolved. Set it in the environment: the shim is a
+  shell script, which does not read the [settings file](#settings) (only `node` processes that a preloaded one starts
+  get the file's settings). Without a `register.cjs`, the shim prints `bundle-lockfile node shim: register.cjs not
+  found …` and runs `node` without the preload: no lockfile.
 
-Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack), and npm (Vite).
+Tested with npm, pnpm, yarn 1, yarn 4 (node-modules linker), bun and `cross-env` (webpack and rspack 2), npm (Vite),
+and a build that starts with an environment of its own (`env -i`) with a settings file.
 
 ### In a melange package build
 
@@ -252,7 +319,8 @@ of the output process it too (SvelteKit's adapter-static with `precompress` writ
 
 ### The plugin in the config
 
-The plugins can also be added to a config by hand, without `NODE_OPTIONS`. webpack:
+The plugins can also be added to a config by hand, without `NODE_OPTIONS`. webpack (rspack: the same plugin, from
+`src/adapters/rspack.cjs`):
 
 ```js
 const path = require('path');
@@ -294,28 +362,36 @@ $ BUNDLE_LOCKFILE_DEBUG=1 npm run build
 ```
 
 Each process that inherits `NODE_OPTIONS` and loads webpack logs its own `patched Compiler` line (e.g. Next.js's build
-workers); a process that never compiles writes nothing. Every process logs how Vite, Rollup and Rolldown are hooked,
-e.g. `ESM hooks: sync (Node 24.21.0)`. A Vite 8 build logs `vite: adding the plugin to a rolldown() call` (Vite 7:
-`rollup()`).
+workers); a process that never compiles writes nothing. Every process logs how ES modules are hooked (Vite, Rollup,
+Rolldown, rspack 2), e.g. `ESM hooks: sync (Node 24.21.0)`. A Vite 8 build logs `vite: adding the plugin to a
+rolldown() call` (Vite 7: `rollup()`).
 
 Errors, warnings and notes are always printed:
 - Errors fail the build (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)):
-  - a lockfile or its export copy that could not be written, or locked;
+  - a lockfile, its export copy or a copy of it (e.g. SvelteKit's in `build/`) that could not be written, or locked;
   - `BUNDLE_LOCKFILE_INLINE=0` without an export directory;
   - bundled code from a `node_modules` directory without a `package.json` with name and version, and no package around
     it;
-  - an adapter that failed to collect the packages or to hook a bundler.
+  - an adapter that failed to collect the packages or to hook a bundler;
+  - rspack 1.0;
+  - a settings file that cannot be read.
+- In watch mode of Vite, Rollup and Rolldown, an error after the output is written is printed, and the watcher goes
+  on.
 - With `BUNDLE_LOCKFILE_STRICT=0` these are warnings instead, and the build goes on.
-- Always warnings or notes, once per process: such bundled code that is listed as the package around it, and a vendored
-  copy that is listed.
+- Always warnings or notes, once per process: such bundled code that is listed as the package around it, a vendored
+  copy that is listed, an adapter that failed while inspecting a module that is no bundler, and ESM hooks that could
+  not be installed in a process whose main script's package depends on no ES-module bundler.
 
 ## Settings
 
 Environment variables, or the same names in a settings file (a JSON object), for builds whose tools do not pass the
 variables on: `config.json` next to `register.cjs` (`src/config.json` in a checkout), or the file
-`BUNDLE_LOCKFILE_CONFIG` names. A variable that is set wins over the file; the processes the build starts get the
-file's settings as variables. A settings file that cannot be read fails the build (with `BUNDLE_LOCKFILE_STRICT=0`:
-a warning).
+`BUNDLE_LOCKFILE_CONFIG` names. Only `BUNDLE_LOCKFILE_*` keys with string, number or boolean values count. A variable
+that is set, also to an empty value, wins over the file; the processes the build starts get the file's settings as
+variables. A settings file that cannot be read, or a file `BUNDLE_LOCKFILE_CONFIG` names that does not exist, fails
+every process that preloads bundle-lockfile: its first build, or else the process itself at exit, also `npm ci`
+(with `BUNDLE_LOCKFILE_STRICT=0`: a warning). A missing `config.json` is no error. Paths are resolved against each
+process's working directory: use absolute ones.
 
 | Variable | Default | |
 |---|---|---|
@@ -324,40 +400,28 @@ a warning).
 | `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | lockfiles below this directory are placed relative to it in the export directory (default: their absolute path) |
 | `BUNDLE_LOCKFILE_INLINE` | on | `0`, `false` or `off` (any case): write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written, and the build fails, or warns with `BUNDLE_LOCKFILE_STRICT=0`) |
 | `BUNDLE_LOCKFILE_STRICT` | on | a build whose lockfile cannot be written or would be incomplete fails (see [Troubleshooting](#troubleshooting-the-build-fails-with-bundle-lockfile-error)); `0`, `false` or `off` (any case): only warn, and let the build go on (e.g. for local experiments or dev servers) |
-| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (empty, `0`, `false` and `off` mean off) |
-| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory, that are first-party: never listed as [vendored copies](docs/format.md#which-package-a-file-belongs-to); `**`: no vendored copies outside `node_modules` |
-| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack`; `rspack`; `vite` (builds with Vite's plugins), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all` |
-| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked: `sync`, `async` or `off` instead of choosing by Node.js version (see [below](#vite-rollup-rolldown)). `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
-| `BUNDLE_LOCKFILE_REGISTER` | next to the shim | the `register.cjs` the node shim preloads |
+| `BUNDLE_LOCKFILE_DEBUG` | unset | log what gets patched and applied to stderr (empty, `0`, `false` and `off`, any case, mean off) |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory (or absolute), that are first-party: never listed as [vendored copies](docs/format.md#which-package-a-file-belongs-to). A glob names directories, not what is below them: `lib/**` for `lib/` and everything in it; `**`: no vendored copies outside `node_modules` |
+| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack` (also Next.js); `rspack` (also Rsbuild, Rslib, next-rspack); `vite` (builds with Vite's plugins, also SvelteKit), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all`. Other names are ignored, and plugins added to a config by hand still run |
+| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked (and webpack and rspack 1 when a loader hook such as Yarn Plug'n'Play's provides their code): `sync`, `async` or `off` instead of choosing by Node.js version (see [below](#vite-rollup-rolldown)); other values mean `auto`. `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
+| `BUNDLE_LOCKFILE_REGISTER` | `../src/register.cjs` or `../register.cjs` from the shim | the `register.cjs` the node shim preloads (only from the environment) |
 | `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | the settings file (only from the environment) |
 
-## Supported
+`BUNDLE_LOCKFILE_NODE_SHIM` and `BUNDLE_LOCKFILE_NODE_SEEN` are set by the node shim for the processes it starts; do
+not set them.
 
-| Bundler | Versions | Notes |
-|---|---|---|
-| webpack | 4, 5 | webpack < 4 is ignored |
-| Next.js (its vendored webpack, or rspack with next-rspack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack` or next-rspack; its default Turbopack build is not supported |
-| Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown; 1.0 release candidates before 8.0.12) | also rolldown-vite (Vite 7 on Rolldown) |
-| SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node, adapter-netlify (edge functions only with adapter-netlify 7) |
-| Rollup, Rolldown | Rollup 4 (from 4.0, also `@rollup/wasm-node`), Rolldown 1 (from 1.0) | their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line |
-| rspack | 1.1 – 1.7, 2 | the `rspack` command line, its JavaScript API, and tools built on it ([below](#rspack-rsbuild)); rspack 1.0 fails the build, 0.x is ignored |
-| Rsbuild | 1.1 – 1.7, 2 | `rsbuild build` (rspack 1.1+ / 2), also Rslib 1 |
-
-Tested with npm, npx, yarn 1/3/4 (also Plug'n'Play), pnpm 8–12, bun, `turbo run` and npm workspaces, in combinations
-per bundler — see [test/README.md](test/README.md#environments).
-
-Not supported yet: esbuild, Parcel, Turbopack, the `rolldown` command line, Bun's own runtime (`bun --bun`)
-and `Bun.build`. `vite dev`, `vite preview` and Vitest write no lockfile.
+## Bundler notes
 
 ### Vite, Rollup, Rolldown
 
 Rollup's CommonJS build (`require('rollup')`, the `rollup` command line) is hooked in every process. Vite imports
 Rollup and Rolldown as ES modules, which needs a Node.js ESM hook:
 - Node.js 24.12, 25.2 and later: hooked in every process.
-- Older versions: hooked only in processes whose main script belongs to a package that is or depends on `vite`,
-  `rollup`, `rolldown` or `rolldown-vite` (the `vite` command, a build script of a project using Vite), or that have
-  another loader hook (e.g. Yarn Plug'n'Play's). A programmatic build from elsewhere needs
-  `BUNDLE_LOCKFILE_ESM_HOOKS=async`.
+- Older versions: hooked only in the main thread of processes whose main script belongs to a package that is or
+  depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`, `@rspack/core`, `@rspack/cli` or `@rsbuild/core` (the
+  `vite` command, a build script of a project using Vite), or that have another loader hook (e.g. Yarn Plug'n'Play's).
+  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`; a build in a worker thread is not
+  hooked.
 
 The details are in [docs/internals.md](docs/internals.md#vite-rollup-rolldown).
 
@@ -370,25 +434,27 @@ other tools that create their compilers with `@rspack/core` (tested: the command
 Rsbuild, Rslib, Next.js with next-rspack).
 
 - rspack 1 is a CommonJS module and is hooked in every process. rspack 2 is an ES module, which needs the ESM hook,
-  as Vite does ([above](#vite-rollup-rolldown)): on Node.js before 24.12, only in processes whose main script belongs
-  to a package that is or depends on `@rspack/core`, `@rspack/cli` or `@rsbuild/core` (or with
-  `BUNDLE_LOCKFILE_ESM_HOOKS=async`). A `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks
-  it anyway.
+  as Vite does ([above](#vite-rollup-rolldown)): on Node.js before 24.12 (25.2 on 25), only in processes whose main
+  script belongs to a package that is or depends on `@rspack/core`, `@rspack/cli`, `@rsbuild/core` or one of Vite's
+  packages, or that have another loader hook (or with `BUNDLE_LOCKFILE_ESM_HOOKS=async`). A `require('@rspack/core')`
+  anywhere in the process (a CommonJS config) hooks it anyway.
 - Files `CopyRspackPlugin` copies out of packages are listed, by name and bytes among the files the build depends on.
 - Style sheets loaders inline from packages (Sass partials, Less `@import`s, PostCSS) are listed; before rspack
   1.3.14, rspack does not record them per module, and all such style sheets the build read are listed.
-- rspack inlines small constants in production (`optimization.inlineExports`): a module whose used exports are all
-  inlined is in no chunk. Its package is listed anyway — its values are in the bundle.
+- rspack 2 inlines small constants in production (`optimization.inlineExports`; rspack 1.7 with
+  `experiments.inlineConst`): a module whose used exports are all inlined is in no chunk. Its package is listed
+  anyway — its values are in the bundle.
 - Child compilations count for their parent, as webpack's: the workers monaco-editor-webpack-plugin builds are in
   its lockfile.
 - rspack's `ModuleFederationPlugin` (also `@module-federation/enhanced`'s) bundles the federation runtime, which
   webpack 5's does not: the `@module-federation/*` runtime packages are listed for the host and for every remote. A
   shared package with `treeShaking` is built again by rspack, in a compiler of its own, into
-  `<output>/independent-packages/<name>/`, with its own lockfile.
-- `rspack serve` and `rsbuild dev` write to memory: the lockfile is served at `/bundle-lockfile/package-lock.json`
-  and not written to disk (with `writeToDisk`, it is). It lists what the dev build bundled: the dev server's client
-  (and @rspack/core's HMR runtime), but not the packages of dynamic imports the page has not loaded yet, which are
-  compiled lazily. Rstest, which bundles the tests with Rsbuild, leaves no lockfile in the project.
+  `<output>/independent-packages/<name>/` (`lodash_es` for lodash-es), with its own lockfile (tested on rspack 2.2).
+- `rspack serve` and `rsbuild dev` write to memory: the lockfile is served below the public path, at
+  `/bundle-lockfile/package-lock.json` by default (`BUNDLE_LOCKFILE_FILE`), and not written to disk (with
+  `writeToDisk`, it is). It lists what the dev build bundled: the dev server's client (and @rspack/core's HMR
+  runtime), but not the packages of dynamic imports the page has not loaded yet, which are compiled lazily. Rstest,
+  which bundles the tests with Rsbuild, leaves no lockfile in the project.
 - rspack 1.0 lacks what the plugin needs (the modules inside concatenated modules): its builds fail (with
   `BUNDLE_LOCKFILE_STRICT=0`: a warning and no lockfile).
 - `bun run` starts the `rspack` and `rsbuild` commands with Node.js (their `#!/usr/bin/env node`) only if Node.js is
@@ -433,7 +499,7 @@ packages) and `server/` (what the server bundles). The adapter then fills its ou
 | adapter-node 6 (SvelteKit 3) | copied to `build/client/` | copied to `build/server/`, with its lockfile (which lists adapter-node, bundled into the server build) |
 | adapter-node 5 (SvelteKit 2) | copied to `build/client/` | bundled again with Rollup into `build/`; its lockfile lists the server output's packages ([nested bundle](docs/format.md#nested-bundles)) and adapter-node's own files, which it copies to `.svelte-kit/adapter-node/` first |
 | adapter-netlify 7 (SvelteKit 3) | copied to `build/` | serverless: copied to `.netlify/v1/server/`, with its lockfile; edge function: bundled with all its dependencies by Rolldown, lockfile in `.netlify/v1/edge-functions/` (also lists adapter-netlify's own files) |
-| adapter-netlify 5, 6 (SvelteKit 2) | copied to `build/` | serverless: copied to `.netlify/server/`, with its lockfile; edge function: bundled by esbuild, no lockfile |
+| adapter-netlify 5 (SvelteKit 2; 6 is not tested) | copied to `build/` | serverless: copied to `.netlify/server/`, with its lockfile; edge function: bundled by esbuild, no lockfile |
 
 Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
 `dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile.
@@ -453,16 +519,22 @@ The format, keys, licenses and bundle-lockfile's own record are described in [do
 
 The build failed because its lockfile would be missing or incomplete; the message says why. webpack reports it as a
 compilation error (`bundle-lockfile: the lockfile would be missing or incomplete …`), Vite and Rollup as an error of
-the `bundle-lockfile` plugin. A problem outside any build (a bundler that could not be hooked) makes the process exit
-with code 1 after printing `[bundle-lockfile] ERROR: …`.
+the `bundle-lockfile` plugin. A problem outside any build (a bundler that could not be hooked, a settings file that
+cannot be read) makes the process exit with code 1 after printing `[bundle-lockfile] ERROR: …` and `the process fails
+because a lockfile would be missing or incomplete`. In the watch mode of Vite, Rollup and Rolldown, an error after the
+output is written is printed and the watcher goes on. On Node.js before 24.12 (25.2 on 25), a bundler that cannot be
+wrapped fails its own import with `bundle-lockfile: could not wrap <file>: …`.
 
 | Message | Cause | What to do |
 |---|---|---|
 | `could not write <lockfile>` | the output directory or the export directory is not writable, or a file is where the `bundle-lockfile/` directory must go | fix the permissions or the paths (`BUNDLE_LOCKFILE_FILE`, `BUNDLE_LOCKFILE_EXPORT_DIR`) |
-| `could not lock <lockfile>` | another process held the lock for more than 30 s | look for a hanging build writing the same output directory |
+| `could not lock <lockfile> - writing it without the lock …` | another process held the lock for more than 30 s; the lockfile is written, but may miss that process's packages | look for a hanging build writing the same output directory |
+| `could not write the copy <copy> of <lockfile>` | a copy of a lockfile made with fs (e.g. SvelteKit's adapters' in `build/`) could not be rewritten for its place | fix the permissions of the copy |
+| `could not read the settings file <file>` | `config.json` next to `register.cjs`, or the file `BUNDLE_LOCKFILE_CONFIG` names, is no JSON object, cannot be read, or (named) does not exist | fix the file or `BUNDLE_LOCKFILE_CONFIG` ([settings](#settings)) |
+| `rspack <version> is not supported (it needs 1.1 or later)` | rspack 1.0 | upgrade rspack |
 | `BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set` | nowhere to write | set `BUNDLE_LOCKFILE_EXPORT_DIR`, or leave the inline lockfile on |
 | `no package.json with name and version in <dir> - its bundled files are not listed` | bundled code in `node_modules` that belongs to no package (a package without `version`, files a tool put there) | install the package properly; a directory whose name starts with a dot (`node_modules/.cache`) is skipped |
-| `<adapter>: could not collect …`, `could not patch …`, `could not wrap …`, `could not install the ESM hooks` | a bug or an unexpected bundler version | report it with `BUNDLE_LOCKFILE_DEBUG=1` output |
+| `<adapter>: could not collect …`, `could not patch …`, `could not attach to the compiler …`, `could not check the files copied …`, `could not add the files written … after the build`, `could not wrap …`, `<adapter> adapter failed to wrap …`, `could not install the ESM hooks` | a bug or an unexpected bundler version | report it with `BUNDLE_LOCKFILE_DEBUG=1` output |
 
 `BUNDLE_LOCKFILE_STRICT=0` turns these into warnings and lets the build go on without a correct lockfile. Leave strict
 mode on where the SBOM matters (package builds).
@@ -473,14 +545,18 @@ mode on where the SBOM matters (package builds).
   written or locked, a failing adapter).
 - Check that `NODE_OPTIONS` reaches the bundler: `BUNDLE_LOCKFILE_DEBUG=1` logs each bundler it patches and each
   lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
-  shim](#build-scripts-that-overwrite-node_options). `BUNDLE_LOCKFILE_DISABLE` may be set.
+  shim](#build-scripts-that-overwrite-node_options). `BUNDLE_LOCKFILE_DISABLE` may be set. A process that preloads
+  another copy of bundle-lockfile first uses that copy.
 - The bundler is not supported: Turbopack (Next.js 16's default; use `next build --webpack`), esbuild, the `rolldown`
   command line.
 - A programmatic build that imports Vite, Rollup, Rolldown or rspack 2 as ES modules, on Node.js before 24.12 (25.2 on
   25), from a package that does not depend on them, needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`.
 - `bun run` without Node.js installed runs the build in Bun's own runtime, which nothing hooks.
-- Outputs below `node_modules`, builds that write nothing themselves, `vite dev`, `vite preview`, Vitest, and a
-  webpack build that failed and emitted nothing get no lockfile.
+- Vite, Rollup and Rolldown outputs below `node_modules`, builds that write nothing themselves, `vite dev`, `vite
+  preview`, Vitest, and a webpack build that failed and emitted nothing get no lockfile. (webpack and rspack outputs
+  below `node_modules` get one, which syft and Trivy do not read.)
+- The node shim found no `register.cjs`: it says so on stderr (set `BUNDLE_LOCKFILE_REGISTER`).
+- Another plugin removed a webpack or rspack output directory after the build: only the export copy is written.
 - `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing (and fails the build unless
   `BUNDLE_LOCKFILE_STRICT=0`).
 - A step after the build dropped it: Next.js' static export and standalone output, a copy of only some files. Use an

@@ -61,7 +61,9 @@ sequenceDiagram
 
 (This is the real disk; with an in-memory output file system the lockfile is a webpack asset, added in
 `afterProcessAssets`, and written again in `afterEmit` only if other writers share it or files were copied in the emit
-hook; the export copy is written after every build.)
+hook; the export copy is written after every build. An output directory on disk that another plugin removed after
+the build, in its own `afterEmit`, is not created again for the lockfile: only the export copy is written, and the
+lock is taken next to it.)
 
 ```mermaid
 sequenceDiagram
@@ -110,7 +112,7 @@ flowchart TD
   inner -- no --> pkg["name, version, license<br/>at its real location"]
   pj -- no --> around{"a package<br/>around it?"}
   around -- yes --> pkg
-  around -- no --> warn["warning: not listed"]
+  around -- no --> warn["not listed: fails the build<br/>(STRICT=0: a warning)"]
   first["first-party: not listed"]
 ```
 
@@ -144,17 +146,17 @@ of the lockfile renders their last written builds, plus the writers other proces
 
 Besides the modules of the written chunks, a lockfile lists the packages of:
 
-- **webpack child compilations whose output is shipped**: emitted next to the bundle (workers built by
-  `worker-loader`, workbox's `InjectManifest` service worker) or inlined into a bundled module (`worker-loader`'s
-  `inline: 'no-fallback'`). Child compilations that only run at build time (html-webpack-plugin's template,
-  mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted.
+- **webpack and rspack child compilations whose output is shipped**: emitted next to the bundle (workers built by
+  `worker-loader` or monaco-editor-webpack-plugin, workbox's `InjectManifest` service worker) or inlined into a
+  bundled module (`worker-loader`'s `inline: 'no-fallback'`). Child compilations that only run at build time
+  (html-webpack-plugin's template, mini-css-extract-plugin's loader, vanilla-extract's compiler) are not counted.
 - **files copied verbatim into a webpack output**, e.g. by `copy-webpack-plugin`, whose assets record the file they
   were copied from (`info.sourceFilename`, from 6.3 on). Those of copy-webpack-plugin 5 (webpack 4, in the emit hook,
   after the lockfile) and 6.0 – 6.2 (before it) do not: such a file counts as the package file with the same bytes
   that the compilation depends on — a file dependency, or a file below a context dependency in `node_modules` (6.2
   adds a copied directory only as one). webpack 5 minimizes such copies like other assets, so they are matched just
   before its optimize stages. An asset that is a chunk's or a module's file is no copy; a copy that was transformed
-  before that matches none.
+  before that matches none. rspack's CopyRspackPlugin records its source differently, see [rspack](#rspack).
 - **builds that write nothing themselves** (Vite, Rollup, Rolldown): Vite's worker bundles (emitted as files of the
   main build, or inlined with `?worker&inline`), @vitejs/plugin-legacy's polyfills, workbox-build's service worker
   (vite-plugin-pwa), any build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write:
@@ -164,9 +166,9 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
 - **style sheets that a style sheet `@import`s from a package** (CSS, Sass, Less, Stylus; inlined into it, so they are
   no modules): in Vite, Rollup and Rolldown builds the style files among the build's watch files. Rolldown provides
   those only on the build object `rolldown()` returns, so Rolldown's `build()` and `watch()` functions — which `vite
-  build --watch` on Vite 8 calls — do not list them. In webpack builds the style files among the file dependencies of
-  a shipped style module, which its loaders record: Sass partials (sass-loader), Less `@import`s (less-loader),
-  postcss-import's and Tailwind's style sheets (postcss-loader).
+  build --watch` on Vite 8 calls — do not list them. In webpack and rspack builds the style files among the file
+  dependencies of a shipped style module, which its loaders record: Sass partials (sass-loader), Less `@import`s
+  (less-loader), postcss-import's and Tailwind's style sheets (postcss-loader).
 - **files other plugins write into a Vite, Rollup or Rolldown output after the build** (in a `closeBundle` hook that
   runs before bundle-lockfile's): JavaScript files with the bytes of a chunk of a build that writes nothing itself
   (vite-plugin-pwa's `sw.js` and `workbox-<hash>.js`), and copies of package files (vite-plugin-static-copy); see
@@ -210,11 +212,15 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
   in-thread hooks next to any loader-thread hook (Yarn Plug'n'Play's, tsx's) crash the process (fixed by
   [nodejs/node#60380](https://github.com/nodejs/node/pull/60380)).
 - Older versions with `module.register` (18.19, 20.6 and later): a loader thread, only in processes whose main script
-  belongs to a package that is or depends on `vite`, `rollup`, `rolldown` or `rolldown-vite` — the `vite` command, a
-  build script of a project using Vite, tools such as `headlamp-plugin` — or that have another loader-thread hook
+  belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`, `@rspack/core`,
+  `@rspack/cli` or `@rsbuild/core` (the adapters' `esmPackages`) — the `vite`, `rspack` or `rsbuild` command, a build
+  script of a project using one of them, tools such as `headlamp-plugin` — or that have another loader-thread hook
   (`--experimental-loader`, `--loader` or `--import` in `NODE_OPTIONS` or on the command line, e.g. Yarn
   Plug'n'Play's, see below), because a loader thread costs time and memory in every process.
-  `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses it in every process, `off` in none.
+  Only in the main thread: worker threads get no ESM hook on these versions.
+- `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses the loader thread in every process (main thread only), `sync` the in-thread
+  hooks wherever `module.registerHooks` exists (also on versions where they are not safe next to other loaders),
+  `off` neither. Node.js's own loader thread, which runs `--require` preloads too, never gets them.
 
 ### CommonJS modules a loader hook provides
 
@@ -227,10 +233,11 @@ Yarn Plug'n'Play's loader does this for the files in its zip cache on Node.js 22
 `fstat` failure on its file descriptors that came with [nodejs/node#61769](https://github.com/nodejs/node/pull/61769)
 and related loader changes, fixed by [nodejs/node#62835](https://github.com/nodejs/node/pull/62835) in 22.23.3, 24.16
 and 26.1; Yarn keeps providing the source on those versions. There, webpack, Next.js' webpack and Rollup's CommonJS
-build would not be hooked: webpack-cli 7 `import()`s webpack, and on Node.js 22 Plug'n'Play loads even the main script
-that way.
+build and rspack 1 would not be hooked: webpack-cli 7 `import()`s webpack, and on Node.js 22 Plug'n'Play loads even
+the main script that way.
 
-So for the files the adapters patch (`cjsFiles`: webpack's `Compiler`, Next.js' webpack, Rollup's CommonJS build), the
+So for the files the adapters patch (`cjsFiles`: webpack's `Compiler`, Next.js' webpack, Rollup's CommonJS build,
+rspack 1's `@rspack/core/dist/index.js`), the
 ESM hook appends a line to a provided source that reports the module once it has run, as the CommonJS hook would. Other
 modules and sources are left as they are. A loader-thread hook registered after bundle-lockfile's (an `--import` after
 the `--require`) that provides the source without calling the next hook hides it.
@@ -255,13 +262,14 @@ rspack differs. `src/adapters/rspack.cjs` only hooks rspack:
   plugins, rspack 2 for the compiler) and see one copy on several paths (on Node.js 24.12+, the in-thread ESM hook
   and the CommonJS hook): each class is patched once, marked on its prototype.
 - rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module
-  graph: its compilers get a problem instead of the plugin (`core/problems.cjs`: the build fails).
+  graph: its compilers get a problem instead of the plugin (`core/problems.cjs`: the build fails). rspack 0.x is left
+  alone, with a debug message only: no lockfile, no failure.
 
 Where rspack's compilations differ:
 
 | | webpack | rspack |
 |---|---|---|
-| copies (copy-webpack-plugin / CopyRspackPlugin) | `info.sourceFilename`, relative to the context | relative to the copy pattern's context (a copied file: its name): matched among the file dependencies by that name, the same file through several paths once, by bytes before the optimize stages (minimizers change copies), else every package file with that name (a copy transformed on the way) |
+| copies (copy-webpack-plugin / CopyRspackPlugin) | `info.sourceFilename`, relative to the context | relative to the copy pattern's context (a copied file: its name). The file dependencies whose path ends with that name are its candidates (the same file through several paths once); the one with the copy's bytes before the optimize stages (minimizers change copies) is its source, and a first-party source lists nothing; with none, every package file with that name (a copy transformed on the way). A name no file dependency has: the package file with the copy's bytes, as for copy-webpack-plugin 6.0 – 6.2 |
 | style sheets loaders inline | in the module's `buildInfo` (`fileDependencies`, or its snapshot) | `buildInfo.fileDependencies` from 1.3.14; before, every style sheet below `node_modules` among the compilation's file dependencies |
 | inlined constants (`optimization.inlineExports`) | webpack 5.108+: such a module is in no chunk, not listed | listed: modules in no chunk whose exports info says they are used (`isModuleUsed`), when the options inline exports and analyse their use (else every module counts as used); the options are read after rspack filled in its defaults |
 | the match resource | `nameForCondition()` | the same from 1.7; before, `matchResource` is taken first |
@@ -286,8 +294,8 @@ package file pulled in under a first-party match resource is not listed either.
 src/register.cjs        NODE_OPTIONS entry point: registers the adapters, installs the hooks and the fs copy wrappers
 bin/node                node shim for builds whose scripts overwrite NODE_OPTIONS
 src/hooks.cjs           module-load hooks shared by the adapters: Module._extensions, and the ESM hooks (in-thread, or the
-src/esm-loader.mjs        loader thread) that replace entry modules by the wrappers esm-wrap.cjs generates
-src/esm-wrap.cjs
+src/esm-loader.mjs        loader thread) that replace entry modules by the wrappers esm-wrap.cjs generates, and report
+src/esm-wrap.cjs          the cjsFiles modules a loader hook provides
 src/adapters/webpack.cjs  webpack 4/5 and Next.js: hooks webpack's Compiler
 src/adapters/rspack.cjs   rspack: hooks rspack's Compiler (every copy loaded)
 src/adapters/webpack-family.cjs  webpack and rspack: which source files are in a compiler's emitted output (the plugin)
@@ -312,13 +320,16 @@ src/core/config.cjs     settings (environment variables, the settings file), deb
 
 A build whose lockfile cannot be written, or would be incomplete, fails (`src/core/problems.cjs`); with
 `BUNDLE_LOCKFILE_STRICT=0` the same is a warning and the build goes on. Code that hits such a problem records it with
-`problem()` - collecting packages, writing a lockfile or its export copy, taking the lock, a bundled package without a
-`package.json`, patching or wrapping a bundler, installing the ESM hooks in a bundler process - and the adapter of the
+`problem()` - collecting packages, checking the files copied into a webpack or rspack output, writing a lockfile, its
+export copy or a copy of it, taking the lock, nowhere to write (`BUNDLE_LOCKFILE_INLINE=0` without an export
+directory), a bundled package without a `package.json`, patching or wrapping a bundler, attaching to a compiler, an
+unsupported rspack (1.0), installing the ESM hooks in a bundler process, a settings file that cannot be read - and the
+adapter of the
 build takes the recorded problems at the end of its hooks:
 
 | Bundler | Before the output is written | After |
 |---|---|---|
-| webpack 4/5, Next.js | a compilation error (webpack 5: `WebpackError` without stack): webpack reports it, emits nothing (`emitOnErrors: false`, the production default) and the build fails with exit code 1 | a compilation error, from `afterEmit` (its callback gets no error) |
+| webpack 4/5, rspack, Next.js, Rsbuild | a compilation error (webpack 5: `WebpackError` without stack): webpack reports it, emits nothing (`emitOnErrors: false`, the production default) and the build fails with exit code 1 | a compilation error, from `afterEmit` (its callback gets no error) |
 | a compiler the plugin cannot be applied to | a compilation error in each of its compilations (if not even `thisCompilation` can be tapped: `compile()` calls back with the error) | – |
 | Rollup, Rolldown, Vite | `this.error()` in `generateBundle` | `writeBundle` rejects; `closeBundle` throws, except in watch mode, where it prints the error |
 | no build (a bundler that could not be hooked) | the process exits with code 1 (unless it already fails) | |
@@ -329,8 +340,9 @@ Never a throw from Vite's `closeBundle` in watch mode: it crashes `vite build --
 line and a newline: the `rollup` command line strips exactly that before it prints a stack, Vite 5 - 7 print only the
 stack.
 
-In the loader thread (Node.js before 24.12) an entry module that cannot be wrapped becomes a module that throws, so its
-import fails with the reason. Problems are taken process-wide: a compiler may fail with another one's problem - a build
+In the loader thread (Node.js before 24.12, 25.2 on 25) a module that cannot be wrapped (an entry module, or a
+`cjsFiles` source) becomes a module that throws, so its import fails with the reason (`BUNDLE_LOCKFILE_STRICT=0`: it
+loads unchanged). Problems are taken process-wide: a compiler may fail with another one's problem - a build
 fails either way. Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that
 is a bundler counts.
 

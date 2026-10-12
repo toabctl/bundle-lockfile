@@ -3,7 +3,7 @@
 See the [README](../README.md#supported) for what is supported, and [internals.md](../docs/internals.md) for how it
 works.
 
-The unit tests run anywhere, in a few seconds (CI: on Node.js 22, 24 and 26):
+The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26):
 
 ```sh
 node --test test/unit.cjs

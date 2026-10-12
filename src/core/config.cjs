@@ -8,7 +8,7 @@
 //   BUNDLE_LOCKFILE_EXPORT_BASE output dirs below it are mirrored relative to it into the export dir (default: their
 //                               absolute path)
 //   BUNDLE_LOCKFILE_INLINE      0/false/off: do not write the lockfile into the output dir (only the export dir)
-//   BUNDLE_LOCKFILE_DEBUG       log what gets patched and applied to stderr (off if unset, empty, 0 or false)
+//   BUNDLE_LOCKFILE_DEBUG       log what gets patched and applied to stderr (off if unset, empty, 0, false or off)
 //   BUNDLE_LOCKFILE_DISABLE     comma-separated adapter names to skip, or "all" (case-insensitive)
 //   BUNDLE_LOCKFILE_FIRST_PARTY comma-separated globs of directories (relative to the working directory) that are
 //                               first-party, never vendored copies (see core/vendored.cjs); "**": none is
