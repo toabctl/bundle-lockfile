@@ -242,7 +242,9 @@ function rewrite(target, writeFile, done) {
     let release = () => {};
     const finish = (err) => { release(); resolve(err); };
     try {
-      const shared = outputs.disk.get(target) && stateFile(target);
+      // the lock next to the file other processes read: without an inline write (BUNDLE_LOCKFILE_INLINE=0, or an output
+      // directory removed after the build) the export copy - a lock in the output directory would recreate it
+      const shared = outputs.disk.get(target) && (writeFile ? stateFile(target) : exportPath(target));
       if (shared) release = lock(shared);
       const content = render(target);
       if (content === null) { config.debug('nothing recorded for', target, '- not written'); return finish(); }

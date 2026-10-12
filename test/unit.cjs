@@ -1896,6 +1896,7 @@ test('webpack adapter: on the real disk the lockfile is no asset: written once t
       taps.emit(comp);
       assert.deepEqual(emitted, [], `${kind}, inline=${inline}: no asset`);
       assert.equal(fs.existsSync(J(outputPath, LOCK)), false, `${kind}, inline=${inline}: not before the output has landed`);
+      fs.mkdirSync(outputPath, { recursive: true }); // webpack has written main.js there
       await new Promise(resolve => taps.afterEmit(comp, resolve));
       assert.equal(fs.existsSync(J(outputPath, LOCK)), inline, `${kind}, inline=${inline}: inline file`);
       if (inline) assert.deepEqual(lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8')), ['a']);
@@ -3120,4 +3121,28 @@ test('hooks: a package\'s require() of a deprecated built-in module warns as wit
     assert.equal(run('a', true), '');
     assert.match(run(J(root, 'app.js'), true), /warning DEP0040/);
   }
+});
+
+test('webpack adapter: an output directory another plugin removed after the build is not recreated for the lockfile (its export copy is written)', async () => {
+  // Metabase's embed build: an afterEmit plugin copies its files into another directory and removes this one
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const outputPath = J(root, 'tmp-embed');
+  fs.mkdirSync(outputPath);
+  const { compiler, taps } = fakeCompiler5({ outputPath });
+  Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
+  compiler.outputFileSystem.gracefulify = () => {}; // the real disk
+  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  const comp = compilation({ context: root, outputPath, chunks: [{ files: ['embed.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }], assets: { 'embed.js': {} } });
+  comp.compiler = compiler;
+  comp.errors = [];
+  comp.hooks = { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } };
+  await withConfig({ strict: true, exportDir: J(root, 'export'), exportBase: root }, async () => {
+    taps.thisCompilation(comp);
+    comp.stage();
+    fs.rmSync(outputPath, { recursive: true }); // the other plugin's afterEmit
+    await new Promise(resolve => taps.afterEmit(comp, resolve));
+  });
+  assert.equal(fs.existsSync(outputPath), false);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'export/tmp-embed', LOCK), 'utf8')), ['a']);
+  assert.deepEqual(comp.errors, []);
 });
