@@ -93,8 +93,8 @@ its code remains: `d3`, which only re-exports `d3-*`, was listed for GitLab (web
 the source maps show none of its code.
 
 Also listed:
-- **webpack child compilations whose output is shipped**: workers (`worker-loader`, also inlined) and workbox's
-  `InjectManifest` service worker. Child compilations that only run at build time (html-webpack-plugin's template,
+- **webpack and rspack child compilations whose output is shipped**: workers (`worker-loader`, also inlined;
+  monaco-editor-webpack-plugin's) and workbox's `InjectManifest` service worker. Child compilations that only run at build time (html-webpack-plugin's template,
   mini-css-extract-plugin's loader, vanilla-extract's compiler) are not.
 - **files copied verbatim into a webpack output**, e.g. by copy-webpack-plugin, whose assets record their source from
   6.3 on. Copies that record none (copy-webpack-plugin 5 and 6.0 – 6.2) count if they have the bytes of a package file
@@ -327,12 +327,12 @@ a warning).
 | Bundler | Versions | Notes |
 |---|---|---|
 | webpack | 4, 5 | webpack < 4 is ignored |
-| Next.js (its vendored webpack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack`; its default Turbopack build is not supported |
+| Next.js (its vendored webpack, or rspack with next-rspack) | 12, 13, 14, 15, 16 | Next 16 only with `next build --webpack` or next-rspack; its default Turbopack build is not supported |
 | Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown; 1.0 release candidates before 8.0.12) | also rolldown-vite (Vite 7 on Rolldown) |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | adapter-static, adapter-node, adapter-netlify (edge functions only with adapter-netlify 7) |
 | Rollup, Rolldown | Rollup 4 (from 4.0, also `@rollup/wasm-node`), Rolldown 1 (from 1.0) | their JavaScript API (`rollup()`, `rolldown()`, Rolldown's `build()`, `watch()`) and the `rollup` command line |
 | rspack | 1.1 – 1.7, 2 | the `rspack` command line, its JavaScript API, and tools built on it ([below](#rspack-rsbuild)); rspack 1.0 fails the build, 0.x is ignored |
-| Rsbuild | 1.1 – 1.7, 2 | `rsbuild build` (rspack 1.1+ / 2) |
+| Rsbuild | 1.1 – 1.7, 2 | `rsbuild build` (rspack 1.1+ / 2), also Rslib 1 |
 
 Tested with npm, npx, yarn 1/3/4 (also Plug'n'Play), pnpm 8–12, bun, `turbo run` and npm workspaces, in combinations
 per bundler — see [test/README.md](test/README.md#environments).
@@ -358,7 +358,7 @@ rspack implements webpack's plugin API, and its builds get the same plugin as we
 writes a lockfile into its output directory, also when the same output directory is shared or when the build runs in
 watch mode. Every copy of `@rspack/core` a process loads is hooked: the `rspack` command line, `rsbuild build`, and
 other tools that create their compilers with `@rspack/core` (tested: the command line, `rspack()` from a script,
-Rsbuild).
+Rsbuild, Rslib, Next.js with next-rspack).
 
 - rspack 1 is a CommonJS module and is hooked in every process. rspack 2 is an ES module, which needs the ESM hook,
   as Vite does ([above](#vite-rollup-rolldown)): on Node.js before 24.12, only in processes whose main script belongs
@@ -370,8 +370,16 @@ Rsbuild).
   1.3.14, rspack does not record them per module, and all such style sheets the build read are listed.
 - rspack inlines small constants in production (`optimization.inlineExports`): a module whose used exports are all
   inlined is in no chunk. Its package is listed anyway — its values are in the bundle.
+- Child compilations count for their parent, as webpack's: the workers monaco-editor-webpack-plugin builds are in
+  its lockfile.
+- rspack's `ModuleFederationPlugin` (also `@module-federation/enhanced`'s) bundles the federation runtime, which
+  webpack 5's does not: the `@module-federation/*` runtime packages are listed for the host and for every remote. A
+  shared package with `treeShaking` is built again by rspack, in a compiler of its own, into
+  `<output>/independent-packages/<name>/`, with its own lockfile.
 - `rspack serve` and `rsbuild dev` write to memory: the lockfile is served at `/bundle-lockfile/package-lock.json`
-  and not written to disk (with `writeToDisk`, it is).
+  and not written to disk (with `writeToDisk`, it is). It lists what the dev build bundled: the dev server's client
+  (and @rspack/core's HMR runtime), but not the packages of dynamic imports the page has not loaded yet, which are
+  compiled lazily. Rstest, which bundles the tests with Rsbuild, leaves no lockfile in the project.
 - rspack 1.0 lacks what the plugin needs (the modules inside concatenated modules): its builds fail (with
   `BUNDLE_LOCKFILE_STRICT=0`: a warning and no lockfile).
 - `bun run` starts the `rspack` and `rsbuild` commands with Node.js (their `#!/usr/bin/env node`) only if Node.js is
@@ -387,6 +395,7 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
 | `.next/server/chunks/bundle-lockfile/` | server |
 | `.next/server/bundle-lockfile/` | edge server: middleware and routes with `runtime = 'edge'` (without packages if there are none) |
 
+- With next-rspack, rspack builds the same compilers: the same lockfiles.
 - With the App Router, the server output uses Next's vendored React (`next/dist/compiled/react`), which is listed as
   `next`; the client output lists `react` and `react-dom`.
 - Next does not bundle many server dependencies (Pages Router dependencies, `serverExternalPackages`): the server

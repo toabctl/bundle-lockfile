@@ -35,9 +35,9 @@ node test/run.cjs /tmp/fixtures      # runs all cases (offline); optional 2nd ar
 CI splits the matrix into shards that run as parallel jobs. Both scripts take:
 - `--shard=<i>/<n>`: the fixtures of shard `i` of `n` and their cases ([`lib/shard.cjs`](lib/shard.cjs));
 - `--fixtures=<regex>`: only the fixtures whose names match, and their cases. The Node.js 22 job uses it for the Vite,
-  Rollup, Rolldown, nested, SvelteKit, peer-dependency and mixed-output fixtures, rspack 2 and Rsbuild 2 (ES modules,
-  hooked through the loader thread there), the two copies of rspack, and webpack 5 and rspack 1.7 under Yarn
-  Plug'n'Play.
+  Rollup, Rolldown, nested, SvelteKit, peer-dependency and mixed-output fixtures, rspack 2, Rsbuild 2 and Rslib (ES
+  modules, hooked through the loader thread there; also module federation, Monaco and Next.js 16 with next-rspack on
+  rspack 2), the two copies of rspack, and webpack 5 and rspack 1.7 under Yarn Plug'n'Play.
 
 ### Environments
 
@@ -50,7 +50,7 @@ CI splits the matrix into shards that run as parallel jobs. Both scripts take:
 - Vite: npm, npx, pnpm 9/10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play, also with the
   global cache, and node-modules linker), bun and npm workspaces (an app built in its own directory).
 - rspack: npm, npx, pnpm 10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play and node-modules
-  linker) and bun; Rsbuild: npm, bun, yarn 4 (Plug'n'Play).
+  linker) and bun; Rsbuild: npm, bun, yarn 4 (Plug'n'Play); Rslib, Next.js with next-rspack: npm.
 - yarn 2 is not tested: it calls `util.isDate`, which Node.js 23 removed, when it sets the times of zip entries from
   dates (e.g. for `file:` dependencies).
 
@@ -195,10 +195,19 @@ and reads the stats:
   written and a package that cannot be listed (strict mode)
 - two copies of `@rspack/core` in one process (OHIF's shape: rspack 1 for the config's plugins, rspack 2 for the
   compiler)
-- Rsbuild 1.1, 1.2, 1.7 and 2.2 (npm; 2.2 also with bun and yarn 4 Plug'n'Play), with `output.copy`
+- Rsbuild 1.1, 1.2, 1.7 and 2.2 (npm; 2.2 also with bun and yarn 4 Plug'n'Play), with `output.copy`; environments
+  web and node (into `dist/` and `dist/server/`; 1.7 and 2.2)
+- module federation (rspack's plugin on 1.7 and 2.2, `@module-federation/enhanced`'s on 2.2): a host, a remote, a
+  shared package, the federation runtime; tree shaking of the shared package, which rspack builds again in compilers
+  of its own (their lockfiles are not compared with the oracle, which builds the config's compilers)
+- Monaco with monaco-editor-webpack-plugin (1.2 and 2.2): its workers built in child compilations (one with a package
+  only there), Monaco's editor worker and a worker of the app's own started with `new Worker(new URL(...))`
+- webpack into `dist/` and rspack into `dist/rspack/`, cleaning its directory (Grafana's build), each run again
 - a Vite-built island bundled by rspack 2.2; an npm workspace package (also with `resolve.symlinks: false`)
-- `rspack serve` with `writeToDisk` (2.2): the lockfile of the dev build in `dist/`
-  ([`lib/dev-server.cjs`](lib/dev-server.cjs); the dev server's client listed, lazily compiled imports not, no oracle)
+- `rspack serve` (1.7, 2.2) and `rsbuild dev`: the lockfile they serve from memory, nothing written to `dist/`
+  ([`lib/dev-server.cjs`](lib/dev-server.cjs); the dev server's client listed, lazily compiled imports not, no oracle);
+  `rspack serve` with `writeToDisk`: the lockfile in `dist/`; Rstest (0.12) leaves no lockfile in the project; Rslib
+  1.0 (an ES module and a CommonJS build into one directory, compared with an oracle that builds through Rslib's API)
 
 **SvelteKit** 2 and 3, each with adapter-static, adapter-node and adapter-netlify (serverless and edge functions), are
 compared with an oracle that builds again with source maps into other directories and follows the maps of the files
@@ -208,6 +217,8 @@ the adapters bundle again — except SvelteKit 2's edge function (built by esbui
 **Next.js** 12–16 are compared per compiler output with webpack's stats:
 - a Pages Router app on each
 - on 15 and 16: an App Router app with server and client components, an edge route handler and middleware
+- with next-rspack (15.5: rspack 1.4; 16.4: rspack 2.0): the Pages Router app on both, the App Router app on 16, with
+  exactly the lockfiles of the webpack builds
 - on 16: a static export (`output: 'export'`), a standalone output (`output: 'standalone'`, no lockfile), a warm build
   from `.next/cache`, a Turbopack build (no lockfile)
 - another `--require` preload next to bundle-lockfile's (Next 15 fails, see the [README](../README.md#nextjs); 16.4

@@ -75,7 +75,7 @@ jobs:
       # the fixtures of the ESM-hooked bundlers (also rspack 2 and Rsbuild 2) and of webpack and rspack 1 under Yarn
       # Plug'n'Play (whose CommonJS modules Node 22 loads without Module._load, see src/hooks.cjs), and their cases
       # (gen.cjs and run.cjs select the same ones)
-      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-workspace2)'
+      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack)'
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-22 npm yarn bun syft trivy

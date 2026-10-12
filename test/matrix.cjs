@@ -104,6 +104,16 @@ const rspackFeatures = (version) => ({ app: 'rspack-features', bundler: 'rspack'
 // Rsbuild: the webpack5 app (test/apps/rsbuild, src/index.js) built by `rsbuild build`, with normalize.css copied
 const rsbuild = (version, installer = { type: 'npm' }) => ({ app: 'rsbuild', bundler: 'rsbuild', installer,
   deps: { '@rsbuild/core': version, ...APP_DEPS, 'normalize.css': '8.0.1' }, packageJson: { scripts: { build: 'rsbuild build' } } });
+// module federation on rspack (test/apps/rspack-federation): rspack 2's ModuleFederationPlugin needs
+// @module-federation/runtime-tools installed (rspack 1.7 depends on its own); @module-federation/enhanced: RSPACK_MF=enhanced
+const rspackFederation = (version, extra = {}) => ({ app: 'rspack-federation', bundler: 'rspack', installer: { type: 'npm' },
+  deps: { '@rspack/core': version, '@rspack/cli': version, 'lodash-es': '4.18.1', ms: '2.1.3', ...extra }, packageJson: { scripts: { build: 'rspack build' } } });
+// the Monaco editor with monaco-editor-webpack-plugin, which builds workers in child compilations (test/apps/rspack-monaco)
+const rspackMonaco = (version) => ({ app: 'rspack-monaco', bundler: 'rspack', installer: { type: 'npm' },
+  deps: { '@rspack/core': version, '@rspack/cli': version, 'monaco-editor': '0.52.2', 'monaco-editor-webpack-plugin': '7.1.1', 'lodash-es': '4.18.1',
+    ms: '2.1.3', 'is-number': '7.0.0' }, packageJson: { scripts: { build: 'rspack build' } } });
+// Next.js with next-rspack of the same version, which builds with rspack (next.config.js: NEXT_RSPACK_APP=1)
+const nextRspack = (fx, version) => ({ ...fx, deps: { ...fx.deps, 'next-rspack': version } });
 
 // fixture fields: app (test/apps/<app>), bundler (the oracle, test/oracles/<bundler>.cjs; default webpack), installer,
 // deps, devDeps, packageJson (more package.json fields), postInstall (a command run in the fixture after the install,
@@ -255,8 +265,10 @@ const fixtures = {
   // a webpack build (ms) and a Vite build (nanoid) into one dist/, as separate processes
   'mixed-output': { app: 'mixed-output', bundler: 'mixed', installer: { type: 'npm' },
     deps: { ...WEBPACK, vite: '8.3.3', ms: '2.1.3', nanoid: '3.3.20' } },
-  ...Object.fromEntries(['1.0.14', '1.1.8', '1.2.8', '1.3.15', '1.5.8', '1.6.8', '1.7.12', '2.0.8', '2.1.10']
+  ...Object.fromEntries(['1.0.14', '1.1.8', '1.2.8', '1.3.15', '1.5.8', '1.6.8', '2.0.8', '2.1.10']
     .map(v => [`rspack${v.split('.').slice(0, 2).join('.')}-npm`, rspack(v)])),
+  // (@rspack/dev-server: the command line's, pinned - rspack serve bundles its client)
+  'rspack1.7-npm': rspack('1.7.12', { type: 'npm' }, { '@rspack/dev-server': '1.1.5' }),
   // (webpack: a webpack process writing to rspack's output dir; memfs: test/lib/memfs-build.cjs; cross-env: build-crossenv)
   // (@rspack/dev-server: rspack serve)
   'rspack2.2-npm': rspack('2.2.8', { type: 'npm' }, { ...WEBPACK, memfs: '4.80.0', 'cross-env': '7.0.3', '@rspack/dev-server': '2.2.1' },
@@ -283,15 +295,23 @@ const fixtures = {
   'rsbuild1.1-npm': rsbuild('1.1.10'),
   'rsbuild1.2-npm': rsbuild('1.2.19'),
   'rsbuild1.7-npm': rsbuild('1.7.6'),
-  'rsbuild2.2-npm': rsbuild('2.2.12'),
+  // (@rstest/core: Rstest, which bundles the tests with this Rsbuild)
+  'rsbuild2.2-npm': { ...rsbuild('2.2.12'), devDeps: { '@rstest/core': '0.12.3' } },
   'rsbuild2.2-bun': rsbuild('2.2.12', { type: 'bun' }),
   'rsbuild2.2-yarn4-pnp': rsbuild('2.2.12', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
+  'rspack-federation2.2': rspackFederation('2.2.8', { '@module-federation/runtime-tools': '2.9.2', '@module-federation/enhanced': '2.9.2' }),
+  'rspack-federation1.7': rspackFederation('1.7.12'),
+  'rspack-monaco2.2': rspackMonaco('2.2.8'),
+  'rspack-monaco1.2': rspackMonaco('1.2.8'),
+  // a library built by Rslib (test/apps/rslib): ms a dependency, lodash-es a devDependency
   // a Vite-built island bundled by rspack (test/apps/nested-island, rspack.config.js)
   'nested-island-rspack': { ...nested({ '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }),
     packageJson: { scripts: { build: 'vite build --config island/vite.config.mjs && rspack build' } } },
   // an npm workspace package (test/apps/edge-workspace, rspack.config.js)
   'rspack-workspace2.2': { app: 'edge-workspace', bundler: 'rspack', installer: { type: 'npm' },
     deps: { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8', '@acme/ui': '1.0.0' }, packageJson: { workspaces: ['packages/*'], scripts: { build: 'rspack build' } } },
+  'rslib1.0-npm': { app: 'rslib', bundler: 'rslib', installer: { type: 'npm' }, deps: { ms: '2.1.3' }, devDeps: { '@rslib/core': '1.0.3', 'lodash-es': '4.18.1' },
+    packageJson: { type: 'module', scripts: { build: 'rslib build' } } },
   'next12': next('12.3.7', '18.3.1'),
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
@@ -299,6 +319,10 @@ const fixtures = {
   'next16': next('16.4.0', '19.3.0'),
   'next15-app': nextApp('15.5.27', '19.3.0'),
   'next16-app': nextApp('16.4.0', '19.3.0'),
+  // next-rspack 15.5: @rspack/core 1.4 (CommonJS); 16.4: @next/rspack-core 1.0.3, which is @rspack/core 2.0 (an ES module)
+  'next15-rspack': nextRspack(next('15.5.27', '19.3.0'), '15.5.27'),
+  'next16-rspack': nextRspack(next('16.4.0', '19.3.0'), '16.4.0'),
+  'next16-app-rspack': nextRspack(nextApp('16.4.0', '19.3.0'), '16.4.0'),
 };
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
@@ -398,13 +422,35 @@ const RSPACK_FEATURES = ['bootstrap-icons@1.13.1', 'bulma@1.0.4', 'consts-defaul
 const RSPACK_FEATURES_MISSING = ['bulma@1.0.4', 'normalize.less@1.0.0', 'reset-css@5.0.2'];
 // the webpack5 app and a copied normalize.css (Rsbuild's output.copy, rspack-copies' CopyRspackPlugin)
 const W5_COPY = [...W5, 'normalize.css@8.0.1'].sort();
-// dev-server.cjs [--on-disk] <command>: the lockfile a dev server serves from memory, or writes to dist/
+// rspack-federation: rspack bundles the federation runtime (@module-federation/*: 2.9.2 from runtime-tools with rspack 2,
+// rspack 1.7's own 0.22.0) into both outputs; the host ships its fallback copy of lodash-es, the remote also its ms
+const MF_RUNTIME = (v) => ['error-codes', 'runtime', 'runtime-core', 'sdk', 'webpack-bundler-runtime'].map(p => `@module-federation/${p}@${v}`);
+const FEDERATION = (v) => ({ host: [...MF_RUNTIME(v), 'lodash-es@4.18.1'], remote: [...MF_RUNTIME(v), 'lodash-es@4.18.1', 'ms@2.1.3'] });
+// with tree shaking of the shared lodash-es (RSPACK_MF_TS=1), rspack builds it again for each, in a compiler of its own
+// (IndependentSharedPlugin's, created while the build runs) into <output>/independent-packages/lodash_es/. The oracle
+// builds the config's compilers and does not see those
+const FEDERATION_TS = { 'host/independent-packages/lodash_es': ['lodash-es@4.18.1'], 'remote/independent-packages/lodash_es': ['lodash-es@4.18.1'] };
+// rspack-monaco: Monaco, its workers' (ms only in the custom language's), lodash-es, the own worker's is-number
+const MONACO = ['is-number@7.0.0', 'lodash-es@4.18.1', 'monaco-editor@0.52.2', 'ms@2.1.3'];
+// dev-server.cjs <command>: the lockfile a dev server serves from memory, written to dist/ afterwards
 const DEV_SERVER = `node ${path.join(__dirname, 'lib/dev-server.cjs')}`;
-// what rspack serve's first build bundles of the webpack5 app: it compiles dynamic imports lazily (lazyCompilation
-// imports: true, its default for web apps), so nanoid's chunk is not built until the page asks for it; and it adds its
-// client to the entries (HMR runtime from @rspack/core, the dev server's client)
+// what a dev server's first build bundles of the webpack5 app: rspack serve and rsbuild dev compile dynamic imports
+// lazily (lazyCompilation imports: true, their default for web apps), so nanoid's chunk is not built until the page
+// asks for it; and they add their client to the entries (HMR runtime from @rspack/core, the dev server's client)
 const DEV_W5 = W5.filter(p => !p.startsWith('nanoid@'));
 const DEV_RSPACK2 = [...DEV_W5, '@rspack/core@2.2.8', '@rspack/dev-server@2.2.1'];
+const DEV_RSPACK1 = [...DEV_W5, '@rspack/core@1.7.12', '@rspack/dev-server@1.1.5', 'webpack-dev-server@5.2.2'];
+const DEV_RSBUILD = [...DEV_W5, '@rsbuild/core@2.2.12', '@rspack/core@2.2.8', 'normalize.css@8.0.1'];
+// Rstest's run, then no lockfile anywhere in the project (outside node_modules)
+const RSTEST = "./node_modules/.bin/rstest run && test -z \"$(find . -path ./node_modules -prune -o -path '*/bundle-lockfile/package-lock.json' -print)\"";
+// Next.js with next-rspack: the lockfiles of the webpack builds of the same app and version (their oracle's lists;
+// @edge-runtime/cookies and server-only: Next's vendored copies in next/dist/compiled/)
+const NEXT_PAGES = (next, swc) => ({ '': [`@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
+  server: [], 'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', `next@${next}`] });
+const NEXT_APP = (next, swc) => ({ '': [`@swc/helpers@${swc}`, 'ms@2.1.3', `next@${next}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
+  server: ['@edge-runtime/cookies@6.0.0', 'is-number@7.0.0', 'nanoid@3.3.20', `next@${next}`],
+  'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'server-only@0.0.1'] });
+const NEXT_RSPACK_ENV = { ...NEXT_ENV, NEXT_RSPACK_APP: '1' };
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle
 function nextCase(fixture, version, react, flags = '') {
@@ -1168,11 +1214,51 @@ const cases = [
     { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV, expect: null },
-  // rspack serve with writeToDisk: the dev build writes its lockfile to dist/, as watch mode does
-  // (test/lib/dev-server.cjs). No oracle: it builds the config alone, without the dev server's entries and lazy
-  // compilation (see DEV_W5)
+  // frameworks and plugins on rspack
+  // Next.js with next-rspack: the same compilers, built by rspack, the same lockfiles as with webpack (exact lists: the
+  // oracle's of the webpack cases above). The oracle's stats plugin works on rspack's compilers too
+  { name: 'Next.js 15.5.27 with next-rspack (rspack 1.4)', ...nextCase('next15-rspack', '15.5.27', '19.3.0'), env: NEXT_RSPACK_ENV,
+    expectIn: NEXT_PAGES('15.5.27', '0.5.15') },
+  { name: 'Next.js 16.4.0 with next-rspack (rspack 2.0)', ...nextCase('next16-rspack', '16.4.0', '19.3.0'), env: NEXT_RSPACK_ENV,
+    expectIn: NEXT_PAGES('16.4.0', '0.5.23') },
+  { name: 'Next.js 16.4.0 with next-rspack (rspack 2.0) App Router, edge route handler, middleware', ...nextCase('next16-app-rspack', '16.4.0', '19.3.0'),
+    env: NEXT_RSPACK_ENV, expectIn: NEXT_APP('16.4.0', '0.5.23') },
+  // module federation: rspack's ModuleFederationPlugin and @module-federation/enhanced's
+  { name: 'rspack 2.2.8: module federation (a host, a remote, a shared package)', fixture: 'rspack-federation2.2', cmd: 'npm run -s build',
+    expectIn: FEDERATION('2.9.2') },
+  { name: 'rspack 2.2.8: module federation, @module-federation/enhanced', fixture: 'rspack-federation2.2', cmd: 'npm run -s build', env: { RSPACK_MF: 'enhanced' },
+    expectIn: FEDERATION('2.9.2') },
+  { name: 'rspack 2.2.8: module federation, tree shaking of the shared package (compilers rspack creates)', fixture: 'rspack-federation2.2', cmd: 'npm run -s build',
+    env: { RSPACK_MF_TS: '1' }, expectIn: { ...FEDERATION('2.9.2'), ...FEDERATION_TS }, oracleMissingIn: FEDERATION_TS },
+  { name: 'rspack 2.2.8: module federation, @module-federation/enhanced, tree shaking of the shared package', fixture: 'rspack-federation2.2',
+    cmd: 'npm run -s build', env: { RSPACK_MF: 'enhanced', RSPACK_MF_TS: '1' }, expectIn: { ...FEDERATION('2.9.2'), ...FEDERATION_TS }, oracleMissingIn: FEDERATION_TS },
+  { name: 'rspack 1.7.12: module federation (a host, a remote, a shared package)', fixture: 'rspack-federation1.7', cmd: 'npm run -s build',
+    expectIn: FEDERATION('0.22.0') },
+  // child compilations: the oracle reads them from the stats' children
+  ...[['2.2.8', '2.2'], ['1.2.8', '1.2']].map(([v, line]) => (
+    { name: `rspack ${v}: Monaco with monaco-editor-webpack-plugin (workers in child compilations)`, fixture: `rspack-monaco${line}`, cmd: 'npm run -s build',
+      expect: MONACO })),
+  // Rsbuild's environments: one compiler each, web into dist/, node into dist/server/
+  ...[['1.7.6', 'rsbuild1.7-npm'], ['2.2.12', 'rsbuild2.2-npm']].map(([v, fixture]) => (
+    { name: `Rsbuild ${v}: environments web (dist/) and node (dist/server/)`, fixture, cmd: 'npm run -s build', env: { RSBUILD_ENVS: '1' },
+      expectIn: { '': W5_COPY, server: W5_COPY } })),
+  // Grafana's shape: webpack into dist/ (sw, webpack.config.js), rspack into dist/rspack/ (app, cleaning its directory);
+  // each run again: each its own lockfile
+  { name: 'rspack 2.2.8: webpack into dist/, rspack into dist/rspack/ (Grafana), each of them again', fixture: 'rspack2.2-npm', env: { RSPACK_NESTED: '1' },
+    cmd: `${WEBPACK_BIN} && ${RSPACK_BIN} build && ${WEBPACK_BIN} && ${RSPACK_BIN} build`, expectIn: { '': ['debug@2.6.9', 'ms@2.0.0'], rspack: ['ms@2.1.3'] },
+    oracleScript: 'mixed', oracleArgs: 'rspack.cjs webpack.cjs' },
+  // dev servers build into memory: the lockfile is served, nothing is written to dist/ (test/lib/dev-server.cjs). No
+  // oracle: it builds the config alone, without the dev server's entries and lazy compilation (see DEV_W5)
+  ...[['2.2.8', 'rspack2.2-npm', DEV_RSPACK2], ['1.7.12', 'rspack1.7-npm', DEV_RSPACK1]].map(([v, fixture, expect]) => (
+    { name: `rspack ${v}: rspack serve serves the lockfile, writes nothing to disk`, fixture, cmd: `${DEV_SERVER} ${RSPACK_BIN} serve`,
+      env: { RSPACK_MODE: 'development' }, expect, oracle: false })),
+  // with writeToDisk the dev build writes its lockfile to dist/, as watch mode does
   { name: 'rspack 2.2.8: rspack serve with writeToDisk writes the lockfile to dist/', fixture: 'rspack2.2-npm', cmd: `${DEV_SERVER} --on-disk ${RSPACK_BIN} serve`,
     env: { RSPACK_MODE: 'development', RSPACK_WRITE_TO_DISK: '1' }, expect: DEV_RSPACK2, oracle: false },
+  { name: 'Rsbuild 2.2.12: rsbuild dev serves the lockfile, writes nothing to disk', fixture: 'rsbuild2.2-npm', cmd: `${DEV_SERVER} ./node_modules/.bin/rsbuild dev`,
+    expect: DEV_RSBUILD, oracle: false },
+  // Rstest bundles the tests with Rsbuild: no lockfile in the project, and the run passes (strict mode)
+  { name: 'Rstest 0.12.3 (Rsbuild 2.2.12): no lockfile in the project, the run passes', fixture: 'rsbuild2.2-npm', cmd: RSTEST, expect: null },
   // more outputs: HtmlRspackPlugin's child compilation adds no packages and no lockfile
   ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm']].map(([v, fixture]) => (
     { name: `rspack ${v}: HtmlRspackPlugin`, fixture, cmd: 'npm run -s build', env: { RSPACK_HTML: '1' }, expect: W5 })),
@@ -1189,6 +1275,9 @@ const cases = [
   { name: 'nested: Vite 8 island bundled by rspack 2.2.8', fixture: 'nested-island-rspack', cmd: 'npm run -s build', oracleArgs: 'rspack', expect: NESTED_EXPECT },
   ...[['', {}], [', resolve.symlinks=false', { EDGE_RESOLVE_SYMLINKS: 'false' }]].map(([what, env]) => (
     { name: `rspack 2.2.8: npm workspace package${what}`, fixture: 'rspack-workspace2.2', cmd: 'npm run -s build', env, expect: ['ms@2.1.3'] })),
+  // Rslib: an ES module and a CommonJS build into dist/ (one lockfile); dependencies stay external (autoExternal)
+  { name: 'Rslib 1.0.3: ES module and CommonJS into dist/, the bundled devDependency only', fixture: 'rslib1.0-npm', cmd: 'npm run -s build',
+    expect: ['lodash-es@4.18.1'] },
 ];
 
 module.exports = { fixtures, cases };
