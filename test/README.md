@@ -183,15 +183,22 @@ and reads the stats:
   cache, externals
 - native CSS and extracted CSS from packages (with a Sass partial and a Less `@import`: per module from rspack 1.3.14,
   from the file dependencies before), an asset from a package, a worker, `CopyRspackPlugin` copying a package file, a
-  package directory and first-party files, packages whose constants rspack inlines (1.7 and 2.x)
-- two compilers into one directory; two processes into one directory (in parallel, then one again, the second
-  cleaning it, also keeping the other's file); the plugin in the config; an rspack and a webpack process into one
-  directory; an in-memory output file system; the export directory with and without the inline lockfile; build
-  scripts overwriting `NODE_OPTIONS` with the node shim (npm, pnpm, yarn 1, yarn 4, bun; also `cross-env`); a lockfile
-  that cannot be written and a package that cannot be listed (strict mode)
+  package directory, a glob in a package, a package file it transforms (the oracle, which matches copies by bytes,
+  does not see it), a package style sheet its CSS minimizer changes after the copy, and first-party files, packages
+  whose constants rspack inlines (1.7 and 2.x)
+- `HtmlRspackPlugin` (1.7, 2.2); two compilers into two directories, into `dist/[fullhash]` (the oracle's hashes
+  differ: the case checks which compiler's file each lockfile is next to), into one directory (also with a query
+  string in file names); two processes into one directory (in parallel, then one again, the second cleaning it, also
+  keeping the other's file); the plugin in the config; an rspack and a webpack process into one directory; an
+  in-memory output file system; the export directory with and without the inline lockfile; build scripts overwriting
+  `NODE_OPTIONS` with the node shim (npm, pnpm, yarn 1, yarn 4, bun; also `cross-env`); a lockfile that cannot be
+  written and a package that cannot be listed (strict mode)
 - two copies of `@rspack/core` in one process (OHIF's shape: rspack 1 for the config's plugins, rspack 2 for the
   compiler)
 - Rsbuild 1.1, 1.2, 1.7 and 2.2 (npm; 2.2 also with bun and yarn 4 Plug'n'Play), with `output.copy`
+- a Vite-built island bundled by rspack 2.2; an npm workspace package (also with `resolve.symlinks: false`)
+- `rspack serve` with `writeToDisk` (2.2): the lockfile of the dev build in `dist/`
+  ([`lib/dev-server.cjs`](lib/dev-server.cjs); the dev server's client listed, lazily compiled imports not, no oracle)
 
 **SvelteKit** 2 and 3, each with adapter-static, adapter-node and adapter-netlify (serverless and edge functions), are
 compared with an oracle that builds again with source maps into other directories and follows the maps of the files

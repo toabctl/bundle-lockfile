@@ -10,11 +10,12 @@
 // Neither changes which other modules are bundled.
 // usage (cwd = fixture): node oracles/rspack.cjs [--from <dir>]    (Yarn PnP: yarn node ...)
 //   --from: the @rspack/core resolved from <dir> (a command line with its own rspack, e.g. node_modules/@rspack/cli)
+//   --sources: prints { packages: <that>, sources: [<absolute path of every emitted source file>] } (for oracles/nested.cjs)
 // prints {"<compiler output dir relative to dist>": [name@version, ...], ...}; compilers sharing an output dir share its
 // lockfile, so their packages are merged
 const path = require('path');
 const { createRequire } = require('module');
-const { STATS_OPTIONS, packagesFromStats, rspackCopies } = require('./stats.cjs');
+const { rspackResult } = require('./stats.cjs');
 
 const args = process.argv.slice(2);
 const from = args.includes('--from') ? args[args.indexOf('--from') + 1] : '.';
@@ -33,13 +34,7 @@ for (const c of configs) {
 
 rspack(Array.isArray(config) ? configs : configs[0], (err, stats) => {
   if (err || stats.hasErrors()) { console.error(err || stats.toString('errors-only')); process.exit(1); }
-  const result = {};
-  for (const s of stats.stats || [stats]) {
-    const outputPath = s.compilation.getPath(s.compilation.outputOptions.path, {});
-    const rel = path.relative(oracleDist, outputPath).split(path.sep).join('/');
-    const json = s.toJson(STATS_OPTIONS);
-    const pkgs = packagesFromStats(json, s.compilation.compiler.context, rspackCopies(s.compilation, json, outputPath));
-    result[rel] = [...new Set([...(result[rel] || []), ...pkgs])].sort();
-  }
-  console.log(JSON.stringify(result));
+  const sources = new Set();
+  const packages = rspackResult(stats, oracleDist, sources);
+  console.log(JSON.stringify(args.includes('--sources') ? { packages, sources: [...sources].sort() } : packages));
 });
