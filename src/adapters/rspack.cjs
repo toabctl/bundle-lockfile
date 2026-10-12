@@ -4,11 +4,11 @@
 // (webpack-family.cjs), which tells rspack's compilations apart where they differ (copies, style sheets before 1.3.14,
 // inlined constants). This module only hooks rspack:
 // - @rspack/core is one bundled file, dist/index.js, whose export has the Compiler class. rspack 1 is CommonJS
-//   (require(), and import() of it, go through Module._load: onCjsLoad); rspack 2 is an ES module (@rspack/cli 2 and
-//   Rsbuild 2 import it: the ESM entry wrapper, esmWrap; require() of it, require(esm), goes through Module._load too).
+//   (require(), and import() of it, load it through the CommonJS hook: onCjsLoad); rspack 2 is an ES module (@rspack/cli 2 and
+//   Rsbuild 2 import it: the ESM entry wrapper, esmWrap; require() of it, require(esm), goes through the CommonJS hook too).
 // - Compiler.prototype.compile is patched, as webpack's (webpack.cjs): it runs for run(), watch() and child compilers;
 //   every top-level compiler gets the plugin on its first compile(). The prototype is marked, so a copy of @rspack/core
-//   seen on several paths (in-thread ESM hooks and Module._load on Node.js 24.12+) is patched once; every copy loaded
+//   seen on several paths (in-thread ESM hooks and the CommonJS hook on Node.js 24.12+) is patched once; every copy loaded
 //   (OHIF loads rspack 1 and 2) gets its own patch.
 // rspack 1.0 lacks what the plugin needs (the inner modules of concatenated modules): its builds fail (strict mode,
 // core/problems.cjs). rspack 0.x is left alone.
@@ -57,7 +57,7 @@ function patchCompiler(Compiler, where) {
 
 module.exports = {
   name: 'rspack',
-  // rspack 1's dist/index.js, when Node.js evaluates it without Module._load (a loader hook provided its source: Yarn
+  // rspack 1's dist/index.js, when Node.js evaluates it without the CommonJS hook (a loader hook provided its source: Yarn
   // Plug'n'Play on recent Node.js versions); rspack 2's is an ES module, which esm-wrap.cjs's cjsSource leaves alone
   cjsFiles: [/[\\/]@rspack[\\/]core[\\/]dist[\\/]index\.js$/],
   // rspack 2: only ES modules are wrapped (esm-wrap.cjs), so rspack 1's file at the same path is not
