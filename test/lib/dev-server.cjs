@@ -47,7 +47,10 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   // the dev middleware answers once the first build is done; until the server listens, the request fails. Other paths
   // may be answered with the app's page (Rsbuild's history fallback): only a lockfile counts
+  // on localhost, IPv4 or IPv6: Rsbuild 2 listens on what "localhost" resolves to first for it - only ::1 in a container
+  // without IPv6 networking (GitHub's) - while fetch() connects to 127.0.0.1 there and gives up: both are asked
   const url = `http://localhost:${port}/${LOCKFILE}`;
+  const urls = [`http://127.0.0.1:${port}/${LOCKFILE}`, `http://[::1]:${port}/${LOCKFILE}`];
   const until = Date.now() + TIMEOUT;
   let text = null;
   while (text === null) {
@@ -56,8 +59,13 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     if (Date.now() > until) return fail(`${cmd} has not ${what} within ${TIMEOUT / 60000} minutes`);
     try {
       const body = onDisk ? fs.readFileSync(path.join(dist, LOCKFILE), 'utf8') : await (async () => {
-        const res = await fetch(url);
-        return res.ok ? res.text() : '';
+        for (const u of urls) {
+          try {
+            const res = await fetch(u), t = res.ok ? await res.text() : '';
+            if (JSON.parse(t).lockfileVersion) return t;
+          } catch { /* not listening there (yet), or not the lockfile */ }
+        }
+        return '';
       })();
       if (JSON.parse(body).lockfileVersion) text = body;
     } catch { /* not listening yet, not written yet, or not the lockfile */ }

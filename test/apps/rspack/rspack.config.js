@@ -35,10 +35,14 @@ const shared = () => {
       ...(v === 'query' && { dependencies: ['app'] }) },
   ];
 };
+// RSPACK_NESTED=1: app into dist/rspack/, inside the dist/ webpack builds sw into (webpack.config.js), cleaning its own
+// directory but keeping boot.js, as Grafana's build (webpack into public/build/, then rspack into public/build/rspack/)
+const nested = () => ({ name: 'app', mode: 'production', entry: './src/app.js',
+  output: { path: path.join(out, 'rspack'), filename: 'app.js', clean: { keep: /[\\/]boot\.js$/ } } });
 // RSPACK_PLUGIN=<path of src/adapters/rspack.cjs>: the plugin in the config, as without NODE_OPTIONS
 const withPlugin = (c) => {
   if (!process.env.RSPACK_PLUGIN) return c;
   const { BundleLockfilePlugin } = require(process.env.RSPACK_PLUGIN);
   return { ...c, plugins: [...(c.plugins || []), new BundleLockfilePlugin('bundle-lockfile/package-lock.json')] };
 };
-module.exports = process.env.RSPACK_SHARED ? shared().map(withPlugin) : withPlugin(app);
+module.exports = process.env.RSPACK_SHARED ? shared().map(withPlugin) : withPlugin(process.env.RSPACK_NESTED ? nested() : app);
