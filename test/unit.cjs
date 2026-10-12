@@ -3002,6 +3002,17 @@ test('rspack: files CopyRspackPlugin copied are found among the file dependencie
   assert.deepEqual(lockOf({ 'hello.txt': copy('hello.txt', 'hi'), 'g/a.js': copy('a.js?v=1', 'ga') }), ['glob']);
   // no file of that name among the dependencies: its bytes (rare: a copy plugin that does not add them)
   assert.deepEqual(lockOf({ 'renamed.js': copy('gone.js', 'ga') }), ['glob']);
+  // a first-party file with a package file's name (OHIF: public/config/default.js as app-config.js, js-yaml has a
+  // lib/schema/default.js), and a first-party package.json (the resolver reads every package's): its own bytes, no package
+  fs.mkdirSync(J(root, 'public/config'), { recursive: true });
+  fs.writeFileSync(J(root, 'public/config/default.js'), 'window.config = {};');
+  fs.mkdirSync(J(root, 'node_modules/yaml/lib/schema'), { recursive: true });
+  fs.writeFileSync(J(root, 'node_modules/yaml/package.json'), JSON.stringify({ name: 'yaml', version: '1.0.0' }));
+  fs.writeFileSync(J(root, 'node_modules/yaml/lib/schema/default.js'), 'module.exports = schema;');
+  fs.writeFileSync(J(root, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }));
+  deps.push(...['public/config/default.js', 'node_modules/yaml/lib/schema/default.js', 'package.json', 'node_modules/yaml/package.json'].map(f => J(root, f)));
+  assert.deepEqual(lockOf({ 'app-config.js': copy('default.js', 'window.config = {};') }), []);
+  assert.deepEqual(lockOf({ 'package.json': copy('package.json', fs.readFileSync(J(root, 'package.json'), 'utf8')) }), []);
 });
 
 test('rspack: style sheets loaders inlined - per module from 1.3.14, from the file dependencies before', () => {

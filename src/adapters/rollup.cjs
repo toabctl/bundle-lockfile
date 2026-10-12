@@ -13,7 +13,7 @@ const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
 const copies = require('../core/copies.cjs');
-const { ancestors, posix, packageRoot } = require('../core/paths.cjs');
+const { ancestors, posix, packageRoot, exportPath } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
 const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
@@ -232,6 +232,7 @@ function createPlugin(kind, inputOptions) {
       outputs.prune(w.target, w.writer, exists, () => {
         outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
           if (err) problems.problem(`${kind}: could not write ${w.target}`, err);
+          else if (config.inline || exportPath(w.target)) config.debug(`${kind}: wrote`, [config.inline && w.target, exportPath(w.target)].filter(Boolean).join(' and '));
           end();
         });
       });
