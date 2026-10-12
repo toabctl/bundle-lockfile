@@ -7,11 +7,13 @@ the [README](../README.md); the implementation in [internals.md](internals.md).
 
 Each output gets `<output dir>/bundle-lockfile/package-lock.json` (`BUNDLE_LOCKFILE_FILE` changes the path below the
 output directory):
-- webpack: one per top-level compiler, in its `output.path` (placeholders such as `[fullhash]` resolved).
+- webpack (also Next.js' copy) and rspack (also Rsbuild, Rslib, Next.js with next-rspack), which get the same
+  plugin: one per top-level compiler, in its `output.path` (placeholders such as `[fullhash]` resolved). None in an
+  output directory that another plugin removed after the build (only the export copy). Below, "webpack" stands for
+  both.
 - Vite, Rollup, Rolldown: one per output of a build that writes, in its `dir`, or the directory of its `file`
-  (Rolldown without either: `dist/`).
-- None for builds that write nothing themselves, and none for outputs below `node_modules` (e.g. Vite's dependency
-  pre-bundling).
+  (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
+  `node_modules` (e.g. Vite's dependency pre-bundling).
 
 With `BUNDLE_LOCKFILE_EXPORT_DIR`, every lockfile is also written to `<export dir>/<its path>`: relative to
 `BUNDLE_LOCKFILE_EXPORT_BASE` when it is below it, else its absolute path without the leading `/`.
@@ -91,7 +93,11 @@ Every key starts with `node_modules/`, as in npm's lockfiles; Trivy skips any ot
   keyed `node_modules/debug`.
 - A package elsewhere is keyed `node_modules/<name>`, or `node_modules/<name>@<version>` (then `-2`, `-3`, …) if that
   is taken. That is a package in Yarn Plug'n'Play's `.yarn/cache/<zip>/node_modules/`, in a workspace's own
-  `packages/<ws>/node_modules/`, or at a location whose key without `../` another package has.
+  `packages/<ws>/node_modules/`, a [vendored copy](#which-package-a-file-belongs-to) outside `node_modules` (e.g.
+  `vendor/…`), or at a location whose key without `../` another package has.
+- A vendored copy inside a package keeps its location as key, which does not end in its name:
+  `node_modules/next/dist/compiled/@edge-runtime/cookies` is `@edge-runtime/cookies`. Read a package's name from
+  `name`, not from the key (syft and Trivy do).
 - The record's `locations` gives the real location of each package whose key is not its location.
 
 ## Which package a file belongs to
@@ -110,8 +116,8 @@ Every key starts with `node_modules/`, as in npm's lockfiles; Trivy skips any ot
 - The package directory has no `package.json` with name and version (VS Code's stripped `node_modules` inside
   `@gitlab/web-ide`, a library build's `dist/esm/node_modules/rxjs`): its files count as the package around it, with a
   warning once per process. Without a package around it, it cannot be listed: the build fails naming it (with
-  `BUNDLE_LOCKFILE_STRICT=0`: a warning; only a debug message for directories starting with a dot, such as
-  `node_modules/.cache`, where tools generate files).
+  `BUNDLE_LOCKFILE_STRICT=0`: a warning). Directories whose name starts with a dot, such as `node_modules/.cache`,
+  where tools generate files, are no packages: their files are not listed, with only a debug message.
 
 **Outside `node_modules`**, a file is first-party (not listed) unless it is in a vendored copy. The same
 `package.json` rule applies: the innermost such directory around the file counts — GitLab's
@@ -121,19 +127,23 @@ unless a first-party directory comes first:
 - the package of an entry module;
 - the members of the monorepo: package manager workspaces, `pnpm-workspace.yaml`, `lerna.json`, `rush.json`, Nx's
   `project.json`;
-- a directory linked into `node_modules` (also Yarn Plug'n'Play's workspaces, portals and links);
+- a directory linked into `node_modules` under its own `package.json` name (also Yarn Plug'n'Play's workspaces,
+  portals and links);
 - a private `package.json`;
 - a directory `BUNDLE_LOCKFILE_FIRST_PARTY` names.
 
-A note names each vendored copy once per process. Listing a package too many is preferred over missing one: an in-repo
-library that is not private, has a version and is none of the above is listed; `BUNDLE_LOCKFILE_FIRST_PARTY=lib/**`
+A note names each vendored copy outside `node_modules` once per process (one inside a package: a debug message).
+Listing a package too many is preferred over missing one: an in-repo library that is not private, has a version and is
+none of the above is listed; `BUNDLE_LOCKFILE_FIRST_PARTY=lib/**`
 leaves it out. Files another build produced are that build's output, not vendored copies (see [Nested
 bundles](#nested-bundles)). Vendored code without a `package.json` (a copied `jquery.min.js`, Grafana's Jaeger UI
 components) is not found — not here, nor by syft, Trivy or the CycloneDX plugin.
 
 **Linked packages**: a package whose real location is outside `node_modules` — a workspace package, a `link:` or
 `portal:` dependency, a `file:` directory dependency that npm installs as a symlink — is first-party and not listed,
-also with webpack's `resolve.symlinks: false`. Its dependencies are listed. Yarn 2+ (which packs it into its cache)
+also with webpack's `resolve.symlinks: false`. Its dependencies are listed. One linked under another name (an alias,
+`"x": "link:../lib"`) that is no workspace member and not private is listed as a vendored copy;
+`BUNDLE_LOCKFILE_FIRST_PARTY` leaves it out. Yarn 2+ (which packs it into its cache)
 and pnpm (which hard-links it into `node_modules/.pnpm`) put a `file:` directory dependency inside `node_modules`,
 which makes it a listed package.
 
@@ -147,13 +157,17 @@ between machines; the record lists them in `outside`.
 `name`, `version` and `license` come from each package's own `package.json`, also the legacy `license: {type}` and
 `licenses: [...]` forms. `license` is always one string, because syft reads no `{type}` objects and Trivy no arrays of
 strings (Trivy 0.70 reads no package at all from a lockfile that has one). Several licenses become an SPDX expression:
-`licenses: [{type: "MIT"}, {type: "Apache-2.0"}]` is `"(MIT OR Apache-2.0)"`.
+`licenses: [{type: "MIT"}, {type: "Apache-2.0"}]` is `"(MIT OR Apache-2.0)"`; a repeated one appears once, and one
+with spaces is parenthesized (`(MIT OR (Apache-2.0 AND BSD-3-Clause))`). `license` wins over `licenses`, also when it
+is no string or `{type}` object (an array in `license`: no license).
 
 ## The record
 
 The `"bundle-lockfile"` field is bundle-lockfile's own record. Tools that read `package-lock.json` (syft, Trivy, npm)
 ignore it. It has no machine-specific paths: paths are relative to the lockfile or the context, ids are hashes of the
 configuration.
+- `v`: the record's version, `1`. A record without it, or of another version, is not read: a build writing into its
+  directory does not keep its writers' packages.
 - `context`: the directory the keys are relative to, relative to the lockfile's directory (both as configured, so a
   context reached through a symlink stays `../..`).
 - `self`: the lockfile's directory relative to the context. A copy of the lockfile somewhere else — at another depth
@@ -196,18 +210,19 @@ Builds that write to the same directory share its lockfile: it lists the package
 - In one process (e.g. a webpack config array whose app and service worker both go to `dist/`, or plugin-legacy's two
   outputs) they build in parallel or rebuild in watch mode.
 - Separate processes (e.g. two `webpack` or `vite build` commands run by `concurrently` or `run-p`) find each other's
-  writers in the lockfile on disk, and keep their packages as long as one of the files recorded for them is still
-  there.
+  writers in the lockfile on disk, and keep their packages as long as one of the files recorded for them (up to 20,
+  the first by path) is still there. A writer recorded without files is kept.
 
 Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one.
-The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`). A
+The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`,
+or when the output directory was removed). A
 lock older than a minute is taken over; after 30 s of waiting the write goes ahead without it, and the build fails
 (another process's packages may be missing; with `BUNDLE_LOCKFILE_STRICT=0`: a warning).
 
 - A writer's packages count once its output is written: a rebuild that fails and is not emitted (webpack's default in
   production) leaves the packages of its previous output in the lockfile.
-- A webpack compiler is recognized by its configuration: name, entry, target and file name templates, per output
-  directory. A new compiler for the same configuration (e.g. a build restarted in the same process, or run again)
+- A webpack or rspack compiler is recognized by its configuration: name, entry, target and file name templates, per
+  output directory. A new compiler for the same configuration (e.g. a build restarted in the same process, or run again)
   replaces the previous one's packages. In the same process that happens once the previous one is closed (webpack <
   5.17, without a shutdown hook: no longer running); until then both are listed.
 - A Vite/Rollup/Rolldown output is recognized by the kind of build (Vite, Rollup, Rolldown), its input, its format,
@@ -234,17 +249,22 @@ inlined, as part of its own code.
 Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its JavaScript and CSS files (`outputs`) and the
 packages in each (`contents`):
 - a chunk: its modules' packages (not those of style sheets Vite took out of it into a CSS file);
-- a CSS file: those of the style sheets that went into it, and of every style sheet the build `@import`s from packages
-  (which style sheet imports which is not known).
+- a CSS file: those of the style sheets that went into it (of all the build's extracted style sheets if no chunk
+  imports it), of the files it was emitted from, and of every style sheet the build `@import`s from packages (which
+  style sheet imports which is not known);
+- a JavaScript asset (Vite's worker chunks): the packages of the build that produced it.
+
+Of an output with more than 500 such files, only the first 500 by path are recorded; the others are not attributed.
 
 For every bundled file outside `node_modules`, bundle-lockfile looks for `<dir>/bundle-lockfile/package-lock.json`
 (`BUNDLE_LOCKFILE_FILE`, or its copy in the export directory) in the file's directory and each directory above it. In
 the first lockfile that records the file, a matching hash adds the packages in that file to this build's (all of the
-writer's packages if the lockfile records none per file). This works in webpack, Vite, Rollup and Rolldown builds.
+writer's packages if the lockfile records none per file). This works in webpack, rspack, Vite, Rollup and
+Rolldown builds.
 - It also covers a first-party package linked into `node_modules` (e.g. a workspace package built by Vite), at its
   real location, whether the bundler resolved the link or kept it (webpack's `resolve.symlinks: false`, Vite's
   `resolve.preserveSymlinks`).
 - A build that bundles only an island's style sheet gets the packages in it, not those of the island's JavaScript.
 - A file changed after its build is not attributed.
 - The record travels with the output, so this works across processes, separate commands and machines.
-- webpack lockfiles record no hashes: a webpack-built bundle that another build bundles is not attributed.
+- webpack and rspack lockfiles record no hashes: a bundle they built that another build bundles is not attributed.
