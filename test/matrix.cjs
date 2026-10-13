@@ -473,6 +473,8 @@ const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 2) || (NODE_MA
 // `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
 // (rebuilt without src/main.js's lazy import, whose chunk has ms@2.1.3, then with it again)
 const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "import('./lazy.js')"`;
+// `vite build` in a worker thread (see the script), run as the fixture's own script
+const VITE_WORKER = `cp ${path.join(__dirname, 'lib/vite-worker.mjs')} .vite-worker.mjs && node .vite-worker.mjs`;
 // vite-spa's two builds as two processes at the same time, into one dist/ (with VITE_SHARED=1)
 const VITE_BIN = './node_modules/.bin/vite';
 const PARALLEL_VITE = `${VITE_BIN} build & a=$!; ${VITE_BIN} build --config vite.second.config.mjs & b=$!; wait $a && wait $b`;
@@ -1070,6 +1072,11 @@ const cases = [
   { name: 'Rollup 4 command line, rollup.config.ts (--configPlugin typescript)', fixture: 'rollup-cli',
     cmd: './node_modules/.bin/rollup -c rollup.config.ts --configPlugin typescript', expect: ROLLUP_API },
   // installers (yarn Plug'n'Play: Yarn's own loader-thread hook next to bundle-lockfile's ESM hooks)
+  // a build in a worker thread: the worker installs its own ESM hooks (Node < 24.12: its own loader thread)
+  { name: 'Vite 8.3.3, vite build in a worker thread', fixture: 'vite8-npm', cmd: VITE_WORKER, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 7.3.7, vite build in a worker thread', fixture: 'vite7-npm', cmd: VITE_WORKER, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, vite build in a worker thread, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: VITE_WORKER,
+    env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, yarn 1', fixture: 'vite8-yarn1', cmd: 'yarn --offline -s build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play", fixture: 'vite8-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // the packages are in .yarn/cache/<zip>/node_modules/, not at their keys: a process that writes after the other one

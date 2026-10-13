@@ -1418,6 +1418,40 @@ test('rollup adapter: rollup()/rolldown()/watch()/build() get the plugin once, t
   assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: 'off' }).plain, ['x']);
 });
 
+test('hooks: a build in a worker thread gets the ESM hooks too; Node\'s own loader thread none', () => {
+  // vite build from a worker_threads Worker: the main thread's loader-thread hooks do not reach the worker, which runs
+  // the preload again and must register its own
+  const root = project({
+    'node_modules/rolldown/package.json': { name: 'rolldown', version: '1.2.13', type: 'module', exports: { '.': './dist/index.mjs' } },
+    'node_modules/rolldown/dist/index.mjs': `const rolldown = async (o) => [].concat(o.plugins || []).flat().map(p => p.name);
+      const VERSION = '1.2.13';
+      export { VERSION, rolldown };`,
+    'package.json': { name: 'app', version: '1.0.0', type: 'module', dependencies: { rolldown: '1.2.13' } },
+    'build.mjs': `import { rolldown } from 'rolldown';
+      import { parentPort } from 'node:worker_threads';
+      parentPort.postMessage(await rolldown({ plugins: [{ name: 'x' }] }));`,
+    'main.mjs': `import { Worker } from 'node:worker_threads';
+      const w = new Worker(new URL('./build.mjs', import.meta.url));
+      w.on('message', (m) => { console.log(JSON.stringify(m)); });`,
+  });
+  const run = (env) => {
+    const r = spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'main.mjs')],
+      { cwd: root, env: { ...process.env, BUNDLE_LOCKFILE_DEBUG: '1', ...env }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return { names: JSON.parse(r.stdout.trim().split('\n').pop()), modes: r.stderr.match(/ESM hooks: \w+/g) };
+  };
+  const modes = ['async', undefined];
+  if (typeof require('module').registerHooks === 'function') modes.push('sync');
+  for (const mode of modes) {
+    const got = run(mode ? { BUNDLE_LOCKFILE_ESM_HOOKS: mode } : {});
+    assert.deepEqual(got.names, ['x', 'bundle-lockfile'], String(mode));
+    // the main thread and the worker install them; Node's loader threads (one per thread with loader-thread hooks)
+    // run the preload too, and do nothing (Node.js 20 and 22 before 22.14 do not mark them: no parentPort)
+    assert.equal(got.modes.length, 2, `${mode}: ${got.modes}`);
+    assert.equal(new Set(got.modes).size, 1, `${mode}: ${got.modes}`);
+  }
+});
+
 test('hooks: a CommonJS bundler whose source another loader hook provides is patched, although Node loads it without Module._load', () => {
   // Yarn Plug'n'Play's loader returns the source of CommonJS files in its zip cache on Node versions whose fstat fails on
   // their file descriptors (22.22.3+, 24.15, 25.7+, 26.0): Node then evaluates them, and all they require, with a

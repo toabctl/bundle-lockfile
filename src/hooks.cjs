@@ -160,15 +160,18 @@ function installedAround(packages, cwd) {
 // sync | async | off, see syncHooksSafe and bundlerProcess. BUNDLE_LOCKFILE_ESM_HOOKS=sync|async|off forces one
 // (async: also outside bundler processes, e.g. for a programmatic build in a project without a dependency on one).
 function esmMode(packages) {
-  if (wt.isInternalThread) return 'off'; // Node's own loader thread, which runs --require preloads too (Node >= 22.14)
+  // Node's own loader thread, which runs --require preloads too (register.cjs returns there before this)
+  if (wt.isInternalThread || (!wt.isMainThread && !wt.parentPort)) return 'off';
   const forced = config.esmHooksOf(process.env.BUNDLE_LOCKFILE_ESM_HOOKS);
   const sync = typeof Module.registerHooks === 'function', async = typeof Module.register === 'function';
   if (forced === 'off') return 'off';
   if (forced === 'sync') return sync ? 'sync' : 'off';
-  // Node 20 has no isInternalThread: its loader thread is not the main thread (nor are user workers, which get none)
-  if (forced === 'async') return async && wt.isMainThread ? 'async' : 'off';
+  if (forced === 'async') return async ? 'async' : 'off';
   if (sync && syncHooksSafe(process.versions.node)) return 'sync';
-  if (async && wt.isMainThread && (bundlerProcess(packages) || otherLoader())) return 'async';
+  // also in a worker thread of a bundler process: the main thread's loader-thread hooks do not reach a worker (a worker
+  // runs the preload again, which registers its own; nodejs/node#52706, which shared them, was reverted), and a build in
+  // a worker (vite build from a worker_threads Worker) would write no lockfile
+  if (async && (bundlerProcess(packages) || otherLoader())) return 'async';
   return 'off';
 }
 

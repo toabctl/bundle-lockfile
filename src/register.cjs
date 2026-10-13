@@ -7,9 +7,13 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./core/config.cjs'); // (also applies the settings file to process.env)
 
-// Node's own loader thread (Node.js >= 22.14 runs --require preloads there too): nothing to hook or check there - the
-// main thread reports the settings and installs the hooks
-if (require('worker_threads').isInternalThread) return;
+// Node's own loader thread, which runs --require preloads too: nothing to hook or check there - the main thread (and each
+// worker thread) reports the settings and installs the hooks. Node.js 22.14 and later mark it (isInternalThread); before,
+// it is the thread that is neither the main thread nor a user's worker, which always has a parentPort.
+{
+  const wt = require('worker_threads');
+  if (wt.isInternalThread || (!wt.isMainThread && !wt.parentPort)) return;
+}
 
 const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters/rspack.cjs', './adapters/esbuild.cjs'];
 // yarn's own entry point (process.argv[1]): yarn 1's bin/yarn.js (npm's and distributions' package, corepack's copy
@@ -60,8 +64,7 @@ function preloads() {
 if (!config.isDisabled('all')) {
   // a settings file that is there but cannot be used: its settings (an export directory) would be missing - a problem
   // (the first build fails with it, or the process, see core/problems.cjs)
-  // Reported by the main thread of each process, once: worker threads run the preload too, and so does Node.js 20's
-  // loader thread, which cannot be told from a worker (no isInternalThread)
+  // Reported by the main thread of each process, once: worker threads run the preload too
   if (require('worker_threads').isMainThread) {
     const problems = require('./core/problems.cjs');
     const { file: settings, error } = config.settingsFile;
