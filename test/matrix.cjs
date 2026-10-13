@@ -1594,12 +1594,11 @@ const cases = [
       // no bundler reports a file inlined into a module; Vite writes no source maps for CSS, and none of the image it
       // inlines: its oracle does not see the style sheets' and the image's packages (here their markers do)
       oracleMissing: fixture.startsWith('canary-vite') ? [...CANARY_INLINED.all, CANARY_URL] : CANARY_INLINED.js })),
-  // esbuild: the shader include comes from an esbuild plugin's onLoad (its watchFiles), which bundle-lockfile does not
-  // read yet; the image a style sheet inlines (dataurl loader) is only among the style sheet's imports in the metafile,
-  // and the oracle's source maps have no source for a data: URL (its marker here shows it); new URL() is left as it is
+  // esbuild: the shader include comes from an esbuild plugin's onLoad (its watchFiles); the image a style sheet inlines
+  // (dataurl loader) is only among the style sheet's imports in the metafile; the oracle's source maps have no source
+  // for either (their markers here show them); new URL() is left as it is
   { name: 'canaries: esbuild 0.28.2', fixture: 'canary-esbuild', cmd: 'npm run -s build', oracleArgs: '--script esbuild.mjs',
-    expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => p !== 'bl-canary-glsl@1.0.0').sort(), canaryUnlisted: ['bl-canary-glsl@1.0.0'],
-    oracleMissing: ['bl-canary-icon@1.0.0'] },
+    expect: [...CANARY_JS, ...CANARY_INLINED.all].sort(), oracleMissing: ['bl-canary-glsl@1.0.0', 'bl-canary-icon@1.0.0'] },
   // Rolldown's build() and watch() (also vite build --watch on Vite 8) have no build object with the watch files, nor
   // has a plugin from the config the build rolldown() returns: the files plugins inlined, from the plugin contexts
   ...['1.2.13', '1.0.0'].flatMap(v => ['rolldown', 'build', 'watch'].map(mode => (
