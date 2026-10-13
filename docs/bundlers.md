@@ -124,7 +124,8 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
   `next`; the client output lists `react` and `react-dom`.
 - Next does not bundle many server dependencies (Pages Router dependencies, `serverExternalPackages`): the server
   loads them from `node_modules` at runtime, and Next records them in `.next/server/**/*.nft.json`. They are in no
-  bundle-lockfile. Ship `node_modules` with the server, and its installed `package.json` files cover them.
+  bundle-lockfile. Ship `node_modules` with the server: image scans read its installed `package.json` files
+  ([which scans](../README.md#sbom-tools)).
 - A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, but not the lockfiles. Ship
   `.next/bundle-lockfile/package-lock.json` with it, or use an [export
   directory](../README.md#outputs-that-do-not-ship-as-files). In this mode a custom `distDir` names the export
@@ -155,7 +156,9 @@ packages) and `server/` (what the server bundles). The adapter then fills its ou
 
 Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
 `dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile.
-Ship that `node_modules` (with its `package.json` files, or a `package-lock.json`), as with Next.js.
+Ship that `node_modules`, as with Next.js: image scans read its `package.json` files ([which
+scans](../README.md#sbom-tools)); the project's `package-lock.json` lists what was installed, not what the server
+loads.
 
 adapter-static with `precompress` processes every file of the output, the lockfile too: it writes
 `package-lock.json.gz` and `.br` next to it.

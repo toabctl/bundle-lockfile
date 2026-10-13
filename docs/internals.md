@@ -242,7 +242,9 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
   (`node_modules/<package>` in the working directory or above: `nuxi`, `storybook`, which load their bundler through
   a dependency), or that have another loader-thread hook (`--experimental-loader`, `--loader` or `--import` in
   `NODE_OPTIONS` or on the command line, e.g. Yarn Plug'n'Play's, see below), because a loader thread costs time and
-  memory in every process. Only in the main thread: worker threads get no ESM hook on these versions.
+  memory in every process. Only in the main thread: worker threads get no ESM hook on these versions (a worker runs
+  the `--require` preload again, but the main thread's `module.register()` hooks do not reach it:
+  [nodejs/node#52706](https://github.com/nodejs/node/pull/52706), which shared them, was reverted).
 - Node.js 20.0 – 20.5 have neither: a process that would get the loader thread has a problem (its ES-module bundlers
   would write no lockfile).
 - `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses the loader thread in every process (main thread only), `sync` the in-thread

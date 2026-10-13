@@ -51,10 +51,13 @@ the source maps show none of its code.
 
 - packages the bundler leaves out: externals, CDN scripts, an unresolvable `require(variable)`;
 - packages a server loads from `node_modules` at runtime (see [Next.js](bundlers.md#nextjs),
-  [SvelteKit](bundlers.md#sveltekit));
+  [SvelteKit](bundlers.md#sveltekit)): image scans of a shipped `node_modules` read them from its `package.json` files,
+  directory scans do not ([which scans](../README.md#sbom-tools));
 - files put into the output without the bundler, e.g. `cp node_modules/x/dist/x.js dist/` in a script; files copied
   out of a package by reading and writing them, or in another process (except files written into an output after the
   build whose path there contains `node_modules/<package>/`), e.g. `public/` files taken from a package once, by hand;
+- other package files a loader or plugin inlines into a module, except style sheets and the files style sheets
+  embed: e.g. GLSL `#include`s (glslify);
 - in Vite, Rollup and Rolldown: a package's image or font that a style sheet's `url()` inlines as a `data:` URL (Vite's
   `build.assetsInlineLimit`, 4 KiB by default): no module, asset or file the build records names it;
 - a package file webpack pulls in under a first-party match resource (`<name>!=!<loaders>!<file>`), e.g.
