@@ -2783,6 +2783,65 @@ test('copies of lockfiles: copied with fs in this process - re-anchored where th
   assert.equal(fs.existsSync(to('build')), false);
 });
 
+test('copies of outputs: an output\'s files copied with fs elsewhere without the lockfile get a copy of it (Nitro\'s public assets), followed', async () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), '.nuxt/dist/client/_nuxt/e.js': 'e', '.nuxt/dist/client/_nuxt/f.css': 'f', '.nuxt/dist/client/notes.txt': 'n',
+    'dist2/x.js': 'x' });
+  const [a, b] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+  const client = J(root, '.nuxt/dist/client'), target = J(client, LOCK);
+  const files = [J(client, '_nuxt/e.js'), J(client, '_nuxt/f.css')];
+  const write = () => new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+  outputs.record(target, 'nuxt-client', [a], root, files, { disk: true });
+  outputs.emitted(target, 'nuxt-client');
+  // another output: nothing is copied into it, and nothing next to it
+  const other = J(root, 'dist2', LOCK);
+  outputs.record(other, 'other', [b], root, [J(root, 'dist2/x.js')], { disk: true });
+  outputs.emitted(other, 'other');
+  // a copy before the lockfile is written: the copy gets it when it is
+  fs.mkdirSync(J(root, 'early/_nuxt'), { recursive: true });
+  fs.copyFileSync(files[0], J(root, 'early/_nuxt/e.js'));
+  assert.equal(fs.existsSync(J(root, 'early', LOCK)), false);
+  await write();
+  await new Promise(resolve => outputs.rewrite(other, outputs.writeDisk(other), resolve));
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'early', LOCK), 'utf8')), ['a']);
+  const valid = (file) => {
+    const meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(file));
+    return meta.anchored === true && meta.writers[0].pkgs.every(p => !p.unknown && fs.existsSync(J(p.path, 'package.json')));
+  };
+  // Nitro: fs.promises.cp of each file of .nuxt/dist/client/_nuxt into .output/public/_nuxt
+  for (const f of files) await fs.promises.cp(f, J(root, '.output/public/_nuxt', path.basename(f)));
+  assert.equal(valid(J(root, '.output/public', LOCK)), true);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, '.output/public', LOCK), 'utf8')), ['a']);
+  // a directory of the output: the same
+  fs.cpSync(J(client, '_nuxt'), J(root, 'pub2/_nuxt'), { recursive: true });
+  assert.equal(valid(J(root, 'pub2', LOCK)), true);
+  // not: a file of the output directory no writer emits, a copy into another output, a copy up into the project (the
+  // place would contain the outputs), a copy below node_modules
+  fs.mkdirSync(J(root, 'pub3'), { recursive: true });
+  fs.copyFileSync(J(client, 'notes.txt'), J(root, 'pub3/notes.txt'));
+  fs.mkdirSync(J(root, 'dist2/_nuxt'), { recursive: true });
+  fs.copyFileSync(files[0], J(root, 'dist2/_nuxt/e.js'));
+  fs.copyFileSync(files[0], J(root, 'top.js'));
+  fs.mkdirSync(J(root, 'node_modules/c/_nuxt'), { recursive: true });
+  fs.copyFileSync(files[0], J(root, 'node_modules/c/_nuxt/e.js'));
+  for (const d of ['pub3', 'dist2/_nuxt', '.', '..', 'node_modules/c']) assert.equal(fs.existsSync(J(root, d, LOCK)), false, d);
+  assert.deepEqual(lockedNames(fs.readFileSync(other, 'utf8')), ['b']);
+  // the lockfile written again: the copies follow
+  outputs.record(target, 'nuxt-client', [a, b], root, files, { disk: true });
+  outputs.emitted(target, 'nuxt-client');
+  await write();
+  for (const d of ['.output/public', 'pub2', 'early']) assert.deepEqual(lockedNames(fs.readFileSync(J(root, d, LOCK), 'utf8')), ['a', 'b'], d);
+  // with BUNDLE_LOCKFILE_INLINE=0: no lockfile in outputs, none in copies of them
+  await withConfig({ inline: false }, async () => {
+    fs.mkdirSync(J(root, 'pub4/_nuxt'), { recursive: true });
+    fs.copyFileSync(files[0], J(root, 'pub4/_nuxt/e.js'));
+    assert.equal(fs.existsSync(J(root, 'pub4', LOCK)), false);
+  });
+});
+
 test('copies of lockfiles: an export copy copied with fs is re-anchored like its lockfile', () => withConfig({ exportDir: null }, async () => {
   const { readMeta } = require('../src/core/lockfile.cjs');
   const copies = require('../src/core/copies.cjs');

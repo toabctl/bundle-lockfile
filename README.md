@@ -262,6 +262,7 @@ must not go on without doing what was asked of it. Every setting in full, and wh
 | rspack | 1.1 – 1.7, 2 | also Rsbuild 1.1+ and 2, Rslib 1; rspack 1.0 fails the build ([details](docs/bundlers.md#rspack-rsbuild)) |
 | Vite | 5 – 8, rolldown-vite 7 | `vite dev`, `vite preview` and Vitest write no lockfile ([details](docs/bundlers.md#vite-rollup-rolldown)) |
 | SvelteKit | 2, 3 | adapter-static, adapter-node, adapter-netlify ([details](docs/bundlers.md#sveltekit)) |
+| Nuxt | 4 | `.output/public` and `.output/server` ([details](docs/bundlers.md#nuxt)) |
 | Rollup | 4 | also `@rollup/wasm-node` |
 | Rolldown | 1 | not the `rolldown` command line |
 | esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line ([details](docs/bundlers.md#esbuild)) |
@@ -286,8 +287,9 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 - **Shipped, not executed:** a lazily loaded chunk that is never opened, and a package of which one function is used,
   are listed.
 - **Dev servers** list what they compiled so far: not the packages of lazily compiled dynamic imports.
-- **Outputs that move:** Next.js' static export and standalone output, and any step that copies only some files,
-  leave the lockfiles behind: use an [export directory](#outputs-that-do-not-ship-as-files).
+- **Outputs that move:** an output whose files the build process copies elsewhere with fs (Nitro's `.output/public`)
+  gets a copy of its lockfile there. Next.js' static export and standalone output, and copies made otherwise (`cp`,
+  another process), leave the lockfiles behind: use an [export directory](#outputs-that-do-not-ship-as-files).
 
 ## SBOM tools
 
