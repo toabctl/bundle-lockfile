@@ -421,6 +421,9 @@ const CANARY_INLINED = { js: ['bl-canary-glsl@1.0.0'], all: ['bl-canary-css@1.0.
 const CANARY_URL = 'bl-canary-url@1.0.0';
 const CANARY_VITE = [...CANARY_JS, ...CANARY_INLINED.all, CANARY_URL].sort();
 const CANARY_ROLLDOWN = [...CANARY_JS, ...CANARY_INLINED.js].sort();
+// what a Rolldown build without its plugin contexts' records and without a build object (watch()) does not list: every
+// file a plugin inlined (bl-canary-css is a module)
+const UNRECORDED_WITHOUT_CONTEXTS = ['bl-canary-glsl@1.0.0', 'bl-canary-icon@1.0.0', 'bl-canary-import@1.0.0', 'bl-canary-url@1.0.0'];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // edge-vendored (src/index.js): the copies outside node_modules (left-pad by an alias, is-odd by resolve.modules,
 // vscode-languageclient with engines.vscode but no publisher, a copy of ms@2.1.3, the in-repo app-lib), container and
@@ -463,6 +466,7 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 // every lockfile below .next and its packages (the files they record differ: Next's build id is new on every build)
 const NEXT_LOCKS = `node ${path.join(__dirname, 'lib/locks.cjs')} .next`;
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+const ROLLDOWN_SHAPE = `--require ${path.join(__dirname, 'lib/rolldown-shape.cjs')}`; // Rolldown's plugin contexts of a shape bundle-lockfile does not know
 // node_modules/naked: bundled code in node_modules without a package.json (webpack5 app with EDGE_NAKED=1), removed afterwards
 const NAKED = "mkdir -p node_modules/naked && echo \"console.log('naked')\" > node_modules/naked/index.js && npm run -s build; s=$?; rm -rf node_modules/naked; exit $s";
 const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // another preload, which does nothing
@@ -1570,6 +1574,15 @@ const cases = [
   ...[['Vite 8.3.3', 'canary-vite8'], ['rolldown-vite 7.3.1', 'canary-rolldown-vite7'], ['Vite 7.3.7', 'canary-vite7.3.7']].map(([what, fixture]) => (
     { name: `canaries: ${what} vite build --watch`, fixture, cmd: VITE_WATCH_CANARY, expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL],
       watchBuilds: [CANARY_VITE, CANARY_VITE.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_VITE] })),
+  // Rolldown's plugin contexts of a shape bundle-lockfile does not know, in a build with style sheets and no build
+  // object (vite build --watch): fails; STRICT=0: a warning, and the files Vite's CSS plugin inlined are not listed
+  { name: 'strict: Rolldown plugin contexts of an unknown shape fail a build with style sheets (Vite 8.3.3 vite build --watch)', fixture: 'canary-vite8',
+    cmd: VITE_WATCH_CANARY, nodeOptions: ROLLDOWN_SHAPE, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*vite: Rolldown 1\.2\.\d+: could not read the files its plugins inlined \(injected fault/ },
+  { name: 'STRICT=0: Rolldown plugin contexts of an unknown shape (Vite 8.3.3 vite build --watch)', fixture: 'canary-vite8', cmd: VITE_WATCH_CANARY,
+    nodeOptions: ROLLDOWN_SHAPE, env: { BUNDLE_LOCKFILE_STRICT: '0' }, expectOutput: /\[bundle-lockfile\] WARNING: vite: Rolldown 1\.2\.\d+: could not read the files its plugins inlined/,
+    expect: CANARY_VITE.filter(p => !UNRECORDED_WITHOUT_CONTEXTS.includes(p)), canaryUnlisted: UNRECORDED_WITHOUT_CONTEXTS,
+    watchBuilds: [1, 2, 3].map(i => CANARY_VITE.filter(p => !UNRECORDED_WITHOUT_CONTEXTS.includes(p) && (i !== 2 || p !== 'bl-canary-glsl@1.0.0'))),
+    oracleMissing: [...CANARY_INLINED.all, CANARY_URL].filter(p => !UNRECORDED_WITHOUT_CONTEXTS.includes(p)) },
   { name: 'canaries: rolldown-vite 7.3.1', fixture: 'canary-rolldown-vite7', cmd: 'npm run -s build', expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL] },
   { name: 'canaries: Vite 8.3.3, plugin in the config (no NODE_OPTIONS)', fixture: 'canary-vite8', cmd: 'npm run -s build', inject: false,
     env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL] },
