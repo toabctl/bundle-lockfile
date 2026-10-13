@@ -22,11 +22,11 @@ cd "$FE"
 
 CDX=$W/cyclonedx
 [ -d "$CDX/node_modules/@cyclonedx/webpack-plugin" ] || { mkdir -p "$CDX"; (cd "$CDX" && echo '{"private":true}' > package.json && npm install -q --no-audit --no-fund @cyclonedx/webpack-plugin@5.3.3 >/dev/null); }
-export BLTEST_CDX_DIR=$CDX
+export BLTEST_COMPARE_DIR=$CDX
 
 MEASURE="--require $REPO/test/bigproject/measure.cjs"
 TOOL="--require $REPO/src/register.cjs"
-COMPARE="--require $REPO/test/compare/inject-cyclonedx.cjs" # loads bundle-lockfile too
+COMPARE="--require $REPO/test/compare/inject-webpack-tools.cjs" # loads bundle-lockfile too
 cold() { rm -rf "$FE/.temp_cache"; }   # webpack persistent cache (cache.cacheDirectory in webpack.config.js)
 lock_stats() { node -e 'const l = require(process.argv[1]); const e = Object.entries(l.packages).filter(([k]) => k);
   console.log(`${e.length} entries, ${new Set(e.map(([, p]) => p.name + "@" + p.version)).size} unique name@version`)' "$1"; }
