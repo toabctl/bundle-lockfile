@@ -4873,3 +4873,28 @@ test('webpack adapter: a vendored webpack exported as a plain object around its 
   webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
   assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
 });
+
+test('oracles/esm-entries: every installed copy of an entry against its wrapper, as Node.js loads both', () => {
+  const es = (name, version, body, type = 'module') => ({
+    [`${name}/package.json`]: { name: name.split('node_modules/').pop(), version, ...(type ? { type } : {}) },
+    [`${name}/${name.endsWith('rspack/core') ? 'dist/index.js' : name.endsWith('rolldown') ? 'dist/index.mjs' : 'dist/es/rollup.js'}`]: body,
+  });
+  const root = project({
+    ...es('node_modules/rollup', '4.0.0', 'export function rollup() {}\nexport function watch() {}\nexport const VERSION = "export default";\n'),
+    // a copy of another version below another package (and pnpm's store), and one of a shape the adapter does not know
+    ...es('node_modules/vite/node_modules/rollup', '3.0.0', 'export const VERSION = 3;\n'),
+    ...es('node_modules/.pnpm/rolldown@1.0.0/node_modules/rolldown', '1.0.0', 'const r = /\\/*/; export function rolldown() {}\nexport default rolldown;\n'),
+    // rspack 1: CommonJS at the path of rspack 2's entry, not wrapped
+    ...es('node_modules/@rspack/core', '1.7.0', 'module.exports = {};\n', null),
+  });
+  const r = spawnSync(process.execPath, [J(__dirname, 'oracles/esm-entries.cjs')], { cwd: root, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const got = JSON.parse(r.stdout).map(({ file, id, version, ok, error }) => ({ file: file.split(path.sep).join('/'), id, version, ok, error }));
+  assert.deepEqual(got, [
+    { file: 'node_modules/.pnpm/rolldown@1.0.0/node_modules/rolldown/dist/index.mjs', id: 'rolldown', version: '1.0.0', ok: true, error: undefined },
+    { file: 'node_modules/rollup/dist/es/rollup.js', id: 'rollup', version: '4.0.0', ok: true, error: undefined },
+    { file: 'node_modules/vite/node_modules/rollup/dist/es/rollup.js', id: 'rollup', version: '3.0.0', ok: false, error: 'none of rollup, watch is a function' },
+  ]);
+  assert.deepEqual(fs.readdirSync(root).filter(f => f.startsWith('.esm-entries-')), []); // its wrappers are gone
+  fs.rmSync(root, { recursive: true, force: true });
+});
