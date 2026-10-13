@@ -1,0 +1,22 @@
+{
+  "about": "Node.js versions at which bundle-lockfile's hooks behave differently (src/hooks.cjs, src/register.cjs, src/esm-wrap.cjs). The other jobs run the newest package of each Node.js line; .github/workflows/node-versions.yaml runs these: the pr ones on every pull request, all of them weekly and when the hooks change. Wolfi keeps old builds: 'nodejs-<major>~<version>' installs one, with Wolfi's current npm, or the one a version names (npm 12 does not run on every Node.js). The unit tests run on each; the fixtures (a regex, as gen.cjs and run.cjs take it) on each that names them, or those of 'fixtures' below.",
+  "fixtures": "^(wp5-npm|wp5-yarn4-pnp|wp5-tsx|rollup-api|vite7-npm|vite8-npm|vite8-yarn4-pnp|rspack2\\.2-npm)$",
+  "versions": [
+    { "version": "20.18.2", "npm": "11.18.0", "why": "the oldest Node.js in Wolfi, the oldest supported: loader-thread hooks without isInternalThread. only bundlers that support it (Vite 7 and 8, Rolldown, rspack 2 and Rsbuild 2 need 20.19 or 22.12): webpack 5, Rollup's command line, Vite 5; npm 12 needs 22.22.2, 24.15 or 26", "fixtures": "^(wp5-npm|wp5-yarn4-pnp|rollup-cli|vite5-npm)$" },
+    { "version": "22.13.1", "why": "the last Node.js 22 without worker_threads.isInternalThread, so register.cjs cannot tell Node's own loader thread from a worker" },
+    { "version": "22.14.0", "pr": true, "why": "isInternalThread: Node's loader thread runs --require preloads, and register.cjs does nothing there" },
+    { "version": "22.22.2", "why": "the last 22 before nodejs/node#59929 (a null CommonJS source from loader-thread hooks reaches in-thread hooks)" },
+    { "version": "22.22.3", "pr": true, "why": "#59929, and Yarn Plug'n'Play's loader provides the source of the CommonJS files in its zip cache (cjsSource)" },
+    { "version": "24.11.1", "why": "the last 24 with loader-thread hooks: in-thread hooks are not safe next to another loader before 24.12 (syncHooksSafe)" },
+    { "version": "24.12.0", "pr": true, "why": "the first version with in-thread hooks (module.registerHooks, nodejs/node#60380); nodejs/node#63060 (synthetic require of CommonJS modules an in-thread hook changed, with any --loader) from here to 24.17" },
+    { "version": "24.14.1", "why": "in-thread hooks, Yarn Plug'n'Play not yet providing CommonJS source on 24" },
+    { "version": "24.15.0", "why": "Yarn Plug'n'Play provides CommonJS source on 24 (cjsSource with in-thread hooks), inside the #63060 window" },
+    { "version": "24.17.0", "pr": true, "why": "the last 24 with nodejs/node#63060" },
+    { "version": "24.18.0", "why": "nodejs/node#62920 fixes #63060" },
+    { "version": "24.20.0", "why": "--experimental-package-map, which Yarn can add to NODE_OPTIONS" },
+    { "version": "26.0.0", "why": "module.register is deprecated at runtime (DEP0205); #63060 still there" },
+    { "version": "26.1.0", "pr": true, "why": "the last 26 with nodejs/node#63060" },
+    { "version": "26.2.0", "why": "nodejs/node#62920 fixes #63060" },
+    { "version": "26.4.0", "why": "--experimental-package-map" }
+  ]
+}
