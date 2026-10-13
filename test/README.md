@@ -123,6 +123,12 @@ process's `locations` (a second build, then the first one again).
 **webpack**, besides installers and versions (also webpack 4 with pnpm):
 - a build script in TypeScript run by tsx (`tsx build.ts`, `node --import tsx build.ts`: tsx compiles webpack's
   modules itself), a project directory with `#` in its name (also rspack)
+- a `webpack.config.ts` through ts-node, @swc/register and esbuild-register (an enum: Node.js' type stripping cannot
+  load it, webpack-cli falls back to the register hook) and through type stripping (22.18+); rspack's `rspack.config.ts`
+  through ts-node
+- tracing agents next to bundle-lockfile (also Vite 8 and rspack 2): OpenTelemetry's loader (`hook.mjs`, before and
+  after the `--require`) and dd-trace (`--import initialize.mjs`, `--import register.js`, `--require init` before and
+  after); yarn 4's package maps (also Vite 8; Node.js 24.20+ / 26.4+)
 - a development build; watch-mode rebuilds (as in every watch case but the failing rebuild: one without an import,
   whose packages must leave the lockfile, then one with it again); warm builds from webpack's persistent cache (also
   with child compilers)

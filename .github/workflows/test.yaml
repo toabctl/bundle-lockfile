@@ -80,7 +80,7 @@ jobs:
         run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
 
   # Node < 24.12 uses the loader-thread ESM hooks (src/hooks.cjs): the Vite, Rollup, Rolldown, nested, SvelteKit, rspack 2 and Rsbuild 2 cases on Wolfi's Node 22
-  # (e.g. GitLab and Coder build with it)
+  # (e.g. GitLab and Coder build with it); wp5-apm: tracing agents next to the hooks
   node22:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -95,7 +95,7 @@ jobs:
       # Plug'n'Play (whose CommonJS modules Node 22 loads without Module._load, see src/hooks.cjs), and their cases
       # (gen.cjs and run.cjs select the same ones)
       # (wp5-tsx: tsx's own loader thread next to bundle-lockfile's)
-      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|wp5-tsx|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack)'
+      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|wp5-tsx|wp5-apm|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack)'
       BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools

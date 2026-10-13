@@ -85,7 +85,9 @@ function runCase(c) {
   for (const [file, name] of [['.pnpm-bin', 'PNPM'], ['.npm-bin', 'NPM']]) {
     if (fs.existsSync(path.join(dir, file))) base[name] = `node ${path.join(dir, fs.readFileSync(path.join(dir, file), 'utf8').trim())}`;
   }
-  const nodeOptions = [c.nodeOptions, c.inject === false ? '' : `--require ${register}`].filter(Boolean).join(' ');
+  // {fixture} in NODE_OPTIONS too: other tools' preloads and loaders installed in the fixture
+  const caseOptions = (o) => (o ? o.split('{fixture}').join(dir) : '');
+  const nodeOptions = [caseOptions(c.nodeOptions), c.inject === false ? '' : `--require ${register}`, caseOptions(c.nodeOptionsAfter)].filter(Boolean).join(' ');
   const env = { ...base, NODE_OPTIONS: nodeOptions };
   const notes = [];
   // heapMB: the build's own process records its heap limit (test/apps/webpack5/webpack.config.js), checked after it
@@ -214,7 +216,7 @@ function runCase(c) {
     const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
     const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
     // PATH: not through the node shim, which would inject bundle-lockfile
-    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
+    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: caseOptions(c.nodeOptions), PATH: process.env.PATH }).trim().split('\n').pop());
     const truth = c.expectSources ? printed.packages : printed;
     // expectSources: the files the case is about are in the output, by the oracle - without them it would test nothing
     if (c.expectSources) {
@@ -262,11 +264,18 @@ function sbomScenario(c, sc, dir, env) {
 let failed = 0, skipped = 0;
 const selected = cases.filter(c => inShard.has(c.fixture) && (!filter || new RegExp(filter).test(c.name)));
 const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+// minNode { <major>: <oldest minor> }: a listed major from that minor on, a newer major than every listed one
+const minNodeOk = (min) => {
+  const [ma, mi] = process.versions.node.split('.').map(Number);
+  if (min[ma] !== undefined) return mi >= min[ma];
+  return ma > Math.max(...Object.keys(min).map(Number));
+};
 if (!hasSyft) console.log('note: syft not on PATH, skipping syft checks');
 if (!hasTrivy) console.log('note: trivy not on PATH, skipping Trivy checks');
 for (const c of selected) {
   // the build tool itself does not run on this Node.js (the case says why)
   if (c.maxNode && NODE_MAJOR > c.maxNode) { skipped++; console.log(`SKIP  ${c.name}: needs Node.js <= ${c.maxNode}, this is ${process.versions.node}`); continue; }
+  if (c.minNode && !minNodeOk(c.minNode)) { skipped++; console.log(`SKIP  ${c.name}: needs Node.js ${Object.entries(c.minNode).map(([ma, mi]) => `${ma}.${mi}+`).join(' / ')}, this is ${process.versions.node}`); continue; }
   try { console.log(`PASS  ${c.name}: ${runCase(c)}`); } catch (e) { failed++; console.log(`FAIL  ${c.name}: ${e.message}`); }
 }
 console.log(`\n${selected.length - failed - skipped}/${selected.length - skipped} passed${skipped ? `, ${skipped} skipped` : ''}`);
