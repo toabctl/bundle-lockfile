@@ -244,16 +244,17 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
   (`node_modules/<package>` in the working directory or above, also pnpm's and bun's `node_modules/.pnpm/node_modules/`,
   `node_modules/.bun/node_modules/`: `nuxi`, `storybook`, which load their bundler through a dependency), or that have another loader-thread hook (`--experimental-loader`, `--loader` or `--import` in
   `NODE_OPTIONS` or on the command line, e.g. Yarn Plug'n'Play's, see below), because a loader thread costs time and
-  memory in every process. Only in the main thread: worker threads get no ESM hook on these versions (a worker runs
-  the `--require` preload again, but the main thread's `module.register()` hooks do not reach it:
-  [nodejs/node#52706](https://github.com/nodejs/node/pull/52706), which shared them, was reverted).
+  memory in every process. Also in each worker thread of such a process, which gets a loader thread of its own: the
+  main thread's `module.register()` hooks do not reach a worker, which runs the `--require` preload again
+  ([nodejs/node#52706](https://github.com/nodejs/node/pull/52706), which shared them, was reverted).
 - Node.js 20.0 – 20.5 have neither: a process that would get the loader thread has a problem (its ES-module bundlers
   would write no lockfile).
-- `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses the loader thread in every process (main thread only), `sync` the in-thread
+- `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses the loader thread in every process and worker thread, `sync` the in-thread
   hooks wherever `module.registerHooks` exists (also on versions where they are not safe next to other loaders),
   `off` neither. Node.js's own loader thread, which runs `--require` preloads too, never gets them: `register.cjs`
-  does nothing there (Node.js 22.14 and later; on 20, which cannot tell it from a worker thread, it only reports
-  nothing - settings problems are reported by each process's main thread).
+  does nothing there. Node.js 22.14 and later mark it (`isInternalThread`); before, it is the thread that is neither
+  the main thread nor a user's worker, which always has a `parentPort`. Settings problems are reported by each
+  process's main thread.
 
 ### CommonJS modules a loader hook provides
 

@@ -58,16 +58,16 @@ bundle-lockfile. The ES-module bundlers — Vite,
 which imports Rollup and Rolldown as ES modules, Rolldown, rspack 2, Rollup through `import` — need a Node.js ESM
 hook:
 - Node.js 24.12, 25.2 and later: hooked in every process.
-- Older versions: hooked only in the main thread of processes
+- Older versions: hooked only in processes (their main thread and worker threads)
   - whose main script belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`,
     `@rspack/core`, `@rspack/cli` or `@rsbuild/core` (the `vite` command, a build script of a project using Vite), or
   - whose project has one of them installed (in `node_modules` of the working directory or above: `nuxi`, `storybook`,
     which load Vite through a dependency), or
   - that have another loader hook (e.g. Yarn Plug'n'Play's).
 
-  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`; a build in a worker thread is not
-  hooked. A `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader
-  thread these versions use costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on Node.js 22.
+  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`. A `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader
+  thread these versions use costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on Node.js 22; each worker
+  thread of such a process starts one more (60 – 300 ms for a Vite build in a worker).
 
 Every process logs how ES modules are hooked with `BUNDLE_LOCKFILE_DEBUG=1`, e.g. `ESM hooks: sync (Node 24.21.0)`.
 The details are in [internals.md](internals.md#vite-rollup-rolldown).
