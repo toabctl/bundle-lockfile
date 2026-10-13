@@ -47,22 +47,23 @@ function failLoad(before) {
 }
 
 const failedOn = new Set(); // adapters whose inspection failed: warned once per process
-// The module's exports, as the adapters leave them: an adapter may return { exports } to replace them.
+// The exports an adapter returned ({ exports }) to replace the module's, or undefined: none did.
 function onCjsLoad(exp, filename) {
   const request = logical(filename), resolve = () => filename;
+  let replaced;
   for (const a of adapters) {
     if (!a.onCjsLoad) continue;
     const before = problems.count();
     try {
       const r = a.onCjsLoad(exp, request, resolve);
-      if (r && typeof r === 'object' && 'exports' in r) exp = r.exports;
+      if (r && typeof r === 'object' && 'exports' in r) exp = replaced = r.exports;
     } catch (e) {
       // recognizing a module only reads it: a failure there is no bundler the adapter could not patch
       if (!failedOn.has(a.name)) { failedOn.add(a.name); config.warn(`${a.name} adapter failed while inspecting ${filename}:`, e); }
     }
     failLoad(before);
   }
-  return exp;
+  return replaced;
 }
 
 // Every CommonJS module once it has run: Module.prototype._compile, which runs a module's code - also the code another
@@ -80,8 +81,12 @@ function installCjs() {
   const report = (module, filename) => {
     if (!module || seen.has(module)) return;
     seen.add(module);
+    // (only exports an adapter replaced: some modules' exports are a getter, e.g. of an ES module require() loaded)
     const exp = onCjsLoad(module.exports, filename);
-    if (exp !== module.exports) module.exports = exp;
+    if (exp === undefined) return;
+    const before = problems.count();
+    try { module.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
+    failLoad(before);
   };
   const compile = Module.prototype._compile;
   if (typeof compile === 'function') {

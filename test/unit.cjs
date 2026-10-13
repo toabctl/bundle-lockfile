@@ -3589,6 +3589,14 @@ test('esbuild adapter: a problem is an onEnd error (the build rejects); write: f
   assert.deepEqual(ids(generated.byContent(text)), ['a@1.0.0']);
 }));
 
+test('hooks: a module whose exports are a getter (a new object every time) loads as without bundle-lockfile', () => {
+  const root = project({ 'm.cjs': "Object.defineProperty(module, 'exports', { get: () => ({ x: 1 }), configurable: true }); module.loaded;", 'main.cjs': "console.log(require('./m.cjs').x);" });
+  const env = { ...strictEnv(undefined), NODE_OPTIONS: `--require ${J(SRC, 'register.cjs')}` };
+  const r = spawnSync(process.execPath, ['main.cjs'], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), '1');
+});
+
 test('esbuild adapter: the CommonJS hook replaces esbuild\'s exports, for require(), import and ES-module interop', () => {
   const root = project({
     'node_modules/esbuild/package.json': { name: 'esbuild', version: '0.28.2', main: 'lib/main.js' },
