@@ -8,40 +8,70 @@ const problems = require('./problems.cjs');
 // Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
 // it. A lock older than a minute (staleAfter) is from a process that died; one that cannot be taken in 30 s (wait) is
 // skipped (the write goes ahead: a stalled build would be worse) - a problem (core/problems.cjs): the lockfile may miss
-// the packages of another process writing it at the same time.
+// the packages of another process writing it at the same time. So is a lock that cannot be created at all (the
+// directory cannot be created, the file system refuses the file). A stale lock that cannot be removed (a directory
+// another user owns, a read-only file system) is waited for like any other.
 function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
   const l = `${file}.lock`;
   const deadline = Date.now() + wait;
-  try { fs.mkdirSync(path.dirname(l), { recursive: true }); } catch { return () => {}; }
-  for (;;) {
+  const without = (why, cause) => {
+    problems.problem(`could not lock ${file}${why} - writing it without the lock (it may miss the packages of another process writing it at the same time)`, cause);
+    return () => {};
+  };
+  for (let created = false; ;) {
     try {
       fs.closeSync(fs.openSync(l, 'wx'));
-      const mine = fs.statSync(l);
+      const mine = fs.lstatSync(l);
       // not one another process took over as stale meanwhile (see takeStale)
-      return () => { try { if (sameFile(fs.statSync(l), mine)) fs.unlinkSync(l); } catch { /* gone */ } };
-    } catch (e) { if (e.code !== 'EEXIST') return () => {}; }
-    let st;
-    try { st = fs.statSync(l); } catch { continue; } // released meanwhile
-    if (Date.now() - st.mtimeMs > staleAfter) { takeStale(l, st); continue; }
-    if (Date.now() > deadline) {
-      problems.problem(`could not lock ${file} - writing it without the lock (it may miss the packages of another process writing it at the same time)`);
-      return () => {};
+      return () => { try { if (sameFile(fs.lstatSync(l), mine)) fs.unlinkSync(l); } catch { /* gone */ } };
+    } catch (e) {
+      if (e.code === 'ENOENT' && !created) { // no directory (yet, or no longer)
+        created = true;
+        try { fs.mkdirSync(path.dirname(l), { recursive: true }); } catch (m) { return without('', m); }
+        continue;
+      }
+      if (e.code !== 'EEXIST') return without('', e);
     }
+    created = false;
+    let st;
+    // lstat: a lock that is a symbolic link to nothing is there (open with wx fails on it), and is as old as the link
+    try { st = fs.lstatSync(l); } catch (e) { if (e.code === 'ENOENT') continue; return without('', e); } // released meanwhile
+    if (isStale(l, st, staleAfter) && takeStale(l, st)) continue;
+    if (Date.now() > deadline) return without('');
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
 }
 
 const sameFile = (a, b) => a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs;
 
+// The lock (with stats st) is older than staleAfter - by this machine's clock and by the file system's: a lock on a
+// network file system has the server's time, and a client whose clock is ahead must not take over a live lock. The file
+// system's time is that of a file made for it next to the lock (if that cannot be made: this machine's clock).
+function isStale(l, st, staleAfter) {
+  if (Date.now() - st.mtimeMs <= staleAfter) return false;
+  const probe = `${l}.${process.pid}.${Math.random().toString(36).slice(2)}.now`;
+  try {
+    fs.closeSync(fs.openSync(probe, 'wx'));
+    try { return fs.lstatSync(probe).mtimeMs - st.mtimeMs > staleAfter; } finally { fs.unlinkSync(probe); }
+  } catch { return true; }
+}
+
 // Removes the stale lock `l` that had the stats `st` - not a lock another process has taken since: it is moved away
-// first (only one process can move it), and put back if it is not the stale one.
+// first (only one process can move it), and put back if it is not the stale one. Returns whether the lock is gone, or
+// was another process's and is back: false if it cannot be moved (another user's directory, a read-only file system).
+// A file system without hard links cannot put back the very file: an empty lock in its place keeps the others out, and
+// stays until it is stale (its holder releases only its own file).
 function takeStale(l, st) {
   const away = `${l}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
-  try { fs.renameSync(l, away); } catch { return; } // another process took it first
+  try { fs.renameSync(l, away); } catch (e) { return e.code === 'ENOENT'; } // ENOENT: another process took it first
   try {
-    if (sameFile(fs.statSync(away), st)) return;
-    try { fs.linkSync(away, l); } catch { /* a third one holds it now: it waits for that one like everyone else */ }
+    if (sameFile(fs.lstatSync(away), st)) return true;
+    try { fs.linkSync(away, l); } catch (e) {
+      // EEXIST: a third one holds it now, and it waits for that one like everyone else
+      if (e.code !== 'EEXIST') { try { fs.closeSync(fs.openSync(l, 'wx')); } catch { /* a third one holds it */ } }
+    }
   } catch { /* gone */ } finally { try { fs.unlinkSync(away); } catch { /* gone */ } }
+  return true;
 }
 
 // Writes atomically: concurrent processes and readers see the old or the new file, never a partial one.

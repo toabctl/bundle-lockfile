@@ -9,7 +9,9 @@ const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
-const { posix, packageRoot, exportPath } = require('../core/paths.cjs');
+const generated = require('../core/generated.cjs');
+const { filesWrittenAfter } = require('../core/late.cjs');
+const { posix, packageRoot, portable, exportPath } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
 const APPLIED = Symbol.for('bundle-lockfile.webpack.applied'); // compiler: has a BundleLockfilePlugin
@@ -19,6 +21,9 @@ const SOURCE = Symbol('bundle-lockfile.webpack.source');       // compilation: {
 const BUNDLED = Symbol('bundle-lockfile.webpack.bundled');     // compilation: its bundledFiles()
 const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: files its latest build copied in the emit hook
 const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: copiedUnnamed() before the assets were optimized
+const STARTED = Symbol('bundle-lockfile.webpack.started');     // compilation: when it started (ms; see filesWrittenAfter)
+const GENERATED = Symbol('bundle-lockfile.webpack.generated'); // compilation: its generatedAssets() (before emit: sources)
+const JS = /\.[cm]?js$/i;
 
 // Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (the path
 // module.rules match it against; also used for splitChunks tests, rules' issuer condition and webpack 5's stats). For a NormalModule it is the resource without query - or the match
@@ -32,13 +37,16 @@ const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: c
 // resource over to the CSS (vanilla-extract), while CSS a file @imports keeps its own file.
 // rspack before 1.7 has the match resource, but its nameForCondition() ignores it: the match resource first (what
 // webpack's nameForCondition() returns then too).
+// webpack's resolver (enhanced-resolve) escapes a "#" in a path as "\0#" (so that it is no fragment), rspack's as
+// "\u200b#" (a zero-width space): resources and nameForCondition() keep that; the file has a plain "#" (~/c#/app).
+const unescaped = (f) => (typeof f === 'string' ? f.replace(/[\0\u200b]#/g, '#') : f);
 function sourceFile(m, issuerOf) {
-  const match = typeof m.matchResource === 'string' && m.matchResource ? m.matchResource.split('?')[0] : null;
-  const own = match || (typeof m.nameForCondition === 'function' ? m.nameForCondition() || null : m.resource || null);
+  const match = typeof m.matchResource === 'string' && m.matchResource ? unescaped(m.matchResource.split('?')[0]) : null;
+  const own = match || unescaped(typeof m.nameForCondition === 'function' ? m.nameForCondition() || null : m.resource || null);
   if (!own || m.resource) return own;
   const issuer = issuerOf(m);
-  if (!issuer || typeof issuer.resource !== 'string' || issuer.resource.split('?')[0] !== own || typeof issuer.nameForCondition !== 'function') return own;
-  return issuer.nameForCondition() || own;
+  if (!issuer || typeof issuer.resource !== 'string' || unescaped(issuer.resource.split('?')[0]) !== own || typeof issuer.nameForCondition !== 'function') return own;
+  return unescaped(issuer.nameForCondition()) || own;
 }
 
 // A hook of a hooks object, or undefined: rspack 2's hooks objects throw on reading a hook they do not have (a Proxy;
@@ -59,15 +67,21 @@ const issuers = (compilation) => (m) => (compilation.moduleGraph ? compilation.m
 
 // Source files of modules, including the inner modules of scope-hoisted ConcatenatedModules (.modules),
 // which webpack takes out of the root's chunks (for their JavaScript).
-// A style module's style sheets also include those its loaders inlined from other files and recorded as file
-// dependencies of the module: Sass partials (sass-loader), Less @imports (less-loader), postcss-import's and Tailwind's
-// style sheets (postcss-loader). They are no modules of their own. webpack 4 keeps them in buildInfo.fileDependencies;
-// webpack 5 moves them into the snapshot it takes of a cacheable module's build (also restored from the persistent
-// cache) and keeps them there only for one that is not. A module generated from its issuer (mini-css-extract's CssModule) has those of the issuer.
+// A module's style sheets also include those its loaders inlined from other files and recorded as file dependencies of
+// the module: Sass partials (sass-loader), Less @imports (less-loader), postcss-import's and Tailwind's style sheets
+// (postcss-loader) - of a style sheet, and of any other module whose loaders compile style (a Vue single-file
+// component's <style lang="scss"> block, App.vue?vue&type=style, whose file is App.vue; an Angular component's styles).
+// They are no modules of their own. A style module's file dependencies in packages that are no code (images, fonts) are
+// files its CSS embeds: an asset url() inlined as a data: URL by a build-time compilation (mini-css-extract-plugin's
+// importModule on webpack 5, its child compiler on webpack 4), whose modules are in no chunk.
+// webpack 4 keeps them in buildInfo.fileDependencies; webpack 5 moves them into the snapshot it takes of a cacheable
+// module's build (also restored from the persistent cache) and keeps them there only for one that is not. A module
+// generated from its issuer (mini-css-extract's CssModule) has those of the issuer.
 // A relative path (less-loader 7 adds what Less found from the working directory as it found it) is relative to the
 // working directory, as for the file system that reads and watches it. null: the module records none at all (rspack
 // before 1.3.14 has no buildInfo.fileDependencies, see styleFallback).
-function styleDependencies(m, issuerOf) {
+const CODE = /\.([cm]?[jt]sx?|json|node|vue|svelte)$/i;
+function fileDependencies(m, issuerOf) {
   const of = (mod) => {
     const info = mod && mod.buildInfo;
     if (!info) return null;
@@ -75,16 +89,28 @@ function styleDependencies(m, issuerOf) {
     const s = info.snapshot;
     if (!s) return null;
     if (typeof s.getFileIterable === 'function') return s.getFileIterable();
-    return [s.fileTimestamps, s.fileHashes, s.fileTshs].flatMap(map => (map ? [...map.keys()] : []));
+    // (webpack 5.0 has getFileIterable; files in packages are its managedFiles, a Set)
+    return [s.fileTimestamps, s.fileHashes, s.fileTshs, s.managedFiles].flatMap(map => (map ? [...map.keys()] : []));
   };
-  const deps = of(m) || (!m.resource && of(issuerOf(m)));
+  return of(m) || (!m.resource && of(issuerOf(m)));
+}
+function styleDependencies(m, issuerOf, style) {
+  const deps = fileDependencies(m, issuerOf);
   if (!deps) return null;
   const out = [];
-  for (const f of deps) if (typeof f === 'string' && packages.STYLE.test(f)) out.push(path.resolve(f));
+  for (const f of deps) {
+    if (typeof f !== 'string') continue;
+    if (packages.STYLE.test(f) || (style && !CODE.test(f) && packageRoot(path.resolve(f)))) out.push(path.resolve(f));
+  }
   return out;
 }
 
-// seen (optional): { modules: Set of the modules walked, unrecorded: whether a style module recorded no style sheets at all }
+// A module that is style: its file is a style sheet, or its request asks for the style of a file (vue-loader's
+// ?vue&type=style), or it is generated from one (mini-css-extract's CssModule: no resource, its issuer's file)
+const isStyle = (m, f) => packages.STYLE.test(f.split('?')[0]) || (typeof m.resource === 'string' && /[?&]type=style\b/.test(m.resource));
+
+// seen (optional): { modules: Set of the modules walked, unrecorded: whether a style module recorded no file
+// dependencies at all }
 function sourcesOf(compilation, modules, into = new Set(), seen = null) {
   const issuerOf = issuers(compilation);
   const walk = (list) => {
@@ -93,10 +119,9 @@ function sourcesOf(compilation, modules, into = new Set(), seen = null) {
       const f = sourceFile(m, issuerOf);
       if (f) {
         into.add(f);
-        if (packages.STYLE.test(f.split('?')[0])) {
-          const deps = styleDependencies(m, issuerOf);
-          if (deps) for (const d of deps) into.add(d); else if (seen) seen.unrecorded = true;
-        }
+        const style = isStyle(m, f) || (!m.resource && (() => { const i = issuerOf(m); return !!(i && typeof i.resource === 'string' && isStyle(i, i.resource)); })());
+        const deps = styleDependencies(m, issuerOf, style);
+        if (deps) for (const d of deps) into.add(d); else if (style && seen) seen.unrecorded = true;
       }
       if (m.modules) walk(m.modules);
     }
@@ -105,9 +130,10 @@ function sourcesOf(compilation, modules, into = new Set(), seen = null) {
   return into;
 }
 
-// rspack before 1.3.14 does not record per module which style sheets its loaders inlined (buildInfo is empty): those
-// below node_modules among the compilation's file dependencies, which has them. A style sheet only a module that is not
-// shipped used is listed too - one package too many rather than one missing.
+// rspack before 1.3.14 does not record per module which style sheets its loaders inlined (buildInfo is empty), nor does
+// webpack 5 for a module whose snapshot failed (a file it could not read the time of): those below node_modules among
+// the compilation's file dependencies, which has them. A style sheet only a module that is not shipped used is listed
+// too - one package too many rather than one missing.
 function styleFallback(compilation) {
   const out = [];
   for (const f of new Set(compilation.fileDependencies || [])) if (typeof f === 'string' && packages.STYLE.test(f) && packageRoot(f)) out.push(f);
@@ -158,10 +184,8 @@ function bundledFiles(compilation) {
   const ship = (c, chunks) => {
     const own = new Set(), seen = { modules: new Set(), unrecorded: false };
     for (const chunk of chunks) sourcesOf(c, chunkModules(c, chunk), own, seen);
-    if (rspack) {
-      if (seen.unrecorded) for (const f of styleFallback(c)) own.add(f);
-      for (const f of inlinedModules(c, seen.modules)) own.add(f);
-    }
+    if (seen.unrecorded) for (const f of styleFallback(c)) own.add(f);
+    if (rspack) for (const f of inlinedModules(c, seen.modules)) own.add(f);
     for (const f of own) files.add(f);
     return own;
   };
@@ -316,7 +340,8 @@ function entryFiles(compilation) {
 // hook), on older versions not running. Until then it is another writer: configs that differ only in what is not
 // compared here (resolve.alias, loader options) can be built side by side into one directory, e.g. with
 // [contenthash] file names. The id has no paths of this machine (the lockfile records it, and must be the same on
-// every machine): absolute paths in the options (entry: path.resolve(__dirname, ...)) are relative to the context.
+// every machine): absolute paths in the options (entry: path.resolve(__dirname, ...)) are relative to the context, those
+// in a package from its node_modules (see core/paths.cjs portable).
 // The claims are per output directory.
 const writers = globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] ||
   (globalThis[Symbol.for('bundle-lockfile.webpack.writers.v2')] = { claims: new Map() }); // dir + id -> ref(compiler)
@@ -326,9 +351,7 @@ function compilerWriter(compiler) {
   const o = compiler.options || {}, out = o.output || {};
   const plain = (v) => (typeof v === 'function' ? '(function)' : v === undefined ? null : v);
   let base;
-  const portable = (k, v) => (typeof v === 'string' && path.isAbsolute(v) && compiler.context
-    ? posix(path.relative(compiler.context, v)) : v);
-  try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)], portable); }
+  try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)], (k, v) => portable(compiler.context, v)); }
   catch { base = JSON.stringify([compiler.name || null, '(not comparable)']); } // e.g. a BigInt in an entry option
   let id = base;
   for (let n = 2; ; n++) {
@@ -417,28 +440,71 @@ function copiedInEmit(compilation, early, previous, readAsset, done) {
   }
 }
 
+// [major, minor] of a version
+const versionOf = (v) => String(v || '').split('.').map(Number);
+
+// Why the plugin cannot work in this compiler, or null: rspack before 1.1 lacks what it needs (the inner modules of
+// concatenated modules)
+function unsupported(compiler) {
+  if (!isRspack(compiler)) return null;
+  const v = compiler.webpack.rspackVersion, [major, minor] = versionOf(v);
+  return major > 1 || (major === 1 && minor >= 1) ? null : `rspack ${v} is not supported (it needs 1.1 or later): no lockfile for ${compiler.outputPath || 'the compiler'}`;
+}
+
+// Packages of JavaScript assets that are no chunk's file and have the content of a generate-only build's chunk (see
+// core/generated.cjs): workbox-webpack-plugin's GenerateSW generates sw.js and workbox-<hash>.js with workbox-build
+// (Rollup's generate()) and emits them as assets. Looked at once, when the lockfile is first rendered: after the emit,
+// webpack 5 keeps only the sizes of the assets.
+function generatedAssets(compilation) {
+  const out = [];
+  if (generated.any()) { // (else nothing generated in this process: nothing to look up)
+    const own = new Set();
+    for (const chunk of compilation.chunks || []) for (const f of chunk.files || []) own.add(f);
+    for (const name of assetNames(compilation)) {
+      if (own.has(name) || !JS.test(name.split('?')[0])) continue;
+      let src;
+      try { src = assetOf(compilation, name).source.source(); } catch { continue; } // (webpack 5 after emit: size only)
+      const pkgs = generated.byContent(src);
+      if (pkgs) { out.push(...pkgs); config.debug(`${kindOf(compilation.compiler)}: asset`, name, 'is the output of a generate-only build'); }
+    }
+  }
+  return out;
+}
+
 class BundleLockfilePlugin {
   // compilerFile: path of the Compiler module, used to find webpack-sources for webpack < 5.1
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
 
   // Content of the lockfile this compilation emits: its packages, plus those of other compilers that write
-  // the same lockfile (see core/outputs.cjs). extra: more files in the output (see copiedInEmit).
-  lockfile(compilation, extra = []) {
+  // the same lockfile (see core/outputs.cjs). extra: more files in the output (see copiedInEmit); more: more packages
+  // (files written into the output after the build, generate-only output emitted late)
+  lockfile(compilation, extra = [], more = []) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
     const build = { context: compiler.context, entries: entryFiles(compilation) }; // for vendored copies
-    return outputs.record(path.join(dir, this.file), compilerWriter(compiler), packages.packagesOfFiles([...bundled, ...extra], build).all,
+    const gen = compilation[GENERATED] || (compilation[GENERATED] = generatedAssets(compilation));
+    const pkgs = packages.unique(packages.packagesOfFiles([...bundled, ...extra], build).all, gen, more);
+    return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler) });
   }
 
   apply(compiler) {
     compiler[APPLIED] = true;
+    const why = unsupported(compiler);
+    if (why) { // each compilation fails (strict mode), or a warning once
+      compiler.hooks.thisCompilation.tap(NAME, (compilation) => { problems.problem(why, null, { once: why }); failCompilation(compilation); });
+      return;
+    }
     let RawSource = compiler.webpack && compiler.webpack.sources.RawSource; // webpack >= 5.1
     if (!RawSource) try { RawSource = createRequire(this.compilerFile || __filename)('webpack-sources').RawSource; } catch { /* fallback below */ }
     const add = (compilation, src) => {
       if (compilation.emitAsset) compilation.emitAsset(this.file, src); else compilation.assets[this.file] = src;
     };
     compiler.hooks.thisCompilation.tap(NAME, (compilation) => {
+      compilation[STARTED] = Date.now() - 2000; // (file systems with coarse timestamps)
+      // a plugin that makes webpack seal the compilation again (needAdditionalSeal): new chunks and assets
+      const unseal = hook(compilation.hooks, 'unseal');
+      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, UNNAMED, SOURCE, GENERATED]) delete compilation[k]; });
       // webpack 5 and rspack: copied files, before the optimize stages change their bytes (copiedUnnamed, copiedRspack)
       const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');
@@ -492,13 +558,25 @@ class BundleLockfilePlugin {
         try { fsys.readFile(path.join(dir, name.split('?')[0]), (err, buf) => cb(err ? null : buf)); } catch { cb(null); }
       };
       let landed = false;
-      const land = (copied) => {
+      const land = (copied, late) => {
         if (landed) return; // once, also if copiedInEmit fails after calling it
         landed = true;
         compiler[COPIED] = copied;
         let write = false;
-        if (copied.size) {
-          try { this.lockfile(compilation, [...copied.values()]); write = true; } catch (e) { problems.problem(`${kindOf(compiler)}: could not collect the packages of ${dir}`, e); }
+        const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler);
+        // files other plugins wrote into the output directory since the build started (filemanager-webpack-plugin's
+        // copies in afterEmit; see core/late.cjs)
+        let after = [];
+        if (disk && compilation[STARTED] && fs.existsSync(dir)) {
+          try {
+            const known = new Set([...assetFiles(dir, assetNames(compilation)), ...outputs.filesOf(file)]);
+            after = filesWrittenAfter(dir, { since: compilation[STARTED], cwd: realCwd(), roots: [compiler.context], skip: path.dirname(file), known });
+            if (after.length) config.debug(`${kindOf(compiler)}: files written into`, dir, 'after the build:', after.map(l => path.relative(dir, l.file)).join(' '));
+          } catch (e) { problems.problem(`${kindOf(compiler)}: could not check the files written into ${dir} after the build`, e); }
+        }
+        const more = [...late, ...after.flatMap(l => l.pkgs)];
+        if (copied.size || more.length) {
+          try { this.lockfile(compilation, [...copied.values()], more); write = true; } catch (e) { problems.problem(`${kindOf(compiler)}: could not collect the packages of ${dir}`, e); }
         }
         // the files webpack wrote: assets the emit hook deleted or added (compression-webpack-plugin <= 6 with
         // deleteOriginalAssets on webpack 4 replaces main.js by main.js.gz) were not known when the lockfile was rendered
@@ -506,7 +584,6 @@ class BundleLockfilePlugin {
         outputs.emitted(file, writer);
         // the inline file on the real disk after every build; in memory again if late copies added packages or
         // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build
-        const disk = compilation[SOURCE] ? compilation[SOURCE].disk : onDisk(compiler);
         // an output directory on disk that is gone by now was removed by another plugin's afterEmit after it took the
         // files away (Metabase's embed build: copied into app/, then rm -rf): the lockfile is not put back there, which
         // would recreate the directory with only it (and ship it in Metabase's jar); the export copy is still written
@@ -534,14 +611,35 @@ class BundleLockfilePlugin {
           });
         });
       };
-      if (!compilation[SOURCE]) return land(new Map());
-      try { copiedInEmit(compilation, compilation[SOURCE].early, compiler[COPIED] || new Map(), readAsset, land); } catch (e) {
-        problems.problem(`${kindOf(compiler)}: could not check the files copied into ${dir} in the emit hook`, e);
-        land(new Map());
-      }
+      if (!compilation[SOURCE]) return land(new Map(), []);
+      const early = compilation[SOURCE].early;
+      lateGenerated(compilation, early, readAsset, (late) => {
+        try { copiedInEmit(compilation, early, compiler[COPIED] || new Map(), readAsset, (copied) => land(copied, late)); } catch (e) {
+          problems.problem(`${kindOf(compiler)}: could not check the files copied into ${dir} in the emit hook`, e);
+          land(new Map(), late);
+        }
+      });
     });
   }
 }
+
+// Packages of the generate-only output among the JavaScript assets added in the emit hook, after the lockfile was
+// rendered (workbox-webpack-plugin's GenerateSW on webpack 4; see generatedAssets): done(packages)
+function lateGenerated(compilation, early, readAsset, done) {
+  const names = assetNames(compilation).filter(n => !early.has(n) && JS.test(n.split('?')[0]));
+  if (!names.length || !generated.any()) return done([]);
+  const out = [];
+  let pending = names.length;
+  for (const name of names) {
+    readAsset(name, (buf) => {
+      const pkgs = buf && generated.byContent(buf);
+      if (pkgs) out.push(...pkgs);
+      if (--pending === 0) done(out);
+    });
+  }
+}
+
+const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { return process.cwd(); } };
 
 // The compiler is rspack's (rspack.cjs), not webpack's: it names its version. Decided per compiler, as both can be loaded
 // in one process (Next.js with next-rspack loads its webpack too, OHIF loads rspack 1 and 2).
@@ -565,4 +663,4 @@ function attach(compiler, listeners, where, args, kind) {
   return failed;
 }
 
-module.exports = { NAME, APPLIED, BundleLockfilePlugin, bundledFiles, sourceFile, compilationError, isRspack, attach };
+module.exports = { NAME, APPLIED, BundleLockfilePlugin, bundledFiles, sourceFile, compilationError, isRspack, attach, versionOf };

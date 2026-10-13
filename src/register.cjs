@@ -5,7 +5,11 @@
 // then writes <output dir>/bundle-lockfile/package-lock.json listing the npm packages in its output.
 const fs = require('fs');
 const path = require('path');
-const config = require('./core/config.cjs');
+const config = require('./core/config.cjs'); // (also applies the settings file to process.env)
+
+// Node's own loader thread (Node.js >= 22.14 runs --require preloads there too): nothing to hook or check there - the
+// main thread reports the settings and installs the hooks
+if (require('worker_threads').isInternalThread) return;
 
 const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters/rspack.cjs'];
 // yarn's own entry point (process.argv[1]): yarn 1's bin/yarn.js (npm's and distributions' package, corepack's copy
@@ -56,15 +60,19 @@ function preloads() {
 if (!config.isDisabled('all')) {
   // a settings file that is there but cannot be used: its settings (an export directory) would be missing - a problem
   // (the first build fails with it, or the process, see core/problems.cjs)
-  const problems = require('./core/problems.cjs');
-  const { file: settings, error } = config.settingsFile;
-  if (error) problems.problem(`could not read the settings file ${settings}`, error);
-  else if (settings) config.debug('settings from', settings);
-  // settings that are set but not recognized, or cannot work: the build would not do what was asked of it
-  for (const msg of config.invalid) problems.problem(msg);
-  // another copy of bundle-lockfile preloaded too: only the first one runs (hooks.cjs), whose settings and version
-  // may not be the ones meant. Each new copy reports the others, whichever comes first.
-  for (const other of otherCopies()) problems.problem(`another copy of bundle-lockfile is preloaded too: ${other} (only the first one runs; preload one)`);
+  // Reported by the main thread of each process, once: worker threads run the preload too, and so does Node.js 20's
+  // loader thread, which cannot be told from a worker (no isInternalThread)
+  if (require('worker_threads').isMainThread) {
+    const problems = require('./core/problems.cjs');
+    const { file: settings, error } = config.settingsFile;
+    if (error) problems.problem(`could not read the settings file ${settings}`, error);
+    else if (settings) config.debug('settings from', settings);
+    // settings that are set but not recognized, or cannot work: the build would not do what was asked of it
+    for (const msg of config.invalid) problems.problem(msg);
+    // another copy of bundle-lockfile preloaded too: only the first one runs (hooks.cjs), whose settings and version
+    // may not be the ones meant. Each new copy reports the others, whichever comes first.
+    for (const other of otherCopies()) problems.problem(`another copy of bundle-lockfile is preloaded too: ${other} (only the first one runs; preload one)`);
+  }
   // With the node shim (bin/node), yarn still runs scripts with a temporary `node` first in PATH that runs yarn's
   // own process.execPath, bypassing the shim. In yarn's process, and only there (others derive paths from it, e.g.
   // node-gyp's headers), process.execPath is the shim, which runs the real node.

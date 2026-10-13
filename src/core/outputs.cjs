@@ -29,6 +29,8 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies
 // copies: copy of a lockfile, made in this process -> { target: the lockfile it is a copy of, content: what was
 // written to the copy last } (see copied).
 const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map() });
+// exports: export copy -> the lockfile this process writes there (see exportOf)
+if (!outputs.exports) outputs.exports = new Map();
 const MAX_COPIES = 1000;
 
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
@@ -52,7 +54,12 @@ function foreign(target, own, all = false) {
   try {
     meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(target));
     outputs.read.set(target, meta);
-  } catch { meta = outputs.read.get(target) || null; } // not there (any more)
+  } catch (e) {
+    // not there (any more, or a file where a directory of its path would be); any other error (EACCES, EMFILE, EISDIR)
+    // hides the other processes' records: a problem (core/problems.cjs), with what this process read last
+    if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') problems.problem(`could not read ${file}: the packages other processes recorded there may be missing`, e);
+    meta = outputs.read.get(target) || null;
+  }
   if (!meta) return [];
   return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(there)))
     .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context, anchored: meta.anchored,
@@ -83,9 +90,10 @@ function render(target, own) {
   const builds = [];
   const ids = new Set();
   for (const [id, w] of outputs.files.get(target) || []) {
-    ids.add(w.id);
     const b = id === own && w.building ? w.building : w.landed;
-    if (b) builds.push({ ...b, id: w.id });
+    // a writer with no landed build here (its first build in this process failed): its record on disk is still the
+    // output in the directory
+    if (b) { builds.push({ ...b, id: w.id }); ids.add(w.id); }
   }
   builds.push(...foreign(target, ids));
   if (!builds.length) return null;
@@ -192,9 +200,10 @@ function copied(src, dest, isDirectory) {
     // the record of an export copy is anchored where its lockfile is, that of a copy where it is
     const anchor = target && exportPath(target) === from ? path.dirname(target) : path.dirname(from);
     let json;
-    try { json = reanchor(fs.readFileSync(to, 'utf8'), anchor, path.dirname(to)); } catch { continue; }
+    try { json = reanchor(fs.readFileSync(to, 'utf8'), anchor, path.dirname(to)); } catch { continue; } // not copied after all
     if (json === null) continue; // no record written where it comes from: left as it is
-    writeAtomic(to, json);
+    // a copy that cannot be re-anchored keeps the record of where it was copied from, and is not followed
+    try { writeAtomic(to, json); } catch (e) { problems.problem(`could not write the copy ${to} of ${from}`, e); continue; }
     lru.set(outputs.copies, to, { target, content: json }, MAX_COPIES);
     config.debug('copied lockfile', from, '->', to, '- its record is for where it is now');
   }
@@ -218,9 +227,23 @@ function follow(target, content) {
   }
 }
 
-// writeFile for rewrite(): a lockfile on the real disk, which other processes read
+// writeFile for rewrite(): a lockfile on the real disk, which other processes read - never one that bundle-lockfile
+// did not write (see ours)
 function writeDisk(file) {
-  return (content, cb) => { try { writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
+  return (content, cb) => { try { ours(file); writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
+}
+
+// Throws if `file` is there and is not a lockfile bundle-lockfile wrote (it has no "bundle-lockfile" record): the
+// project's own package-lock.json, when the output directory is the project and BUNDLE_LOCKFILE_FILE is
+// package-lock.json, must not be replaced.
+function ours(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return; throw e; }
+  let doc = null;
+  try { doc = JSON.parse(text); } catch { /* not JSON */ }
+  if (!doc || typeof doc !== 'object' || !doc['bundle-lockfile'] || typeof doc['bundle-lockfile'] !== 'object') {
+    throw new Error(`${file} is there and was not written by bundle-lockfile (e.g. npm's own lockfile): it is not replaced`);
+  }
 }
 
 // BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR: there is nowhere to write - a problem of every build
@@ -250,7 +273,8 @@ function rewrite(target, writeFile, done) {
       if (content === null) { config.debug('nothing recorded for', target, '- not written'); return finish(); }
       if (!writeFile && !exportPath(target)) nowhere();
       const exported = (err) => {
-        const file = exportPath(target);
+        let file;
+        try { file = exportOf(target); } catch (e) { return finish(err || e); }
         if (file) try { writeAtomic(file, content); } catch (e) { return finish(err || e); }
         if (!err) follow(target, content);
         finish(err);
@@ -260,6 +284,17 @@ function rewrite(target, writeFile, done) {
   }));
   outputs.queues.set(target, next);
   next.then((err) => setImmediate(done, err)); // outside the promise: done() continues the build
+}
+
+// The export copy of `target` (exportPath), or null. Two lockfiles of this process at one export path would replace each
+// other's copy: an error, and neither writes it but the first.
+function exportOf(target) {
+  const file = exportPath(target);
+  if (!file) return null;
+  const first = outputs.exports.get(file);
+  if (first === undefined) outputs.exports.set(file, target);
+  else if (first !== target) throw new Error(`its export copy ${file} is also the export copy of ${first}`);
+  return file;
 }
 
 // The files the writers of `target` in this process emit there (their builds in progress and landed).

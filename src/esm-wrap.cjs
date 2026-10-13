@@ -3,12 +3,22 @@
 // whose file: URL ends with one of the suffixes is replaced by a generated module that re-exports everything of the
 // real one, except the functions named in `wrap`, which go through globalThis[Symbol.for('bundle-lockfile.esm')].
 // Used by the in-thread hooks (module.registerHooks) and the loader thread (esm-loader.mjs) alike.
+const path = require('path');
+const { fileURLToPath } = require('url');
+const { logical } = require('./core/layout.cjs');
+
 const MARK = 'bundle-lockfile-real'; // query on the URL of the real module, which is loaded as is
+
+// The path of a file: URL as adapters recognize bundler files by ("/" separators; a package in Yarn's store as
+// node_modules/<name>, see core/layout.cjs), or null
+function pathOf(url) {
+  try { return logical(fileURLToPath(url.split(/[?#]/)[0])).split(path.sep).join('/'); } catch { return null; }
+}
 
 function match(url, entries) {
   if (typeof url !== 'string' || !url.startsWith('file:') || url.includes(MARK)) return null;
-  const p = url.split(/[?#]/)[0];
-  return entries.find(e => e.suffixes.some(s => p.endsWith(s))) || null;
+  const p = pathOf(url);
+  return (p && entries.find(e => e.suffixes.some(s => p.endsWith(s)))) || null;
 }
 
 // The source without its comments (each replaced by a space), so that an export in a comment does not count: a
@@ -57,20 +67,30 @@ function exportedNames(source) {
   return names;
 }
 
-// The wrapper's source, or null if the module does not export any of the functions to wrap (an unknown version:
-// leave it alone).
+// The wrapper's source. Every function in entry.wrap is exported as the wrapped one, whether the module exports it or
+// not (the namespace has it also from an `export *`; one it does not have is undefined, and stays so); the wrapper tells
+// the hooks whether the module had any of them - an entry with none is a version the adapter does not know, whose
+// builds would write no lockfile (hooks.cjs found). Only the default export is read from the source.
 function source(url, realSrc, entry) {
   const names = exportedNames(realSrc);
-  const wrap = entry.wrap.filter(n => names.has(n));
-  if (!wrap.length) return null;
   const real = JSON.stringify(`${url}${url.includes('?') ? '&' : '?'}${MARK}`);
+  const id = JSON.stringify(entry.id);
   return [
     `import * as real from ${real};`,
     `export * from ${real};`,
     names.has('default') ? `export { default } from ${real};` : '',
     `const api = globalThis[Symbol.for('bundle-lockfile.esm')];`,
-    ...wrap.map(n => `export const ${n} = api ? api.wrap(${JSON.stringify(entry.id)}, ${JSON.stringify(n)}, real.${n}) : real.${n};`),
+    `if (api && api.found) api.found(${id}, ${JSON.stringify(url)}, ${JSON.stringify(entry.wrap)}, ${JSON.stringify(entry.wrap)}.some(n => typeof real[n] === 'function'));`,
+    ...entry.wrap.map(n => `export const ${n} = api ? api.wrap(${id}, ${JSON.stringify(n)}, real.${n}) : real.${n};`),
   ].filter(Boolean).join('\n') + '\n';
+}
+
+// What a load hook returns for an entry module it cannot wrap, in strict mode: a module that throws when it is
+// evaluated, which fails its import - the build - with the reason (in the bundler's thread also when the loader thread
+// found it).
+function unwrappable(url, e) {
+  const msg = `bundle-lockfile: could not wrap ${url}: ${e && e.message} (BUNDLE_LOCKFILE_STRICT=0 makes this a warning)`;
+  return { format: 'module', source: `throw new Error(${JSON.stringify(msg)});\n`, shortCircuit: true };
 }
 
 // CommonJS modules whose source a loader hook provides (Yarn Plug'n'Play's for files in its zip cache, on Node versions
@@ -83,8 +103,8 @@ function source(url, realSrc, entry) {
 const CJS_LOADED = "\n;{ const f = globalThis[Symbol.for('bundle-lockfile.cjs-loaded')]; if (typeof f === 'function') f(module, __filename); }\n";
 function cjsSource(url, result, files) {
   if (!result || result.format !== 'commonjs' || result.source == null || typeof url !== 'string' || !url.startsWith('file:')) return null;
-  const p = decodeURIComponent(url.split(/[?#]/)[0]);
-  if (!files.some(re => re.test(p))) return null;
+  const p = pathOf(url);
+  if (!p || !files.some(re => re.test(p))) return null;
   const src = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
   return src.endsWith(CJS_LOADED) ? null : src + CJS_LOADED;
 }
@@ -100,8 +120,7 @@ function transform(url, result, entries, cjsFiles) {
     const cjs = cjsSource(url, result, cjsFiles);
     return cjs ? { ...result, source: cjs } : result;
   }
-  const src = source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry);
-  return src ? { format: 'module', source: src, shortCircuit: true } : result;
+  return { format: 'module', source: source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry), shortCircuit: true };
 }
 
-module.exports = { MARK, match, withoutComments, exportedNames, source, cjsSource, CJS_LOADED, transform };
+module.exports = { MARK, match, withoutComments, exportedNames, source, cjsSource, CJS_LOADED, transform, unwrappable };

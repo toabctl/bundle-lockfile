@@ -42,8 +42,11 @@ function problem(what, cause, opts = {}) {
   }
 }
 
-// The recorded problems, removed (so that each fails one build).
-function take() { return state.pending.splice(0); }
+// The recorded problems, removed (so that each fails one build); from: only those recorded after the first `from`
+// (see count).
+function take(from = 0) { return state.pending.splice(from); }
+// How many problems are pending: take(count()) later takes those recorded in between.
+const count = () => state.pending.length;
 
 const pending = () => state.pending.length > 0;
 
@@ -67,4 +70,4 @@ function failIfAny(fail) {
   return true;
 }
 
-module.exports = { problem, take, pending, failure, failIfAny, isFailure };
+module.exports = { problem, take, count, pending, failure, failIfAny, isFailure };

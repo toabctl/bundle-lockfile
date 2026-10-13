@@ -35,6 +35,7 @@ const FROM_FILE = NAMES.filter(n => !/_(CONFIG|REGISTER|NODE_SHIM|NODE_SEEN)$/.t
 const ADAPTER_NAMES = ['webpack', 'rspack', 'vite', 'rollup', 'rolldown'];
 const ESM_HOOKS = ['auto', 'sync', 'async', 'off'];
 const invalid = []; // what is set but not recognized, or cannot work: register.cjs reports each (core/problems.cjs)
+const fromFile = new Set(); // the settings the settings file set (not the environment)
 
 // The settings file: { "BUNDLE_LOCKFILE_EXPORT_DIR": "/x", ... }. Some build tools pass on NODE_OPTIONS and PATH but
 // not these variables (turbo's strict env mode), or start the build with an environment of their own (Metabase's
@@ -59,7 +60,7 @@ function readSettingsFile() {
       invalid.push(`the settings file ${file} sets ${k}, which ${NAMES.includes(k) ? 'only the environment can set' : 'is no setting of bundle-lockfile'}`);
     } else if (v === null || typeof v === 'object') {
       invalid.push(`the settings file ${file} sets ${k} to ${JSON.stringify(v)}: not a string, number or boolean`);
-    } else if (env[k] === undefined) env[k] = String(v);
+    } else if (env[k] === undefined) { env[k] = String(v); fromFile.add(k); }
   }
   return { file, error: null };
 }
@@ -69,6 +70,9 @@ for (const k of Object.keys(env)) {
 }
 
 const value = (k) => (env[k] === undefined ? '' : env[k].trim());
+// where a setting comes from, for messages: nothing for the environment, the settings file for one it set
+const from = (k) => (fromFile.has(k) ? ` (from the settings file ${settingsFile.file})` : '');
+const shown = (k) => `${k}=${env[k]}${from(k)}`;
 // an on/off setting: unset or empty - the default; 1, true, on / 0, false, off (any case); anything else is invalid
 // (the default then: BUNDLE_LOCKFILE_STRICT=yes stays strict, and fails the build for the invalid value)
 function flag(k, dflt) {
@@ -76,39 +80,46 @@ function flag(k, dflt) {
   if (!v) return dflt;
   if (/^(1|true|on)$/i.test(v)) return true;
   if (/^(0|false|off)$/i.test(v)) return false;
-  invalid.push(`${k}=${env[k]} is not recognized (1, true or on; 0, false or off)`);
+  invalid.push(`${shown(k)} is not recognized (1, true or on; 0, false or off)`);
   return dflt;
 }
 // an absolute directory, or null: a relative one would resolve against each process's working directory
 function dir(k) {
   const v = value(k);
   if (!v) return null;
-  if (!path.isAbsolute(v)) invalid.push(`${k} is not an absolute path: ${v} (each process would resolve it in its own working directory)`);
+  if (!path.isAbsolute(v)) invalid.push(`${k} is not an absolute path: ${v}${from(k)} (each process would resolve it in its own working directory)`);
   return path.resolve(v);
 }
 // the lockfile's path below an output directory: relative, inside it, named package-lock.json and not below a
-// node_modules directory - the only files syft and Trivy read
+// node_modules directory - the only files syft and Trivy read. Unset or empty: the default. A backslash separates
+// directories only on Windows: elsewhere it is part of a name (sbom\package-lock.json is no file named package-lock.json).
 function lockfilePath() {
-  const v = env.BUNDLE_LOCKFILE_FILE || 'bundle-lockfile/package-lock.json';
-  const parts = v.split(/[\\/]/);
+  const v = value('BUNDLE_LOCKFILE_FILE') || 'bundle-lockfile/package-lock.json';
+  const parts = path.sep === '\\' ? v.split(/[\\/]/) : v.split('/');
   if (path.isAbsolute(v) || parts.includes('..') || parts[parts.length - 1] !== 'package-lock.json' || parts.includes('node_modules')) {
-    invalid.push(`BUNDLE_LOCKFILE_FILE=${v} is not a relative path inside the output directory to a file named package-lock.json outside node_modules (the only files syft and Trivy read)`);
+    invalid.push(`BUNDLE_LOCKFILE_FILE=${v}${from('BUNDLE_LOCKFILE_FILE')} is not a relative path inside the output directory to a file named package-lock.json outside node_modules (the only files syft and Trivy read)`);
   }
   return v;
 }
 
 const disabled = new Set(value('BUNDLE_LOCKFILE_DISABLE').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
-for (const n of disabled) if (n !== 'all' && !ADAPTER_NAMES.includes(n)) invalid.push(`BUNDLE_LOCKFILE_DISABLE names ${n}, which is none of ${ADAPTER_NAMES.join(', ')} or all`);
-const esmHooks = value('BUNDLE_LOCKFILE_ESM_HOOKS').toLowerCase() || 'auto';
-if (!ESM_HOOKS.includes(esmHooks)) invalid.push(`BUNDLE_LOCKFILE_ESM_HOOKS=${env.BUNDLE_LOCKFILE_ESM_HOOKS} is none of ${ESM_HOOKS.join(', ')}`);
+for (const n of disabled) if (n !== 'all' && !ADAPTER_NAMES.includes(n)) invalid.push(`BUNDLE_LOCKFILE_DISABLE names ${n}${from('BUNDLE_LOCKFILE_DISABLE')}, which is none of ${ADAPTER_NAMES.join(', ')} or all`);
+// BUNDLE_LOCKFILE_ESM_HOOKS as hooks.cjs reads it when it installs the hooks: any case, spaces ignored; unset or empty: auto
+const esmHooksOf = (v) => (v === undefined ? '' : String(v).trim()).toLowerCase() || 'auto';
+if (!ESM_HOOKS.includes(esmHooksOf(env.BUNDLE_LOCKFILE_ESM_HOOKS))) invalid.push(`${shown('BUNDLE_LOCKFILE_ESM_HOOKS')} is none of ${ESM_HOOKS.join(', ')}`);
 const exportDir = dir('BUNDLE_LOCKFILE_EXPORT_DIR'), exportBase = dir('BUNDLE_LOCKFILE_EXPORT_BASE');
-if (exportBase && !exportDir) invalid.push('BUNDLE_LOCKFILE_EXPORT_BASE is set without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect');
+if (exportBase && !exportDir) invalid.push(`BUNDLE_LOCKFILE_EXPORT_BASE is set${from('BUNDLE_LOCKFILE_EXPORT_BASE')} without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect`);
+// the node shim (bin/node) preloads it in every process, wherever that runs: Node's --require takes a relative path as
+// a package name (the shim refuses it too)
+const register = value('BUNDLE_LOCKFILE_REGISTER');
+if (register && !path.isAbsolute(register)) invalid.push(`BUNDLE_LOCKFILE_REGISTER is not an absolute path: ${register} (the node shim preloads it in every process, wherever it runs)`);
 const debugOn = flag('BUNDLE_LOCKFILE_DEBUG', false);
 
 module.exports = {
   settingsFile, // { file: the settings file read, or null; error: why it could not be used, or null }
   invalid, // settings that are set but not recognized, or cannot work (messages)
   ADAPTER_NAMES,
+  esmHooksOf,
   file: lockfilePath(),
   exportDir,
   exportBase,

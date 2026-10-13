@@ -20,12 +20,13 @@ const listeners = [(compiler, where) => {
 }];
 const onCompiler = (fn) => { listeners.push(fn); };
 
+// Returns whether Compiler looks like webpack's Compiler (and is patched now, or was already), not any class called
+// "Compiler" (e.g. snapdragon's).
 function patchCompiler(Compiler, where) {
-  if (typeof Compiler !== 'function') return; // check first: reading props of a circular partial export warns
+  if (typeof Compiler !== 'function') return false; // check first: reading props of a circular partial export warns
   const p = Compiler.prototype;
-  // must look like webpack's Compiler, not any class called "Compiler" (e.g. snapdragon's)
-  if (!p || !['compile', 'run', 'watch', 'newCompilation', 'isChild'].every(k => typeof p[k] === 'function')) return;
-  if (p[PATCHED]) return;
+  if (!p || !['compile', 'run', 'watch', 'newCompilation', 'isChild'].every(k => typeof p[k] === 'function')) return false;
+  if (p[PATCHED]) return true;
   p[PATCHED] = true;
   const orig = p.compile;
   p.compile = function (...args) {
@@ -37,18 +38,25 @@ function patchCompiler(Compiler, where) {
     return orig.apply(this, args);
   };
   config.debug('webpack: patched Compiler from', where);
+  return true;
+}
+
+// The Compiler of a module that is webpack's (its lib/Compiler.js, Next.js' copy) but not of the shape webpack.cjs
+// knows: a version whose builds would write no lockfile - a problem (in strict mode its require() fails, see hooks.cjs)
+function unknownCompiler(where) {
+  problems.problem(`webpack: ${where} has no Compiler bundle-lockfile knows (compile, run, watch, newCompilation, isChild): its builds would write no lockfile`);
 }
 
 // In Next 12-15, next/dist/compiled/webpack/webpack.js only exports init() when it is loaded; init() then fills
 // in exports.webpack (Object.assign(exports, require('./bundle5')())). Next 16 fills the exports when the module
 // is loaded (no init()). Patch an already filled copy right away, and otherwise right after init().
 function patchNext(exp, where) {
-  if (exp.webpack && exp.webpack.Compiler) patchCompiler(exp.webpack.Compiler, where);
+  if (exp.webpack && exp.webpack.Compiler && !patchCompiler(exp.webpack.Compiler, where)) unknownCompiler(where);
   if (typeof exp.init !== 'function' || exp.init[PATCHED]) return;
   const init = exp.init;
   exp.init = function (...args) {
     const r = init.apply(this, args);
-    try { if (exp.webpack) patchCompiler(exp.webpack.Compiler, where); } catch (e) { problems.problem(`webpack: could not patch Next.js' webpack (${where})`, e); }
+    try { if (exp.webpack && !patchCompiler(exp.webpack.Compiler, where)) unknownCompiler(where); } catch (e) { problems.problem(`webpack: could not patch Next.js' webpack (${where})`, e); }
     return r;
   };
   exp.init[PATCHED] = true;
@@ -64,15 +72,17 @@ module.exports = {
   onCompiler,
   onCjsLoad(exp, request, resolve) {
     // recognizing a module only reads it (a failure there is hooks.cjs's warning); failing to patch one that is webpack
-    // means its builds write no lockfile: a problem (core/problems.cjs)
+    // means its builds write no lockfile: a problem (core/problems.cjs). request: the path as webpack's files are
+    // recognized by (see hooks.cjs), resolve(): the real one
     let patch = null;
     if (typeof exp === 'function') {
       // only probe functions: probing plain objects can trigger circular-dependency warnings
-      if (exp.name === 'Compiler') patch = () => patchCompiler(exp, resolve());                                    // webpack/lib/Compiler.js
-      else if (exp.Compiler && exp.Compilation && exp.version && !exp.rspackVersion) patch = () => patchCompiler(exp.Compiler, resolve()); // webpack namespace (not rspack's: rspack.cjs)
-    } else if (exp && typeof exp === 'object' && request.includes('webpack')) {
-      const where = resolve();
-      if (NEXT_WEBPACK.test(where)) patch = () => patchNext(exp, where);
+      if (exp.name === 'Compiler') { // webpack/lib/Compiler.js - or another class called Compiler, elsewhere
+        patch = () => { if (!patchCompiler(exp, resolve()) && module.exports.cjsFiles[0].test(request)) unknownCompiler(resolve()); };
+      } else if (exp.Compiler && exp.Compilation && exp.version && !exp.rspackVersion) patch = () => patchCompiler(exp.Compiler, resolve()); // webpack namespace (not rspack's: rspack.cjs)
+    } else if (request.includes('webpack')) {
+      if (exp && typeof exp === 'object' && NEXT_WEBPACK.test(request)) patch = () => patchNext(exp, resolve());
+      else if (module.exports.cjsFiles[0].test(request)) patch = () => unknownCompiler(resolve()); // webpack's lib/Compiler.js exports no class
     }
     if (patch) try { patch(); } catch (e) { problems.problem(`webpack: could not patch ${resolve()}`, e); }
   },
