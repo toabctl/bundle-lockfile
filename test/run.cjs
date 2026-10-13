@@ -5,14 +5,15 @@
 // Collects all lockfiles under the case's outDir ({output dir: packages}, one per top-level compiler) and checks:
 //   1. they are valid for syft and match the expectation (expect / expectIncludes / expectExcludes), and their
 //      records give every package's real location
-//   2. they agree exactly with the bundler's oracle (independent build without bundle-lockfile)
+//   2. they agree exactly with the bundler's oracle (independent build without bundle-lockfile), and with the canaries
+//      in the output's bytes
 //   3. syft (if on PATH) reads exactly those packages from outDir via javascript-lock-cataloger
 //   4. Trivy (if on PATH) reads exactly those packages from outDir via its npm (package-lock.json) analyzer
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fixtures, cases } = require('./matrix.cjs');
-const { LOCKFILE, readLockfiles, checkLocations, unlocated, sameMap, same, show } = require('./lib/check.cjs');
+const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
 const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
@@ -164,6 +165,15 @@ function runCase(c) {
   if (missing.length) throw new Error(`missing ${missing.join(' ')} in${show(got)}`);
   const unwanted = (c.expectExcludes || []).filter(p => all.includes(p));
   if (unwanted.length) throw new Error(`unexpected ${unwanted.join(' ')} in${show(got)}`);
+
+  // canaries (test/apps/canary): found in the output's bytes, not through the bundler - each one listed, and each listed
+  // one there
+  const shipped = canaries(outDir);
+  const unlisted = shipped.filter(p => !all.includes(p));
+  if (unlisted.length) throw new Error(`in the output, not listed: ${unlisted.join(' ')}`);
+  const absent = all.filter(p => p.startsWith('bl-canary-') && !shipped.includes(p));
+  if (absent.length) throw new Error(`listed, not in the output: ${absent.join(' ')}`);
+  if (shipped.length) notes.push(`${shipped.length} canaries in the output, all listed`);
 
   // syft first: the oracle's build may write where the case's build wrote (adapter-netlify's .netlify/, Next's .next/
   // with output: 'export')

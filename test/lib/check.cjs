@@ -2,6 +2,7 @@
 // Checks shared by all bundlers: lockfiles are ones syft and Trivy can read, and their package lists.
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const LOCKFILE = 'bundle-lockfile/package-lock.json';
 
@@ -93,4 +94,22 @@ function unlocated(f) {
   return [...(m.outside || []), ...(m.unknown || [])];
 }
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, sameMap, same, show };
+// The canaries in the files below dir (test/apps/canary): name@version of each BLCANARY:<name>@<version> in their bytes,
+// gzip and brotli copies unpacked - what is shipped, whatever the bundler reports. Sorted, unique
+function canaries(dir) {
+  const found = new Set();
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.isFile()) continue;
+      let bytes = fs.readFileSync(p);
+      try { if (p.endsWith('.gz')) bytes = zlib.gunzipSync(bytes); else if (p.endsWith('.br')) bytes = zlib.brotliDecompressSync(bytes); } catch { /* not compressed */ }
+      for (const m of bytes.toString('latin1').matchAll(/BLCANARY:((?:@[\w.-]+\/)?[\w.-]+@\d+\.\d+\.\d+)/g)) found.add(m[1]);
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir);
+  return [...found].sort();
+}
+
+module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, canaries, sameMap, same, show };
