@@ -933,15 +933,20 @@ const cases = [
   ...['8.3.3', '7.3.7'].map(v => ({ name: `Vite ${v} features, plugin in the config and NODE_OPTIONS`, fixture: `vite${v[0]}-features`,
     cmd: 'npm run -s build', env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING })),
   // the plugin in the config without NODE_OPTIONS: it adds itself to worker.plugins, with which Vite bundles the
-  // workers (nanoid; is-number inlined). Not reached without the preload, so not asserted: workbox-build's service
-  // worker (a build with plugins of its own), and on Vite 8 plugin-legacy's polyfills (their chunk, which it puts into
-  // the bundle, is no chunk of this build there) and the style sheets @imported from packages (Rolldown gives them
-  // only to the caller of rolldown()); the oracle, which sees all of them, is therefore not compared
+  // workers (nanoid; is-number inlined; the worker's font, bootstrap-icons, which the app's build emits again). The
+  // static copy keeps its path (vendor/node_modules/normalize.css/normalize.css): found as a file written after the
+  // build. Not reached without the preload: workbox-build's service worker (a build with plugins of its own), and on
+  // Vite 8 plugin-legacy's polyfills (their chunk, which it puts into the bundle, is no chunk of this build there) and
+  // the style sheets @imported from packages (Rolldown gives them only to the caller of rolldown()). On Vite 7 the
+  // polyfills' chunk (core-js, systemjs) and the style sheets (Rollup's watch files) are this build's. Checked in the
+  // output (2026-10-13): each package's code or file is where its list says. The oracle sees all of them, so it is not
+  // compared
   { name: 'Vite 8.3.3 features, plugin in the config (no NODE_OPTIONS)', fixture: 'vite8-features', cmd: 'npm run -s build', inject: false,
-    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expectIncludes: ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'], oracle: false },
+    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') },
+    expect: ['bootstrap-icons@1.13.2', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1'], oracle: false },
   { name: 'Vite 7.3.7 features, plugin in the config (no NODE_OPTIONS)', fixture: 'vite7-features', cmd: 'npm run -s build', inject: false,
     env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') },
-    expectIncludes: ['bulma@1.0.4', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'], oracle: false },
+    expect: FEATURES_EXPECT.filter(p => !p.startsWith('workbox-')), oracle: false },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
   { name: "Rollup 4 command line (rollup -c), yarn 4.18.1 Plug'n'Play", fixture: 'rollup-cli-yarn4-pnp', cmd: 'yarn build', expect: ROLLUP_API },
   { name: 'Rollup 4 command line (rollup -c), yarn 4.18.1 pnpm linker', fixture: 'rollup-cli-yarn4-pnpm', cmd: 'yarn build', expect: ROLLUP_API },
@@ -1097,10 +1102,11 @@ const cases = [
   // the project's dependencies (the server runtime's imports left by Vite's SSR build), not what the disabled server
   // build bundled (no lockfile there to find): not svelte, the kit's runtime, the client's packages. No oracle: it
   // derives everything the output has. (Which versions of the runtime's imports it bundles depends on npm's hoisting.)
+  // Checked in build/ (2026-10-13): set-cookie-parser's and devalue's code in server/chunks/chunks/utils.js, cookie's in
+  // server/chunks/index.js, clsx's (svelte's server runtime imports it) in server/chunks/chunks/root.js
   { name: 'SvelteKit 2 (Vite 7), adapter-node, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build',
     env: { SVELTEKIT_ADAPTER: 'node', BUNDLE_LOCKFILE_DISABLE: 'vite' }, oracle: false,
-    expectIncludes: ['@sveltejs/adapter-node@5.5.7', 'clsx@2.1.1', 'cookie@0.6.0', 'devalue@5.9.4'],
-    expectExcludes: ['@sveltejs/kit@2.70.3', 'svelte@5.57.2', 'esm-env@1.2.2', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'ms@2.1.3'] },
+    expect: ['@sveltejs/adapter-node@5.5.7', 'clsx@2.1.1', 'cookie@0.6.0', 'devalue@5.9.4', 'set-cookie-parser@2.7.2'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-static', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build',
     expectIncludes: SVELTE_CLIENT('3.0.1'), expectExcludes: ['ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-node', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },
@@ -1354,6 +1360,7 @@ const cases = [
     expectIn: { a: ['ms@2.1.3'], b: ['debug@2.6.9', 'ms@2.0.0'] } },
   // output.path 'dist/[fullhash]': each compiler's own directory. No oracle: it builds without minimizing, which changes
   // the hashes, so its directories have other names; RSPACK_FULLHASH checks which compiler's file each lockfile is next to
+  // and that lockfile's exact packages (expectIncludes: their union, as the directory names are not known)
   { name: 'rspack 2.2.8: two compilers, output.path with [fullhash]', fixture: 'rspack2.2-npm', cmd: RSPACK_FULLHASH, env: { RSPACK_SHARED: 'fullhash' },
     expectIncludes: SHARED, oracle: false },
   // the first compiler's asset names carry a query string ([name].js?[contenthash]): its files are still there
