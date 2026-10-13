@@ -239,8 +239,8 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
   belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`, `@rspack/core`,
   `@rspack/cli` or `@rsbuild/core` (the adapters' `esmPackages`) — the `vite`, `rspack` or `rsbuild` command, a build
   script of a project using one of them, tools such as `headlamp-plugin` —, whose project has one of them installed
-  (`node_modules/<package>` in the working directory or above: `nuxi`, `storybook`, which load their bundler through
-  a dependency), or that have another loader-thread hook (`--experimental-loader`, `--loader` or `--import` in
+  (`node_modules/<package>` in the working directory or above, also pnpm's and bun's `node_modules/.pnpm/node_modules/`,
+  `node_modules/.bun/node_modules/`: `nuxi`, `storybook`, which load their bundler through a dependency), or that have another loader-thread hook (`--experimental-loader`, `--loader` or `--import` in
   `NODE_OPTIONS` or on the command line, e.g. Yarn Plug'n'Play's, see below), because a loader thread costs time and
   memory in every process. Only in the main thread: worker threads get no ESM hook on these versions (a worker runs
   the `--require` preload again, but the main thread's `module.register()` hooks do not reach it:

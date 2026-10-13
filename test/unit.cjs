@@ -3842,6 +3842,26 @@ test('hooks: a process in a project that has a bundler installed is a bundler pr
   assert.equal(hooks.bundlerProcess(P, J(other, 'node_modules/npm/bin/npm-cli.js'), other), false);
 });
 
+test('hooks: pnpm and bun (isolated linker) link a dependency of a dependency only in their hidden node_modules: still a bundler process', () => {
+  const hooks = require('../src/hooks.cjs');
+  const P = ['vite', 'rollup', 'rolldown'];
+  // pnpm 10 / bun 1.4: `pnpm nuxi build` - nuxi names no bundler, nuxt depends on vite, which is in no other node_modules
+  for (const hidden of ['.pnpm', '.bun']) {
+    const store = hidden === '.pnpm' ? 'vite@8.3.4' : 'vite@8.3.4+0123abcd';
+    const root = project({
+      [`node_modules/${hidden}/${store}/node_modules/vite/package.json`]: { name: 'vite', version: '8.3.4' },
+      [`node_modules/${hidden}/node_modules/vite/package.json`]: { name: 'vite', version: '8.3.4' },
+      [`node_modules/${hidden}/nuxi@4.0.1/node_modules/nuxi/package.json`]: { name: 'nuxi', version: '4.0.1', dependencies: { citty: '*' } },
+      [`node_modules/${hidden}/nuxi@4.0.1/node_modules/nuxi/bin/nuxi.mjs`]: '',
+      'package.json': { name: 'app', dependencies: { nuxt: '*', nuxi: '*' } },
+    });
+    assert.equal(hooks.bundlerProcess(P, J(root, `node_modules/${hidden}/nuxi@4.0.1/node_modules/nuxi/bin/nuxi.mjs`), root), true, hidden);
+    // the hidden directory of another layout, or a package there that is no bundler, is not enough
+    const none = project({ [`node_modules/${hidden}/node_modules/citty/package.json`]: { name: 'citty', version: '1.0.0' }, 'package.json': { name: 'app' } });
+    assert.equal(hooks.bundlerProcess(P, J(none, 'scripts/x.js'), none), false, hidden);
+  }
+});
+
 test('strict: a Node.js without ESM hooks (20.0 - 20.5) fails a bundler process: its ES-module bundlers would not be hooked', () => {
   const root = project({ 'package.json': { name: 'app', devDependencies: { vite: '8.0.0' } }, 'build.cjs': '' });
   const script = (main) => `const M = require('module'); M.registerHooks = undefined; M.register = undefined;

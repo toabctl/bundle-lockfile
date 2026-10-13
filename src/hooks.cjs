@@ -112,7 +112,9 @@ function syncHooksSafe(version) {
 // - the package of its main script is one of `packages` or depends on one (node_modules/vite/bin/vite.js, a build
 //   script of a project using vite, headlamp-plugin);
 // - or the project it runs in has one installed: one of `packages` in a node_modules directory of the working directory
-//   or above (a command line that loads its bundler through another package: nuxi, storybook's builder-vite).
+//   or above (a command line that loads its bundler through another package: nuxi, storybook's builder-vite), also
+//   only in the hidden directory where pnpm and bun's isolated linker link every package (node_modules/.pnpm/node_modules,
+//   node_modules/.bun/node_modules): there a dependency of a dependency is in no other node_modules of the project.
 function bundlerProcess(packages, main = process.argv[1], cwd = process.cwd()) {
   return mainUses(packages, main) || installedAround(packages, cwd);
 }
@@ -136,7 +138,9 @@ function mainUses(packages, main) {
 function installedAround(packages, cwd) {
   if (!cwd) return false;
   for (const dir of ancestors(cwd)) {
-    if (packages.some(p => fs.existsSync(path.join(dir, 'node_modules', p, 'package.json')))) return true;
+    for (const nm of ['node_modules', 'node_modules/.pnpm/node_modules', 'node_modules/.bun/node_modules']) {
+      if (packages.some(p => fs.existsSync(path.join(dir, nm, p, 'package.json')))) return true;
+    }
   }
   return false;
 }
