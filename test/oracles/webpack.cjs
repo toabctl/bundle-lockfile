@@ -5,10 +5,9 @@
 // prints {"<compiler output dir relative to dist>": [name@version, ...], ...}; compilers sharing an output dir
 // share its lockfile, so their packages are merged. --sources: prints { packages: <that>, sources: [<absolute path of
 // every emitted source file>] } (for oracles/nested.cjs)
-const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
-const { STATS_OPTIONS, filesFromStats, packagesFromStats } = require('./stats.cjs');
+const { STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles } = require('./stats.cjs');
 
 const req = createRequire(path.join(process.cwd(), 'package.json'));
 const webpack = req('webpack');
@@ -20,22 +19,6 @@ const configs = Array.isArray(config) ? config : [config];
 for (const c of configs) {
   const out = c.output && c.output.path ? path.resolve(c.output.path) : dist;
   c.output = { ...c.output, path: path.join(oracleDist, path.relative(dist, out)) };
-}
-
-// Files copied without naming their source (copy-webpack-plugin 5, 6.0 - 6.2): assets in no chunk and without
-// info.sourceFilename whose bytes are those of a non-empty file in node_modules that the compilation depends on: a file
-// dependency, or a file below a context dependency (a copied directory).
-function copiedFiles(compilation, json, outputPath) {
-  const candidates = (json.assets || []).filter(a => !(a.chunks || []).length && !(a.info && a.info.sourceFilename))
-    .map(a => { try { return fs.readFileSync(path.join(outputPath, a.name.split('?')[0])); } catch { return null; } })
-    .filter(bytes => bytes && bytes.length);
-  if (!candidates.length) return [];
-  const inPackages = (f) => f.split(path.sep).includes('node_modules');
-  const below = (dir) => fs.readdirSync(dir, { withFileTypes: true, recursive: true }).filter(e => e.isFile()).map(e => path.join(e.parentPath || e.path, e.name));
-  const deps = [...compilation.fileDependencies].filter(inPackages)
-    .concat([...(compilation.contextDependencies || [])].filter(inPackages).flatMap(d => { try { return below(d); } catch { return []; } }));
-  const sizeOf = (f) => { try { return fs.statSync(f).size; } catch { return -1; } };
-  return candidates.map(bytes => deps.find(f => sizeOf(f) === bytes.length && fs.readFileSync(f).equals(bytes))).filter(Boolean);
 }
 
 webpack(Array.isArray(config) ? configs : configs[0], (err, stats) => {

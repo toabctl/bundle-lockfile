@@ -72,6 +72,22 @@ function packagesFromStats(json, context, copied = []) {
   return owner.packagesOf(files, { context }); // see owner.cjs
 }
 
+// Files copied without naming their source (copy-webpack-plugin 5, 6.0 - 6.2): assets in no chunk and without
+// info.sourceFilename whose bytes are those of a non-empty file in node_modules that the compilation depends on: a file
+// dependency, or a file below a context dependency (a copied directory).
+function copiedFiles(compilation, json, outputPath) {
+  const candidates = (json.assets || []).filter(a => !(a.chunks || []).length && !(a.info && a.info.sourceFilename))
+    .map(a => { try { return fs.readFileSync(path.join(outputPath, a.name.split('?')[0])); } catch { return null; } })
+    .filter(bytes => bytes && bytes.length);
+  if (!candidates.length) return [];
+  const inPackages = (f) => f.split(path.sep).includes('node_modules');
+  const below = (dir) => fs.readdirSync(dir, { withFileTypes: true, recursive: true }).filter(e => e.isFile()).map(e => path.join(e.parentPath || e.path, e.name));
+  const deps = [...compilation.fileDependencies].filter(inPackages)
+    .concat([...(compilation.contextDependencies || [])].filter(inPackages).flatMap(d => { try { return below(d); } catch { return []; } }));
+  const sizeOf = (f) => { try { return fs.statSync(f).size; } catch { return -1; } };
+  return candidates.map(bytes => deps.find(f => sizeOf(f) === bytes.length && fs.readFileSync(f).equals(bytes))).filter(Boolean);
+}
+
 // rspack: the package files copied into the output (assets with info.copied: CopyRspackPlugin, Rsbuild's output.copy),
 // for packagesFromStats' copied - those in packages the compilation depends on whose bytes are the copy's (built with
 // optimization.minimize off). A copy's sourceFilename is relative to its copy pattern, not to the context: removed from
@@ -104,4 +120,4 @@ function rspackResult(stats, oracleDist, sources = new Set()) {
   return result;
 }
 
-module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats, rspackCopies, rspackResult };
+module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles, rspackCopies, rspackResult };
