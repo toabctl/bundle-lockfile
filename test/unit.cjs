@@ -1244,10 +1244,10 @@ test('hooks: a throwing adapter is reported and does not break require()', () =>
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
   const script = `const M = require('module'); const before = M._extensions['.js']; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._extensions['.js'] === before);`;
-  // the rollup, rspack, esbuild and parcel adapters hook CommonJS modules too (Rollup's CommonJS build, rspack, esbuild,
-  // @parcel/core): only off with all names
-  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild,Parcel', 'true'],
-    ['webpack,rollup,rolldown,vite,rspack,esbuild', 'false'], ['webpack,rollup,rolldown,vite,rspack', 'false'], ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false'], ['esbuild', 'false']]) {
+  // the rollup, rspack, esbuild, parcel and angular adapters hook CommonJS modules too (Rollup's CommonJS build, rspack,
+  // esbuild, @parcel/core, Angular's builder): only off with all names
+  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel,angular', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild,Parcel,Angular', 'true'],
+    ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel', 'false'], ['webpack,rollup,rolldown,vite,rspack,esbuild', 'false'], ['webpack,rollup,rolldown,vite,rspack', 'false'], ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false'], ['esbuild', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
     assert.equal(r.stdout.trim(), untouched, `BUNDLE_LOCKFILE_DISABLE=${disable}: ${r.stderr}`);
   }
@@ -3827,7 +3827,7 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
-  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel or all');
+  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
   for (const k of ['INLINE', 'STRICT', 'DEBUG']) {
     for (const v of ['yes', 'no', '2', 'disabled']) assert.equal(one({ [`BUNDLE_LOCKFILE_${k}`]: v }), `BUNDLE_LOCKFILE_${k}=${v} is not recognized (1, true or on; 0, false or off)`);
@@ -4172,7 +4172,58 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
 }));
 
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
-  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
+  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
+
+// Angular: executeBuild() of a fake application builder, whose result has Angular's shape (ExecutionResult)
+function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors = [] } = {}) {
+  return async (options) => {
+    const outputFiles = [{ path: 'main.js', type: 0, text: 'x' }];
+    const result = { outputFiles, assetFiles: assets.map(source => ({ source, destination: 'a' })), errors: [...errors],
+      addOutputFile(p, text, type) { outputFiles.push({ path: p, type, text }); }, addError(e) { this.errors.push(e); } };
+    const metafile = { outputs: { 'main.js': { entryPoint: 'src/main.ts', inputs: Object.fromEntries(inputs.map(i => [i, { bytesInOutput: 1 }])) } } };
+    if (options.stats) {
+      if (stats === 'split') outputFiles.push({ path: 'browser-stats.json', type: 4, text: JSON.stringify(metafile) });
+      else outputFiles.push({ path: 'stats.json', type: 4, text: JSON.stringify(metafile) });
+    }
+    return result;
+  };
+}
+
+test('angular adapter: executeBuild with stats on; the lockfile added to its output files; the stats taken out again unless asked for', () => withConfig({ strict: true }, async () => {
+  const angular = require('../src/adapters/angular.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('font'), 'node_modules/nopj/i.js': '', 'src/main.ts': '' });
+  const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' } };
+  for (const stats of ['split', 'combined']) {
+    const run = angular.wrap(fakeExecuteBuild(root, { stats, inputs: ['src/main.ts', 'node_modules/a/i.js'], assets: [J(root, 'node_modules/font/f.woff2')] }));
+    const r = await run(options);
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(r.outputFiles.map(f => f.path), ['main.js', LOCK], stats); // the stats are no output: not asked for
+    const lock = r.outputFiles.find(f => f.path === LOCK);
+    assert.equal(lock.type, 0); // Angular's Browser: <outputPath>/browser/
+    assert.deepEqual(lockedNames(lock.text), ['a', 'font'], stats);
+    const asked = await run({ ...options, stats: true });
+    assert.ok(asked.outputFiles.some(f => /stats\.json$/.test(f.path)), stats);
+  }
+  // a failed build: nothing added; a problem: an error of the build
+  const failed = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'], errors: ['TS2307'] }))(options);
+  assert.deepEqual(failed.outputFiles.map(f => f.path), ['main.js']);
+  problems.take();
+  const bad = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/nopj/i.js'] }))(options);
+  assert.equal(bad.errors.length, 1);
+  assert.match(bad.errors[0], /no package\.json with name and version in \S*nopj/);
+  // an executeBuild of another shape
+  const where = '/p/node_modules/@angular/build/src/builders/application/execute-build.js';
+  angular.onCjsLoad({ executeBuild: 1 }, where, () => where);
+  assert.match(problems.take().join('\n'), /exports no executeBuild\(\) bundle-lockfile knows/);
+  const exp = { executeBuild: async () => null };
+  angular.onCjsLoad(exp, where, () => where);
+  assert.equal(exp.executeBuild.name, 'bundleLockfileExecuteBuild');
+  const wrapped = exp.executeBuild;
+  angular.onCjsLoad(exp, where, () => where);
+  assert.equal(exp.executeBuild, wrapped); // once
+}));
+
   assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
 });
 

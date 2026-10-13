@@ -69,8 +69,8 @@ They do not fail the build:
 - Check that `NODE_OPTIONS` reaches the bundler: `BUNDLE_LOCKFILE_DEBUG=1` logs each bundler it patches and each
   lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
   shim](configuration.md#the-node-shim). `BUNDLE_LOCKFILE_DISABLE` may be set.
-- The bundler is not supported: the `esbuild` command line (build with its JavaScript API instead), Angular's esbuild
-  builder, Bun's own runtime (with `BUNDLE_LOCKFILE_STRICT=0` also those that fail in strict mode: Turbopack, the
+- The bundler is not supported: the `esbuild` command line (build with its JavaScript API instead), Bun's own
+  runtime (with `BUNDLE_LOCKFILE_STRICT=0` also those that fail in strict mode: Turbopack, the
   `rolldown` command line, ncc, webpack < 4, rspack 0.x).
 - On Node.js before 24.12 (25.2 on 25), Vite, Rollup, Rolldown and rspack 2 are hooked only in some processes: a
   programmatic build may need `BUNDLE_LOCKFILE_ESM_HOOKS=async` ([which

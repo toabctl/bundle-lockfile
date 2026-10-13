@@ -267,6 +267,7 @@ must not go on without doing what was asked of it. Every setting in full, and wh
 | Rolldown | 1 | not the `rolldown` command line |
 | esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line ([details](docs/bundlers.md#esbuild)) |
 | Parcel | 2 | `parcel build`, `parcel watch`, its JavaScript API ([details](docs/bundlers.md#parcel)) |
+| Angular | 20 – 22 | its application builder (`ng build`, `@angular/build`) ([details](docs/bundlers.md#angular)) |
 
 Watch mode writes the lockfile after every rebuild; rspack's dev servers serve it from memory. The tested versions,
 Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, bun, turbo, workspaces) are in
@@ -278,8 +279,7 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
   (Next.js 16's default build: use `next build --webpack`), the `rolldown` command line, `@vercel/ncc`, webpack < 4,
   rspack 0.x.
 - **Not hooked** — no lockfile, and no failure: the `esbuild` command line and Go API (their metafile gives one:
-  [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Angular's esbuild builder (it writes the files itself),
-  Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), and a bundler in a
+  [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), and a bundler in a
   process that `NODE_OPTIONS` (or the node shim) does not reach. Check in CI that every lockfile the package should
   ship exists.
 - **Older Node.js:** before 24.12 (25.2 on 25), ES-module bundlers (Vite, Rolldown, rspack 2, Rollup through

@@ -75,6 +75,13 @@ const parcelApp = (parcel, installer = { type: 'npm' }) => ({ app: 'parcel', bun
   deps: { parcel, '@parcel/core': parcel, '@parcel/config-default': parcel, 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20',
     'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.2', 'is-number': '7.0.0' },
   packageJson: { scripts: { build: 'parcel build src/index.html --dist-dir dist' } } });
+// Angular's application builder (test/apps/angular): ng build, with the Angular packages of one release
+// (tools: @angular/cli and @angular/build; fw: the framework's packages, released with their own patch versions)
+const angularApp = (tools, fw, ts, installer = { type: 'npm' }) => ({ app: 'angular', bundler: 'angular', installer,
+  deps: Object.fromEntries([...['cli', 'build'].map(p => [`@angular/${p}`, tools]), ...['core', 'common', 'compiler', 'compiler-cli', 'platform-browser'].map(p => [`@angular/${p}`, fw]),
+    ['typescript', ts], ['rxjs', '7.8.2'], ['tslib', '2.8.1'], ['lodash-es', '4.18.1'], ['uuid', '9.0.1'], ['ms', '2.1.3'], ['nanoid', '3.3.20'],
+    ['normalize.css', '8.0.1'], ['bootstrap-icons', '1.13.2'], ['is-number', '7.0.0'], ['debug', '2.6.9']]),
+  packageJson: { scripts: { build: 'ng build' } } });
 const esbuildApp = (esbuild, installer = { type: 'npm' }, extra = {}) => ({ app: 'esbuild', bundler: 'esbuild', installer,
   deps: { esbuild, 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20', 'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.2', 'is-number': '7.0.0', ...extra },
   packageJson: { type: 'module', scripts: { build: 'node build.mjs build' } } });
@@ -199,6 +206,10 @@ const fixtures = {
   'parcel-floor': parcelApp('2.0.0'),
   'parcel-pnpm10': parcelApp('2.16.4', { type: 'pnpm', version: '10.34.6' }),
   'parcel-yarn4-pnp': parcelApp('2.16.4', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
+  // Angular 22 (the latest), 21, 20
+  'angular22': angularApp('22.2.2', '22.2.2', '6.0.3'),
+  'angular21': angularApp('21.2.26', '21.2.25', '5.9.3'),
+  'angular20': angularApp('20.3.39', '20.3.33', '5.8.3'),
   // a project directory with "#" in its name, which is no fragment of the module ids
   'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
@@ -430,6 +441,10 @@ const ESBUILD = ['bootstrap-icons@1.13.2', 'debug@2.6.9', 'lodash-es@4.18.1', 'm
 // test/apps/parcel: as ESBUILD (the font through a style sheet's url()), is-number; and Parcel's runtime, which loads
 // the lazy bundle (a file Parcel generates in @parcel/runtime-js)
 const PARCEL = (v) => [...ESBUILD, 'is-number@7.0.0', `@parcel/runtime-js@${v}`].sort();
+// test/apps/angular: the framework's packages of the fixture's release, rxjs (the framework imports it), the app's
+const ANGULAR = (fixture) => { const fw = fixtures[fixture].deps['@angular/core'];
+  return [...['common', 'core', 'platform-browser'].map(p => `@angular/${p}@${fw}`), 'bootstrap-icons@1.13.2', 'debug@2.6.9', 'is-number@7.0.0', 'lodash-es@4.18.1',
+    'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'rxjs@7.8.2'].sort(); };
 // watch modes: the build, the rebuild without nanoid, the rebuild with it again
 const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
 const CANARY_JS = ['bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0', 'bl-canary-used@1.0.0'];
@@ -979,7 +994,7 @@ const cases = [
     { name: `strict: a misspelled setting fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export' },
       expectError: /BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ },
     { name: `strict: a value that is not recognized fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'rsbuild' },
-      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel or all/ }]),
+      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular or all/ }]),
   ...[['webpack 5', 'wp5-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].map(([what, fixture]) => (
     { name: `STRICT=0: a misspelled setting is a warning (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export', BUNDLE_LOCKFILE_STRICT: '0' },
       expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ })),
@@ -1244,6 +1259,16 @@ const cases = [
   ...[['2.0.0 (the first release)', 'parcel-floor', '2.16.4'], ['2.16.4, pnpm 10', 'parcel-pnpm10', '2.16.4'], ['2.16.4, yarn 4 Plug\'n\'Play', 'parcel-yarn4-pnp', '2.16.4']].map(([what, fixture, v]) => (
     { name: `Parcel ${what}: parcel build`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'npm run -s build', expect: PARCEL(v), oracleMissing: ['bootstrap-icons@1.13.2'],
       ...(fixture === 'parcel-floor' && { installed: ['@parcel/core@2.0.0'] }) })),
+  // Angular's application builder: the lockfile with its output files (dist/browser/), from its final metafile (after
+  // its chunk optimizer, which three lazy chunks turn on) and its asset files (bootstrap-icons' font, copied from
+  // node_modules: in no source map, the oracle's); not uuid (unused)
+  ...[['22.2.2', 'angular22'], ['21.2.26', 'angular21'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
+    { name: `Angular ${v}: ng build`, fixture, cmd: 'npm run -s build', expectIn: { browser: ANGULAR(fixture) }, oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  { name: 'Angular 22.2.2: ng build without the chunk optimizer (NG_BUILD_OPTIMIZE_CHUNKS=0)', fixture: 'angular22', cmd: 'npm run -s build',
+    env: { NG_BUILD_OPTIMIZE_CHUNKS: '0' }, expectIn: { browser: ANGULAR('angular22') }, oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Angular 22.2.2: export directory only', fixture: 'angular22', cmd: 'npm run -s build', exportOnly: true, expectIn: { browser: ANGULAR('angular22') },
+    oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Angular: BUNDLE_LOCKFILE_DISABLE=angular', fixture: 'angular22', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'angular' }, expect: null },
   { name: 'esbuild-wasm 0.28.2: build()', fixture: 'esbuild-wasm', cmd: 'node build.mjs build', env: { BLTEST_ESBUILD_PKG: 'esbuild-wasm' }, expect: ESBUILD,
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   ...[['0.19.12 (Vite 5\'s)', 'esbuild-0.19'], ['0.17.0 (the oldest supported)', 'esbuild-floor'], ['0.28.2, pnpm 10', 'esbuild-pnpm10'], ['0.28.2, yarn 4 Plug\'n\'Play', 'esbuild-yarn4-pnp']].map(([what, fixture]) => (

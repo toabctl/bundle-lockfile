@@ -243,6 +243,11 @@ the font has none):
   failing adapter
 - Parcel 2.0.0 (its `@parcel/core`; its plugins' ranges install the 2.16 ones) and 2.16.4, npm, pnpm, yarn 4
   Plug'n'Play; the canary app
+**Angular** (`apps/angular`, an application builder app with three lazy chunks, which turn on Angular's chunk
+optimizer, and an asset glob from `node_modules`; compared with an oracle that builds again with source maps of the
+sources, not the packages' own, and without the chunk optimizer, whose maps name no sources, `oracles/angular.cjs`):
+- `ng build` of Angular 20.3, 21.2, 22.2; without the chunk optimizer; the export directory only;
+  `BUNDLE_LOCKFILE_DISABLE=angular`
 
 **rspack** (the `rspack` app is webpack 5's, with `rspack.config.js`) and **Rsbuild**, compared with an oracle that
 builds again through rspack's or Rsbuild's API without bundle-lockfile, without minimizing (so that copies keep their
