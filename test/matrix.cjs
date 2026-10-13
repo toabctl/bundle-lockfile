@@ -117,6 +117,14 @@ const rspackMonaco = (version) => ({ app: 'rspack-monaco', bundler: 'rspack', in
 // Next.js with next-rspack of the same version, which builds with rspack (next.config.js: NEXT_RSPACK_APP=1)
 const nextRspack = (fx, version) => ({ ...fx, deps: { ...fx.deps, 'next-rspack': version } });
 
+// canaries (test/apps/canary): packages whose shipped code carries BLCANARY:<name>@<version>, which run.cjs finds in the
+// output's bytes - not through the bundler's own reporting, which the oracles read. Moved into node_modules after the
+// install (npm links a file: directory): bl-canary-dup 2.0.0 at the top, 1.0.0 inside bl-canary-used
+const CANARY_INSTALL = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused bl-canary-css ../node_modules/'
+  + ' && mv bl-canary-dup-2 ../node_modules/bl-canary-dup && mkdir ../node_modules/bl-canary-used/node_modules'
+  + ' && mv bl-canary-dup-1 ../node_modules/bl-canary-used/node_modules/bl-canary-dup && cd .. && rmdir pkgs';
+const canary = (bundler, deps, packageJson = {}) => ({ app: 'canary', bundler, installer: { type: 'npm' }, deps, packageJson, postInstall: CANARY_INSTALL });
+
 // fixture fields: app (test/apps/<app>), bundler (the oracle, test/oracles/<bundler>.cjs; default webpack), installer,
 // deps, devDeps, packageJson (more package.json fields), postInstall (a command run in the fixture after the install,
 // with network)
@@ -341,6 +349,10 @@ const fixtures = {
   'next15-rspack': nextRspack(next('15.5.27', '19.3.0'), '15.5.27'),
   'next16-rspack': nextRspack(next('16.4.0', '19.3.0'), '16.4.0'),
   'next16-app-rspack': nextRspack(nextApp('16.4.0', '19.3.0'), '16.4.0'),
+  'canary-wp5': canary('webpack', WEBPACK),
+  'canary-rspack2.2': canary('rspack', { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }, { scripts: { build: 'rspack build' } }),
+  'canary-vite8': canary('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
+  'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
 };
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
@@ -351,6 +363,7 @@ const VITE_WATCH_BUILDS = [VITE_EXPECT, VITE_EXPECT.filter(p => p !== 'ms@2.1.3'
 const ROLLUP_API = ['lodash-es@4.18.1', 'nanoid@3.3.20'];
 // watch modes: the build, the rebuild without nanoid, the rebuild with it again
 const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
+const CANARY_JS = ['bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0', 'bl-canary-used@1.0.0'];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // edge-vendored (src/index.js): the copies outside node_modules (left-pad by an alias, is-odd by resolve.modules,
 // vscode-languageclient with engines.vscode but no publisher, a copy of ms@2.1.3, the in-repo app-lib), container and
@@ -1375,6 +1388,12 @@ const cases = [
     expect: ['lodash-es@4.18.1'] },
   { name: 'rspack 2.2.8, yarn 4.18.1 pnpm linker', fixture: 'rspack2.2-yarn4-pnpm', cmd: 'yarn build', expect: W5 },
   { name: 'rspack 2.2.8 in a directory with "#" in its name', fixture: 'rspack2.2-c#', cmd: 'npm run -s build', expect: W5 },
+  // canaries: every marker in the output is listed (run.cjs), and every listed canary's marker is in the output: both
+  // versions of bl-canary-dup, not the unused bl-canary-unused
+  ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['rollup 4.64.2', 'canary-rollup']].map(([what, fixture]) => (
+    { name: `canaries: ${what}`, fixture, cmd: 'npm run -s build', expect: [...CANARY_JS, ...(fixture === 'canary-rollup' ? [] : ['bl-canary-css@1.0.0'])].sort(),
+      // Vite writes no source maps for CSS: its oracle does not see bl-canary-css (here its marker does)
+      ...(fixture === 'canary-vite8' && { oracleMissing: ['bl-canary-css@1.0.0'] }) })),
 ];
 
 module.exports = { fixtures, cases };

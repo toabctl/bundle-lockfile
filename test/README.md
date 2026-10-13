@@ -73,6 +73,11 @@ A case that expects a lockfile checks every lockfile the build writes:
   bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no code with the adapters. A
   case names the packages its oracle cannot see (CSS-only packages, fonts loaded by `url()`, copied files and service
   workers without source maps), or says why it has none;
+- every canary in the output's bytes (gzip and brotli copies unpacked) is listed, and every listed canary is there: the
+  packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 8 and Rollup) carry a
+  `BLCANARY:<name>@<version>` string in their code and CSS, which shows what is shipped without the bundler's own
+  reporting, which the oracles read (a package at two versions, one inside another; an unused import; CSS, which
+  Vite's oracle does not see);
 - if `syft` and `trivy` are on `PATH` (as in CI, which sets `BLTEST_REQUIRE_SBOM=1`: without them the run fails): each
   reads exactly those packages, each with a license and a `pkg:npm` purl (syft: from its `javascript-lock-cataloger`).
 
