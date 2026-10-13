@@ -242,7 +242,7 @@ variable that is set wins. The defaults need no configuration.
 | `BUNDLE_LOCKFILE_INLINE` | on | off: write the lockfiles only into the export directory |
 | `BUNDLE_LOCKFILE_STRICT` | on | off: warn instead of failing a build whose lockfile would be missing or incomplete |
 | `BUNDLE_LOCKFILE_DEBUG` | off | on: log what gets patched and written to stderr |
-| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories that are never listed as vendored copies |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are never listed as vendored copies |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated bundlers to skip: `webpack`, `rspack`, `vite`, `rollup`, `rolldown`, or `all` |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | `sync`, `async` or `off`: how ES-module bundlers are hooked, instead of choosing by Node.js version |
 | `BUNDLE_LOCKFILE_REGISTER` | found by the shim | an absolute path: the `register.cjs` the node shim preloads (environment only) |

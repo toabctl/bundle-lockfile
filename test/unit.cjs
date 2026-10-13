@@ -2681,7 +2681,7 @@ test('vendored: workspace patterns, pnpm-workspace.yaml, rush.json', () => {
   assert.deepEqual(parseJsonc('/* c */ { "a": "x//y", // line\n "b": [1, 2,], }'), { a: 'x//y', b: [1, 2] });
 });
 
-test('vendored: first-party boundaries - context, entries, workspaces, pnpm, lerna, rush, Nx, links, settings, private', () => withConfig({ firstParty: ['tools/**'] }, () => {
+test('vendored: first-party boundaries - context, entries, workspaces, pnpm, lerna, rush, Nx, links, settings, private', () => withConfig({ firstParty: [] }, () => {
   const { scope } = require('../src/core/vendored.cjs');
   const v = (name) => ({ name, version: '1.0.0', main: 'i.js' });
   const files = { 'package.json': { name: 'root', version: '1.0.0', workspaces: { packages: ['packages/*', '!packages/excluded'] } },
@@ -2695,8 +2695,10 @@ test('vendored: first-party boundaries - context, entries, workspaces, pnpm, ler
   const root = project(files);
   fs.mkdirSync(J(root, 'node_modules'), { recursive: true });
   fs.symlinkSync(J(root, 'linked/l'), J(root, 'node_modules/l'), 'dir');
+  // BUNDLE_LOCKFILE_FIRST_PARTY: absolute globs, whatever the working directory is
+  config.firstParty = [J(root, 'tools/**')];
   const cwd = process.cwd();
-  process.chdir(root);
+  process.chdir(os.tmpdir());
   try {
     const s = scope({ context: J(root, 'app') });
     const owner = (d) => { const p = s.ownerOf(J(root, d, 'i.js')); return p && p.name; };
@@ -2712,6 +2714,16 @@ test('vendored: first-party boundaries - context, entries, workspaces, pnpm, ler
     assert.equal(owner('vendor/private'), null);
     assert.equal(owner('vendor/left-pad'), 'left-pad');
     assert.equal(owner('other'), 'other');            // an in-repo library nothing marks first-party
+    // a glob through a symbolic link names the directories at their real paths too
+    const link = `${root}-link`;
+    fs.symlinkSync(root, link, 'dir');
+    config.firstParty = [J(link, 'oth?r'), J(link, 'vendor/left-pad')];
+    const linked = scope({ context: J(root, 'app') });
+    assert.equal(linked.ownerOf(J(root, 'other/i.js')), null);
+    assert.equal(linked.ownerOf(J(root, 'vendor/left-pad/i.js')), null);
+    config.firstParty = ['/**']; // none outside node_modules
+    assert.equal(scope({ context: J(root, 'app') }).ownerOf(J(root, 'other/i.js')), null);
+    config.firstParty = [J(root, 'tools/**')];
     // a build started from another directory (Rollup's API): the package of its entry is first-party
     const elsewhere = scope({ context: os.tmpdir(), entries: [J(root, 'other/i.js')] });
     assert.equal(elsewhere.ownerOf(J(root, 'other/i.js')), null);
@@ -3341,7 +3353,7 @@ test('settings file: config.json next to register.cjs sets what the environment 
 // what config.cjs finds invalid for an environment (BUNDLE_LOCKFILE_* variables of this process removed first)
 function invalidFor(vars) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_')));
-  const r = spawnSync(process.execPath, ['-e', `const c = require(${JSON.stringify(J(SRC, 'core/config.cjs'))}); console.log(JSON.stringify({ invalid: c.invalid, strict: c.strict, inline: c.inline }))`],
+  const r = spawnSync(process.execPath, ['-e', `const c = require(${JSON.stringify(J(SRC, 'core/config.cjs'))}); console.log(JSON.stringify({ invalid: c.invalid, strict: c.strict, inline: c.inline, firstParty: c.firstParty }))`],
     { env: { ...env, ...vars }, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
@@ -3351,7 +3363,7 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
   assert.deepEqual(invalidFor({}).invalid, []);
   // every setting with a value it takes
   assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json', BUNDLE_LOCKFILE_EXPORT_DIR: '/x', BUNDLE_LOCKFILE_EXPORT_BASE: '/y',
-    BUNDLE_LOCKFILE_INLINE: 'OFF', BUNDLE_LOCKFILE_STRICT: ' true ', BUNDLE_LOCKFILE_DEBUG: '', BUNDLE_LOCKFILE_FIRST_PARTY: 'lib/**',
+    BUNDLE_LOCKFILE_INLINE: 'OFF', BUNDLE_LOCKFILE_STRICT: ' true ', BUNDLE_LOCKFILE_DEBUG: '', BUNDLE_LOCKFILE_FIRST_PARTY: '/app/lib/**, /**',
     BUNDLE_LOCKFILE_DISABLE: ' Vite , rolldown', BUNDLE_LOCKFILE_ESM_HOOKS: 'Async', BUNDLE_LOCKFILE_REGISTER: '/r.cjs',
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
@@ -3367,6 +3379,8 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
   assert.match(one({ BUNDLE_LOCKFILE_EXPORT_DIR: 'out/export' }), /^BUNDLE_LOCKFILE_EXPORT_DIR is not an absolute path: out\/export/);
   assert.match(one({ BUNDLE_LOCKFILE_EXPORT_DIR: '/x', BUNDLE_LOCKFILE_EXPORT_BASE: '.' }), /^BUNDLE_LOCKFILE_EXPORT_BASE is not an absolute path: \./);
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORT_BASE: '/y' }), 'BUNDLE_LOCKFILE_EXPORT_BASE is set without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect');
+  assert.equal(one({ BUNDLE_LOCKFILE_FIRST_PARTY: '/app/lib/**,tools/**' }), 'BUNDLE_LOCKFILE_FIRST_PARTY names tools/**, which is not an absolute path (each process would match it against its own working directory)');
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FIRST_PARTY: '/app/lib/**,tools/**' }).firstParty, ['/app/lib/**']);
   assert.match(one({ BUNDLE_LOCKFILE_CONFIG: 'config.json' }), /^BUNDLE_LOCKFILE_CONFIG is not an absolute path: config\.json/); // (and the file is missing: settingsFile.error)
   // the lockfile only where syft and Trivy read it
   for (const v of ['sbom/lock.json', '/abs/package-lock.json', '../package-lock.json', 'a/../../package-lock.json', 'node_modules/x/package-lock.json', 'package-lock.json/x']) {

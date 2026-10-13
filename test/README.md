@@ -1,7 +1,7 @@
 # Tests
 
-See [bundlers.md](../docs/bundlers.md#supported) for what is supported, and [internals.md](../docs/internals.md) for how it
-works.
+See [bundlers.md](../docs/bundlers.md#supported) for what is supported, and [internals.md](../docs/internals.md) for
+how it works.
 
 The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26):
 
@@ -114,9 +114,9 @@ All other cases run in strict mode, so a problem there would fail them. The unit
 Besides the cases below, the matrix covers how bundle-lockfile is activated (nothing without `NODE_OPTIONS`,
 `BUNDLE_LOCKFILE_DISABLE=webpack`, existing `NODE_OPTIONS` such as a heap limit kept, a default-if-unset
 `NODE_OPTIONS` script), vendored copies (outside `node_modules`, inside packages, with `BUNDLE_LOCKFILE_FIRST_PARTY`
-set to `lib/**` and to `**`, with the notes and warnings expected), copies of outputs made with `cp` (a Vite build
-into a copy of another output, a copied island bundled by webpack 5), and builds that read another process's
-`locations` (a second build, then the first one again).
+set to `<fixture>/lib/**` and to `/**`, with the notes and warnings expected), copies of outputs made with `cp` (a
+Vite build into a copy of another output, a copied island bundled by webpack 5), and builds that read another
+process's `locations` (a second build, then the first one again).
 
 **webpack**, besides installers and versions (also webpack 4 with pnpm):
 - a build script in TypeScript run by tsx (`tsx build.ts`, `node --import tsx build.ts`: tsx compiles webpack's
@@ -245,8 +245,8 @@ the adapters bundle again — except SvelteKit 2's edge function (built by esbui
   exactly the lockfiles of the webpack builds
 - on 16: a static export (`output: 'export'`), a standalone output (`output: 'standalone'`, no lockfile), a warm build
   from `.next/cache`, a Turbopack build (no lockfile)
-- another `--require` preload next to bundle-lockfile's (Next 15 fails, see [bundlers.md](../docs/bundlers.md#nextjs); 16.4
-  builds)
+- another `--require` preload next to bundle-lockfile's (Next 15 fails, see
+  [bundlers.md](../docs/bundlers.md#nextjs); 16.4 builds)
 
 ## rspack on real projects
 

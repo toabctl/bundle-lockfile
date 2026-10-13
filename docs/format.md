@@ -142,8 +142,8 @@ unless a first-party directory comes first:
 
 A note names each vendored copy outside `node_modules` once per process (one inside a package: a debug message).
 Listing a package too many is preferred over missing one: an in-repo library that is not private, has a version and is
-none of the above is listed; `BUNDLE_LOCKFILE_FIRST_PARTY=lib/**`
-leaves it out. Files another build produced are that build's output, not vendored copies (see [Nested
+none of the above is listed; `BUNDLE_LOCKFILE_FIRST_PARTY=/src/app/lib/**` (the project in `/src/app`) leaves it
+out. Files another build produced are that build's output, not vendored copies (see [Nested
 bundles](#nested-bundles)). Vendored code without a `package.json` (a copied `jquery.min.js`, Grafana's Jaeger UI
 components) is not found — not here, nor by syft, Trivy or the CycloneDX plugin.
 

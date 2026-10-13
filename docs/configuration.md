@@ -27,7 +27,7 @@ environment of the process, so that the processes the build starts get them as v
 | `BUNDLE_LOCKFILE_INLINE` | on | off: write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written, and the build fails, or warns with `BUNDLE_LOCKFILE_STRICT=0`) |
 | `BUNDLE_LOCKFILE_STRICT` | on | a build whose lockfile cannot be written or would be incomplete fails (see [troubleshooting](troubleshooting.md)); off: only warn, and let the build go on (e.g. for local experiments or dev servers) |
 | `BUNDLE_LOCKFILE_DEBUG` | off | on: log what gets patched and applied to stderr |
-| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated globs of directories, relative to the working directory (or absolute), that are first-party: never listed as [vendored copies](format.md#which-package-a-file-belongs-to). A glob names directories, not what is below them: `lib/**` for `lib/` and everything in it; `**`: no vendored copies outside `node_modules` |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are first-party: never listed as [vendored copies](format.md#which-package-a-file-belongs-to). A glob names directories, not what is below them: `/src/app/lib/**` for `/src/app/lib/` and everything in it; `/**`: no vendored copies outside `node_modules`. A glob through a symbolic link also names the directories at their real paths |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack` (also Next.js); `rspack` (also Rsbuild, Rslib, next-rspack); `vite` (builds with Vite's plugins, also SvelteKit), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line); or `all`. Plugins added to a config by hand still run |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked (and webpack and rspack 1 when a loader hook such as Yarn Plug'n'Play's provides their code): `sync`, `async` or `off` instead of choosing by Node.js version ([which processes](bundlers.md#which-processes-are-hooked)). `sync` without `module.registerHooks` is `off`; `async` hooks the main thread only, not worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
 | `BUNDLE_LOCKFILE_REGISTER` | `../src/register.cjs` or `../register.cjs` from the shim | an absolute path: the `register.cjs` the [node shim](#the-node-shim) preloads (only from the environment) |
@@ -48,7 +48,8 @@ warning). A build must not go on without doing what was asked of it. That is:
 - a value the setting does not take: an on/off setting set to anything else, a name `BUNDLE_LOCKFILE_DISABLE` or
   `BUNDLE_LOCKFILE_ESM_HOOKS` does not take;
 - a relative `BUNDLE_LOCKFILE_EXPORT_DIR`, `BUNDLE_LOCKFILE_EXPORT_BASE`, `BUNDLE_LOCKFILE_CONFIG` or
-  `BUNDLE_LOCKFILE_REGISTER` (each process would resolve it in its own working directory), and
+  `BUNDLE_LOCKFILE_REGISTER`, or a relative glob in `BUNDLE_LOCKFILE_FIRST_PARTY` (each process would resolve it in
+  its own working directory), and
   `BUNDLE_LOCKFILE_EXPORT_BASE` without an export directory;
 - a `BUNDLE_LOCKFILE_FILE` that syft and Trivy would not read;
 - a settings file that cannot be read, or a file `BUNDLE_LOCKFILE_CONFIG` names that does not exist;

@@ -67,10 +67,12 @@ function firstParty(context) {
       if (/^(workspace|portal|link):/.test(loc.reference)) dirs.add(realOr(pnp.getPackageInformation(loc).packageLocation.replace(/\/$/, '')));
     }
   } catch { /* no PnP */ }
-  for (const p of (process.env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).filter(Boolean)) {
-    for (const d of p === '**' ? [] : glob(process.cwd(), p)) dirs.add(realOr(d));
+  // BUNDLE_LOCKFILE_FIRST_PARTY: absolute globs ("/**": every directory)
+  const settings = (process.env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const p of settings) {
+    for (const d of p === '/**' ? [] : glob('/', p.replace(/^\//, ''))) dirs.add(realOr(d));
   }
-  return { dirs, all: (process.env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).includes('**') };
+  return { dirs, all: settings.includes('/**') };
 }
 
 // name@version of each package the files (absolute paths) belong to, sorted; build: { context }

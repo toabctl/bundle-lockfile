@@ -11,8 +11,8 @@
 //                               on/off settings take 1/true/on and 0/false/off (any case), anything else is invalid
 //   BUNDLE_LOCKFILE_DEBUG       log what gets patched and applied to stderr (1/true/on; off if unset or empty)
 //   BUNDLE_LOCKFILE_DISABLE     comma-separated adapter names to skip, or "all" (case-insensitive)
-//   BUNDLE_LOCKFILE_FIRST_PARTY comma-separated globs of directories (relative to the working directory) that are
-//                               first-party, never vendored copies (see core/vendored.cjs); "**": none is
+//   BUNDLE_LOCKFILE_FIRST_PARTY comma-separated absolute globs of directories that are first-party, never vendored
+//                               copies (see core/vendored.cjs); "/**": none is
 //   BUNDLE_LOCKFILE_STRICT      0/false/off: a lockfile that cannot be written, or would be incomplete, is a warning;
 //                               by default it fails the build (see core/problems.cjs)
 //   BUNDLE_LOCKFILE_CONFIG      the settings file (default: config.json next to register.cjs: src/ in a checkout,
@@ -114,6 +114,14 @@ if (exportBase && !exportDir) invalid.push(`BUNDLE_LOCKFILE_EXPORT_BASE is set${
 const register = value('BUNDLE_LOCKFILE_REGISTER');
 if (register && !path.isAbsolute(register)) invalid.push(`BUNDLE_LOCKFILE_REGISTER is not an absolute path: ${register} (the node shim preloads it in every process, wherever it runs)`);
 const debugOn = flag('BUNDLE_LOCKFILE_DEBUG', false);
+// absolute globs: a relative one would match different directories in each process (turbo's tasks, workspace builds
+// run in their package's directory); one that is not is left out (with BUNDLE_LOCKFILE_STRICT=0: more vendored copies
+// listed, rather than other directories' left out)
+const firstParty = value('BUNDLE_LOCKFILE_FIRST_PARTY').split(',').map(s => s.trim()).filter(Boolean).filter((g) => {
+  if (path.isAbsolute(g)) return true;
+  invalid.push(`BUNDLE_LOCKFILE_FIRST_PARTY names ${g}${from('BUNDLE_LOCKFILE_FIRST_PARTY')}, which is not an absolute path (each process would match it against its own working directory)`);
+  return false;
+});
 
 module.exports = {
   settingsFile, // { file: the settings file read, or null; error: why it could not be used, or null }
@@ -125,7 +133,7 @@ module.exports = {
   exportBase,
   inline: flag('BUNDLE_LOCKFILE_INLINE', true),
   isDisabled: (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
-  firstParty: (env.BUNDLE_LOCKFILE_FIRST_PARTY || '').split(',').map(s => s.trim()).filter(Boolean),
+  firstParty,
   strict: flag('BUNDLE_LOCKFILE_STRICT', true),
   debug: (...a) => { if (debugOn) console.error('[bundle-lockfile]', ...a); },
   // always printed: what is wrong but does not fail the build (with BUNDLE_LOCKFILE_STRICT=0: also what makes a
