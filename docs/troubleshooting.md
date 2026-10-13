@@ -24,6 +24,7 @@ output is written is printed and the watcher goes on. A bundler that cannot be h
 | `… exports none of …: a version of … bundle-lockfile does not know`, `… has no Compiler bundle-lockfile knows`, `the Compiler of rspack … is not one bundle-lockfile knows`, `… is no Rollup bundle-lockfile can hook` | a bundler version bundle-lockfile cannot hook (newer, or Rollup before 2.78): its builds would write no lockfile | use a supported version ([Supported](../README.md#supported)), or report it |
 | `Node.js … has no ESM hooks (module.register: 20.6 and later)` | Node.js 20.0 – 20.5 in a process that builds with Vite, Rollup, Rolldown or rspack 2 | use Node.js 20.6 or later |
 | `<file URL> is wrapped, but bundle-lockfile is not loaded in this thread` | an ES-module bundler's entry was replaced by bundle-lockfile's wrapper in a thread where its preload did not run | please report it, with the Node.js version and how the build starts its threads |
+| `could not read <lockfile>: the packages of the build that wrote <dir> would be missing …`, `<lockfile> is not JSON: …`, `<lockfile> has a record of version …` | a bundled file is below the output of another build whose lockfile cannot be read ([nested bundles](format.md#nested-bundles)): permissions, an edited file, a lockfile of another bundle-lockfile version | fix the permissions, or rebuild that output with this bundle-lockfile |
 | `could not read the settings file <file>` | `config.json` next to `register.cjs`, or the file `BUNDLE_LOCKFILE_CONFIG` names, is not a JSON object, cannot be read, or (named) does not exist | fix the file or `BUNDLE_LOCKFILE_CONFIG` ([settings](configuration.md#invalid-settings-fail-the-build)) |
 | `rspack <version> is not supported (it needs 1.1 or later)` | rspack 1.0 | upgrade rspack |
 | `BUNDLE_LOCKFILE_… is set, but is no setting of bundle-lockfile`, `… is not recognized`, `… is none of …`, `… is not an absolute path`, `… without BUNDLE_LOCKFILE_EXPORT_DIR`, `… needs module.registerHooks …`, `the settings file … sets …` | a setting bundle-lockfile does not recognize, or that cannot work ([settings](configuration.md#invalid-settings-fail-the-build)) | fix the name or the value |
@@ -43,7 +44,8 @@ They do not fail the build:
   process: bundled code from a `node_modules` directory without a `package.json`, listed as the package around it; an
   adapter that failed while inspecting a module that is not a bundler; ESM hooks that could not be installed in a
   process whose main script's package depends on no ES-module bundler; a limit that was reached, so that some files
-  were not compared or checked (too many files below a directory, a file too large).
+  were not compared or checked (too many files below a directory, a file too large); a bundled file that another build
+  wrote and that changed since, listed with that build's packages ([nested bundles](format.md#nested-bundles)).
 - `[bundle-lockfile] note:` — always, once per process: a vendored copy that is listed (`BUNDLE_LOCKFILE_FIRST_PARTY`
   names directories that are not).
 

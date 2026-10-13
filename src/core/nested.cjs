@@ -5,19 +5,25 @@
 // and "contents"); a bundled file that is not in node_modules and has the bytes recorded by the nearest such lockfile
 // above it brings the packages in it.
 // Works across processes, separate commands and machines (the record travels with the output) and for the export
-// copy (BUNDLE_LOCKFILE_EXPORT_DIR) when the inline lockfile is off. A file changed after it was built does not match.
+// copy (BUNDLE_LOCKFILE_EXPORT_DIR) when the inline lockfile is off. A file at a path the record has whose bytes changed
+// after it was built (post-processed, minified again) still brings that build's packages, with a warning: the record
+// says by path that the build wrote it - one package too many rather than the packages inlined into it missing. A
+// lockfile of the inner build that cannot be read (permissions, not JSON, a record of another version) is a problem:
+// its packages would be missing.
 // A first-party package linked into node_modules (a workspace package that another build wrote, e.g. a library built
 // by Vite) is looked at where it really is, also when the bundler reached it through the link (webpack's
 // resolve.symlinks: false, Vite's resolve.preserveSymlinks).
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
-const { readMeta } = require('./lockfile.cjs');
+const problems = require('./problems.cjs');
+const { readMeta, unreadableRecord } = require('./lockfile.cjs');
 const { hashOf } = require('./hashes.cjs');
 const { ancestors, packageRoot, realRoot, exportPath } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
-const state = globalThis[S] || (globalThis[S] = { metas: new Map() }); // dir -> meta | null
+const state = globalThis[S] || (globalThis[S] = { metas: new Map(), changed: new Set() }); // dir -> meta | null; files warned about
+if (!state.changed) state.changed = new Set();
 
 // The lockfile meta (readMeta) of the build whose output dir is `dir`, or null.
 function metaOf(dir) {
@@ -25,8 +31,18 @@ function metaOf(dir) {
   let meta = null;
   const target = path.join(dir, config.file);
   const exp = exportPath(target);
+  const missing = (why) => `the packages of the build that wrote ${dir} would be missing (${why})`;
   for (const f of exp ? [target, exp] : [target]) {
-    try { meta = readMeta(fs.readFileSync(f, 'utf8'), path.dirname(target)); } catch { meta = null; }
+    let text;
+    try { text = fs.readFileSync(f, 'utf8'); } catch (e) {
+      if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) problems.problem(`could not read ${f}: ${missing('a bundled file there may be its output')}`, e, { once: f });
+      continue;
+    }
+    meta = readMeta(text, path.dirname(target));
+    if (!meta) {
+      const why = unreadableRecord(text);
+      if (why) problems.problem(`${f} ${why}: ${missing('a bundled file there may be its output')}`, null, { once: f });
+    }
     if (meta && meta.writers.some(w => Object.keys(w.outputs).length)) break;
     meta = null;
   }
@@ -67,8 +83,11 @@ function nestedByFile(files) {
       if (!meta) continue;
       const writer = meta.writers.find(w => w.outputs[file]);
       if (writer) {
-        if (writer.outputs[file] === hashOf(file)) out.set(f, writer.contents[file] || writer.pkgs);
-        else config.debug('built by another build, but changed since:', file);
+        if (writer.outputs[file] !== hashOf(file) && !state.changed.has(file)) {
+          state.changed.add(file);
+          config.warn(`${file} changed after the build that wrote it into ${dir}: listed with that build's packages`);
+        }
+        out.set(f, writer.contents[file] || writer.pkgs);
         break;
       }
       const cut = meta.writers.filter(w => w.outputCount > Object.keys(w.outputs).length);

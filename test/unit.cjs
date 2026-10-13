@@ -1686,7 +1686,7 @@ test('rollup adapter: plugins configured by hand, two builds of different inputs
   } finally { process.chdir(cwd); }
 });
 
-test('nested: a bundled file another build produced brings its packages, unless it changed since', async () => {
+test('nested: a bundled file another build produced brings its packages, also when it changed since (with a warning)', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('inner'), ...pj('outer') });
@@ -1697,9 +1697,51 @@ test('nested: a bundled file another build produced brings its packages, unless 
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
     const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
     assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
+    // post-processed after its build: the record says by path that the island's build wrote it
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
-    assert.deepEqual(ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['outer@1.0.0']);
+    let got;
+    const warned = warnings(() => { got = ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]); });
+    assert.deepEqual(got, ['inner@1.0.0', 'outer@1.0.0']);
+    assert.deepEqual(warned, [`${J(root, 'island/dist/main.js')} changed after the build that wrote it into ${J(root, 'island/dist')}: listed with that build's packages`]);
+    assert.deepEqual(warnings(() => ids([J(root, 'island/dist/main.js')])), []); // once per file
+    // a file the record does not have: first-party
+    fs.writeFileSync(J(root, 'island/dist/other.js'), 'x');
+    assert.deepEqual(ids([J(root, 'island/dist/other.js')]), []);
   } finally { process.chdir(cwd); }
+});
+
+test('strict: a nested build\'s lockfile that cannot be read fails the build that bundles its output (BUNDLE_LOCKFILE_STRICT=0: a warning)', () => {
+  const lock = (record) => JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {} }, ...(record === undefined ? {} : { 'bundle-lockfile': record }) });
+  const cases = [
+    ['not JSON', '{ "lockfileVersion": 3,', 'is not JSON'],
+    ['another version', lock({ v: 2, context: '.', writers: [] }), 'has a record of version 2, which this bundle-lockfile does not read'],
+    ['another shape', lock({ v: 1, context: 1, writers: 'x' }), 'has a bundle-lockfile record of a shape it does not read'],
+  ];
+  for (const [what, content, why] of cases) {
+    const root = project({ 'island/dist/main.js': 'x', 'island/dist/bundle-lockfile/package-lock.json': content });
+    const file = J(root, 'island/dist/bundle-lockfile/package-lock.json');
+    const msg = `${file} ${why}: the packages of the build that wrote ${J(root, 'island/dist')} would be missing (a bundled file there may be its output)`;
+    const script = `const p = require(${JSON.stringify(J(SRC, 'core/packages.cjs'))}); const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+      p.packagesOfFiles([${JSON.stringify(J(root, 'island/dist/main.js'))}]); console.log(JSON.stringify(problems.take()));`;
+    const strict = nodeWith(strictEnv(undefined), ['-e', script]);
+    assert.deepEqual(JSON.parse(strict.stdout), [msg], `${what}: ${strict.stderr}`);
+    const off = nodeWith(strictEnv('0'), ['-e', script]);
+    assert.deepEqual([JSON.parse(off.stdout), off.stderr], [[], `[bundle-lockfile] WARNING: ${msg}\n`], what);
+  }
+  // a lockfile that cannot be read (a directory in its place; permissions do not stop root, which runs the tests in CI)
+  const dir = project({ 'island/dist/main.js': 'x', 'island/dist/bundle-lockfile/package-lock.json/x': '' });
+  const unreadable = nodeWith(strictEnv(undefined), ['-e', `const p = require(${JSON.stringify(J(SRC, 'core/packages.cjs'))}); const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+    p.packagesOfFiles([${JSON.stringify(J(dir, 'island/dist/main.js'))}]); console.log(JSON.stringify(problems.take()));`]);
+  const [got] = JSON.parse(unreadable.stdout);
+  const lockAt = J(dir, 'island/dist/bundle-lockfile/package-lock.json');
+  assert.ok(got.startsWith(`could not read ${lockAt}: the packages of the build that wrote ${J(dir, 'island/dist')} would be missing (a bundled file there may be its output): EISDIR`), got);
+  // the project's own lockfile (BUNDLE_LOCKFILE_FILE=package-lock.json, an output directory that is the project): no
+  // record, nothing to say; no lockfile at all: nothing either
+  const own = project({ 'src/a.js': 'x', 'package-lock.json': lock(undefined), 'other/b.js': 'x' });
+  const script = `const p = require(${JSON.stringify(J(SRC, 'core/packages.cjs'))}); const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+    p.packagesOfFiles([${JSON.stringify(J(own, 'src/a.js'))}, ${JSON.stringify(J(own, 'other/b.js'))}]); console.log(JSON.stringify(problems.take()));`;
+  const r = nodeWith({ ...strictEnv(undefined), BUNDLE_LOCKFILE_FILE: 'package-lock.json' }, ['-e', script]);
+  assert.deepEqual([r.stdout, r.stderr], ['[]\n', '']);
 });
 
 test('nested: each JavaScript and CSS file another build produced brings the packages in it', async () => {
@@ -2342,13 +2384,16 @@ test('lockfile: a writer\'s record has at most 20 of its files and 500 output ha
   assert.equal(read.files.length, 20);
   assert.equal(read.outputCount, 600);
   // another build bundling one of the outputs the record does not have gets all of the writer's packages, not none
-  // (a JavaScript or CSS file: no other one); one the record has, with other bytes, is no output of it any more
+  // (a JavaScript or CSS file: no other one); one the record has, with other bytes (changed after its build), still
+  // brings the writer's packages, with a warning (see nested.cjs)
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(J(dir, 'package-lock.json'), json);
   for (const f of ['o550.js', 'o100.js', 'o560.txt']) fs.writeFileSync(J(root, 'dist', f), 'x');
   const elsewhere = { context: os.tmpdir() };
   assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o550.js')], elsewhere).all), ['a@1.0.0']);
-  assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o100.js')], elsewhere).all), []);
+  let changed;
+  assert.equal(warnings(() => { changed = packages.packagesOfFiles([J(root, 'dist/o100.js')], elsewhere).all; }).length, 1);
+  assert.deepEqual(ids(changed), ['a@1.0.0']);
   assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o560.txt')], elsewhere).all), []);
   // a record with all of them has no count
   const few = JSON.parse(toPackageLock([pkg], root, { dir, writers: [{ id: 'w', files, paths: [pkg.path], outputs: { [J(root, 'dist/o.js')]: 'sha256-0' } }] }));
@@ -2897,8 +2942,11 @@ test('vendored: a bundled file another build produced is its output, no vendored
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island', modules: [J(root, 'node_modules/inner/i.js')] }] });
     const elsewhere = { context: os.tmpdir() }; // island/ is no ancestor: only the record says it is first-party output
     assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'island/dist/main.js')], elsewhere).all), ['inner@1.0.0']);
-    fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */'); // no longer that build's output: island's own package.json
-    assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'island/dist/main.js')], elsewhere).all), ['island@1.0.0']);
+    // changed after its build: still that build's output (its record says so by path), no vendored copy of island
+    fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
+    let changed;
+    assert.equal(warnings(() => { changed = packages.packagesOfFiles([J(root, 'island/dist/main.js')], elsewhere).all; }).length, 1);
+    assert.deepEqual(ids(changed), ['inner@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
