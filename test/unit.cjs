@@ -4315,6 +4315,65 @@ test('strict: a Node.js without ESM hooks (20.0 - 20.5) fails a bundler process:
   assert.deepEqual([e.status, e.stderr], [0, '']);
 });
 
+test('strict: an ES-module bundler in a thread without ESM hooks fails when it loads its CommonJS companion; its CommonJS build does not', () => {
+  // a process that bundlerProcess does not take for one (its project has no bundler installed where it looks, and its
+  // main script names none): Node.js before 24.12 installs no ESM hooks there. Simulated on every version by taking
+  // module.register / registerHooks away before the hooks install.
+  const tools = {
+    // Rollup: the ES build loads dist/native.js with no CommonJS module of Rollup's before it, the CommonJS one from
+    // dist/shared/parseAst.js
+    'node_modules/rollup/package.json': { name: 'rollup', version: '4.64.6' },
+    'node_modules/rollup/dist/es/package.json': { type: 'module' },
+    'node_modules/rollup/dist/es/rollup.js': "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('../native.js');\nexport const rollup = async () => {};\n",
+    'node_modules/rollup/dist/native.js': 'module.exports = { parse() {} };\n',
+    'node_modules/rollup/dist/shared/parseAst.js': "module.exports = require('../native.js');\n",
+    'node_modules/rollup/dist/rollup.js': "require('./shared/parseAst.js');\nexports.rollup = async () => {};\n",
+    // Rolldown: its ES build loads its binding's package.json from dist/shared/*.mjs
+    'node_modules/rolldown/package.json': { name: 'rolldown', version: '1.2.13', type: 'module' },
+    'node_modules/rolldown/dist/shared/binding-x.mjs': "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('@rolldown/binding-linux-x64-gnu/package.json');\nexport const rolldown = async () => {};\n",
+    'node_modules/@rolldown/binding-linux-x64-gnu/package.json': { name: '@rolldown/binding-linux-x64-gnu', version: '1.2.13' },
+    // rspack 2: its ES module loads @rspack/binding/binding.js
+    'node_modules/@rspack/core/package.json': { name: '@rspack/core', version: '2.2.9', type: 'module' },
+    'node_modules/@rspack/core/dist/index.js': "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('@rspack/binding/binding.js');\nexport const rspack = () => {};\n",
+    'node_modules/@rspack/binding/package.json': { name: '@rspack/binding', version: '2.2.9' },
+    'node_modules/@rspack/binding/binding.js': 'module.exports = {};\n',
+  };
+  const root = project({ ...Object.fromEntries(Object.entries(tools).map(([k, v]) => [`tools/${k}`, v])), 'app/package.json': { name: 'app', version: '1.0.0' } });
+  // rspack 1: a CommonJS dist/index.js loads the same binding
+  const cjs = project({
+    'node_modules/@rspack/core/package.json': { name: '@rspack/core', version: '1.7.12' },
+    'node_modules/@rspack/core/dist/index.js': "require('@rspack/binding/binding.js');\nmodule.exports = {};\n",
+    'node_modules/@rspack/binding/package.json': { name: '@rspack/binding', version: '1.7.12' },
+    'node_modules/@rspack/binding/binding.js': 'module.exports = {};\n',
+  });
+  const T = (f) => J(root, 'tools/node_modules', f);
+  const run = (env, file, how = 'import') => spawnSync(process.execPath, ['-e', `const M = require('module'); M.registerHooks = undefined; M.register = undefined;
+    require(${JSON.stringify(J(SRC, 'register.cjs'))});
+    (${how === 'import' ? `import(${JSON.stringify(pathToFileURLHref(file))})` : `Promise.resolve().then(() => require(${JSON.stringify(file)}))`})
+      .then(() => console.log('loaded'), (e) => { console.log('failed:', e.message); process.exitCode = 3; });`],
+  { encoding: 'utf8', cwd: J(root, 'app'), env: { ...strictEnv(env), BUNDLE_LOCKFILE_ESM_HOOKS: '' } });
+  for (const [id, file] of [['rollup', T('rollup/dist/es/rollup.js')], ['rolldown', T('rolldown/dist/shared/binding-x.mjs')], ['rspack', T('@rspack/core/dist/index.js')]]) {
+    const strict = run(undefined, file);
+    assert.match(strict.stdout, new RegExp(`^failed: bundle-lockfile: the lockfile would be missing or incomplete[\\s\\S]*${id} is loaded as an ES module in a process without bundle-lockfile's ESM hooks .*set BUNDLE_LOCKFILE_ESM_HOOKS=async`), `${id}: ${strict.stdout}${strict.stderr}`);
+    const lax = run('0', file);
+    assert.equal(lax.stdout.trim(), 'loaded', `${id}: ${lax.stderr}`);
+    assert.match(lax.stderr, new RegExp(`WARNING: ${id} is loaded as an ES module`), id);
+    // turned off: nothing to check; the bundler disabled: nothing either
+    const off = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(J(SRC, 'register.cjs'))}); import(${JSON.stringify(pathToFileURLHref(file))}).then(() => console.log('loaded'));`],
+      { encoding: 'utf8', cwd: J(root, 'app'), env: { ...strictEnv(undefined), BUNDLE_LOCKFILE_ESM_HOOKS: 'off' } });
+    assert.deepEqual([off.stdout.trim(), off.stderr], ['loaded', ''], id);
+  }
+  const dis = spawnSync(process.execPath, ['-e', `const M = require('module'); M.registerHooks = undefined; M.register = undefined;
+    require(${JSON.stringify(J(SRC, 'register.cjs'))}); import(${JSON.stringify(pathToFileURLHref(T('rollup/dist/es/rollup.js')))}).then(() => console.log('loaded'));`],
+  { encoding: 'utf8', cwd: J(root, 'app'), env: { ...strictEnv(undefined), BUNDLE_LOCKFILE_ESM_HOOKS: '', BUNDLE_LOCKFILE_DISABLE: 'rollup,vite' } });
+  assert.deepEqual([dis.stdout.trim(), dis.stderr], ['loaded', '']);
+  // the CommonJS builds load the same files from a module that came through the CommonJS hook: no problem
+  for (const file of [T('rollup/dist/rollup.js'), J(cjs, 'node_modules/@rspack/core/dist/index.js')]) {
+    const r = run(undefined, file, 'require');
+    assert.deepEqual([r.stdout.trim(), r.stderr, r.status], ['loaded', '', 0], file);
+  }
+});
+
 test('hooks: an entry module the in-thread hook cannot wrap fails when it is imported (BUNDLE_LOCKFILE_STRICT=0: a warning)', { skip: !(typeof require('module').registerHooks === 'function' && require('../src/hooks.cjs').syncHooksSafe(process.versions.node)) }, () => {
   const root = project({ 'm.mjs': 'export const x = 1;' });
   const script = `const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});

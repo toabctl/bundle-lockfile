@@ -255,6 +255,11 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
   ([nodejs/node#52706](https://github.com/nodejs/node/pull/52706), which shared them, was reverted).
 - Node.js 20.0 – 20.5 have neither: a process that would get the loader thread has a problem (its ES-module bundlers
   would write no lockfile).
+- A thread without ESM hooks (they are not turned off, but the process was not taken for a bundler process) has a safety
+  net: each ES-module bundler loads a CommonJS file of its own (the adapters' `esmCompanions`: Rollup's
+  `dist/native.js`, Rolldown's binding package's `package.json` and `.node` file, rspack 2's `@rspack/binding`), from a
+  module that did not come through the CommonJS hook; its CommonJS build loads the same file from one that did. Loading
+  it there is a problem: in strict mode the bundler's import fails, with `BUNDLE_LOCKFILE_ESM_HOOKS=async` as the fix.
 - `BUNDLE_LOCKFILE_ESM_HOOKS=async` uses the loader thread in every process and worker thread, `sync` the in-thread
   hooks wherever `module.registerHooks` exists (also on versions where they are not safe next to other loaders),
   `off` neither. Node.js's own loader thread, which runs `--require` preloads too, never gets them: `register.cjs`
@@ -408,7 +413,7 @@ never replaced, and two lockfiles at one export path), taking or creating the lo
 wrapping a bundler, a bundler it recognizes but does not know (an entry without the functions to wrap, a compiler of
 another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an unsupported rspack (1.0, 0.x when it compiles), a build bundle-lockfile recognizes but does not hook (Turbopack, Parcel,
 the `rolldown` command line, ncc, webpack < 4: `core/unsupported.cjs`, the webpack adapter), installing the ESM hooks in a
-bundler process (or a Node.js without them), a settings file that cannot be read, a setting that is not recognized or
+bundler process (or a Node.js without them), an ES-module bundler loaded in a thread without them, a settings file that cannot be read, a setting that is not recognized or
 cannot work (`config.invalid`), another copy of bundle-lockfile preloaded too - and the adapter of the build takes the
 recorded problems at the end of its hooks:
 

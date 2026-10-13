@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import config from '../rspack.config.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+process.chdir(root); // the config's paths are relative to the project, also when this starts elsewhere
 const { rspack } = await import(pathToFileURL(path.join(root, 'node_modules/@rspack/core/dist/index.js')).href);
 const compiler = rspack(config);
 compiler.run((err, stats) => {

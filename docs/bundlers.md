@@ -71,7 +71,7 @@ hook:
     which load Vite through a dependency), or
   - that have another loader hook (e.g. Yarn Plug'n'Play's).
 
-  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async`. A `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader
+  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async` (without, it fails the build). A `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader
   thread these versions use costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on Node.js 22; each worker
   thread of such a process starts one more (60 – 300 ms for a Vite build in a worker).
 
