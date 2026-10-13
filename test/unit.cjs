@@ -4233,3 +4233,39 @@ test('webpack adapter: a generate-only build\'s assets still count when files wr
   assert.deepEqual(comp.errors, []);
   assert.deepEqual(lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8')), ['a', 'late', 'wb-runtime']);
 });
+
+test('config: BUNDLE_LOCKFILE_ESM_HOOKS=sync is invalid on a Node.js without module.registerHooks', () => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_')));
+  const run = (value, without) => {
+    const r = spawnSync(process.execPath, ['-e', `${without ? "require('module').registerHooks = undefined;" : "require('module').registerHooks = () => {};"}
+      console.log(JSON.stringify(require(${JSON.stringify(J(SRC, 'core/config.cjs'))}).invalid))`], { env: { ...env, BUNDLE_LOCKFILE_ESM_HOOKS: value }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  assert.deepEqual(run('sync', true), [`BUNDLE_LOCKFILE_ESM_HOOKS=sync needs module.registerHooks, which Node.js ${process.versions.node} does not have (22.15 and later): ES-module bundlers would not be hooked`]);
+  assert.deepEqual(run(' Sync ', false), []);
+  assert.deepEqual(run('async', true), []);
+  assert.deepEqual(run('off', true), []);
+});
+
+test('strict: an entry wrapper evaluated where bundle-lockfile is not loaded fails its import (BUNDLE_LOCKFILE_STRICT=0: a warning)', () => {
+  const esmWrap = require('../src/esm-wrap.cjs');
+  const root = project({ 'rollup.mjs': 'export function rollup() { return 1; }' });
+  const url = pathToFileURLHref(J(root, 'rollup.mjs'));
+  const entry = { id: 'rollup', suffixes: ['/rollup.mjs'], wrap: ['rollup'] };
+  fs.writeFileSync(J(root, 'strict.mjs'), esmWrap.source(url, 'export function rollup() {}', entry, true));
+  fs.writeFileSync(J(root, 'warn.mjs'), esmWrap.source(url, 'export function rollup() {}', entry, false));
+  const load = (f) => nodeWith(strictEnv('0'), ['--input-type=module', '-e',
+    `try { const m = await import(${JSON.stringify(pathToFileURLHref(J(root, f)))}); console.log('loaded', m.rollup()); } catch (e) { console.log('failed:', e.message); }`]);
+  const msg = `${url} is wrapped, but bundle-lockfile is not loaded in this thread: its builds would write no lockfile`;
+  const strict = load('strict.mjs');
+  assert.equal(strict.stdout, `failed: bundle-lockfile: ${msg} (BUNDLE_LOCKFILE_STRICT=0 makes this a warning)\n`, strict.stderr);
+  const warn = load('warn.mjs');
+  assert.equal(warn.stdout, 'loaded 1\n', warn.stderr);
+  assert.equal(warn.stderr, `[bundle-lockfile] WARNING: ${msg}\n`);
+  // with the API (the hooks installed in the thread): no message
+  const hooked = nodeWith(strictEnv(undefined), ['--input-type=module', '-e',
+    `globalThis[Symbol.for('bundle-lockfile.esm')] = { wrap: (id, n, fn) => () => 2, found() {} };
+     const m = await import(${JSON.stringify(pathToFileURLHref(J(root, 'strict.mjs')))}); console.log('loaded', m.rollup());`]);
+  assert.deepEqual([hooked.stdout, hooked.stderr], ['loaded 2\n', '']);
+});

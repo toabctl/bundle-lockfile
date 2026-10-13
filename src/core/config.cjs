@@ -107,6 +107,10 @@ for (const n of disabled) if (n !== 'all' && !ADAPTER_NAMES.includes(n)) invalid
 // BUNDLE_LOCKFILE_ESM_HOOKS as hooks.cjs reads it when it installs the hooks: any case, spaces ignored; unset or empty: auto
 const esmHooksOf = (v) => (v === undefined ? '' : String(v).trim()).toLowerCase() || 'auto';
 if (!ESM_HOOKS.includes(esmHooksOf(env.BUNDLE_LOCKFILE_ESM_HOOKS))) invalid.push(`${shown('BUNDLE_LOCKFILE_ESM_HOOKS')} is none of ${ESM_HOOKS.join(', ')}`);
+// sync needs module.registerHooks: without it no ES-module bundler would be hooked
+else if (esmHooksOf(env.BUNDLE_LOCKFILE_ESM_HOOKS) === 'sync' && typeof require('module').registerHooks !== 'function') {
+  invalid.push(`${shown('BUNDLE_LOCKFILE_ESM_HOOKS')} needs module.registerHooks, which Node.js ${process.versions.node} does not have (22.15 and later): ES-module bundlers would not be hooked`);
+}
 const exportDir = dir('BUNDLE_LOCKFILE_EXPORT_DIR'), exportBase = dir('BUNDLE_LOCKFILE_EXPORT_BASE');
 if (exportBase && !exportDir) invalid.push(`BUNDLE_LOCKFILE_EXPORT_BASE is set${from('BUNDLE_LOCKFILE_EXPORT_BASE')} without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect`);
 // the node shim (bin/node) preloads it in every process, wherever that runs: Node's --require takes a relative path as

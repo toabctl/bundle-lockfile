@@ -70,16 +70,23 @@ function exportedNames(source) {
 // The wrapper's source. Every function in entry.wrap is exported as the wrapped one, whether the module exports it or
 // not (the namespace has it also from an `export *`; one it does not have is undefined, and stays so); the wrapper tells
 // the hooks whether the module had any of them - an entry with none is a version the adapter does not know, whose
-// builds would write no lockfile (hooks.cjs found). Only the default export is read from the source.
-function source(url, realSrc, entry) {
+// builds would write no lockfile (hooks.cjs found). Only the default export is read from the source. Without the
+// hooks' API in its thread (bundle-lockfile not loaded there) the bundler is not hooked: in strict mode the wrapper
+// throws when it is evaluated, which fails its import; otherwise it warns, and the module is as it is.
+function source(url, realSrc, entry, strict = true) {
   const names = exportedNames(realSrc);
   const real = JSON.stringify(`${url}${url.includes('?') ? '&' : '?'}${MARK}`);
   const id = JSON.stringify(entry.id);
+  const unhooked = `${url} is wrapped, but bundle-lockfile is not loaded in this thread: its builds would write no lockfile`;
+  const noApi = strict
+    ? `throw new Error(${JSON.stringify(`bundle-lockfile: ${unhooked} (BUNDLE_LOCKFILE_STRICT=0 makes this a warning)`)});`
+    : `process.stderr.write(${JSON.stringify(`[bundle-lockfile] WARNING: ${unhooked}\n`)});`;
   return [
     `import * as real from ${real};`,
     `export * from ${real};`,
     names.has('default') ? `export { default } from ${real};` : '',
     `const api = globalThis[Symbol.for('bundle-lockfile.esm')];`,
+    `if (!api) ${noApi}`,
     `if (api && api.found) api.found(${id}, ${JSON.stringify(url)}, ${JSON.stringify(entry.wrap)}, ${JSON.stringify(entry.wrap)}.some(n => typeof real[n] === 'function'));`,
     ...entry.wrap.map(n => `export const ${n} = api ? api.wrap(${id}, ${JSON.stringify(n)}, real.${n}) : real.${n};`),
   ].filter(Boolean).join('\n') + '\n';
@@ -112,7 +119,7 @@ function cjsSource(url, result, files) {
 // What the load hooks (in-thread in hooks.cjs, in the loader thread in esm-loader.mjs) return for `url`, given the
 // result of the next hook: the wrapper of an entry module, a cjsFiles module's source with the line appended, or the
 // result as it is.
-function transform(url, result, entries, cjsFiles) {
+function transform(url, result, entries, cjsFiles, strict = true) {
   // only ES modules are wrapped: rspack 1's CommonJS dist/index.js has the path of rspack 2's entry, and must go on to
   // cjsSource (under Yarn Plug'n'Play Node.js evaluates it without the CommonJS hook)
   const entry = result && result.format === 'module' ? match(url, entries) : null;
@@ -120,7 +127,7 @@ function transform(url, result, entries, cjsFiles) {
     const cjs = cjsSource(url, result, cjsFiles);
     return cjs ? { ...result, source: cjs } : result;
   }
-  return { format: 'module', source: source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry), shortCircuit: true };
+  return { format: 'module', source: source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry, strict), shortCircuit: true };
 }
 
 module.exports = { MARK, match, withoutComments, exportedNames, source, cjsSource, CJS_LOADED, transform, unwrappable };
