@@ -168,14 +168,16 @@ function runCase(c) {
   const unwanted = (c.expectExcludes || []).filter(p => all.includes(p));
   if (unwanted.length) throw new Error(`unexpected ${unwanted.join(' ')} in${show(got)}`);
 
-  // canaries (test/apps/canary): found in the output's bytes, not through the bundler - each one listed, and each listed
-  // one there
+  // canaries (test/apps/canary): found in the output's bytes, not through the bundler - each one listed (except exactly
+  // the case's canaryUnlisted: a documented limit, pinned), and each listed one there
   const shipped = canaries(outDir);
   const unlisted = shipped.filter(p => !all.includes(p));
-  if (unlisted.length) throw new Error(`in the output, not listed: ${unlisted.join(' ')}`);
+  if (!same(unlisted, c.canaryUnlisted || [])) {
+    throw new Error(`in the output, not listed: ${unlisted.join(' ') || '(none)'}${c.canaryUnlisted ? `; want exactly ${c.canaryUnlisted.join(' ')}` : ''}`);
+  }
   const absent = all.filter(p => p.startsWith('bl-canary-') && !shipped.includes(p));
   if (absent.length) throw new Error(`listed, not in the output: ${absent.join(' ')}`);
-  if (shipped.length) notes.push(`${shipped.length} canaries in the output, all listed`);
+  if (shipped.length) notes.push(`${shipped.length} canaries in the output, ${unlisted.length ? `all listed but ${unlisted.join(' ')}, as expected` : 'all listed'}`);
 
   // syft first: the oracle's build may write where the case's build wrote (adapter-netlify's .netlify/, Next's .next/
   // with output: 'export')

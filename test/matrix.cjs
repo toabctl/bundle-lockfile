@@ -125,7 +125,7 @@ const nextRspack = (fx, version) => ({ ...fx, deps: { ...fx.deps, 'next-rspack':
 // canaries (test/apps/canary): packages whose shipped code carries BLCANARY:<name>@<version>, which run.cjs finds in the
 // output's bytes - not through the bundler's own reporting, which the oracles read. Moved into node_modules after the
 // install (npm links a file: directory): bl-canary-dup 2.0.0 at the top, 1.0.0 inside bl-canary-used
-const CANARY_INSTALL = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused bl-canary-css ../node_modules/'
+const CANARY_INSTALL = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused bl-canary-css bl-canary-import bl-canary-icon bl-canary-url bl-canary-glsl ../node_modules/'
   + ' && mv bl-canary-dup-2 ../node_modules/bl-canary-dup && mkdir ../node_modules/bl-canary-used/node_modules'
   + ' && mv bl-canary-dup-1 ../node_modules/bl-canary-used/node_modules/bl-canary-dup && cd .. && rmdir pkgs';
 // edge-manifests: engine.io-client pinned too (socket.io-client takes ~6.6.1), as the package whose build/esm/package.json
@@ -384,6 +384,7 @@ const fixtures = {
   'canary-wp5': canary('webpack', WEBPACK),
   'canary-rspack2.2': canary('rspack', { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }, { scripts: { build: 'rspack build' } }),
   'canary-vite8': canary('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
+  ...Object.fromEntries(['7.3.7', '6.1.6', '6.0.11', '5.4.21'].map(v => [`canary-vite${v}`, canary('vite', { vite: v }, { type: 'module', scripts: { build: 'vite build' } })])),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
   'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
@@ -405,6 +406,11 @@ const ESBUILD = ['bootstrap-icons@1.13.2', 'debug@2.6.9', 'lodash-es@4.18.1', 'm
 // watch modes: the build, the rebuild without nanoid, the rebuild with it again
 const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
 const CANARY_JS = ['bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0', 'bl-canary-used@1.0.0'];
+// the canaries of files inlined into a module (the shader include) and of the style sheets (Rollup's canary build has no CSS)
+const CANARY_INLINED = { js: ['bl-canary-glsl@1.0.0'], all: ['bl-canary-css@1.0.0', 'bl-canary-glsl@1.0.0', 'bl-canary-icon@1.0.0', 'bl-canary-import@1.0.0'] };
+// the image JavaScript inlines with new URL(): a module of webpack's and rspack's builds, inlined by Vite's (Rollup leaves
+// the URL as it is: not in the output)
+const CANARY_URL = 'bl-canary-url@1.0.0';
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // edge-vendored (src/index.js): the copies outside node_modules (left-pad by an alias, is-odd by resolve.modules,
 // vscode-languageclient with engines.vscode but no publisher, a copy of ms@2.1.3, the in-repo app-lib), container and
@@ -585,6 +591,8 @@ function nextCase(fixture, version, react, flags = '') {
 //              on, majors newer than every listed one): skipped (and reported) on others (say why at the case)
 //   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
+//   canaryUnlisted  canaries (test/apps/canary) in the output that are not listed - a documented limit (say why at the
+//              case); exactly these, so the limit is pinned
 //   expectSources  path fragments ("/"-separated, e.g. "node_modules/preact/hooks/"): each must be part of a source file
 //              of the oracle's build (its --sources), so the files the case is about are bundled at all
 const cases = [
@@ -1503,11 +1511,29 @@ const cases = [
         'node_modules/socket.io-client/build/esm/', 'node_modules/engine.io-client/build/esm/'] })),
   // canaries: every marker in the output is listed (run.cjs), and every listed canary's marker is in the output: both
   // versions of bl-canary-dup, not the unused bl-canary-unused
-  ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['rollup 4.64.2', 'canary-rollup'], ['esbuild 0.28.2', 'canary-esbuild']].map(([what, fixture]) => (
-    { name: `canaries: ${what}`, fixture, cmd: 'npm run -s build', expect: [...CANARY_JS, ...(fixture === 'canary-rollup' ? [] : ['bl-canary-css@1.0.0'])].sort(),
-      ...(fixture === 'canary-esbuild' && { oracleArgs: '--script esbuild.mjs' }),
-      // Vite writes no source maps for CSS: its oracle does not see bl-canary-css (here its marker does)
-      ...(fixture === 'canary-vite8' && { oracleMissing: ['bl-canary-css@1.0.0'] }) })),
+  // canaries in files inlined into a module, no modules themselves: bl-canary-glsl's shader include (a loader's file
+  // dependency, a plugin's watch file), and in style sheets bl-canary-import (@imported) and bl-canary-icon (an image
+  // inlined as a data: URL) - modules of their own in webpack's and rspack's CSS, inlined by Vite's
+  ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['Vite 7.3.7', 'canary-vite7.3.7'],
+    ['rollup 4.64.2', 'canary-rollup']].map(([what, fixture]) => (
+    { name: `canaries: ${what}`, fixture, cmd: 'npm run -s build',
+      expect: [...CANARY_JS, ...CANARY_INLINED[fixture === 'canary-rollup' ? 'js' : 'all'], ...(fixture === 'canary-rollup' ? [] : [CANARY_URL])].sort(),
+      // no bundler reports a file inlined into a module; Vite writes no source maps for CSS, and none of the image it
+      // inlines: its oracle does not see the style sheets' and the image's packages (here their markers do)
+      oracleMissing: fixture.startsWith('canary-vite') ? [...CANARY_INLINED.all, CANARY_URL] : CANARY_INLINED.js })),
+  // esbuild: the shader include comes from an esbuild plugin's onLoad (its watchFiles), which bundle-lockfile does not
+  // read yet; the image a style sheet inlines (dataurl loader) is only among the style sheet's imports in the metafile,
+  // and the oracle's source maps have no source for a data: URL (its marker here shows it); new URL() is left as it is
+  { name: 'canaries: esbuild 0.28.2', fixture: 'canary-esbuild', cmd: 'npm run -s build', oracleArgs: '--script esbuild.mjs',
+    expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => p !== 'bl-canary-glsl@1.0.0').sort(), canaryUnlisted: ['bl-canary-glsl@1.0.0'],
+    oracleMissing: ['bl-canary-icon@1.0.0'] },
+  // Vite records the images a style sheet inlines as data: URLs from 6.1 on (vitejs/vite#18979), those JavaScript
+  // inlines with new URL() from 7 on: before, nothing the build records names their files - their markers are in the
+  // output, their packages not listed
+  ...[['6.1.6', [CANARY_URL]], ['6.0.11', ['bl-canary-icon@1.0.0', CANARY_URL]], ['5.4.21', ['bl-canary-icon@1.0.0', CANARY_URL]]].map(([v, unlisted]) => (
+    { name: `canaries: Vite ${v}, images inlined as data: URLs ${unlisted.length > 1 ? 'are' : 'from JavaScript are'} not recorded`, fixture: `canary-vite${v}`,
+      cmd: 'npm run -s build', expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => !unlisted.includes(p)).sort(), canaryUnlisted: unlisted,
+      oracleMissing: CANARY_INLINED.all.filter(p => !unlisted.includes(p)) })),
 ];
 
 module.exports = { fixtures, cases };

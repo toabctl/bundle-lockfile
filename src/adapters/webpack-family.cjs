@@ -67,20 +67,21 @@ const issuers = (compilation) => (m) => (compilation.moduleGraph ? compilation.m
 
 // Source files of modules, including the inner modules of scope-hoisted ConcatenatedModules (.modules),
 // which webpack takes out of the root's chunks (for their JavaScript).
-// A module's style sheets also include those its loaders inlined from other files and recorded as file dependencies of
-// the module: Sass partials (sass-loader), Less @imports (less-loader), postcss-import's and Tailwind's style sheets
-// (postcss-loader) - of a style sheet, and of any other module whose loaders compile style (a Vue single-file
-// component's <style lang="scss"> block, App.vue?vue&type=style, whose file is App.vue; an Angular component's styles).
-// They are no modules of their own. A style module's file dependencies in packages that are no code (images, fonts) are
-// files its CSS embeds: an asset url() inlined as a data: URL by a build-time compilation (mini-css-extract-plugin's
-// importModule on webpack 5, its child compiler on webpack 4), whose modules are in no chunk.
+// A module's files also include those its loaders inlined from other files and recorded as file dependencies of the
+// module (packages.inlinedFile): Sass partials (sass-loader), Less @imports (less-loader), postcss-import's and
+// Tailwind's style sheets (postcss-loader) - of a style sheet, and of any other module whose loaders compile style (a
+// Vue single-file component's <style lang="scss"> block, App.vue?vue&type=style, whose file is App.vue; an Angular
+// component's styles) -, a shader's #includes (glslify-loader), JSON a loader merges in. They are no modules of their
+// own. A style module's also include the images and fonts its CSS embeds: an asset url() inlined as a data: URL by a
+// build-time compilation (mini-css-extract-plugin's importModule on webpack 5, its child compiler on webpack 4), whose
+// modules are in no chunk. Which package such a file belongs to is up to core/packages.cjs (a first-party one: none, one
+// in a vendored copy outside node_modules: that copy).
 // webpack 4 keeps them in buildInfo.fileDependencies; webpack 5 moves them into the snapshot it takes of a cacheable
 // module's build (also restored from the persistent cache) and keeps them there only for one that is not. A module
 // generated from its issuer (mini-css-extract's CssModule) has those of the issuer.
 // A relative path (less-loader 7 adds what Less found from the working directory as it found it) is relative to the
 // working directory, as for the file system that reads and watches it. null: the module records none at all (rspack
 // before 1.3.14 has no buildInfo.fileDependencies, see styleFallback).
-const CODE = /\.([cm]?[jt]sx?|json|node|vue|svelte)$/i;
 function fileDependencies(m, issuerOf) {
   const of = (mod) => {
     const info = mod && mod.buildInfo;
@@ -94,13 +95,12 @@ function fileDependencies(m, issuerOf) {
   };
   return of(m) || (!m.resource && of(issuerOf(m)));
 }
-function styleDependencies(m, issuerOf, style) {
+function inlinedDependencies(m, issuerOf) {
   const deps = fileDependencies(m, issuerOf);
   if (!deps) return null;
   const out = [];
   for (const f of deps) {
-    if (typeof f !== 'string') continue;
-    if (packages.STYLE.test(f) || (style && !CODE.test(f) && packageRoot(path.resolve(f)))) out.push(path.resolve(f));
+    if (typeof f === 'string' && packages.inlinedFile(f)) out.push(path.resolve(f));
   }
   return out;
 }
@@ -120,7 +120,7 @@ function sourcesOf(compilation, modules, into = new Set(), seen = null) {
       if (f) {
         into.add(f);
         const style = isStyle(m, f) || (!m.resource && (() => { const i = issuerOf(m); return !!(i && typeof i.resource === 'string' && isStyle(i, i.resource)); })());
-        const deps = styleDependencies(m, issuerOf, style);
+        const deps = inlinedDependencies(m, issuerOf);
         if (deps) for (const d of deps) into.add(d); else if (style && seen) seen.unrecorded = true;
       }
       if (m.modules) walk(m.modules);

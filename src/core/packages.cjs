@@ -14,6 +14,25 @@ const { packageRoot, realRoot, unvirtual } = require('./paths.cjs');
 // CSS handling (Vite's CSS plugin, sass-loader, less-loader, postcss-import, Tailwind) and are no modules of their own
 const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
 
+// Files a loader or plugin reads while it builds a module and inlines into it - no modules of their own, recorded only
+// as the module's file dependencies (webpack, rspack: this.addDependency) or the build's watch files (Rollup, Rolldown,
+// Vite: this.addWatchFile): style sheets a style sheet @imports, images and fonts a style sheet inlines as data: URLs,
+// a shader's #includes (glslify), JSON a plugin merges in. Not: code, which is a module when it is bundled (also type
+// declarations, read by TypeScript loaders: .d.ts is .ts), and files that configure a build tool (package.json, read by
+// every resolver; tsconfig.json and the bases it extends; Babel, browserslist, PostCSS, SWC and ESLint settings).
+const CODE = /\.([cm]?[jt]sx?|node|vue|svelte|astro)$/i;
+const CONFIG = /^(package\.json|[jt]sconfig(\..*)?\.json|\.babelrc(\..*)?|babel\.config\.json|\.browserslistrc|browserslist|\.postcssrc(\..*)?|\.swcrc|\.eslintrc(\..*)?|\.npmrc|\.yarnrc(\.yml)?)$/i;
+// (a path, query strings allowed, relative to the working directory; whether such a file is a package's is up to the
+// caller). No directories: webpack 5's snapshots also have those a module's build looked into
+// (@vanilla-extract/webpack-plugin's loader: node_modules/@vanilla-extract, the package's directory, ...). A path that
+// is not there (any more) counts by its name.
+function inlinedFile(f) {
+  if (typeof f !== 'string') return false;
+  const file = f.split('?')[0];
+  if (!file || CODE.test(file) || CONFIG.test(path.basename(file))) return false;
+  try { return !fs.statSync(file).isDirectory(); } catch { return true; }
+}
+
 // Bundled code from a package the lockfile cannot list as itself must not go unnoticed: listed as the package around
 // it, a warning; listed as nothing, a problem (core/problems.cjs) - the lockfile would miss it. Directories such as
 // node_modules/.cache are no packages: tools generate files there, so they are skipped quietly.
@@ -117,4 +136,4 @@ function packagesOfFiles(files, build) {
   return { all: unique(own, ...inner), byFile };
 }
 
-module.exports = { STYLE, unique, packagesForFiles, packagesOfFiles };
+module.exports = { STYLE, CODE, inlinedFile, unique, packagesForFiles, packagesOfFiles };

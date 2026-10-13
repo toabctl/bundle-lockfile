@@ -268,10 +268,11 @@ inlined, as part of its own code.
 
 Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its JavaScript and CSS files (`outputs`) and the
 packages in each (`contents`):
-- a chunk: its modules' packages (not those of style sheets Vite took out of it into a CSS file);
+- a chunk: its modules' packages (not those of style sheets Vite took out of it into a CSS file), and those of the
+  files the build's plugins inlined that are no style sheets (which module inlined which is not known);
 - a CSS file: those of the style sheets that went into it (of all the build's extracted style sheets if no chunk
-  imports it), of the files it was emitted from, and of every style sheet the build `@import`s from packages (which
-  style sheet imports which is not known);
+  imports it), of the files it was emitted from, and of every file the build's plugins inlined, such as the style
+  sheets it `@import`s from packages (which style sheet inlined which is not known);
 - a JavaScript asset (Vite's worker chunks): the packages of the build that produced it.
 
 Of an output with more than 500 such files, only the first 500 by path are recorded, and `outputCount` gives the
