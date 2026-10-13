@@ -56,6 +56,8 @@ the source maps show none of its code.
 ## Not listed
 
 - packages the bundler leaves out: externals, CDN scripts, an unresolvable `require(variable)`;
+- modules that exist only in the bundler's input file system (webpack-virtual-modules, unplugin's virtual modules): in a
+  package directory that is not on disk, no package's (a warning); inside an installed package, listed as that package;
 - packages a server loads from `node_modules` at runtime (see [Next.js](bundlers.md#nextjs),
   [SvelteKit](bundlers.md#sveltekit)): image scans of a shipped `node_modules` read them from its `package.json` files,
   directory scans do not ([which scans](../README.md#sbom-tools));

@@ -36,10 +36,27 @@ function inlinedFile(f) {
 // Bundled code from a package the lockfile cannot list as itself must not go unnoticed: listed as the package around
 // it, a warning; listed as nothing, a problem (core/problems.cjs) - the lockfile would miss it. Directories such as
 // node_modules/.cache are no packages: tools generate files there, so they are skipped quietly.
+// A package root that is not on disk, below a directory that is - the bundler's input file system made it up
+// (webpack-virtual-modules writing node_modules/<name>/index.js): generated code, no package's. Not one inside a file
+// (a Yarn PnP zip archive that fs cannot read here): that package is real, and its files would go missing.
+function generated(root) {
+  for (let d = root; path.dirname(d) !== d; d = path.dirname(d)) {
+    let st;
+    try { st = fs.statSync(d); } catch { continue; }
+    return d !== root && st.isDirectory();
+  }
+  return false;
+}
+
 const warned = new Set();
 function unlisted(root, container) {
   const msg = `no package.json with name and version in ${root} - its bundled files are ${container ? `listed as ${container.name}@${container.version}, the package around it` : 'not listed'}`;
   if (path.basename(root).startsWith('.')) { config.debug(msg); return; }
+  if (!container && generated(root)) {
+    if (warned.has(root)) return;
+    warned.add(root);
+    return config.warn(`${root} is not on disk: its bundled files are generated in memory (e.g. by webpack-virtual-modules), no package's - not listed`);
+  }
   if (!container) return problems.problem(msg, null, { once: root }); // with strict mode: on every build
   if (warned.has(root)) return; // once per process, not on every watch rebuild
   warned.add(root);
