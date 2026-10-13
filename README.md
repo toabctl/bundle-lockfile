@@ -36,7 +36,7 @@ bundle-lockfile lists only the packages whose files the bundler put into the out
 [syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report what is shipped.
 A plugin such as [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin) lists what
 webpack processed, which includes tree-shaken packages and build-time loaders, and needs a config change
-([comparison](test/README.md#comparison-with-the-cyclonedx-webpack-plugin)).
+([comparison](test/README.md#comparison-with-other-tools)).
 
 ## How it works
 

@@ -277,6 +277,10 @@ const fixtures = {
   // lerna, rush, Nx)
   'edge-vendored': edge('edge-vendored', { ms: '2.1.3', container: 'file:./pkgs/container' }, { packageJson: { workspaces: ['ws/*'] } }),
   'edge-subpkg': edge('edge-subpkg', { preact: '10.28.3' }),
+  // modules only in the bundler's input file system (test/apps/edge-virtual)
+  'edge-virtual': edge('edge-virtual', { 'webpack-virtual-modules': '0.6.2', unplugin: '2.3.11', ms: '2.1.3' }),
+  'edge-virtual-vite8': { app: 'edge-virtual', bundler: 'vite', installer: { type: 'npm' }, deps: { vite: '8.3.3', unplugin: '2.3.11', ms: '2.1.3' },
+    packageJson: { type: 'module', scripts: { build: 'vite build' } } },
   // a directory of the project as a dependency (local-lib, which depends on ms): npm links file: (first-party), yarn 2+
   // and pnpm copy it into node_modules (a package); link: and portal: link it (first-party). ms is a direct dependency
   // too where the linked directory's dependencies are not installed (link:)
@@ -762,6 +766,12 @@ const cases = [
   // a nested package.json with its own name/version (preact/hooks -> "preact-hooks@0.1.0") is not a package
   { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'],
     expectSources: ['node_modules/preact/hooks/'] },
+  // virtual modules: one in a package directory that is not on disk is generated code (a warning, not a failure), one
+  // inside an installed package counts as that package; unplugin's (webpack: <context>/_virtual_/, Vite: a \0 id) are none
+  { name: 'edge: virtual modules (webpack-virtual-modules, unplugin), webpack 5', fixture: 'edge-virtual', cmd: 'npm run -s build', expect: ['ms@2.1.3'],
+    expectOutput: /node_modules\/virtual-pkg is not on disk: its bundled files are generated in memory/,
+    expectSources: ['node_modules/virtual-pkg/index.js', 'node_modules/ms/virtual-inside.js', '_virtual_'] },
+  { name: 'edge: virtual modules (unplugin), Vite 8.3.3', fixture: 'edge-virtual-vite8', cmd: 'npm run -s build', expect: ['ms@2.1.3'] },
   // workspace packages count as first-party also when webpack keeps the node_modules/@acme/ui symlink path
   { name: 'edge: npm workspace package, resolve.symlinks=false', fixture: 'edge-workspace', cmd: 'npm run -s build', env: { EDGE_RESOLVE_SYMLINKS: 'false' }, expect: ['ms@2.1.3'] },
   // a project directory as a dependency: linked (first-party, its dependency listed) or copied into node_modules (a package)

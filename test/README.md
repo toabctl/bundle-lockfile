@@ -305,27 +305,64 @@ by name cost seconds on OHIF, and an output directory another plugin removed aft
 lockfile (Metabase). Not found by any tool: third-party code committed into a project's own directories without a
 `package.json` (OHIF's `public/es6-shim.min.js`).
 
-## Comparison with the CycloneDX webpack plugin
+## Comparison with other tools
 
-`test/compare/` attaches [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin) (5.3.3)
-to every webpack 5 compiler bundle-lockfile attaches to (no config changes) and reports, per compiler output, the
-packages only one of the two lists — each explained by what webpack processed vs. what is in the emitted output. The
-explanations share no code with bundle-lockfile's collection: the emitted output's packages come from webpack's stats
-through the oracles' code (`oracles/stats.cjs`, `owner.cjs`), as for the oracles:
+`test/compare/` runs other tools that list a build's packages next to bundle-lockfile, without config changes, and
+reports per output the packages only one side lists - each explained from data the tools do not share with
+bundle-lockfile. Not a test: it never writes expectations, and runs by hand (on the workstation), not in CI:
+
+| bundler | tools | attached by |
+|---|---|---|
+| webpack 5, Next.js | [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin) 5.3.3, [license-webpack-plugin](https://github.com/xz64/license-webpack-plugin) 4.0.2, [webpack-license-plugin](https://github.com/codepunkt/webpack-license-plugin) 4.5.1 | `inject-webpack-tools.cjs`: bundle-lockfile's own compiler hook, so all see the same compilers |
+| Vite, Rollup | [rollup-plugin-license](https://github.com/mjeanroy/rollup-plugin-license) 3.7.1, [rollup-plugin-sbom](https://github.com/janbiasi/rollup-plugin-sbom) 4.0.1, Vite 8's `build.license` | `vite.compare.mjs`, `rollup.compare.mjs`: the fixture's config plus the tools |
 
 ```sh
-sh test/compare/fixtures.sh /tmp/fixtures     # the webpack 5 / Next.js fixtures it lists (19)
+sh test/compare/fixtures.sh /tmp/fixtures [fixture-regex]   # the fixtures it lists (31); exit 1: a difference is unexplained
+node test/compare/manifest-survey.cjs <dir>...               # every package.json inside an installed package, and what the rule makes of it
 ```
 
-On the fixtures, every difference was explained in the last run (results are not kept in the repository):
-- CycloneDX lists packages that are not in the emitted output: tree-shaken `uuid`; `css-loader` and vanilla-extract's
-  plugin, which only run at build time
-- CycloneDX lists workspace packages, which bundle-lockfile leaves out as first-party, and manifests nested inside a
-  package that are no vendored copy (preact 10's private `preact/hooks` as `preact-hooks`), which bundle-lockfile
-  lists as the containing package
-- bundle-lockfile lists packages the main compilation never processed but that are shipped: those in workers
-  (worker-loader, workbox's service worker) and files copied by copy-webpack-plugin
-- with two compilers writing to one directory, CycloneDX's `bom.json` holds only the last one's packages
+The explanations come from the bundler's own data and the files on disk, never from bundle-lockfile's code: webpack's
+stats through the oracles' code (`oracles/stats.cjs`, `owner.cjs`), the modules each build parsed and put into chunks
+(`diag-rollup.cjs`), the files each license plugin reads from webpack's chunk graph, the package.json files a
+nearest-manifest tool sees (`manifests.cjs`), the `@import`s of style sheets, the Vite/Rollup oracle's build, and files
+of a package that are in the output byte for byte. A build one of the tools breaks is built again without it, and the
+tool is named. In the last run (2026-10-13, 31 fixtures) every difference was explained:
+
+| tool | outputs | in both | only bundle-lockfile | only the tool |
+|---|---|---|---|---|
+| @cyclonedx/webpack-plugin | 26 | 73 | 11 | 12 |
+| license-webpack-plugin | 18 | 31 | 27 | 10 |
+| webpack-license-plugin | 23 | 74 | 5 | 7 |
+| rollup-plugin-license | 9 | 28 | 20 | 0 |
+| rollup-plugin-sbom | 9 | 35 | 13 | 4 |
+| Vite's `build.license` | 5 | 18 | 13 | 0 |
+
+- **The tools list packages that are not shipped:** tree-shaken ones (`uuid`) and build-time ones (`css-loader`,
+  vanilla-extract's plugin; CycloneDX takes every module webpack processed), packages of child compilations that run at
+  build time (html-webpack-plugin's template: both license plugins), first-party workspace packages, and package.json
+  files inside packages as packages: `preact-hooks@0.1.0`, `preact-compat@4.0.0` (CycloneDX, both license plugins,
+  rollup-plugin-sbom), `duet-loader` without a version (license-webpack-plugin).
+- **The tools miss shipped packages:**
+  - license-webpack-plugin: every package whose files are only inner modules of concatenated ES modules (`lodash-es`,
+    `yallist` 5, socket.io's packages, the canaries): it reads them by their stats identifiers, `javascript/esm|<path>`
+    ([#116](https://github.com/xz64/license-webpack-plugin/issues/116)); and a second version of a package (one per
+    name, [#135](https://github.com/xz64/license-webpack-plugin/issues/135); also rollup-plugin-license by default)
+  - webpack-license-plugin: a package whose files are only leaf modules of a concatenation (worker-loader's inline
+    runtime): it reads a concatenation's root module and where its imports come from
+  - rollup-plugin-license: modules that render no bytes of their own (`normalize.css` imported from JavaScript)
+  - all Vite/Rollup tools: style sheets `@import`ed from packages (`sanitize.css`, `bulma`, `normalize.less`), builds
+    that write nothing themselves (workers, plugin-legacy's polyfills, vite-plugin-pwa's service worker), files copied
+    into the output (vite-plugin-static-copy) and a worker's font the main build emits again
+  - CycloneDX, the license plugins: with two compilers writing to one directory, the last one's list wins; workers,
+    workbox's service worker and copy-webpack-plugin's copies (CycloneDX)
+- **The tools fail builds:** license-webpack-plugin with `ENOENT: scandir ''` in `processAssets` on a DLL build and on
+  Next.js 15 and 16; webpack-license-plugin with "Could not find license info" for a first-party package without a
+  license (an npm workspace, the project itself through webpack's `context`, unplugin's virtual module).
+
+The manifest survey of the matrix fixtures (3,223 package.json files inside packages, ~100 fixtures): every one the
+rule takes as a vendored copy is one (`next/dist/compiled/*`, `@rspack/core/compiled/*`), except `needle`'s
+`examples/stream-multiple` (`express-needle@1.0.0`), which no build bundles. The other shapes - no name, a name
+without a version, private, a name with a slash - are the ones `test/unit.cjs` tests.
 
 `test/bigproject/superset.sh` runs the same comparison on Apache Superset's frontend, measures the build cost and
 compares syft's counts on the output with those on the project's lockfile.

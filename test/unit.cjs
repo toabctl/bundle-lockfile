@@ -3122,6 +3122,28 @@ test('strict: a bundled package that cannot be listed fails every build; one lis
   }
 }));
 
+test('strict: a package root that is not on disk (a module the input file system made up) is a warning; one inside an unreadable archive fails', () => withConfig({ strict: true }, () => {
+  problems.take();
+  // webpack-virtual-modules: node_modules/virtual-pkg/index.js only in memory, node_modules/ on disk
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/f.zip': 'an archive fs reads as a file' });
+  const virtual = J(root, 'node_modules/virtual-pkg/index.js');
+  for (let i = 0; i < 2; i++) {
+    const warned = warnings(() => assert.deepEqual(packagesForFiles([virtual]), []));
+    if (i === 0) { assert.equal(warned.length, 1); assert.match(warned[0], /virtual-pkg is not on disk: its bundled files are generated in memory/); }
+    else assert.deepEqual(warned, []); // once per process
+    assert.deepEqual(problems.take(), [], `build ${i + 1}`);
+  }
+  // a Yarn PnP archive path that fs cannot read in this process: a real package whose files would be missing
+  assert.deepEqual(packagesForFiles([J(root, 'node_modules/f.zip/node_modules/f/index.js')]), []);
+  const [p, ...rest] = problems.take();
+  assert.deepEqual(rest, []);
+  assert.match(p, /no package\.json with name and version in \S*f\.zip\/node_modules\/f - its bundled files are not listed/);
+  // a package root that is there but has no usable package.json still fails (the existing rule)
+  fs.mkdirSync(J(root, 'node_modules/empty'));
+  assert.deepEqual(packagesForFiles([J(root, 'node_modules/empty/i.js')]), []);
+  assert.equal(problems.take().length, 1);
+}));
+
 test('strict: a bundled package whose package.json cannot be parsed fails every build (BUNDLE_LOCKFILE_STRICT=0: a warning)', async () => {
   const root = project({ 'node_modules/broken/package.json': '{"name": "broken", "version": "1.0.0",' });
   const file = J(root, 'node_modules/broken/i.js');
