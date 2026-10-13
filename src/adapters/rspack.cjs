@@ -69,6 +69,9 @@ module.exports = {
   // processes that get the loader-thread ESM hooks on Node.js before 24.12 (see hooks.cjs esmMode): @rspack/cli 2 and
   // Rsbuild 2 import rspack, as may a build script of a project using it
   esmPackages: ['@rspack/core', '@rspack/cli', '@rsbuild/core'],
+  // the CommonJS file rspack 2's ES module loads (hooks.cjs esmCompanions): its binding, from dist/index.js - rspack 1's
+  // and require(esm) of rspack 2's load that through the CommonJS hook first
+  esmCompanions: [{ id: 'rspack', names: ['rspack'], file: /[\\/]node_modules[\\/]@rspack[\\/]binding[\\/]binding\.js$/ }],
   BundleLockfilePlugin, // usable directly in an rspack config, without injection
   onCompiler,
   esmWrap(id, name, value) {

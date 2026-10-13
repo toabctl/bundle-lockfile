@@ -394,6 +394,13 @@ module.exports = {
   ],
   esmPackages: ['vite', 'rollup', 'rolldown', 'rolldown-vite'],
   cjsFiles: [CJS_ROLLUP], // the module onCjsLoad patches
+  // CommonJS files the ES-module builds load (hooks.cjs esmCompanions): Rollup's native parser, which its ES build
+  // loads with no CommonJS module of Rollup's before it (its CommonJS build: from dist/shared/parseAst.js), and
+  // Rolldown's binding (its package.json and the .node file), which its ES build loads from dist/shared/*.mjs
+  esmCompanions: [
+    { id: 'rollup', names: ['rollup', 'vite'], file: /[\\/]node_modules[\\/](?:rollup|@rollup[\\/]wasm-node)[\\/]dist[\\/]native\.js$/ },
+    { id: 'rolldown', names: ['rolldown', 'vite'], file: /[\\/]node_modules[\\/]@rolldown[\\/]binding-[^\\/]+[\\/](?:package\.json|[^\\/]+\.node)$/ },
+  ],
 
   esmWrap(id, name, fn) {
     if (typeof fn !== 'function') return null;

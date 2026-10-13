@@ -1,7 +1,8 @@
 'use strict';
 // Module-load hooks shared by all adapters.
 //
-// An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, esmEntries?, esmPackages?, esmWrap?(id, name, fn) }.
+// An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, esmEntries?, esmPackages?, esmWrap?(id, name, fn),
+// esmCompanions? }.
 // - onCjsLoad(exports, request, resolve) is called for every CommonJS module once it has run (and an ES module that
 //   require() loads), and patches the bundler when it recognizes it - or returns { exports }, which replace the module's
 //   exports (esbuild's are getters, which cannot be patched). request is the module's file name as adapters
@@ -10,7 +11,9 @@
 //   when Node loads them without the CommonJS hook (see esm-wrap.cjs cjsSource).
 // - esmEntries ({ id, suffixes, wrap }, see esm-wrap.cjs) are ESM modules replaced by a wrapper whose functions in
 //   `wrap` go through esmWrap(id, name, fn), which returns the function to use instead. esmPackages: npm packages
-//   whose use makes a process a bundler process (see esmMode).
+//   whose use makes a process a bundler process (see esmMode). esmCompanions ({ id, names, file }): a CommonJS file
+//   (RegExp of its path) the ES-module build of a bundler loads, the safety net for a thread without ESM hooks (see
+//   companion); names: the bundlers (BUNDLE_LOCKFILE_DISABLE) of which one must be enabled.
 // A bundler module an adapter recognizes but cannot patch (it fails, or the bundler is of a shape it does not know) would
 // build without a lockfile: in strict mode loading it fails, with the reason (as the loader thread does, see
 // esm-loader.mjs) - in whatever process or thread it is loaded, also one whose exit code nobody reads.
@@ -91,8 +94,10 @@ function installCjs() {
   const compile = Module.prototype._compile;
   if (typeof compile === 'function') {
     Module.prototype._compile = function (content, filename) {
+      const file = typeof filename === 'string' ? filename : this.filename;
+      entered.add(file);
       const r = compile.apply(this, arguments);
-      report(this, typeof filename === 'string' ? filename : this.filename);
+      report(this, file);
       return r;
     };
   }
@@ -100,13 +105,45 @@ function installCjs() {
     const handler = Module._extensions[ext];
     if (typeof handler !== 'function') continue;
     Module._extensions[ext] = function (module, filename) {
+      entered.add(filename);
+      companion(module, filename);
       const r = handler.apply(this, arguments);
       report(module, filename);
       return r;
     };
   }
+  // (only for esmCompanions: Rolldown's binding is a package.json and a .node file)
+  for (const ext of ['.json', '.node']) {
+    const handler = Module._extensions[ext];
+    if (typeof handler !== 'function') continue;
+    Module._extensions[ext] = function (module, filename) {
+      companion(module, filename);
+      return handler.apply(this, arguments);
+    };
+  }
   // a cjsFiles module Node evaluated without the CommonJS hook reports itself here once it has run (esm-wrap.cjs cjsSource)
   globalThis[Symbol.for('bundle-lockfile.cjs-loaded')] = report;
+}
+
+// The safety net for a thread without ESM hooks (esmMode 'off' although they were not turned off; a bundler process the
+// check in bundlerProcess misses): an ES-module bundler would build without the plugin, and no lockfile. Each loads a
+// CommonJS file of its own (the adapters' esmCompanions: Rollup's native parser, Rolldown's binding, rspack 2's
+// binding) from a module that did not come through the CommonJS hook - its CommonJS build loads the same file from one
+// that did. Loading it then is a problem: in strict mode it fails, and the bundler's import with it.
+const entered = new Set(); // files of CommonJS modules the CommonJS hook loaded or compiled (before they ran)
+let companions = null; // the esmCompanions to check, in a thread without ESM hooks
+const tripped = new Set();
+function companion(module, filename) {
+  if (!companions || typeof filename !== 'string') return;
+  const c = companions.find(x => x.file.test(filename));
+  if (!c || tripped.has(c.id)) return;
+  // the first module that required it (module.parent warns only with --pending-deprecation, DEP0144)
+  const parent = module && module.parent;
+  if (parent && typeof parent.filename === 'string' && entered.has(parent.filename)) return;
+  tripped.add(c.id);
+  const before = problems.count();
+  problems.problem(`${c.id} is loaded as an ES module in a process without bundle-lockfile's ESM hooks (${filename}): its builds would write no lockfile (set BUNDLE_LOCKFILE_ESM_HOOKS=async)`);
+  failLoad(before);
 }
 
 // module.registerHooks (in-thread, synchronous) together with any loader-thread hook (Yarn PnP's .pnp.loader.mjs,
@@ -208,6 +245,10 @@ function installEsm(entries, cjsFiles) {
   const packages = [...new Set(adapters.flatMap(a => a.esmPackages || []))];
   const mode = esmMode(packages);
   config.debug('ESM hooks:', mode, `(Node ${process.versions.node})`);
+  // no ESM hooks in this thread, although they were not turned off: the safety net (see companion)
+  if (mode === 'off' && config.esmHooksOf(process.env.BUNDLE_LOCKFILE_ESM_HOOKS) !== 'off' && !wt.isInternalThread) {
+    companions = adapters.flatMap(a => a.esmCompanions || []).filter(c => c.names.some(n => !config.isDisabled(n)));
+  }
   // neither hook API (Node.js 20 before 20.6): Vite, Rollup, Rolldown and rspack 2 builds would write no lockfile
   if (mode === 'off' && typeof Module.registerHooks !== 'function' && typeof Module.register !== 'function'
     && config.esmHooksOf(process.env.BUNDLE_LOCKFILE_ESM_HOOKS) !== 'off' && !wt.isInternalThread && bundlerProcess(packages)) {

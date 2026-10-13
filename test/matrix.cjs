@@ -1021,6 +1021,13 @@ const cases = [
     fixture: 'vite8-npm', cmd: 'node tools/build.mjs', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, programmatic build from a package without Vite, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'vite8-npm', cmd: 'node tools/build.mjs',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // the same build started from outside the project (/): no bundler process by what bundlerProcess sees, so Node.js
+  // before 24.12 installs no ESM hooks - the safety net (hooks.cjs companion) fails the build instead of a silent miss
+  ...[['8.3.3', 'vite8-npm', 'rolldown'], ['7.3.7', 'vite7-npm', 'rollup']].map(([v, fixture, inner]) => ({
+    name: `Vite ${v}, programmatic build started outside the project (Node ${process.versions.node}: ${SYNC_HOOKS ? 'in-thread hooks' : 'no ESM hooks, fails'})`,
+    fixture, cmd: 'D=$PWD && cd / && node "$D/tools/build.mjs"',
+    ...(SYNC_HOOKS ? { expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] }
+      : { expectError: new RegExp(`${inner} is loaded as an ES module in a process without bundle-lockfile's ESM hooks .*set BUNDLE_LOCKFILE_ESM_HOOKS=async`) }) })),
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
   // disabling the bundlers Vite builds with does not disable Vite's builds
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=rollup,rolldown: still hooked', fixture: 'vite8-npm', cmd: 'npm run -s build',
@@ -1380,6 +1387,9 @@ const cases = [
     fixture: 'rspack2.2-npm', cmd: 'node tools/build.mjs', expect: W5 },
   { name: 'rspack 2.2.8: programmatic build from a package without rspack, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'rspack2.2-npm',
     cmd: 'node tools/build.mjs', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: W5 },
+  { name: `rspack 2.2.8: programmatic build started outside the project (Node ${process.versions.node}: ${SYNC_HOOKS ? 'in-thread hooks' : 'no ESM hooks, fails'})`,
+    fixture: 'rspack2.2-npm', cmd: 'D=$PWD && cd / && node "$D/tools/build.mjs"',
+    ...(SYNC_HOOKS ? { expect: W5 } : { expectError: /rspack is loaded as an ES module in a process without bundle-lockfile's ESM hooks .*set BUNDLE_LOCKFILE_ESM_HOOKS=async/ }) },
   // build modes
   ...[['1.7.12', '1.7'], ['2.2.8', '2.2']].flatMap(([v, line]) => [
     { name: `rspack ${v}, development mode`, fixture: `rspack${line}-npm`, cmd: 'npm run -s build', env: { RSPACK_MODE: 'development' }, expect: W5 },
