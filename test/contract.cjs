@@ -87,4 +87,38 @@ test('Trivy (trivy fs) reads every package, with its license', { skip: missing(h
   assert.deepEqual(got, WANT);
 });
 
+// Which scans read what (the README's "SBOM tools" table): syft picks its catalogers by the kind of source - a
+// directory's (lockfiles) or an image's (installed package.json files); --override-default-catalogers image scans a
+// directory as it would scan an image. Trivy's fs scans read lockfiles, its rootfs (and image) scans package.json
+// files. Each test lists the npm packages one scan reports, as name@version.
+const syftPkgs = (...args) => run('syft', ['scan', ...args, '-q', '-o', 'json']).artifacts
+  .filter(a => a.type === 'npm').map(a => `${a.name}@${a.version}`).sort();
+const trivyPkgs = (mode, target) => (run('trivy', [mode, '-q', '--skip-version-check', '--format', 'cyclonedx', target]).components || [])
+  .filter(c => c.type === 'library').map(c => `${c.group ? `${c.group}/` : ''}${c.name}@${c.version}`).sort();
+const ALL = Object.keys(WANT).sort();
+
+test('image scans read no lockfile: syft only with +javascript-lock-cataloger, trivy rootfs not at all',
+  { skip: missing(hasSyft, 'syft') || missing(hasTrivy, 'trivy') }, () => {
+    assert.deepEqual(syftPkgs(`dir:${out}`, '--override-default-catalogers', 'image'), []);
+    assert.deepEqual(syftPkgs(`dir:${out}`, '--override-default-catalogers', 'image', '--select-catalogers', '+javascript-lock-cataloger'), ALL);
+    assert.deepEqual(trivyPkgs('rootfs', out), []);
+  });
+
+// A shipped node_modules (a server's runtime dependencies): its package.json files, read by image scans only
+const srv = J(tmp, 'srv');
+for (const [dir, name, license] of [['a', 'a', 'MIT'], ['@scope/b', '@scope/b', 'ISC']]) {
+  fs.mkdirSync(J(srv, 'node_modules', dir), { recursive: true });
+  fs.writeFileSync(J(srv, 'node_modules', dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', license }));
+}
+const INSTALLED = ['@scope/b@1.0.0', 'a@1.0.0'];
+
+test('installed package.json files: read by image scans, by syft dir: only with +javascript-package-cataloger, not by trivy fs',
+  { skip: missing(hasSyft, 'syft') || missing(hasTrivy, 'trivy') }, () => {
+    assert.deepEqual(syftPkgs(`dir:${srv}`), []);
+    assert.deepEqual(syftPkgs(`dir:${srv}`, '--select-catalogers', '+javascript-package-cataloger'), INSTALLED);
+    assert.deepEqual(syftPkgs(`dir:${srv}`, '--override-default-catalogers', 'image'), INSTALLED);
+    assert.deepEqual(trivyPkgs('fs', srv), []);
+    assert.deepEqual(trivyPkgs('rootfs', srv), INSTALLED);
+  });
+
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

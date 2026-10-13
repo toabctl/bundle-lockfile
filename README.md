@@ -11,7 +11,7 @@ package builds), or a project that publishes an SBOM with its releases. It is no
   ([format](docs/format.md#fields));
 - a replacement for the project's own lockfile, which still pins what is installed;
 - a scan of what a server loads from `node_modules` at runtime (externals, Next.js' and SvelteKit's server
-  dependencies): ship that `node_modules`, and SBOM tools find its packages there.
+  dependencies): ship that `node_modules`, and image scans report its packages ([which scans](#sbom-tools)).
 
 ## The problem
 
@@ -292,8 +292,12 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 | | syft | Trivy |
 |---|---|---|
 | directory or file scans (`syft scan dir:` / `file:`, `trivy fs`, `trivy repo`) | yes | yes |
-| image scans (and `trivy rootfs`) | only with `--select-catalogers +javascript-lock-cataloger` | no: `trivy image` and `trivy rootfs` read no lockfiles (melange's APK SBOMs, which they read, carry no npm packages) |
+| image scans (and `trivy rootfs`) | only with `--select-catalogers +javascript-lock-cataloger` | no: `trivy image` and `trivy rootfs` read no lockfiles (an APK's SBOM, which they read, lists npm packages only if it was made by scanning the package's files: melange's own SBOM generator lists none) |
 | a lockfile below `node_modules`, or not named `package-lock.json` | no | no |
+
+A `node_modules` shipped with a server, whose packages are in no lockfile, is read the other way round: from its
+`package.json` files, by image scans (also `trivy rootfs`), not by directory scans (`trivy fs`; `syft scan dir:` only
+with `--select-catalogers +javascript-package-cataloger`).
 
 The format, keys, licenses and bundle-lockfile's own record are described in [docs/format.md](docs/format.md).
 
