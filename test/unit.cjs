@@ -4722,6 +4722,93 @@ test('webpack adapter: directories among a module\'s file dependencies (webpack 
   const c = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'src/styles.css.js'), buildInfo: { snapshot: {
     getFileIterable: () => [J(root, 'src/styles.css.js'), nm('@vanilla-extract'), nm('@vanilla-extract/webpack-plugin'), nm('@vanilla-extract/webpack-plugin/loader/dist')] } } }] }] });
   assert.deepEqual(lockedNames(plugin().lockfile(c)), []);
+});
+
+test('strict: builds bundle-lockfile recognizes but does not hook fail (the rolldown command line, Next.js with Turbopack, ncc, Parcel); STRICT=0: a warning', () => {
+  const root = project({
+    'node_modules/rolldown/package.json': { name: 'rolldown', version: '1.2.13', type: 'module' },
+    'node_modules/rolldown/bin/cli.mjs': "console.log('built');\n",
+    // next build: Next sets TURBOPACK when it builds with Turbopack (auto: by default), NEXT_RSPACK with next-rspack;
+    // next build ends with process.exit()
+    'node_modules/next/package.json': { name: 'next', version: '16.4.0' },
+    'node_modules/next/dist/bin/next': "if (process.env.FAKE_BUNDLER) process.env[process.env.FAKE_BUNDLER] = 'auto';\nconsole.log('built');\nprocess.exit(0);\n",
+    'node_modules/@vercel/ncc/package.json': { name: '@vercel/ncc', version: '0.38.4' },
+    'node_modules/@vercel/ncc/dist/ncc/index.js': 'module.exports = () => {};\n',
+    'node_modules/@parcel/core/package.json': { name: '@parcel/core', version: '2.16.4' },
+    'node_modules/@parcel/core/lib/Parcel.js': "class Parcel { async run() { return 'ran'; } async watch() { return 'watching'; } }\nexports.default = Parcel;\n",
+    'parcel.cjs': "const Parcel = require('@parcel/core/lib/Parcel.js').default;\nnew Parcel().watch().then(w => new Parcel().run().then(r => console.log(w, r), e => { console.log('failed:', e.message); process.exitCode = 3; }));\n",
+    'ncc.cjs': "try { require('@vercel/ncc/dist/ncc/index.js'); console.log('loaded'); } catch (e) { console.log('failed:', e.message); process.exitCode = 3; }\n",
+  });
+  const node = (env, args) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), ...args], { cwd: root, encoding: 'utf8', env: { ...strictEnv(env.STRICT), ...env } });
+  const ROLLDOWN = /the rolldown command line is not hooked: its builds write no lockfile/;
+  const TURBO = /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile \(build with next build --webpack, or with next-rspack\)/;
+  // strict: the process fails (at exit: there is no build to fail), or the module's require() / Parcel's run()
+  let r = node({}, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
+  assert.deepEqual([r.status, r.stdout.trim()], [1, 'built']);
+  assert.match(r.stderr, ROLLDOWN);
+  r = node({ FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  assert.deepEqual([r.status, r.stdout.trim()], [1, 'built'], r.stderr);
+  assert.match(r.stderr, TURBO);
+  r = node({}, [J(root, 'ncc.cjs')]);
+  assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*@vercel\/ncc builds with a webpack of its own/);
+  r = node({}, [J(root, 'parcel.cjs')]);
+  assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*Parcel is not hooked: its builds write no lockfile/);
+  // STRICT=0: warnings, and the builds go on
+  r = node({ STRICT: '0' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /WARNING: the rolldown command line is not hooked/);
+  r = node({ STRICT: '0', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /WARNING: Next\.js built with Turbopack/);
+  r = node({ STRICT: '0' }, [J(root, 'ncc.cjs')]);
+  assert.equal(r.stdout.trim(), 'loaded');
+  assert.match(r.stderr, /WARNING: @vercel\/ncc builds with a webpack of its own/);
+  r = node({ STRICT: '0' }, [J(root, 'parcel.cjs')]);
+  assert.equal(r.stdout.trim(), 'watching ran');
+  assert.match(r.stderr, /WARNING: Parcel is not hooked/);
+  // not these: next build with webpack (no TURBOPACK) or next-rspack, next dev, rolldown disabled
+  for (const [env, args] of [[{}, ['build']], [{ FAKE_BUNDLER: 'NEXT_RSPACK' }, ['build']], [{ FAKE_BUNDLER: 'TURBOPACK' }, ['dev']]]) {
+    r = node(env, [J(root, 'node_modules/next/dist/bin/next'), ...args]);
+    assert.deepEqual([r.status, r.stderr], [0, ''], JSON.stringify([env, args]));
+  }
+  r = node({ BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  r = node({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
+  assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+});
+
+test('strict: webpack before 4 (a Compiler without hooks) fails the process when it compiles; STRICT=0: a warning', () => {
+  const compiler = "class Compiler { compile(cb) { cb && cb(null); } run() { this.compile(); } watch() {} newCompilation() {} isChild() { return false; } }\nmodule.exports = Compiler;\n";
+  const root = project({
+    'node_modules/webpack/package.json': { name: 'webpack', version: '3.12.0' },
+    'node_modules/webpack/lib/Compiler.js': compiler,
+    'build.cjs': "const Compiler = require('webpack/lib/Compiler.js');\nrequire('webpack/lib/Compiler.js');\nconsole.log('loaded');\nnew Compiler().run();\nconsole.log('built');\n",
+    'load.cjs': "require('webpack/lib/Compiler.js');\nconsole.log('loaded');\n",
+  });
+  const node = (strict, file) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, file)], { cwd: root, encoding: 'utf8', env: strictEnv(strict) });
+  let r = node(undefined, 'build.cjs');
+  assert.deepEqual([r.status, r.stdout.trim()], [1, 'loaded\nbuilt']);
+  assert.match(r.stderr, /webpack before 4 is not supported \(a Compiler without hooks, from \S+Compiler\.js\): its builds write no lockfile/);
+  r = node('0', 'build.cjs');
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /WARNING: webpack before 4 is not supported/);
+  // loaded only (an old copy among a project's packages): nothing
+  r = node(undefined, 'load.cjs');
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+});
+
+test('webpack adapter: a vendored webpack exported as a plain object around its namespace (umi) is patched', () => {
+  const W = fakeCompiler();
+  const exp = { webpack: Object.assign(function webpack() {}, { Compiler: W, Compilation: class {}, version: '5.110.3' }), Compiler: W };
+  webpack.onCjsLoad(exp, '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js', () => '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js');
+  assert.equal(W.prototype[PATCHED], true);
+  // the same shape around rspack's, or with another name, is not webpack's
+  const R = fakeCompiler();
+  webpack.onCjsLoad({ webpack: Object.assign(function rspack() {}, { Compiler: R, Compilation: class {}, version: '5.75.0', rspackVersion: '1.7.12' }) }, '/p/node_modules/x-webpack/index.js', () => '/p/x.js');
+  const O = fakeCompiler();
+  webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
+  assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
+});
 
 // Rolldown's plugin context classes, as in its dist (1.0, 1.2): PluginContextImpl and its subclasses for load and
 // transform, each with an addWatchFile of its own; data: the build's (one PluginContextData per build)
@@ -4886,90 +4973,4 @@ test('rollup adapter: Rollup\'s watch mode - the transform dependencies of the m
     // src/app.css transformed again, without its @import: the cache's dependencies of it do not count
     assert.deepEqual(await build({ cache, transform: [app], modules: [app, a], watch: [app, a] }), ['a']);
   } finally { process.chdir(cwd); }
-});
-
-test('strict: builds bundle-lockfile recognizes but does not hook fail (the rolldown command line, Next.js with Turbopack, ncc, Parcel); STRICT=0: a warning', () => {
-  const root = project({
-    'node_modules/rolldown/package.json': { name: 'rolldown', version: '1.2.13', type: 'module' },
-    'node_modules/rolldown/bin/cli.mjs': "console.log('built');\n",
-    // next build: Next sets TURBOPACK when it builds with Turbopack (auto: by default), NEXT_RSPACK with next-rspack;
-    // next build ends with process.exit()
-    'node_modules/next/package.json': { name: 'next', version: '16.4.0' },
-    'node_modules/next/dist/bin/next': "if (process.env.FAKE_BUNDLER) process.env[process.env.FAKE_BUNDLER] = 'auto';\nconsole.log('built');\nprocess.exit(0);\n",
-    'node_modules/@vercel/ncc/package.json': { name: '@vercel/ncc', version: '0.38.4' },
-    'node_modules/@vercel/ncc/dist/ncc/index.js': 'module.exports = () => {};\n',
-    'node_modules/@parcel/core/package.json': { name: '@parcel/core', version: '2.16.4' },
-    'node_modules/@parcel/core/lib/Parcel.js': "class Parcel { async run() { return 'ran'; } async watch() { return 'watching'; } }\nexports.default = Parcel;\n",
-    'parcel.cjs': "const Parcel = require('@parcel/core/lib/Parcel.js').default;\nnew Parcel().watch().then(w => new Parcel().run().then(r => console.log(w, r), e => { console.log('failed:', e.message); process.exitCode = 3; }));\n",
-    'ncc.cjs': "try { require('@vercel/ncc/dist/ncc/index.js'); console.log('loaded'); } catch (e) { console.log('failed:', e.message); process.exitCode = 3; }\n",
-  });
-  const node = (env, args) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), ...args], { cwd: root, encoding: 'utf8', env: { ...strictEnv(env.STRICT), ...env } });
-  const ROLLDOWN = /the rolldown command line is not hooked: its builds write no lockfile/;
-  const TURBO = /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile \(build with next build --webpack, or with next-rspack\)/;
-  // strict: the process fails (at exit: there is no build to fail), or the module's require() / Parcel's run()
-  let r = node({}, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
-  assert.deepEqual([r.status, r.stdout.trim()], [1, 'built']);
-  assert.match(r.stderr, ROLLDOWN);
-  r = node({ FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
-  assert.deepEqual([r.status, r.stdout.trim()], [1, 'built'], r.stderr);
-  assert.match(r.stderr, TURBO);
-  r = node({}, [J(root, 'ncc.cjs')]);
-  assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*@vercel\/ncc builds with a webpack of its own/);
-  r = node({}, [J(root, 'parcel.cjs')]);
-  assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*Parcel is not hooked: its builds write no lockfile/);
-  // STRICT=0: warnings, and the builds go on
-  r = node({ STRICT: '0' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
-  assert.equal(r.status, 0);
-  assert.match(r.stderr, /WARNING: the rolldown command line is not hooked/);
-  r = node({ STRICT: '0', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
-  assert.equal(r.status, 0);
-  assert.match(r.stderr, /WARNING: Next\.js built with Turbopack/);
-  r = node({ STRICT: '0' }, [J(root, 'ncc.cjs')]);
-  assert.equal(r.stdout.trim(), 'loaded');
-  assert.match(r.stderr, /WARNING: @vercel\/ncc builds with a webpack of its own/);
-  r = node({ STRICT: '0' }, [J(root, 'parcel.cjs')]);
-  assert.equal(r.stdout.trim(), 'watching ran');
-  assert.match(r.stderr, /WARNING: Parcel is not hooked/);
-  // not these: next build with webpack (no TURBOPACK) or next-rspack, next dev, rolldown disabled
-  for (const [env, args] of [[{}, ['build']], [{ FAKE_BUNDLER: 'NEXT_RSPACK' }, ['build']], [{ FAKE_BUNDLER: 'TURBOPACK' }, ['dev']]]) {
-    r = node(env, [J(root, 'node_modules/next/dist/bin/next'), ...args]);
-    assert.deepEqual([r.status, r.stderr], [0, ''], JSON.stringify([env, args]));
-  }
-  r = node({ BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
-  assert.deepEqual([r.status, r.stderr], [0, '']);
-  r = node({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
-  assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
-});
-
-test('strict: webpack before 4 (a Compiler without hooks) fails the process when it compiles; STRICT=0: a warning', () => {
-  const compiler = "class Compiler { compile(cb) { cb && cb(null); } run() { this.compile(); } watch() {} newCompilation() {} isChild() { return false; } }\nmodule.exports = Compiler;\n";
-  const root = project({
-    'node_modules/webpack/package.json': { name: 'webpack', version: '3.12.0' },
-    'node_modules/webpack/lib/Compiler.js': compiler,
-    'build.cjs': "const Compiler = require('webpack/lib/Compiler.js');\nrequire('webpack/lib/Compiler.js');\nconsole.log('loaded');\nnew Compiler().run();\nconsole.log('built');\n",
-    'load.cjs': "require('webpack/lib/Compiler.js');\nconsole.log('loaded');\n",
-  });
-  const node = (strict, file) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, file)], { cwd: root, encoding: 'utf8', env: strictEnv(strict) });
-  let r = node(undefined, 'build.cjs');
-  assert.deepEqual([r.status, r.stdout.trim()], [1, 'loaded\nbuilt']);
-  assert.match(r.stderr, /webpack before 4 is not supported \(a Compiler without hooks, from \S+Compiler\.js\): its builds write no lockfile/);
-  r = node('0', 'build.cjs');
-  assert.equal(r.status, 0);
-  assert.match(r.stderr, /WARNING: webpack before 4 is not supported/);
-  // loaded only (an old copy among a project's packages): nothing
-  r = node(undefined, 'load.cjs');
-  assert.deepEqual([r.status, r.stderr], [0, '']);
-});
-
-test('webpack adapter: a vendored webpack exported as a plain object around its namespace (umi) is patched', () => {
-  const W = fakeCompiler();
-  const exp = { webpack: Object.assign(function webpack() {}, { Compiler: W, Compilation: class {}, version: '5.110.3' }), Compiler: W };
-  webpack.onCjsLoad(exp, '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js', () => '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js');
-  assert.equal(W.prototype[PATCHED], true);
-  // the same shape around rspack's, or with another name, is not webpack's
-  const R = fakeCompiler();
-  webpack.onCjsLoad({ webpack: Object.assign(function rspack() {}, { Compiler: R, Compilation: class {}, version: '5.75.0', rspackVersion: '1.7.12' }) }, '/p/node_modules/x-webpack/index.js', () => '/p/x.js');
-  const O = fakeCompiler();
-  webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
-  assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
 });
