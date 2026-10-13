@@ -1129,6 +1129,11 @@ const cases = [
   { name: 'Rolldown 1 command line (unsupported: no lockfile)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser', expect: null },
   // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
   { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
+  // the island's main.js changed after its build (a post-processing step): its record still names it by path, so its
+  // packages are listed, with a warning
+  { name: 'nested: Vite 8 island post-processed after its build, bundled by webpack 5', fixture: 'nested-island-wp5',
+    cmd: "./node_modules/.bin/vite build --config island/vite.config.mjs && printf '/* post-processed */\\n' >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js",
+    expect: NESTED_EXPECT, expectOutput: /WARNING: \S*island\/dist\/main\.js changed after the build that wrote it into \S*island\/dist: listed with that build's packages/ },
   { name: 'nested: Vite 8 island bundled by webpack 4', fixture: 'nested-island-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: NESTED_EXPECT },
   { name: 'nested: Vite 8 island bundled by Vite 8', fixture: 'nested-island-vite', cmd: 'npm run -s build', oracleArgs: 'vite', expect: NESTED_EXPECT },
@@ -1200,10 +1205,6 @@ const cases = [
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && mkdir -p copied/island && cp -r island/dist copied/island/dist && ./node_modules/.bin/webpack --config webpack.config.js',
     expect: NESTED_EXPECT, expectKeys: { 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/nanoid': 'nanoid@3.3.20' },
     oracle: false },
-  // a changed island file is not attributed (its hash no longer matches)
-  { name: 'nested: island changed after its build is not attributed', fixture: 'nested-island-wp5',
-    cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && echo "/* changed */" >> island/dist/main.js && ./node_modules/.bin/webpack --config webpack.config.js',
-    expect: ['lodash-es@4.18.1'], oracle: false },
   // Next.js
   // Next 12's own build fails on Node.js >= 25, also without bundle-lockfile: its compiled jsonwebtoken (through
   // buffer-equal-constant-time) reads require('buffer').SlowBuffer.prototype, and Node.js 25 removed SlowBuffer

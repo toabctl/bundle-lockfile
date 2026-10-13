@@ -287,6 +287,9 @@ Rolldown builds.
   real location, whether the bundler resolved the link or kept it (webpack's `resolve.symlinks: false`, Vite's
   `resolve.preserveSymlinks`).
 - A build that bundles only an island's style sheet gets the packages in it, not those of the island's JavaScript.
-- A file changed after its build is not attributed.
+- A file at a path the record has that changed after its build (post-processed, minified again) still brings that
+  build's packages, with a warning: the record says by path that the build wrote it.
+- That build's lockfile is a problem if it cannot be read, is not JSON, or has a record of another version or shape:
+  the packages of its files would be missing (a `package-lock.json` without a record, another tool's, is left alone).
 - The record travels with the output, so this works across processes, separate commands and machines.
 - webpack and rspack lockfiles record no hashes: a bundle they built that another build bundles is not attributed.
