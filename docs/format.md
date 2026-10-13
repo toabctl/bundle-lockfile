@@ -15,12 +15,10 @@ output directory):
   (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
   `node_modules` (e.g. Vite's dependency pre-bundling).
 
-With `BUNDLE_LOCKFILE_EXPORT_DIR`, every lockfile is also written to `<export dir>/<its path>`: relative to
-`BUNDLE_LOCKFILE_EXPORT_BASE` when it is below it (as given or by real paths), else its absolute path without the
-leading `/` - below `_outside_base/` when there is an export base, so that it cannot land where a lockfile below the
-base does. A `package-lock.json` in a lockfile's place that bundle-lockfile did not write (it has no `bundle-lockfile`
-record: the project's own, with `BUNDLE_LOCKFILE_FILE=package-lock.json` and an output directory that is the project)
-is never replaced: the build fails.
+With `BUNDLE_LOCKFILE_EXPORT_DIR`, every lockfile is also written below the export directory
+([layout](configuration.md#the-export-directory)). A `package-lock.json` in a lockfile's place that bundle-lockfile
+did not write (it has no `bundle-lockfile` record: the project's own, with `BUNDLE_LOCKFILE_FILE=package-lock.json`
+and an output directory that is the project) is never replaced: the build fails.
 
 ## Example
 

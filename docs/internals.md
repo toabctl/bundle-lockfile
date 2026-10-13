@@ -121,7 +121,7 @@ flowchart TD
 A file outside `node_modules` that is neither a copy, nor recorded by another build, nor in a vendored copy is
 first-party and not listed (see [format.md](format.md#which-package-a-file-belongs-to) for what a vendored copy is and
 where the first-party boundaries are; `src/core/vendored.cjs`). Vite, Rollup and Rolldown builds add the packages of
-builds that write nothing themselves by the content of their chunks (see the [README](../README.md#what-is-listed)).
+builds that write nothing themselves by the content of their chunks (see [coverage.md](coverage.md)).
 
 ## One lockfile, several writers
 
