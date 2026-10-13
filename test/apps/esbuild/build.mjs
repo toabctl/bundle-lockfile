@@ -8,6 +8,9 @@
 //   sync         buildSync() into dist/app.js
 //   two          two build()s into dist/: src/main.js, then src/second.js; the lockfile must keep both
 //   write-false  build() with write: false: nothing written, no lockfile
+//   features     src/features.js with esbuild-sass-plugin (a Sass partial from bulma, which the plugin inlines), and a
+//                plugin whose onEnd copies sanitize.css out of its package into the output with fs (as authentik's
+//                copies its assets)
 // BLTEST_ESBUILD_ORACLE=<dir> (oracles/esbuild.cjs, without bundle-lockfile): the same build with source maps, into <dir>;
 // BLTEST_ESBUILD_PKG=esbuild-wasm: esbuild's WebAssembly build
 import fs from 'node:fs';
@@ -40,6 +43,10 @@ else if (mode === 'two') {
 } else if (mode === 'write-false') {
   const r = await esbuild.build({ ...split, write: false });
   if (!r.outputFiles.length) fail('write-false: no output files');
+} else if (mode === 'features') {
+  const { sassPlugin } = await import('esbuild-sass-plugin');
+  const copy = { name: 'copy-assets', setup(build) { build.onEnd(() => { fs.cpSync('node_modules/sanitize.css/sanitize.css', path.join(out, 'sanitize.css')); }); } };
+  await esbuild.build({ ...common, entryPoints: ['src/features.js'], outdir: out, format: 'esm', plugins: [sassPlugin(), copy] });
 } else if (mode === 'watch') {
   const input = 'src/main.js';
   const source = fs.readFileSync(input, 'utf8');

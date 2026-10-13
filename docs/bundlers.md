@@ -147,7 +147,15 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
   `buildSync()` throws it, `watch()` prints it and goes on watching. esbuild 0.16 and older (no `context()`) fail a
   build that writes an output.
-- Style sheets that a plugin inlines (esbuild-sass-plugin's Sass partials) are not in the metafile: not listed.
+- Files that a plugin inlines into a module it loads (esbuild-sass-plugin's Sass partials) are not in the metafile:
+  they count when the plugin reports them as that module's `watchFiles` (not code, not a build tool's settings), and
+  the module reaches an output.
+- Files that other plugins write into the output in their `onEnd` (authentik's `fs.cp` of assets out of packages) are
+  listed, as files written after a Vite build are ([coverage](coverage.md#also-listed)).
+- The command line and the Go API are not hooked; their metafile (`--metafile=meta.json`) gives the lockfile:
+  `node /opt/bundle-lockfile/bin/bundle-lockfile-from-metafile meta.json` writes it into the directory of the outputs
+  (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one). It sees no
+  `watchFiles` and no files copied with fs; it reads the settings and fails as a build would.
 
 ## Next.js
 

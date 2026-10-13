@@ -3802,7 +3802,7 @@ test('esbuild adapter: an esbuild of a shape it does not know, or before 0.17, f
 async function esbuildEnd(options, result) {
   const plugin = esbuildAdapter().attach(options).plugins.at(-1);
   let end = null;
-  plugin.setup({ initialOptions: options, onEnd: (fn) => { end = fn; } });
+  plugin.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
   return end(result);
 }
 
@@ -3863,6 +3863,36 @@ test('hooks: a module whose exports are a getter (a new object every time) loads
   assert.equal(r.stdout.trim(), '1');
 });
 
+test('esbuild adapter: style sheets a plugin inlines (its onLoad watchFiles) count for the module it loaded; files written by other plugins\' onEnd too', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('partial'), ...pj('code'), ...pj('unused'), ...pj('copied'), 'node_modules/copied/c.css': 'copied bytes',
+    'node_modules/partial/_p.scss': '', 'src/s.scss': '', 'src/u.scss': '' });
+  fs.mkdirSync(J(root, 'dist'));
+  fs.writeFileSync(J(root, 'dist/main.css'), 'css');
+  const options = { entryPoints: ['src/s.scss'], outdir: 'dist', absWorkingDir: root, plugins: [{
+    name: 'sass', setup(build) {
+      assert.equal(build.initialOptions.outdir, 'dist'); // the build's own, through the recording wrapper
+      build.onLoad({ filter: /\.scss$/ }, async (args) => ({ contents: '', loader: 'css',
+        watchFiles: args.path.endsWith('s.scss')
+          ? [args.path, J(root, 'node_modules/partial/_p.scss'), J(root, 'node_modules/code/i.js'), 'relative/_x.scss']
+          : [J(root, 'node_modules/unused/_u.scss')] }));
+      build.onEnd(() => { fs.copyFileSync(J(root, 'node_modules/copied/c.css'), J(root, 'dist/c.css')); });
+    },
+  }] };
+  const attached = esbuildAdapter().attach(options);
+  assert.deepEqual(attached.plugins.map(p => p.name), ['sass', 'bundle-lockfile']);
+  const loads = [], ends = [], starts = [];
+  const build = { initialOptions: attached, onLoad: (o, cb) => loads.push(cb), onEnd: (cb) => ends.push(cb), onStart: (cb) => starts.push(cb), onResolve() {} };
+  for (const p of attached.plugins) p.setup(build);
+  for (const s of starts) s();
+  for (const cb of loads) { await cb({ path: J(root, 'src/s.scss'), namespace: 'file' }); await cb({ path: J(root, 'src/u.scss'), namespace: 'file' }); }
+  const result = { errors: [], metafile: { outputs: { 'dist/main.css': { inputs: { 'src/s.scss': { bytesInOutput: 3 } } } } } };
+  for (const cb of ends) assert.equal(await cb(result), undefined);
+  // the partial of the module in the output (not the code file, not the relative path, not the unused module's), and
+  // the file the other plugin's onEnd copied out of a package
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['copied', 'partial']);
+});
+
 test('esbuild adapter: the CommonJS hook replaces esbuild\'s exports, for require(), import and ES-module interop', () => {
   const root = project({
     'node_modules/esbuild/package.json': { name: 'esbuild', version: '0.28.2', main: 'lib/main.js' },
@@ -3891,6 +3921,40 @@ console.log((await Promise.all([ns.build({ outdir: 'd' }), def.build({ outdir: '
   assert.equal(esm.stdout.trim(), 'bundle-lockfile bundle-lockfile bundle-lockfile', esm.stderr);
   const off = spawnSync(process.execPath, ['esm.mjs'], { cwd: root, env: { ...env, BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, encoding: 'utf8' });
   assert.equal(off.stdout, '  \n', off.stderr);
+});
+
+test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild metafile; what it cannot read fails (STRICT=0: a warning)', () => {
+  const CLI = J(__dirname, '../bin/bundle-lockfile-from-metafile');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/b/package.json': { name: 'b', version: '2.0.0' },
+    'node_modules/nopj/i.js': '', 'dist/main.js': 'x', 'dist/assets/f.woff2': 'f',
+    'meta.json': { inputs: {}, outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 }, '(disabled):node_modules/b/i.js': { bytesInOutput: 9 } } },
+      'dist/assets/f.woff2': { inputs: { 'node_modules/b/f.woff2': { bytesInOutput: 1 } } } } },
+    'bad.json': { outputs: { 'dist/main.js': { inputs: { 'node_modules/nopj/i.js': { bytesInOutput: 1 } } } } },
+    'none.json': { inputs: {} },
+  });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_') && k !== 'NODE_OPTIONS'));
+  const run = (args, extra = {}) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8' });
+  const ok = run(['meta.json']);
+  assert.equal(ok.status, 0, ok.stderr);
+  const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')); // dist/: the directory of all outputs
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'b']); // b: the font's package (not its disabled module)
+  assert.deepEqual([...lock['bundle-lockfile'].writers[0].files].sort(), ['../assets/f.woff2', '../main.js']);
+  const out = run(['meta.json', '--out', 'elsewhere', '--working-dir', root]);
+  assert.equal(out.status, 0, out.stderr);
+  assert.ok(fs.existsSync(J(root, 'elsewhere', LOCK)));
+  // a package without a package.json, a file that is no metafile, none at all, a misspelled setting: exit code 1
+  for (const [args, re, extra] of [[['bad.json'], /no package\.json with name and version in \S*nopj/], [['none.json'], /none\.json is no esbuild metafile/],
+    [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }]]) {
+    const r = run(args, extra);
+    assert.equal(r.status, 1, `${args}: ${r.stderr}`);
+    assert.match(r.stderr, /\[bundle-lockfile\] ERROR: bundle-lockfile: the lockfile would be missing or incomplete/);
+    assert.match(r.stderr, re);
+    const lax = run(args, { ...extra, BUNDLE_LOCKFILE_STRICT: '0' });
+    assert.equal(lax.status, 0, lax.stderr);
+    assert.match(lax.stderr, /WARNING/);
+  }
+  assert.equal(run([]).status, 2);
+  assert.equal(run(['meta.json', '--out']).status, 2);
 });
 
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {

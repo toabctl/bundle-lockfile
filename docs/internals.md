@@ -364,6 +364,14 @@ sequenceDiagram
 ```
 
 - `buildSync()` takes no plugins: it gets `metafile: true`, and its result is processed the same way after it returns.
+- The other plugins of a build get, in their `setup`, a build object whose `onLoad` records the `watchFiles` of what
+  they load (a Proxy of esbuild's: everything else is esbuild's own). The files among them a plugin inlines
+  (`packages.inlinedFile`: no code, no build tool's settings) count for the module (by the metafile's key of it), if
+  that module reaches an output: Sass partials that esbuild-sass-plugin inlines.
+- The plugin's `onEnd` runs last: files the other plugins' `onEnd` wrote into the output since `onStart` are looked at
+  as in `core/late.cjs` (a copy out of a package, also with fs's copy functions; a generate-only build's chunk).
+- `bin/bundle-lockfile-from-metafile` writes the lockfile from a metafile file, with the same mapping and
+  `core/outputs.cjs`, for the command line and the Go API.
 - The input keys of a metafile are paths relative to `absWorkingDir`, with esbuild's own forms: `<namespace>:<path>`
   (a plugin's module: a file if the path is absolute, or relative and there), `(disabled):<path>` (a browser field's
   `false`: no code of it ships), `?query` and `#hash` suffixes. Every input of an output counts, also one without bytes
@@ -397,6 +405,7 @@ src/adapters/webpack-family.cjs  webpack and rspack: which source files are in a
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
 src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that reads the metafile's inputs per output
 src/adapters/rolldown-watch.cjs  Rolldown: the files its plugins inlined (addWatchFile of its plugin contexts), per build and module
+bin/bundle-lockfile-from-metafile  the lockfile from an esbuild metafile (the command line, the Go API)
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries

@@ -219,7 +219,9 @@ process's `locations` (a second build, then the first one again).
 `oracles/esbuild.cjs`; the font, an asset, has none):
 - `build()`, `context()` with `rebuild()`, `watch()` (a rebuild without an import, whose packages must leave the
   lockfile, then one with it again), `outfile`, `buildSync()`, two builds into one directory, `write: false` (no
-  lockfile), the export directory only, `BUNDLE_LOCKFILE_DISABLE=esbuild`
+  lockfile), the export directory only, `BUNDLE_LOCKFILE_DISABLE=esbuild`; a Sass partial from bulma that
+  esbuild-sass-plugin inlines, and a package file another plugin copies into the output in its `onEnd`; the command
+  line (no lockfile) and its metafile read by `bin/bundle-lockfile-from-metafile`
 - esbuild 0.17.0 (the oldest supported), 0.19.12, 0.28.2, esbuild-wasm; esbuild 0.16 fails the build (a warning with
   `BUNDLE_LOCKFILE_STRICT=0`); SvelteKit 2's adapter-netlify edge function, which esbuild bundles
 - Vite 5 – 7, which build with esbuild themselves (dependency pre-bundling, the config file), are unchanged
