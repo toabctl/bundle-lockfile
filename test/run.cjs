@@ -208,12 +208,22 @@ function runCase(c) {
   }
 
   // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)
+  if (c.oracle === false && c.expectSources) throw new Error('expectSources needs the oracle');
   if (c.oracle === false) notes.push('no oracle (see case)');
   else {
     const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
     const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
     // PATH: not through the node shim, which would inject bundle-lockfile
-    const truth = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
+    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: c.nodeOptions || '', PATH: process.env.PATH }).trim().split('\n').pop());
+    const truth = c.expectSources ? printed.packages : printed;
+    // expectSources: the files the case is about are in the output, by the oracle - without them it would test nothing
+    if (c.expectSources) {
+      if (!Array.isArray(printed.sources)) throw new Error(`expectSources: oracle ${path.basename(oracle)} lists no sources`);
+      const sources = printed.sources.map(f => f.split(path.sep).join('/'));
+      const absent = c.expectSources.filter(p => !sources.some(f => f.includes(p)));
+      if (absent.length) throw new Error(`the oracle's build has no source file from ${absent.join(' ')}: the case does not test what it is for`);
+      notes.push(`${c.expectSources.length} source path(s) bundled, by the oracle`);
+    }
     // packages the oracle cannot see (e.g. Vite: CSS-only packages have no source map), each also expected
     for (const k of Object.keys(truth)) truth[k] = [...new Set([...truth[k], ...(c.oracleMissing || [])])].sort();
     // ... or only in some outputs ({ "<output dir>": [...] })

@@ -5,7 +5,8 @@
 // usage (cwd = fixture): node oracles/rollup.cjs [--config <file>] [--out <dir> | --out-file <file>]
 // (--out-file for a config with output.file)
 // prints {"": [name@version, ...]} (the output dir relative to itself); --by-file (for oracles/nested-vite.cjs):
-// { packages: <that>, byFile: { "<output file relative to the output dir>": [name@version, ...] } }
+// { packages: <that>, byFile: { "<output file relative to the output dir>": [name@version, ...] } }; --sources:
+// { packages: <that>, sources: [absolute path of every source in a map] }
 const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
@@ -43,5 +44,8 @@ walk(out);
 // the packages of source files: see owner.cjs (the build's working directory is its context)
 const packagesOf = (list) => owner.packagesOf(list);
 const result = { '': packagesOf(files) };
-console.log(JSON.stringify(process.argv.includes('--by-file')
-  ? { packages: result, byFile: Object.fromEntries([...filesOf].map(([f, list]) => [f, packagesOf(list)])) } : result));
+const extra = {
+  ...(process.argv.includes('--by-file') && { byFile: Object.fromEntries([...filesOf].map(([f, list]) => [f, packagesOf(list)])) }),
+  ...(process.argv.includes('--sources') && { sources: [...files].sort() }),
+};
+console.log(JSON.stringify(Object.keys(extra).length ? { packages: result, ...extra } : result));

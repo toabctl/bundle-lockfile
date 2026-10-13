@@ -73,6 +73,8 @@ A case that expects a lockfile checks every lockfile the build writes:
   bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no code with the adapters. A
   case names the packages its oracle cannot see (CSS-only packages, fonts loaded by `url()`, copied files and service
   workers without source maps), or says why it has none;
+- where a case is about particular files (a `package.json` nested in a package, Babel's ES-module helpers), the oracle's
+  build has source files below them (`expectSources`): a case whose files are not bundled at all would test nothing;
 - every canary in the output's bytes (gzip and brotli copies unpacked) is listed, and every listed canary is there: the
   packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 8 and Rollup) carry a
   `BLCANARY:<name>@<version>` string in their code and CSS, which shows what is shipped without the bundler's own
@@ -93,7 +95,7 @@ The other cases check that no lockfile is written, or that the build fails with 
 - a lockfile that cannot be written: webpack 5, Vite 8, the `rollup` command line;
 - an export directory that cannot be written;
 - `BUNDLE_LOCKFILE_INLINE=0` without an export directory: webpack 5, Vite 8;
-- a bundled package without a `package.json`.
+- a bundled package without a `package.json` (the unit tests: also one whose `package.json` cannot be parsed).
 
 All other cases run in strict mode, so a problem there would fail them. The unit tests cover the remaining paths:
 - a lock that cannot be taken, a stale one that cannot be removed, one that is a link to nothing, one that cannot be
@@ -131,7 +133,11 @@ process's `locations` (a second build, then the first one again).
   Plug'n'Play's virtual paths, pnpm's peer-suffixed directories; also with Vite), workspace packages (also with
   `resolve.symlinks: false`), project directories as dependencies (`file:` with npm, pnpm and yarn 4, `link:` with
   pnpm and yarn 4, `portal:`), subpath manifests, externals and a `context` below the project root
-- Babel-injected helpers, CSS and asset modules from packages (also webpack 5's native CSS and `asset/inline`), style
+- `package.json` files inside real packages that are no packages of their own (preact's private `hooks/` and
+  `compat/`, `@duetds/date-picker`'s `dist/loader/` without a version, socket.io-client's and engine.io-client's
+  `build/esm/`), built by webpack 5, Vite 8 and Rollup
+- Babel-injected helpers, CSS and asset modules from packages (also webpack 5's native CSS and `asset/inline`, and a
+  JavaScript module from a `data:` URL), style
   sheets loaders inline from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent
   cache), vanilla-extract's virtual CSS modules
 - module federation (a host, a remote, a shared package), a DLL, nested and inlined worker-loader workers (webpack 4
@@ -286,8 +292,9 @@ lockfile (Metabase). Not found by any tool: third-party code committed into a pr
 
 `test/compare/` attaches [`@cyclonedx/webpack-plugin`](https://github.com/CycloneDX/cyclonedx-webpack-plugin) (5.3.3)
 to every webpack 5 compiler bundle-lockfile attaches to (no config changes) and reports, per compiler output, the
-packages only one of the two lists — each explained by what webpack processed vs. what is in the emitted output (the
-same files bundle-lockfile counts):
+packages only one of the two lists — each explained by what webpack processed vs. what is in the emitted output. The
+explanations share no code with bundle-lockfile's collection: the emitted output's packages come from webpack's stats
+through the oracles' code (`oracles/stats.cjs`, `owner.cjs`), as for the oracles:
 
 ```sh
 sh test/compare/fixtures.sh /tmp/fixtures     # the webpack 5 / Next.js fixtures it lists (19)

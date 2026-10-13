@@ -123,6 +123,10 @@ const nextRspack = (fx, version) => ({ ...fx, deps: { ...fx.deps, 'next-rspack':
 const CANARY_INSTALL = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused bl-canary-css ../node_modules/'
   + ' && mv bl-canary-dup-2 ../node_modules/bl-canary-dup && mkdir ../node_modules/bl-canary-used/node_modules'
   + ' && mv bl-canary-dup-1 ../node_modules/bl-canary-used/node_modules/bl-canary-dup && cd .. && rmdir pkgs';
+// edge-manifests: engine.io-client pinned too (socket.io-client takes ~6.6.1), as the package whose build/esm/package.json
+// has a name and no version
+const MANIFESTS = { preact: '10.29.8', '@duetds/date-picker': '1.4.0', 'socket.io-client': '4.8.4', 'engine.io-client': '6.6.7' };
+const manifests = (bundler, deps, packageJson = {}) => ({ app: 'edge-manifests', bundler, installer: { type: 'npm' }, deps: { ...MANIFESTS, ...deps }, packageJson });
 const canary = (bundler, deps, packageJson = {}) => ({ app: 'canary', bundler, installer: { type: 'npm' }, deps, packageJson, postInstall: CANARY_INSTALL });
 
 // fixture fields: app (test/apps/<app>), bundler (the oracle, test/oracles/<bundler>.cjs; default webpack), installer,
@@ -354,6 +358,11 @@ const fixtures = {
   'canary-rspack2.2': canary('rspack', { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }, { scripts: { build: 'rspack build' } }),
   'canary-vite8': canary('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
+  // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
+  'edge-manifests-wp5': manifests('webpack', WEBPACK),
+  'edge-manifests-vite8': manifests('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
+  'edge-manifests-rollup': manifests('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', '@rollup/plugin-commonjs': '29.0.3' },
+    { type: 'module', scripts: { build: 'rollup -c' } }),
 };
 
 const VITE_EXPECT = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'normalize.css@8.0.1'];
@@ -536,6 +545,8 @@ function nextCase(fixture, version, react, flags = '') {
 //   maxNode    the newest Node.js major the build tool runs on: skipped (and reported) on newer ones (say why at the case)
 //   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
+//   expectSources  path fragments ("/"-separated, e.g. "node_modules/preact/hooks/"): each must be part of a source file
+//              of the oracle's build (its --sources), so the files the case is about are bundled at all
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
@@ -634,7 +645,9 @@ const cases = [
     expect: ['debug@2.6.8', 'debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'],
     expectKeys: { 'node_modules/ms': 'ms@2.1.3', 'node_modules/ms-old': 'ms@2.0.0', 'node_modules/debug': 'debug@2.6.9', 'node_modules/debug-old': 'debug@2.6.8',
       'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/debug-old/node_modules/ms': 'ms@2.0.0' } },
-  { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'] },
+  // @babel/runtime's ES-module helpers are below helpers/esm/, whose package.json is only {"type": "module"}
+  { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'],
+    expectSources: ['node_modules/@babel/runtime/helpers/esm/'] },
   { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
   // a package's image inlined as a data: URL into the extracted CSS: mini-css-extract-plugin built the asset module at
   // build time (importModule), in no chunk - not in the stats' modules of a chunk (oracleMissing)
@@ -645,6 +658,9 @@ const cases = [
   { name: 'edge: Sass from a package in a Vue single-file component\'s style block (vue-loader)', fixture: 'edge-vue', cmd: 'npm run -s build',
     expect: VUE_EXPECT, oracleMissing: ['bootstrap@5.3.8'] },
   { name: 'edge: asset/resource from a package', fixture: 'edge-asset', cmd: 'npm run -s build', expectIncludes: ['bootstrap-icons@1.13.1'] },
+  // a JavaScript module from a data: URL is no file of any package: the build lists only the asset's package
+  { name: 'edge: a JavaScript module from a data: URL', fixture: 'edge-asset', cmd: 'npm run -s build', env: { EDGE_ASSET: 'data-js' },
+    expect: ['bootstrap-icons@1.13.1'] },
   { name: 'edge: CSS from packages, webpack 5 native CSS (experiments.css)', fixture: 'edge-css', cmd: 'npm run -s build', env: { EDGE_CSS: 'native' },
     expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
   { name: 'edge: asset/inline from a package (a data: URL in main.js)', fixture: 'edge-asset', cmd: 'npm run -s build', env: { EDGE_ASSET: 'inline' },
@@ -666,7 +682,8 @@ const cases = [
   // workspace packages resolve to their real path outside node_modules and count as first-party; their dependencies are listed
   { name: 'edge: npm workspace package', fixture: 'edge-workspace', cmd: 'npm run -s build', expect: ['ms@2.1.3'] },
   // a nested package.json with its own name/version (preact/hooks -> "preact-hooks@0.1.0") is not a package
-  { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'] },
+  { name: 'edge: subpath manifests (preact/hooks)', fixture: 'edge-subpkg', cmd: 'npm run -s build', expect: ['preact@10.28.3'],
+    expectSources: ['node_modules/preact/hooks/'] },
   // workspace packages count as first-party also when webpack keeps the node_modules/@acme/ui symlink path
   { name: 'edge: npm workspace package, resolve.symlinks=false', fixture: 'edge-workspace', cmd: 'npm run -s build', env: { EDGE_RESOLVE_SYMLINKS: 'false' }, expect: ['ms@2.1.3'] },
   // a project directory as a dependency: linked (first-party, its dependency listed) or copied into node_modules (a package)
@@ -1389,6 +1406,16 @@ const cases = [
     expect: ['lodash-es@4.18.1'] },
   { name: 'rspack 2.2.8, yarn 4.18.1 pnpm linker', fixture: 'rspack2.2-yarn4-pnpm', cmd: 'yarn build', expect: W5 },
   { name: 'rspack 2.2.8 in a directory with "#" in its name', fixture: 'rspack2.2-c#', cmd: 'npm run -s build', expect: W5 },
+  // package.json files inside packages that are no packages of their own: their files (expectSources, by the oracle)
+  // are listed as the package that has them - never as preact-hooks or preact-compat (private, with versions); a
+  // duet-loader or an engine.io-client without a version could not be listed at all (every key must lead to a
+  // package.json with its name and version). The packages' own dependencies (debug, socket.io-parser, ...) drift: the
+  // oracle gives the exact list
+  ...[['webpack 5.111.1', 'edge-manifests-wp5'], ['Vite 8.3.3', 'edge-manifests-vite8'], ['rollup 4.64.2', 'edge-manifests-rollup']].map(([what, fixture]) => (
+    { name: `edge: package.json files inside packages, ${what}`, fixture, cmd: 'npm run -s build',
+      expectIncludes: Object.entries(MANIFESTS).map(([n, v]) => `${n}@${v}`), expectExcludes: ['preact-hooks@0.1.0', 'preact-compat@4.0.0'],
+      expectSources: ['node_modules/preact/hooks/', 'node_modules/preact/compat/', 'node_modules/@duetds/date-picker/dist/loader/',
+        'node_modules/socket.io-client/build/esm/', 'node_modules/engine.io-client/build/esm/'] })),
   // canaries: every marker in the output is listed (run.cjs), and every listed canary's marker is in the output: both
   // versions of bl-canary-dup, not the unused bl-canary-unused
   ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['rollup 4.64.2', 'canary-rollup']].map(([what, fixture]) => (
