@@ -67,9 +67,10 @@ fields syft and Trivy read, in the forms both read the same way:
 Entries are sorted by name, version and key in code-unit order, so the same build writes the same bytes on every
 machine, whatever its locale.
 
-Not written: `resolved` and `integrity` (an SBOM gets no download location or hash of a package), `dependencies`,
-`peerDependencies` and `optionalDependencies`, and the install-time fields (`dev`, `optional`, `link`, `bin`,
-`engines`, …). The lockfile is an inventory of what is shipped, not a dependency graph: SBOM tools report the packages
+Not written: `resolved` and `integrity` (an SBOM gets no download location or hash of a package; osv-scanner, which
+counts an entry without a registry `resolved` URL as a local package, therefore matches no vulnerabilities),
+`dependencies`, `peerDependencies` and `optionalDependencies`, and the install-time fields (`dev`, `optional`, `link`,
+`bin`, `engines`, …). The lockfile is an inventory of what is shipped, not a dependency graph: SBOM tools report the packages
 without relationships between them (Trivy calls every one `indirect`, as for any lockfile whose root entry declares no
 dependencies).
 

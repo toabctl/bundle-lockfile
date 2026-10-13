@@ -299,6 +299,10 @@ A `node_modules` shipped with a server, whose packages are in no lockfile, is re
 `package.json` files, by image scans (also `trivy rootfs`), not by directory scans (`trivy fs`; `syft scan dir:` only
 with `--select-catalogers +javascript-package-cataloger`).
 
+Grype finds vulnerabilities in the packages of a lockfile as syft reads them, Trivy as `trivy fs`. osv-scanner (2.7)
+reads the lockfile but matches no vulnerabilities to its packages: it counts an entry without a registry `resolved`
+URL as a local package, and bundle-lockfile writes none ([format](docs/format.md#fields)).
+
 The format, keys, licenses and bundle-lockfile's own record are described in [docs/format.md](docs/format.md).
 
 ## Troubleshooting
