@@ -16,7 +16,11 @@ output directory):
   `node_modules` (e.g. Vite's dependency pre-bundling).
 
 With `BUNDLE_LOCKFILE_EXPORT_DIR`, every lockfile is also written to `<export dir>/<its path>`: relative to
-`BUNDLE_LOCKFILE_EXPORT_BASE` when it is below it, else its absolute path without the leading `/`.
+`BUNDLE_LOCKFILE_EXPORT_BASE` when it is below it (as given or by real paths), else its absolute path without the
+leading `/` - below `_outside_base/` when there is an export base, so that it cannot land where a lockfile below the
+base does. A `package-lock.json` in a lockfile's place that bundle-lockfile did not write (it has no `bundle-lockfile`
+record: the project's own, with `BUNDLE_LOCKFILE_FILE=package-lock.json` and an output directory that is the project)
+is never replaced: the build fails.
 
 ## Example
 
@@ -103,7 +107,8 @@ Every key starts with `node_modules/`, as in npm's lockfiles; Trivy skips any ot
 ## Which package a file belongs to
 
 **In `node_modules`**, a file belongs to the directory directly below the last `node_modules` in its path
-(`node_modules/<name>` or `node_modules/@scope/<name>`), at its real location. Two exceptions:
+(`node_modules/<name>` or `node_modules/@scope/<name>`; with Yarn's pnpm linker `node_modules/.store/<slug>/package`,
+its key too), at its real location. Two exceptions:
 - A **vendored copy** inside that package holds the file. That is a directory whose `package.json`:
   - has a valid package name (as Trivy reads names) and a version;
   - is not private;
@@ -129,7 +134,8 @@ unless a first-party directory comes first:
   `project.json`;
 - a directory linked into `node_modules` under its own `package.json` name (also Yarn Plug'n'Play's workspaces,
   portals and links);
-- a private `package.json`;
+- a private `package.json` - unless a vendored copy further out has it inside (`vendor/preact/hooks/package.json` in
+  a copy of preact is a helper of that copy, as inside `node_modules`);
 - a directory `BUNDLE_LOCKFILE_FIRST_PARTY` names.
 
 A note names each vendored copy outside `node_modules` once per process (one inside a package: a debug message).
@@ -146,7 +152,9 @@ linker, one linked under another name (an alias, `"x": "link:../lib"`) whose `pa
 is not private and is no workspace member is listed as a vendored copy (Yarn Plug'n'Play's links and portals are
 always first-party); `BUNDLE_LOCKFILE_FIRST_PARTY` leaves it out. Yarn 2+ (which packs it into its cache)
 and pnpm (which hard-links it into `node_modules/.pnpm`) put a `file:` directory dependency inside `node_modules`,
-which makes it a listed package.
+which makes it a listed package. So does pnpm with injected workspace packages (`dependenciesMeta.injected`,
+`injectWorkspacePackages`): a workspace member hard-linked into `node_modules/.pnpm` is listed under its own name and
+version, although it is first-party (one package too many rather than one missing).
 
 **Packages outside the project** — outside the context and not in an ancestor directory's `node_modules`, e.g. in
 Yarn's global cache (Yarn 4's default), pnpm's global virtual store or a shared store — are listed and keyed like a
@@ -217,17 +225,24 @@ Builds that write to the same directory share its lockfile: it lists the package
 Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one.
 The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`,
 or when the output directory was removed). A
-lock older than a minute is taken over; after 30 s of waiting the write goes ahead without it, and the build fails
-(another process's packages may be missing; with `BUNDLE_LOCKFILE_STRICT=0`: a warning).
+lock older than a minute - by this machine's clock and by the file system's (a network file system has the server's
+time) - is taken over; one that cannot be removed (another user's directory, a read-only file system) is waited for.
+After 30 s of waiting the write goes ahead without it, and the build fails (another process's packages may be
+missing; with `BUNDLE_LOCKFILE_STRICT=0`: a warning). So does a lock that cannot be created at all, and a lockfile
+that is there but cannot be read.
 
 - A writer's packages count once its output is written: a rebuild that fails and is not emitted (webpack's default in
-  production) leaves the packages of its previous output in the lockfile.
+  production) leaves the packages of its previous output in the lockfile - also when the build that failed is the
+  writer's first in a new process (the record its earlier process left stays).
 - A webpack or rspack compiler is recognized by its configuration: name, entry, target and file name templates, per
   output directory. A new compiler for the same configuration (e.g. a build restarted in the same process, or run again)
   replaces the previous one's packages. In the same process that happens once the previous one is closed (webpack <
   5.17, without a shutdown hook: no longer running); until then both are listed.
 - A Vite/Rollup/Rolldown output is recognized by the kind of build (Vite, Rollup, Rolldown), its input, its format,
-  its position among the build's outputs and its entry file name template (if it is a string).
+  its position among the build's outputs, its entry file name template (if it is a string) and its `output.file`, if
+  it has one (separate builds of one input, such as the configs of `rollup -c`, each with its own file in one
+  directory). Paths in these ids are relative to the context or working directory, those in a package from its last
+  `node_modules` (Yarn's global cache, a global store), so that the ids are the same on every machine.
 - Writers whose files are all gone are left out, e.g. when a webpack compiler's `output.clean` deleted what the others
   had written (on its first build, except paths matching `clean.keep`). If one of its files is left, all its packages
   stay. So after a configuration change, a build into a directory that is not cleaned keeps the previous build's
