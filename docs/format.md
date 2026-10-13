@@ -191,6 +191,16 @@ configuration.
   (SvelteKit's adapters copy Vite's output from `.svelte-kit/output/` to `build/`), in another directory, or vendored
   into another project — has a `context` that is not the project; `self` from there does not lead back to the copy, so
   a reader knows it is one.
+- `contextId` and `selfId`, instead of `context` and `self`, for a lockfile outside the context's project (the
+  outermost directory with a `package.json` among the context and those above it), e.g. of an absolute `outDir`
+  elsewhere: there the relative paths would spell out the directories of the machine on the way
+  (`../../home/builder/out`). Both are the first 16 hex digits of a SHA-256: `contextId` of `context\0<secret>`,
+  `selfId` of `self\0<secret>\0<the lockfile's directory relative to the context>`, where the secret is the SHA-256
+  of `bundle-lockfile\0<the context's real path>\0<its device number>\0<its inode number>` - so a guessed path
+  cannot be checked against them. A process whose context has that id reads the record as written where it is (if
+  `selfId` matches the lockfile's place too), and keeps its writers' packages at their locations; any other reader -
+  another project's build, a copy, the same directory recreated - reads it as a copy's: the packages by name and
+  version (`unknown`).
 - `locations` (only if there are any): the location, relative to the context, of each package whose key is not its
   location (`"node_modules/debug": "../node_modules/debug"`), so that another process finds the same package.
 - `writers`: per writer (a webpack compiler, a Vite/Rollup/Rolldown output):

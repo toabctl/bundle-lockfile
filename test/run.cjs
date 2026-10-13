@@ -179,7 +179,7 @@ function runCase(c) {
     for (const k of Object.keys(got)) {
       const exported = path.join(lockDir, k, lf), at = path.dirname(path.join(outDir, k, lf));
       if (!c.exportOnly && fs.readFileSync(exported, 'utf8') !== fs.readFileSync(path.join(outDir, k, lf), 'utf8')) throw new Error(`${exported} is not the inline lockfile's copy`);
-      checkLocations(exported, at);
+      checkLocations(exported, at, [dir]);
     }
     notes.push(c.exportOnly ? 'export dir only' : 'export dir = inline');
   }
@@ -195,8 +195,18 @@ function runCase(c) {
   if (nowhere.length && !c.outside) throw new Error(`packages outside the project or of unknown location (the case does not say why): ${[...new Set(nowhere)].join(' ')}`);
   if (nowhere.length) notes.push(`${new Set(nowhere).size} outside or of unknown location (${c.outside})`);
   // also the copies SvelteKit's adapters make of Vite's output (from .svelte-kit/output/): re-anchored where they are
-  const located = Object.keys(inline).reduce((n, k) => n + checkLocations(path.join(outDir, k, c.lockfile || LOCKFILE)), 0);
+  const located = Object.keys(inline).reduce((n, k) => n + checkLocations(path.join(outDir, k, c.lockfile || LOCKFILE), undefined, [dir]), 0);
   if (located) notes.push(`${located} locations`);
+  // expectAnchor: 'ids' - the records have no paths (an output outside the project, docs/format.md), 'paths' (default
+  // for a case that names it) - they have context and self
+  if (c.expectAnchor) {
+    for (const k of Object.keys(inline)) {
+      const m = JSON.parse(fs.readFileSync(path.join(outDir, k, c.lockfile || LOCKFILE), 'utf8'))['bundle-lockfile'];
+      const ids = typeof m.contextId === 'string' && typeof m.selfId === 'string' && m.context === undefined && m.self === undefined;
+      if (ids !== (c.expectAnchor === 'ids')) throw new Error(`record of ${k || '.'}: ${JSON.stringify({ context: m.context, self: m.self, contextId: m.contextId })}, want ${c.expectAnchor}`);
+    }
+    notes.push(`records with ${c.expectAnchor}`);
+  }
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectIn && !sameMap(got, c.expectIn)) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(c.expectIn)}`);
   if (c.expectKeys) {
@@ -276,7 +286,7 @@ function runCase(c) {
     const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
     const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
     // PATH: not through the node shim, which would inject bundle-lockfile
-    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: caseOptions(c.nodeOptions), PATH: process.env.PATH }).trim().split('\n').pop());
+    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: caseOptions(c.nodeOptions), PATH: process.env.PATH, BLTEST_OUT_DIR: outDir }).trim().split('\n').pop());
     const truth = c.expectSources ? printed.packages : printed;
     // expectSources: the files the case is about are in the output, by the oracle - without them it would test nothing
     if (c.expectSources) {

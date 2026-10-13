@@ -12,7 +12,7 @@ const { STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles } = requir
 const req = createRequire(path.join(process.cwd(), 'package.json'));
 const webpack = req('webpack');
 const config = req('./webpack.config.js');
-const dist = path.resolve('dist');
+const dist = path.resolve(process.env.BLTEST_OUT_DIR || 'dist'); // (the case's output directory, as test/run.cjs passes it)
 const oracleDist = path.resolve('dist-oracle');
 
 const configs = Array.isArray(config) ? config : [config];

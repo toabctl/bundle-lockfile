@@ -38,7 +38,7 @@ function metaOf(dir) {
       if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) problems.problem(`could not read ${f}: ${missing('a bundled file there may be its output')}`, e, { once: f });
       continue;
     }
-    meta = readMeta(text, path.dirname(target));
+    meta = readMeta(text, path.dirname(target), [process.cwd()]); // (a record without its paths: anchored if it is this project's)
     if (!meta) {
       const why = unreadableRecord(text);
       if (why) problems.problem(`${f} ${why}: ${missing('a bundled file there may be its output')}`, null, { once: f });

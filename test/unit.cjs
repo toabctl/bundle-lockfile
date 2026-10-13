@@ -257,6 +257,53 @@ test('packagesOfFiles: how each file\'s packages were found - modules by the cla
   assert.deepEqual(byName, { a: ['chunk'], inner: ['chunk', 'vendored'], s: ['style'], c: ['chunk', 'fs-copy'] });
 });
 
+test('toPackageLock: a lockfile outside the project has a record without its paths, which only the same context anchors', () => {
+  const { readMeta, reanchor } = require('../src/core/lockfile.cjs');
+  const base = fs.realpathSync(fs.mkdtempSync(J(os.tmpdir(), 'blr-anchor-')));
+  const proj = J(base, 'proj'), other = J(base, 'other');
+  for (const [d, name] of [[proj, 'app'], [J(proj, 'node_modules/a'), 'a'], [other, 'other']]) {
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(J(d, 'package.json'), JSON.stringify({ name, version: '1.0.0' }));
+  }
+  const a = pkg('a', '1.0.0', J(proj, 'node_modules/a'));
+  const meta = (dir) => ({ dir, writers: [{ id: 'w', files: [J(path.dirname(dir), 'main.js')], paths: [a.path] }] });
+  try {
+    // inside the project: the paths, as always
+    const inside = JSON.parse(toPackageLock([a], proj, meta(J(proj, 'dist/bundle-lockfile'))))['bundle-lockfile'];
+    assert.deepEqual([inside.context, inside.self, inside.contextId], ['../..', 'dist/bundle-lockfile', undefined]);
+    // outside it (an absolute outDir elsewhere): no path of this machine in the record
+    const dir = J(base, 'srv/www/out/bundle-lockfile');
+    const json = toPackageLock([a], proj, meta(dir));
+    const rec = JSON.parse(json)['bundle-lockfile'];
+    assert.equal(rec.context, undefined);
+    assert.equal(rec.self, undefined);
+    assert.match(rec.contextId, /^[0-9a-f]{16}$/);
+    assert.match(rec.selfId, /^[0-9a-f]{16}$/);
+    for (const word of ['srv', 'www', 'proj', path.basename(base)]) assert.ok(!JSON.stringify(rec).includes(word), word);
+    // the same context reads it as written there, at the packages' locations
+    const m = readMeta(json, dir, [J(base, 'x'), proj]);
+    assert.equal(m.anchored, true);
+    assert.deepEqual(m.writers[0].pkgs.map(p => p.path), [a.path]);
+    // another context (another project), or none: a copy - the packages' locations are not known
+    for (const contexts of [[other], []]) {
+      const o = readMeta(json, dir, contexts);
+      assert.equal(o.anchored, false);
+      assert.deepEqual(o.writers[0].pkgs.map(p => [p.name, !!p.unknown]), [['a', true]]);
+    }
+    // and in another place than it was written for: not anchored
+    assert.equal(readMeta(json, J(base, 'srv/elsewhere/bundle-lockfile'), [proj]).anchored, false);
+    // a copy (SvelteKit's adapters' kind): anchored where it is, outside the project or in it
+    const outside = JSON.parse(reanchor(json, dir, J(base, 'srv/copy/bundle-lockfile'), [proj]))['bundle-lockfile'];
+    assert.equal(outside.context, undefined);
+    assert.notEqual(outside.selfId, rec.selfId);
+    assert.equal(readMeta(JSON.stringify({ ...JSON.parse(json), 'bundle-lockfile': outside }), J(base, 'srv/copy/bundle-lockfile'), [proj]).anchored, true);
+    const back = JSON.parse(reanchor(json, dir, J(proj, 'build/bundle-lockfile'), [proj]))['bundle-lockfile'];
+    assert.deepEqual([back.context, back.self, back.contextId], ['../..', 'build/bundle-lockfile', undefined]);
+    // a process without that context cannot re-anchor it
+    assert.equal(reanchor(json, dir, J(base, 'srv/copy2/bundle-lockfile'), [other]), null);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('toPackageLock: packages outside the project get keys without their machine-specific path', () => {
   // Yarn's global cache in the home directory: the same build on two machines must write the same bytes
   const build = (home) => toPackageLock([
