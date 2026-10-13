@@ -217,8 +217,6 @@ itself to `worker.plugins`, so Vite's workers count. Without the preload:
 - files copied out of packages with fs are not recorded;
 - builds with plugins of their own (workbox-build's service worker, and on Vite 8 @vitejs/plugin-legacy's polyfills)
   and processes the build starts do not get the plugin;
-- in Rolldown builds (also Vite 8), style sheets `@import`ed from packages are not listed: Rolldown provides them only
-  to the caller of `rolldown()`, which the preload wraps;
 - the settings are not checked.
 
 ## Configuration

@@ -95,7 +95,7 @@ jobs:
       # Plug'n'Play (whose CommonJS modules Node 22 loads without Module._load, see src/hooks.cjs), and their cases
       # (gen.cjs and run.cjs select the same ones)
       # (wp5-tsx: tsx's own loader thread next to bundle-lockfile's)
-      FIXTURES: '^(vite|nested|sveltekit|nuxt|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|wp5-tsx|wp5-apm|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack)'
+      FIXTURES: '^(vite|nested|sveltekit|nuxt|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|wp5-tsx|wp5-apm|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack|canary-(vite|rolldown))'
       BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools

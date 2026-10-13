@@ -4890,3 +4890,168 @@ test('webpack adapter: a vendored webpack exported as a plain object around its 
   webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
   assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
 });
+
+// Rolldown's plugin context classes, as in its dist (1.0, 1.2): PluginContextImpl and its subclasses for load and
+// transform, each with an addWatchFile of its own; data: the build's (one PluginContextData per build)
+function rolldownContexts({ loadClass = true } = {}) {
+  const calls = [];
+  class PluginContextImpl {
+    constructor(data) { this.data = data; this.meta = { rolldownVersion: '1.2.13' }; }
+    addWatchFile(f) { calls.push(['base', f]); return 'base-result'; }
+  }
+  class LoadPluginContextImpl extends PluginContextImpl {
+    constructor(data, id) { super(data); this.currentLoadingModule = id; }
+    addWatchFile(f) { calls.push(['load', f]); }
+  }
+  class TransformPluginContextImpl extends PluginContextImpl {
+    constructor(data, id) { super(data); this.moduleId = id; }
+    addWatchFile(f) { calls.push(['transform', f]); }
+  }
+  return { calls, base: (d) => new PluginContextImpl(d), load: loadClass ? (d, id) => new LoadPluginContextImpl(d, id) : (d) => new PluginContextImpl(d),
+    transform: (d, id) => new TransformPluginContextImpl(d, id) };
+}
+
+test('rolldown-watch: addWatchFile of Rolldown\'s plugin contexts, recorded per build and per module', () => {
+  const rw = require('../src/adapters/rolldown-watch.cjs');
+  const r = rolldownContexts();
+  const a = {}, b = {}; // two builds (vite build --app's environments; watch mode's builds)
+  assert.equal(rw.start(r.base(a)), null);
+  assert.equal(rw.start(r.base(b)), null);
+  // the subclasses inherit the wrapped base: each is wrapped itself (the marker is an own property)
+  for (const d of [a, b]) { assert.equal(rw.wrap(r.load(d, 'x')), null); assert.equal(rw.wrap(r.transform(d, 'x')), null); }
+  // the original is called, with its this and its result
+  const t = r.transform(a, '/p/src/app.css');
+  t.addWatchFile('/p/node_modules/s/s.css');
+  r.load(a, '/p/src/shader.glsl').addWatchFile('/p/node_modules/g/n.glsl');
+  assert.equal(r.base(a).addWatchFile('/p/node_modules/c/c.json'), 'base-result'); // no module: the whole build's
+  r.transform(b, '/p/src/other.css').addWatchFile('/p/node_modules/o/o.css');
+  assert.deepEqual(r.calls.map(c => c[0]), ['transform', 'load', 'base', 'transform']); // each once
+  assert.deepEqual(rw.filesOf(r.base(a), ['/p/src/app.css', '/p/src/shader.glsl']).sort(), ['/p/node_modules/c/c.json', '/p/node_modules/g/n.glsl', '/p/node_modules/s/s.css']);
+  assert.deepEqual(rw.filesOf(r.base(a), ['/p/src/app.css']).sort(), ['/p/node_modules/c/c.json', '/p/node_modules/s/s.css']); // only this output's modules
+  assert.deepEqual(rw.filesOf(r.base(b), ['/p/src/app.css', '/p/src/other.css']), ['/p/node_modules/o/o.css']); // the builds do not mix
+  // a module loaded again (watch mode): its records start over
+  rw.loading(r.base(a), '/p/src/app.css');
+  assert.deepEqual(rw.filesOf(r.base(a), ['/p/src/app.css']), ['/p/node_modules/c/c.json']);
+  // a build whose start was not seen: none known
+  assert.equal(rw.filesOf(r.base({}), ['/p/src/app.css']), null);
+  // a second copy of Rolldown: its own classes, wrapped too
+  const r2 = rolldownContexts({ loadClass: false }); // 1.0 betas: the load hook's context is a PluginContextImpl
+  const c = {};
+  assert.equal(rw.start(r2.base(c)), null);
+  assert.equal(rw.wrap(r2.load(c)), null);
+  r2.load(c).addWatchFile('/p/node_modules/l/l.svg'); // no module known: the whole build's
+  assert.deepEqual(rw.filesOf(r2.base(c), []), ['/p/node_modules/l/l.svg']);
+  // a subclass without an addWatchFile of its own: the one it inherits is wrapped, once
+  class Inherits extends Object.getPrototypeOf(r2.base(c)).constructor {}
+  assert.equal(rw.wrap(new Inherits(c)), null);
+  r2.calls.length = 0;
+  new Inherits(c).addWatchFile('/p/node_modules/i/i.css');
+  assert.equal(r2.calls.length, 1);
+  // a shape bundle-lockfile does not know
+  assert.match(rw.start({ data: {} }), /no addWatchFile/);
+  assert.match(rw.wrap(Object.create({ addWatchFile() {} })), /no build data/);
+});
+
+test('rollup adapter: Rolldown build() and watch() - the files plugins inlined, from the plugin contexts (no build object)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('sanitize.css'), ...pj('icons'), ...pj('glsl'), ...pj('other'), ...pj('a') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const nm = (name, f) => J(root, 'node_modules', name, f);
+    const r = rolldownContexts();
+    const data = {};
+    const plugin = rollupAdapter.bundleLockfile('vite'); // also the plugin from a config: Rolldown's hooks are there
+    const ctx = r.base(data);
+    const app = J(root, 'src/app.css'), shader = J(root, 'src/shader.glsl'), unused = J(root, 'src/unused.css');
+    // the hooks run as Rolldown runs them: buildStart, then per module load and transform (bundle-lockfile's first)
+    plugin.buildStart.call(ctx, {});
+    for (const id of [app, shader, unused]) {
+      const l = r.load(data, id);
+      plugin.load.handler.call(l, id);
+      if (id === shader) l.addWatchFile(nm('glsl', 'noise.glsl'));
+      const t = r.transform(data, id);
+      plugin.transform.handler.call(t, 'code', id);
+      if (id === app) { t.addWatchFile(nm('sanitize.css', 'sanitize.css')); t.addWatchFile(nm('icons', 'bell.svg')); }
+      if (id === unused) t.addWatchFile(nm('other', 'o.css')); // a module in no chunk of this output
+    }
+    const out = { dir: J(root, 'dist'), format: 'es' };
+    plugin.renderStart.call(ctx, out);
+    plugin.renderChunk.call(ctx, '', { moduleIds: [app, shader, nm('a', 'i.js')] }, out);
+    const bundle = { 'i.js': { type: 'chunk', fileName: 'i.js', code: 'i', moduleIds: [app, shader, nm('a', 'i.js')] }, 'i.css': { type: 'asset', fileName: 'i.css', source: 'css' } };
+    await plugin.generateBundle.handler.call(ctx, out, bundle, true);
+    fs.mkdirSync(J(root, 'dist'), { recursive: true });
+    for (const f of Object.values(bundle)) fs.writeFileSync(J(root, 'dist', f.fileName), f.code || f.source);
+    await plugin.writeBundle.handler.call(ctx, out);
+    await plugin.closeBundle.handler.call(ctx);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'glsl', 'icons', 'sanitize.css']);
+  } finally { process.chdir(cwd); }
+});
+
+test('strict: a Rolldown build with style whose inlined files cannot be read fails; without style it does not', () => withConfig({ strict: true }, async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    problems.take();
+    // a Rolldown of another shape: its plugin context has no addWatchFile
+    const ctx = { meta: { rolldownVersion: '9.0.0' }, data: {}, error(e) { throw e; } };
+    const style = [{ fileName: 'main.js', code: 'main', modules: [J(root, 'src/app.css'), J(root, 'node_modules/a/i.js')] }];
+    await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'), chunks: style, ctx }),
+      (e) => problems.isFailure(e) && /Rolldown 9\.0\.0: could not read the files its plugins inlined \(its plugin context has no addWatchFile\): style sheets @imported from packages would be missing/.test(e.message));
+    // the same with the build rolldown() returned: its watch files have them
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    plugin.api.setBuild({ get watchFiles() { return Promise.resolve([]); } });
+    await rollupBuild(plugin, { outDir: J(root, 'dist2'), chunks: style, ctx });
+    // no style: nothing would be missing that the build could have inlined from a style sheet
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist3'), chunks: [{ fileName: 'main.js', code: 'm', modules: [J(root, 'node_modules/a/i.js')] }], ctx });
+    assert.equal(problems.pending(), false);
+  } finally { process.chdir(cwd); }
+}));
+
+test('STRICT=0: a Rolldown build with style whose inlined files cannot be read warns and writes its lockfile', () => withConfig({ strict: false }, async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  const orig = config.warn, seen = [];
+  config.warn = (...a) => seen.push(a.join(' '));
+  try {
+    problems.take();
+    const ctx = { meta: { rolldownVersion: '9.0.0' }, data: {}, error(e) { throw e; } };
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'), ctx,
+      chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'src/app.css'), J(root, 'node_modules/a/i.js')] }] });
+    assert.match(seen.join('\n'), /Rolldown 9\.0\.0: could not read the files its plugins inlined/);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a']);
+  } finally { config.warn = orig; process.chdir(cwd); }
+}));
+
+test('rollup adapter: Rollup\'s watch mode - the transform dependencies of the modules a rebuild takes from the cache', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('sanitize.css'), ...pj('glsl'), ...pj('a') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const css = J(root, 'node_modules/sanitize.css/sanitize.css'), noise = J(root, 'node_modules/glsl/noise.glsl');
+    const app = J(root, 'src/app.css'), shader = J(root, 'src/shader.glsl'), a = J(root, 'node_modules/a/i.js');
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    // a build: options (with the cache Rollup's watcher passes), then the transforms of the modules not taken from it
+    const build = async ({ cache, transform, modules, watch }) => {
+      plugin.options({ input: 'x', cache });
+      const ctx = { meta: { rollupVersion: '4.64.2', watchMode: true }, getWatchFiles: () => watch, getModuleIds: () => modules.values() };
+      const run = { ...plugin, buildStart(o) { plugin.buildStart.call(this, o); for (const id of transform) plugin.transform.handler.call(this, '', id); } };
+      // (code no other test's chunks have: generate-only builds' chunks are matched by content, process-wide)
+      await rollupBuild(run, { outDir: J(root, 'dist'), chunks: [{ fileName: 'i.js', code: 'rebuilt from the cache', modules }], ctx });
+      return lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+    };
+    assert.deepEqual(await build({ cache: undefined, transform: [app, shader, a], modules: [app, shader, a], watch: [app, shader, a, css, noise] }), ['a', 'glsl', 'sanitize.css']);
+    // rebuilt without the shader: src/app.css from the cache (no watch file of this build has its @import)
+    const cache = { modules: [{ id: app, transformDependencies: [css] }, { id: shader, transformDependencies: [noise] }, { id: a, transformDependencies: [] }] };
+    assert.deepEqual(await build({ cache, transform: [], modules: [app, a], watch: [app, a] }), ['a', 'sanitize.css']);
+    // src/app.css transformed again, without its @import: the cache's dependencies of it do not count
+    assert.deepEqual(await build({ cache, transform: [app], modules: [app, a], watch: [app, a] }), ['a']);
+  } finally { process.chdir(cwd); }
+});

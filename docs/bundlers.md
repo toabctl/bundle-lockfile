@@ -82,8 +82,11 @@ The details are in [internals.md](internals.md#vite-rollup-rolldown).
 
 - Vite 8's dependency pre-bundling (`vite dev`) is never hooked, wherever its cache directory (`cacheDir`) is.
 - `vite dev`, `vite preview` and Vitest ship nothing and write no lockfile.
-- Rolldown's `build()` and `watch()` (also `vite build --watch` on Vite 8) list no style sheets `@import`ed from
-  packages.
+- The files Vite's and other plugins inline into a module (style sheets `@import`ed from packages, images inlined as
+  `data:` URLs): Rollup's watch files (Vite 5 - 7), and in Rolldown builds (Vite 8, rolldown-vite) the plugins'
+  `this.addWatchFile` calls, recorded per build and module - also in Rolldown's `build()` and `watch()` (`vite build
+  --watch` on Vite 8), which provide no watch files. A Rolldown whose plugin contexts are of another shape fails a
+  build with style sheets ([troubleshooting](troubleshooting.md)).
 - A Vite 8 build logs `vite: adding the plugin to a rolldown() call` with `BUNDLE_LOCKFILE_DEBUG=1` (Vite 7:
   `rollup()`).
 

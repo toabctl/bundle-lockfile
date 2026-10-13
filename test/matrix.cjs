@@ -393,6 +393,10 @@ const fixtures = {
   'canary-rspack2.2': canary('rspack', { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }, { scripts: { build: 'rspack build' } }),
   'canary-vite8': canary('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
   ...Object.fromEntries(['7.3.7', '6.1.6', '6.0.11', '5.4.21'].map(v => [`canary-vite${v}`, canary('vite', { vite: v }, { type: 'module', scripts: { build: 'vite build' } })])),
+  'canary-rolldown-vite7': canary('vite', { vite: 'npm:rolldown-vite@7.3.1' }, { type: 'module', scripts: { build: 'vite build' } }),
+  // Rolldown's API (rolldown.mjs); rollup for the oracle, which builds src/main.js with rollup.config.mjs
+  ...Object.fromEntries(['1.2.13', '1.0.0'].map(v => [`canary-rolldown${v}`, canary('rollup', { rolldown: v, rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' },
+    { type: 'module', scripts: { build: 'node rolldown.mjs build' } })])),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
   'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
@@ -419,6 +423,11 @@ const CANARY_INLINED = { js: ['bl-canary-glsl@1.0.0'], all: ['bl-canary-css@1.0.
 // the image JavaScript inlines with new URL(): a module of webpack's and rspack's builds, inlined by Vite's (Rollup leaves
 // the URL as it is: not in the output)
 const CANARY_URL = 'bl-canary-url@1.0.0';
+const CANARY_VITE = [...CANARY_JS, ...CANARY_INLINED.all, CANARY_URL].sort();
+const CANARY_ROLLDOWN = [...CANARY_JS, ...CANARY_INLINED.js].sort();
+// what a Rolldown build without its plugin contexts' records and without a build object (watch()) does not list: every
+// file a plugin inlined (bl-canary-css is a module)
+const UNRECORDED_WITHOUT_CONTEXTS = ['bl-canary-glsl@1.0.0', 'bl-canary-icon@1.0.0', 'bl-canary-import@1.0.0', 'bl-canary-url@1.0.0'];
 const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // edge-vendored (src/index.js): the copies outside node_modules (left-pad by an alias, is-odd by resolve.modules,
 // vscode-languageclient with engines.vscode but no publisher, a copy of ms@2.1.3, the in-repo app-lib), container and
@@ -461,6 +470,7 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 // every lockfile below .next and its packages (the files they record differ: Next's build id is new on every build)
 const NEXT_LOCKS = `node ${path.join(__dirname, 'lib/locks.cjs')} .next`;
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+const ROLLDOWN_SHAPE = `--require ${path.join(__dirname, 'lib/rolldown-shape.cjs')}`; // Rolldown's plugin contexts of a shape bundle-lockfile does not know
 // node_modules/naked: bundled code in node_modules without a package.json (webpack5 app with EDGE_NAKED=1), removed afterwards
 const NAKED = "mkdir -p node_modules/naked && echo \"console.log('naked')\" > node_modules/naked/index.js && npm run -s build; s=$?; rm -rf node_modules/naked; exit $s";
 const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // another preload, which does nothing
@@ -483,6 +493,8 @@ const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 2) || (NODE_MA
 const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "import('./lazy.js')"`;
 // `vite build` in a worker thread (see the script), run as the fixture's own script
 const VITE_WORKER = `cp ${path.join(__dirname, 'lib/vite-worker.mjs')} .vite-worker.mjs && node .vite-worker.mjs`;
+// the canary app: rebuilt without the shader's import (bl-canary-glsl leaves the lockfile), then with it
+const VITE_WATCH_CANARY = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "./shader.glsl"`;
 // vite-spa's two builds as two processes at the same time, into one dist/ (with VITE_SHARED=1)
 const VITE_BIN = './node_modules/.bin/vite';
 const PARALLEL_VITE = `${VITE_BIN} build & a=$!; ${VITE_BIN} build --config vite.second.config.mjs & b=$!; wait $a && wait $b`;
@@ -1062,15 +1074,15 @@ const cases = [
   // the plugin in the config without NODE_OPTIONS: it adds itself to worker.plugins, with which Vite bundles the
   // workers (nanoid; is-number inlined; the worker's font, bootstrap-icons, which the app's build emits again). The
   // static copy keeps its path (vendor/node_modules/normalize.css/normalize.css): found as a file written after the
-  // build. Not reached without the preload: workbox-build's service worker (a build with plugins of its own), and on
-  // Vite 8 plugin-legacy's polyfills (their chunk, which it puts into the bundle, is no chunk of this build there) and
-  // the style sheets @imported from packages (Rolldown gives them only to the caller of rolldown()). On Vite 7 the
-  // polyfills' chunk (core-js, systemjs) and the style sheets (Rollup's watch files) are this build's. Checked in the
-  // output (2026-10-13): each package's code or file is where its list says. The oracle sees all of them, so it is not
-  // compared
+  // build. The style sheets @imported from packages: Rollup's watch files (Vite 7), Rolldown's plugin contexts (Vite 8,
+  // which gives them to the caller of rolldown() only). Not reached without the preload: workbox-build's service
+  // worker (a build with plugins of its own), and on Vite 8 plugin-legacy's polyfills (their chunk, which it puts into
+  // the bundle, is no chunk of this build there). On Vite 7 the polyfills' chunk (core-js, systemjs) is this build's.
+  // Checked in the output (2026-10-13): each package's code or file is where its list says. The oracle sees all of
+  // them, so it is not compared
   { name: 'Vite 8.3.3 features, plugin in the config (no NODE_OPTIONS)', fixture: 'vite8-features', cmd: 'npm run -s build', inject: false,
     env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') },
-    expect: ['bootstrap-icons@1.13.2', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1'], oracle: false },
+    expect: ['bootstrap-icons@1.13.2', 'bulma@1.0.4', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'], oracle: false },
   { name: 'Vite 7.3.7 features, plugin in the config (no NODE_OPTIONS)', fixture: 'vite7-features', cmd: 'npm run -s build', inject: false,
     env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') },
     expect: FEATURES_EXPECT.filter(p => !p.startsWith('workbox-')), oracle: false },
@@ -1574,6 +1586,26 @@ const cases = [
   { name: 'canaries: esbuild 0.28.2', fixture: 'canary-esbuild', cmd: 'npm run -s build', oracleArgs: '--script esbuild.mjs',
     expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => p !== 'bl-canary-glsl@1.0.0').sort(), canaryUnlisted: ['bl-canary-glsl@1.0.0'],
     oracleMissing: ['bl-canary-icon@1.0.0'] },
+  // Rolldown's build() and watch() (also vite build --watch on Vite 8) have no build object with the watch files, nor
+  // has a plugin from the config the build rolldown() returns: the files plugins inlined, from the plugin contexts
+  ...['1.2.13', '1.0.0'].flatMap(v => ['rolldown', 'build', 'watch'].map(mode => (
+    { name: `canaries: Rolldown ${v} ${mode}()`, fixture: `canary-rolldown${v}`, cmd: `node rolldown.mjs ${mode}`, expect: CANARY_ROLLDOWN, oracleMissing: CANARY_INLINED.js,
+      ...(mode === 'watch' && { watchBuilds: [CANARY_ROLLDOWN, CANARY_JS, CANARY_ROLLDOWN] }) }))),
+  ...[['Vite 8.3.3', 'canary-vite8'], ['rolldown-vite 7.3.1', 'canary-rolldown-vite7'], ['Vite 7.3.7', 'canary-vite7.3.7']].map(([what, fixture]) => (
+    { name: `canaries: ${what} vite build --watch`, fixture, cmd: VITE_WATCH_CANARY, expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL],
+      watchBuilds: [CANARY_VITE, CANARY_VITE.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_VITE] })),
+  // Rolldown's plugin contexts of a shape bundle-lockfile does not know, in a build with style sheets and no build
+  // object (vite build --watch): fails; STRICT=0: a warning, and the files Vite's CSS plugin inlined are not listed
+  { name: 'strict: Rolldown plugin contexts of an unknown shape fail a build with style sheets (Vite 8.3.3 vite build --watch)', fixture: 'canary-vite8',
+    cmd: VITE_WATCH_CANARY, nodeOptions: ROLLDOWN_SHAPE, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*vite: Rolldown 1\.2\.\d+: could not read the files its plugins inlined \(injected fault/ },
+  { name: 'STRICT=0: Rolldown plugin contexts of an unknown shape (Vite 8.3.3 vite build --watch)', fixture: 'canary-vite8', cmd: VITE_WATCH_CANARY,
+    nodeOptions: ROLLDOWN_SHAPE, env: { BUNDLE_LOCKFILE_STRICT: '0' }, expectOutput: /\[bundle-lockfile\] WARNING: vite: Rolldown 1\.2\.\d+: could not read the files its plugins inlined/,
+    expect: CANARY_VITE.filter(p => !UNRECORDED_WITHOUT_CONTEXTS.includes(p)), canaryUnlisted: UNRECORDED_WITHOUT_CONTEXTS,
+    watchBuilds: [1, 2, 3].map(i => CANARY_VITE.filter(p => !UNRECORDED_WITHOUT_CONTEXTS.includes(p) && (i !== 2 || p !== 'bl-canary-glsl@1.0.0'))),
+    oracleMissing: [...CANARY_INLINED.all, CANARY_URL].filter(p => !UNRECORDED_WITHOUT_CONTEXTS.includes(p)) },
+  { name: 'canaries: rolldown-vite 7.3.1', fixture: 'canary-rolldown-vite7', cmd: 'npm run -s build', expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL] },
+  { name: 'canaries: Vite 8.3.3, plugin in the config (no NODE_OPTIONS)', fixture: 'canary-vite8', cmd: 'npm run -s build', inject: false,
+    env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL] },
   // Vite records the images a style sheet inlines as data: URLs from 6.1 on (vitejs/vite#18979), those JavaScript
   // inlines with new URL() from 7 on: before, nothing the build records names their files - their markers are in the
   // output, their packages not listed

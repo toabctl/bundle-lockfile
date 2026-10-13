@@ -76,11 +76,14 @@ A case that expects a lockfile checks every lockfile the build writes:
   workers without source maps), or says why it has none;
 - where a case is about particular files (a `package.json` nested in a package, Babel's ES-module helpers), the oracle's
   build has source files below them (`expectSources`): a case whose files are not bundled at all would test nothing;
-- every canary in the output's bytes (gzip and brotli copies unpacked) is listed, and every listed canary is there: the
-  packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 8, Rollup and esbuild) carry a
-  `BLCANARY:<name>@<version>` string in their code and CSS, which shows what is shipped without the bundler's own
-  reporting, which the oracles read (a package at two versions, one inside another; an unused import; CSS, which
-  Vite's oracle does not see);
+- every canary in the output's bytes (gzip and brotli copies unpacked, `data:` URLs decoded) is listed, and every
+  listed canary is there: the packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 5.4 – 8,
+  rolldown-vite, Rollup, Rolldown's API and esbuild, also in watch mode) carry a `BLCANARY:<name>@<version>` string in their
+  code, CSS and images, which shows what is shipped without the bundler's own reporting, which the oracles read (a
+  package at two versions, one inside another; an unused import; CSS, which Vite's oracle does not see; files inlined
+  into a module, which no bundler reports: a style sheet `@import`ed, images inlined as `data:` URLs from CSS and from
+  JavaScript, a shader's `#include`). A case may name the canaries a bundler version cannot list (`canaryUnlisted`,
+  e.g. Vite before 6.1 records no inlined images): exactly those must be unlisted, so the limit is pinned;
 - if `syft` and `trivy` are on `PATH` (as in CI, which sets `BLTEST_REQUIRE_SBOM=1`: without them the run fails): each
   reads exactly those packages, each with a license and a `pkg:npm` purl (syft: from its `javascript-lock-cataloger`).
 
