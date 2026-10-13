@@ -1,14 +1,15 @@
 'use strict';
 // Module-load hooks shared by all adapters.
 //
-// An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, esmEntries?, esmPackages?, esmWrap?(id, name, fn),
-// esmCompanions? }.
+// An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, cjsPackages?, esmEntries?, esmPackages?,
+// esmWrap?(id, name, fn), esmCompanions? }.
 // - onCjsLoad(exports, request, resolve) is called for every CommonJS module once it has run (and an ES module that
 //   require() loads), and patches the bundler when it recognizes it - or returns { exports }, which replace the module's
 //   exports (esbuild's are getters, which cannot be patched). request is the module's file name as adapters
 //   recognize bundler files by (see core/layout.cjs logical: a package in Yarn's store as node_modules/<name>), resolve()
 //   its real file name. cjsFiles (RegExps of file paths): the modules onCjsLoad patches, which the ESM hooks report also
-//   when Node loads them without the CommonJS hook (see esm-wrap.cjs cjsSource).
+//   when Node loads them without the CommonJS hook (see esm-wrap.cjs cjsSource). cjsPackages: npm packages whose use
+//   makes a process one that builds with the adapter's CommonJS bundlers (see installCjs).
 // - esmEntries ({ id, suffixes, wrap }, see esm-wrap.cjs) are ESM modules replaced by a wrapper whose functions in
 //   `wrap` go through esmWrap(id, name, fn), which returns the function to use instead. esmPackages: npm packages
 //   whose use makes a process a bundler process (see esmMode). esmCompanions ({ id, names, file }): a CommonJS file
@@ -61,8 +62,10 @@ function onCjsLoad(exp, filename) {
       const r = a.onCjsLoad(exp, request, resolve);
       if (r && typeof r === 'object' && 'exports' in r) exp = replaced = r.exports;
     } catch (e) {
-      // recognizing a module only reads it: a failure there is no bundler the adapter could not patch
-      if (!failedOn.has(a.name)) { failedOn.add(a.name); config.warn(`${a.name} adapter failed while inspecting ${filename}:`, e); }
+      // recognizing a module only reads it: a failure there is no bundler the adapter could not patch - unless the module
+      // is one the adapter patches (its cjsFiles), whose builds would then write no lockfile
+      if ((a.cjsFiles || []).some(re => re.test(request))) problems.problem(`${a.name} adapter failed on ${filename}: its builds would write no lockfile`, e);
+      else if (!failedOn.has(a.name)) { failedOn.add(a.name); config.warn(`${a.name} adapter failed while inspecting ${filename}:`, e); }
     }
     failLoad(before);
   }
@@ -79,6 +82,10 @@ function onCjsLoad(exp, filename) {
 // warned - which fails builds that exit on any warning (OpenSearch Dashboards', Kibana's). _compile and the handlers of
 // the module being loaded are below that module's code on the stack. A module from the cache runs neither: it was seen
 // when it loaded.
+// Modules that ran before the hooks were installed (loaded by a preload before this one) are reported when they are
+// installed. At exit, a module the adapters patch (cjsFiles) that is in require.cache but was never reported ran past
+// the hooks (a loader that compiles modules itself): the bundler in it was not patched - a problem. So are hook points
+// this Node.js does not have, in a process that builds with a CommonJS bundler (elsewhere there is nothing to miss).
 function installCjs() {
   const seen = new WeakSet();
   const report = (module, filename) => {
@@ -91,6 +98,7 @@ function installCjs() {
     try { module.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
     failLoad(before);
   };
+  const missing = [];
   const compile = Module.prototype._compile;
   if (typeof compile === 'function') {
     Module.prototype._compile = function (content, filename) {
@@ -100,10 +108,11 @@ function installCjs() {
       report(this, file);
       return r;
     };
-  }
+  } else missing.push('Module.prototype._compile');
   for (const ext of ['.js', '.cjs']) {
     const handler = Module._extensions[ext];
-    if (typeof handler !== 'function') continue;
+    // (no Node.js has a handler of its own for .cjs files: the .js handler loads them)
+    if (typeof handler !== 'function') { if (ext === '.js') missing.push(`Module._extensions['${ext}']`); continue; }
     Module._extensions[ext] = function (module, filename) {
       entered.add(filename);
       companion(module, filename);
@@ -123,7 +132,27 @@ function installCjs() {
   }
   // a cjsFiles module Node evaluated without the CommonJS hook reports itself here once it has run (esm-wrap.cjs cjsSource)
   globalThis[Symbol.for('bundle-lockfile.cjs-loaded')] = report;
+  if (missing.length) {
+    const msg = `Node.js ${process.versions.node} has no ${missing.join(', ')}: CommonJS bundlers (webpack, rspack 1, Rollup's CommonJS build, esbuild) are not hooked`;
+    if (bundlerProcess(cjsPackages())) problems.problem(msg); else config.debug(msg);
+  }
+  // (not bundle-lockfile's own modules; they came through the CommonJS loader, as the safety net counts modules: entered)
+  for (const m of Object.values(Module._cache)) {
+    if (!m || !m.loaded || typeof m.filename !== 'string' || m.filename.startsWith(__dirname + path.sep)) continue;
+    entered.add(m.filename);
+    report(m, m.filename);
+  }
+  const files = adapters.flatMap(a => (a.onCjsLoad && a.cjsFiles) || []);
+  problems.atExit(() => {
+    for (const m of Object.values(Module._cache)) {
+      if (!m || !m.loaded || seen.has(m) || typeof m.filename !== 'string') continue;
+      const request = logical(m.filename);
+      if (files.some(re => re.test(request))) problems.problem(`${m.filename} ran past bundle-lockfile's CommonJS hook (a loader that compiles modules itself): the bundler in it was not patched, its builds wrote no lockfile`);
+    }
+  });
 }
+// the npm packages whose use makes a process one that builds with a bundler of the adapters (see bundlerProcess)
+const cjsPackages = () => [...new Set(adapters.flatMap(a => [...(a.cjsPackages || []), ...(a.esmPackages || [])]))];
 
 // The safety net for a thread without ESM hooks (esmMode 'off' although they were not turned off; a bundler process the
 // check in bundlerProcess misses): an ES-module bundler would build without the plugin, and no lockfile. Each loads a

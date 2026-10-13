@@ -12,6 +12,8 @@
 //   (OHIF loads rspack 1 and 2) gets its own patch.
 // rspack 1.0 lacks what the plugin needs (the inner modules of concatenated modules): its builds fail (strict mode,
 // core/problems.cjs). rspack 0.x fails its builds too.
+const fs = require('fs');
+const path = require('path');
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
 const { APPLIED, BundleLockfilePlugin, attach, versionOf } = require('./webpack-family.cjs');
@@ -52,6 +54,11 @@ function patchCompiler(Compiler, where) {
   return true;
 }
 
+// The version in dir/package.json, or null
+function versionIn(dir) {
+  try { const v = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version; return typeof v === 'string' ? v : null; } catch { return null; }
+}
+
 // @rspack/core's Compiler, of a version from 1.0 on, that is not of the shape rspack.cjs knows: its builds would write no
 // lockfile - a problem (in strict mode loading it fails, see hooks.cjs). rspack 0.x fails when it compiles.
 function patchRspack(Compiler, version, where) {
@@ -82,8 +89,22 @@ module.exports = {
     return value; // the class itself, patched
   },
   onCjsLoad(exp, request, resolve) {
-    // only the export of @rspack/core: a function (rspack()) with its version and Compiler (webpack's says version)
-    if (typeof exp !== 'function' || typeof exp.rspackVersion !== 'string' || typeof exp.Compiler !== 'function') return;
-    try { patchRspack(exp.Compiler, exp.rspackVersion, resolve()); } catch (e) { problems.problem(`rspack: could not patch ${resolve()}`, e); }
+    // only the export of @rspack/core: a function (rspack()) with its version and Compiler (webpack's says version) -
+    // or, for require() of rspack 2's ES module on a Node.js that does not take its "module.exports" export, its namespace
+    // (the path first: reading a missing property of a module in a circular require() makes Node warn)
+    const own = module.exports.cjsFiles[0].test(request);
+    const api = typeof exp === 'function' || (own && exp && exp[Symbol.toStringTag] === 'Module') ? exp : null;
+    if (!api || typeof api.rspackVersion !== 'string' || typeof api.Compiler !== 'function') {
+      // @rspack/core's own dist/index.js of another shape, from 1.0 on (its package.json says which): its builds would
+      // write no lockfile - a problem (in strict mode its require() fails, see hooks.cjs). rspack 0.x fails when it
+      // compiles (listeners).
+      if (!own) return;
+      const version = exp && typeof exp.rspackVersion === 'string' ? exp.rspackVersion : versionIn(path.join(path.dirname(resolve()), '..'));
+      if (version && versionOf(version)[0] >= 1) {
+        problems.problem(`rspack: ${resolve()} (rspack ${version}) exports no rspack() with rspackVersion and Compiler, as bundle-lockfile knows it: its builds would write no lockfile`);
+      }
+      return;
+    }
+    try { patchRspack(api.Compiler, api.rspackVersion, resolve()); } catch (e) { problems.problem(`rspack: could not patch ${resolve()}`, e); }
   },
 };
