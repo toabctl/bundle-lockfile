@@ -30,16 +30,28 @@ function problem(what, cause, opts = {}) {
   }
   state.pending.push(text(what, cause));
   if (cause instanceof Error) config.debug(what, cause);
-  if (!state.atExit) {
-    state.atExit = true;
-    process.on('exit', () => {
-      const left = take();
-      if (!left.length) return;
-      for (const t of left) config.error(t);
-      config.error(`the process fails because a lockfile would be missing or incomplete (${HINT})`);
-      if (!process.exitCode) process.exitCode = 1;
-    });
-  }
+  onExit();
+}
+
+// Problems no build took make the process exit with code 1; checks that can only be made when the process ends
+// (core/unsupported.cjs) run first, and may record more.
+function onExit() {
+  if (state.atExit) return;
+  state.atExit = true;
+  process.on('exit', () => {
+    for (const fn of state.checks || []) {
+      try { fn(); } catch (e) { config.debug('a check at exit failed:', e); }
+    }
+    const left = take();
+    if (!left.length) return;
+    for (const t of left) config.error(t);
+    config.error(`the process fails because a lockfile would be missing or incomplete (${HINT})`);
+    if (!process.exitCode) process.exitCode = 1;
+  });
+}
+function atExit(fn) {
+  (state.checks || (state.checks = [])).push(fn);
+  onExit();
 }
 
 // The recorded problems, removed (so that each fails one build); from: only those recorded after the first `from`
@@ -70,4 +82,4 @@ function failIfAny(fail) {
   return true;
 }
 
-module.exports = { problem, take, count, pending, failure, failIfAny, isFailure };
+module.exports = { problem, take, count, pending, failure, failIfAny, isFailure, atExit };

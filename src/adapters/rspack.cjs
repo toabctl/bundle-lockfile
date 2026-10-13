@@ -11,7 +11,7 @@
 //   seen on several paths (in-thread ESM hooks and the CommonJS hook on Node.js 24.12+) is patched once; every copy loaded
 //   (OHIF loads rspack 1 and 2) gets its own patch.
 // rspack 1.0 lacks what the plugin needs (the inner modules of concatenated modules): its builds fail (strict mode,
-// core/problems.cjs). rspack 0.x is left alone.
+// core/problems.cjs). rspack 0.x fails its builds too.
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
 const { APPLIED, BundleLockfilePlugin, attach, versionOf } = require('./webpack-family.cjs');
@@ -23,7 +23,8 @@ const SEEN = Symbol.for('bundle-lockfile.rspack.seen');       // compiler: liste
 const listeners = [(compiler, where) => {
   const version = compiler.webpack && compiler.webpack.rspackVersion;
   const [major] = versionOf(version);
-  if (!(major >= 1)) { config.debug('rspack: version', version, 'is not supported, left alone'); return; }
+  // rspack 0.x: its builds would write no lockfile - a problem (the compilation fails, see attach)
+  if (!(major >= 1)) { problems.problem(`rspack ${version} is not supported (it needs 1.1 or later): its builds write no lockfile`); return; }
   // (rspack 1.0: the plugin records that it is not supported, see webpack-family.cjs)
   if (compiler[APPLIED]) { config.debug('rspack: plugin already in the config of compiler', compiler.name || '(unnamed)'); return; }
   config.debug('rspack: applying to compiler', compiler.name || '(unnamed)', 'rspack', version, 'output', compiler.outputPath, 'via', where);
@@ -52,7 +53,7 @@ function patchCompiler(Compiler, where) {
 }
 
 // @rspack/core's Compiler, of a version from 1.0 on, that is not of the shape rspack.cjs knows: its builds would write no
-// lockfile - a problem (in strict mode loading it fails, see hooks.cjs). rspack 0.x is left alone.
+// lockfile - a problem (in strict mode loading it fails, see hooks.cjs). rspack 0.x fails when it compiles.
 function patchRspack(Compiler, version, where) {
   if (patchCompiler(Compiler, where) || !(versionOf(version)[0] >= 1)) return;
   problems.problem(`rspack: the Compiler of rspack ${version} (${where}) is not one bundle-lockfile knows (compile, run, watch, isChild, runAsChild, createChildCompiler): its builds would write no lockfile`);

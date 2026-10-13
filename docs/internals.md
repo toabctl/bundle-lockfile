@@ -393,6 +393,7 @@ src/core/outputs.cjs    writers of each lockfile, in this process and others; wr
 src/core/lock.cjs       lock across processes, atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record
 src/core/problems.cjs   what makes a lockfile missing or incomplete: fails the build (strict mode) or is a warning
+src/core/unsupported.cjs builds it recognizes but does not hook (Turbopack, Parcel, the rolldown command line, ncc)
 src/core/config.cjs     settings (environment variables, the settings file), debug, warning and error output
 ```
 
@@ -405,7 +406,8 @@ the build, reading or writing a lockfile, its export copy or a copy of it (also 
 never replaced, and two lockfiles at one export path), taking or creating the lock, nowhere to write
 (`BUNDLE_LOCKFILE_INLINE=0` without an export directory), a bundled package without a `package.json`, patching or
 wrapping a bundler, a bundler it recognizes but does not know (an entry without the functions to wrap, a compiler of
-another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an unsupported rspack (1.0), installing the ESM hooks in a
+another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an unsupported rspack (1.0, 0.x when it compiles), a build bundle-lockfile recognizes but does not hook (Turbopack, Parcel,
+the `rolldown` command line, ncc, webpack < 4: `core/unsupported.cjs`, the webpack adapter), installing the ESM hooks in a
 bundler process (or a Node.js without them), a settings file that cannot be read, a setting that is not recognized or
 cannot work (`config.invalid`), another copy of bundle-lockfile preloaded too - and the adapter of the build takes the
 recorded problems at the end of its hooks:

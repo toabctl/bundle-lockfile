@@ -47,10 +47,14 @@ Package managers tested ([details](../test/README.md#environments)):
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
 
+Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile): Turbopack (Next.js
+16's default build; known when `next build` ends), Parcel (its `run()`, not `parcel watch` or `serve`), the `rolldown`
+command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack < 4 and rspack 0.x (when a compiler
+compiles).
+
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Angular's
-esbuild builder (it builds with `write: false` and writes the files itself), Parcel, Turbopack (Next.js 16's default
-build), the `rolldown` command line, Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not
-installed), webpack < 4, rspack 0.x.
+esbuild builder (it builds with `write: false` and writes the files itself), Bun's own runtime (`bun --bun`,
+`Bun.build`, and `bun run` where Node.js is not installed).
 
 ## Which processes are hooked
 
@@ -150,7 +154,8 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
 | `.next/server/chunks/bundle-lockfile/` | server |
 | `.next/server/bundle-lockfile/` | edge server: middleware and routes with `runtime = 'edge'` (without packages if there are none) |
 
-- Next.js 16 builds with Turbopack by default, which is not hooked: use `next build --webpack` (or next-rspack).
+- Next.js 16 builds with Turbopack by default, which is not hooked: the build fails when it ends (strict mode). Use
+  `next build --webpack` (or next-rspack).
 - With next-rspack, rspack builds the same compilers: the same lockfiles.
 - With the App Router, the server output uses Next's vendored React (`next/dist/compiled/react`), which is listed as
   `next`; the client output lists `react` and `react-dom`.

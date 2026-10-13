@@ -1193,8 +1193,12 @@ const cases = [
     env: { BUNDLE_LOCKFILE_DISABLE: 'vite,rolldown' }, expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=vite,rollup,webpack: still hooked', fixture: 'rollup-api', cmd: 'node build.mjs rolldown',
     env: { BUNDLE_LOCKFILE_DISABLE: 'vite,rollup,webpack' }, expect: ROLLUP_API },
-  // the rolldown command line imports Rolldown's internal chunk, not its entry module, which the hooks wrap
-  { name: 'Rolldown 1 command line (unsupported: no lockfile)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser', expect: null },
+  // the rolldown command line imports Rolldown's internal chunk, not its entry module, which the hooks wrap: it is
+  // recognized, and fails (strict); STRICT=0: no lockfile
+  { name: 'Rolldown 1 command line (unsupported: fails)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser',
+    expectError: /the rolldown command line is not hooked: its builds write no lockfile/ },
+  { name: 'Rolldown 1 command line, BUNDLE_LOCKFILE_STRICT=0 (unsupported: no lockfile)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser',
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null },
   // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
   { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
   // the island's main.js changed after its build (a post-processing step): its record still names it by path, so its
@@ -1449,8 +1453,12 @@ const cases = [
     ['2.2.12', 'rsbuild2.2-npm', 'npm run -s build'], ['2.2.12, bun', 'rsbuild2.2-bun', 'bun run build'],
     ['2.2.12, yarn 4.18.1 Plug\'n\'Play', 'rsbuild2.2-yarn4-pnp', 'yarn build']].map(([what, fixture, cmd]) => (
     { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
-  // Next 16 builds with Turbopack by default, which bundle-lockfile does not support (yet)
-  { name: 'Next.js 16.4.0 Turbopack (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV, expect: null },
+  // Next 16 builds with Turbopack by default, which bundle-lockfile does not hook: recognized, it fails (strict);
+  // STRICT=0: no lockfile
+  { name: 'Next.js 16.4.0 Turbopack (unsupported: fails)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV,
+    expectError: /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile/ },
+  { name: 'Next.js 16.4.0 Turbopack, BUNDLE_LOCKFILE_STRICT=0 (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next',
+    env: { ...NEXT_ENV, BUNDLE_LOCKFILE_STRICT: '0' }, expect: null },
   // frameworks and plugins on rspack
   // Next.js with next-rspack: the same compilers, built by rspack, the same lockfiles as with webpack (exact lists: the
   // oracle's of the webpack cases above). The oracle's stats plugin works on rspack's compilers too
