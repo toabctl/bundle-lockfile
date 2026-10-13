@@ -297,6 +297,18 @@ test('webpack adapter: Next.js vendored webpack, whose exports are filled in by 
   const C3 = fakeCompiler();
   webpack.onCjsLoad({ webpack: { Compiler: C3 } }, '/p/node_modules/my-webpack/index.js', () => '/p/node_modules/my-webpack/index.js');
   assert.equal(C3.prototype[PATCHED], undefined);
+
+  // next-rspack fills it with rspack's exports: rspack's Compiler (no newCompilation) is rspack.cjs's, no unknown webpack
+  return withConfig({ strict: true }, () => {
+    problems.take();
+    const R = fakeRspack('2.0.4');
+    const viaInit = { init() { Object.assign(viaInit, { webpack: R }); } };
+    webpack.onCjsLoad(viaInit, where, () => where);
+    viaInit.init();
+    webpack.onCjsLoad({ webpack: R }, where, () => where);
+    assert.deepEqual(problems.take(), []);
+    assert.equal(R.Compiler.prototype[PATCHED], undefined);
+  });
 });
 
 // minimal webpack 5 compilation: chunks of modules (entry: the chunk's entry modules), child compilations,
