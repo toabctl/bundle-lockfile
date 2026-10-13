@@ -52,6 +52,7 @@ CI splits the matrix into shards that run as parallel jobs. Both scripts take:
   global cache, node-modules and pnpm linker), bun and npm workspaces (an app built in its own directory).
 - rspack: npm, npx, pnpm 10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play, node-modules and
   pnpm linker) and bun; Rsbuild: npm, bun, yarn 4 (Plug'n'Play); Rslib, Next.js with next-rspack: npm.
+- esbuild: npm, pnpm 10, yarn 4 (Plug'n'Play).
 - yarn 2 is not tested: it calls `util.isDate`, which Node.js 23 removed, when it sets the times of zip entries from
   dates (e.g. for `file:` dependencies).
 
@@ -76,7 +77,7 @@ A case that expects a lockfile checks every lockfile the build writes:
 - where a case is about particular files (a `package.json` nested in a package, Babel's ES-module helpers), the oracle's
   build has source files below them (`expectSources`): a case whose files are not bundled at all would test nothing;
 - every canary in the output's bytes (gzip and brotli copies unpacked) is listed, and every listed canary is there: the
-  packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 8 and Rollup) carry a
+  packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 8, Rollup and esbuild) carry a
   `BLCANARY:<name>@<version>` string in their code and CSS, which shows what is shipped without the bundler's own
   reporting, which the oracles read (a package at two versions, one inside another; an unused import; CSS, which
   Vite's oracle does not see);
@@ -91,7 +92,8 @@ The other cases check that no lockfile is written, or that the build fails with 
 
 **Strict mode.** Each of these cases fails the build with bundle-lockfile's reason (the default), and with
 `BUNDLE_LOCKFILE_STRICT=0` the build succeeds with a warning instead:
-- a failing adapter: webpack 5, Vite 7 and 8, the `rollup` command line, the Rollup and Rolldown APIs;
+- a failing adapter: webpack 5, Vite 7 and 8, the `rollup` command line, the Rollup and Rolldown APIs, esbuild's
+  `build()`, `context()` and `buildSync()`;
 - a lockfile that cannot be written: webpack 5, Vite 8, the `rollup` command line;
 - an export directory that cannot be written;
 - `BUNDLE_LOCKFILE_INLINE=0` without an export directory: webpack 5, Vite 8;
@@ -198,6 +200,15 @@ process's `locations` (a second build, then the first one again).
 - Rollup 4.0.2, Rolldown 1.0.0 and `@rollup/wasm-node` (its API and its command line)
 - no lockfile from the `rolldown` command line (not supported yet), and webpack and Vite builds in Bun's own runtime
   (`bun --bun`; the builds are not affected)
+
+**esbuild** (`apps/esbuild`, compared with an oracle that builds again with esbuild's source maps,
+`oracles/esbuild.cjs`; the font, an asset, has none):
+- `build()`, `context()` with `rebuild()`, `watch()` (a rebuild without an import, whose packages must leave the
+  lockfile, then one with it again), `outfile`, `buildSync()`, two builds into one directory, `write: false` (no
+  lockfile), the export directory only, `BUNDLE_LOCKFILE_DISABLE=esbuild`
+- esbuild 0.17.0 (the oldest supported), 0.19.12, 0.28.2, esbuild-wasm; esbuild 0.16 fails the build (a warning with
+  `BUNDLE_LOCKFILE_STRICT=0`); SvelteKit 2's adapter-netlify edge function, which esbuild bundles
+- Vite 5 – 7, which build with esbuild themselves (dependency pre-bundling, the config file), are unchanged
 
 **rspack** (the `rspack` app is webpack 5's, with `rspack.config.js`) and **Rsbuild**, compared with an oracle that
 builds again through rspack's or Rsbuild's API without bundle-lockfile, without minimizing (so that copies keep their

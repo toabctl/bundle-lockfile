@@ -16,10 +16,12 @@ What is supported and tested, which processes are hooked, and what is particular
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
 | Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
+| esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
   older Node.js versions only some processes get ([which processes](#which-processes-are-hooked)).
-- **Watch mode** (webpack, rspack, Rollup, Rolldown, `vite build --watch`) writes the lockfile after every rebuild.
+- **Watch mode** (webpack, rspack, Rollup, Rolldown, `vite build --watch`, esbuild's `watch()`) writes the lockfile
+  after every rebuild.
   The dev servers of rspack (`rspack serve`, `rsbuild dev`) serve it from memory (webpack's dev server goes the same
   way, through its in-memory output file system, but is not tested).
 - **Node.js:** 20.6 or later. Builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite,
@@ -38,18 +40,21 @@ Package managers tested ([details](../test/README.md#environments)):
 | Rsbuild | npm, bun, yarn 4 (Plug'n'Play) |
 | Vite | npm, npx, pnpm 9 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules, pnpm), bun, npm workspaces |
 | Next.js, SvelteKit, Rollup, Rolldown, Rslib | npm (the `rollup` command line also yarn 4 Plug'n'Play and pnpm) |
+| esbuild | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
 
-Not hooked — no lockfile, and no failure: esbuild, Parcel, Turbopack (Next.js 16's default build), the `rolldown`
-command line, Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), webpack < 4,
-rspack 0.x.
+Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Angular's
+esbuild builder (it builds with `write: false` and writes the files itself), Parcel, Turbopack (Next.js 16's default
+build), the `rolldown` command line, Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not
+installed), webpack < 4, rspack 0.x.
 
 ## Which processes are hooked
 
 The CommonJS bundlers — webpack (also Next.js' copy), rspack 1, Rollup's CommonJS build (`require('rollup')`, the
-`rollup` command line) — are hooked in every process that preloads bundle-lockfile. The ES-module bundlers — Vite,
+`rollup` command line), esbuild's API (also through `import`) — are hooked in every process that preloads
+bundle-lockfile. The ES-module bundlers — Vite,
 which imports Rollup and Rolldown as ES modules, Rolldown, rspack 2, Rollup through `import` — need a Node.js ESM
 hook:
 - Node.js 24.12, 25.2 and later: hooked in every process.
@@ -108,6 +113,31 @@ Rsbuild, Rslib, Next.js with next-rspack).
 - `bun run` starts the `rspack` and `rsbuild` commands with Node.js (their `#!/usr/bin/env node`) only if Node.js is
   installed: without it, Bun runs them itself and nothing is hooked.
 
+## esbuild
+
+esbuild's JavaScript API is hooked: `build()`, `context()` (with `rebuild()` and `watch()`) and `buildSync()`, also of
+esbuild-wasm and of Node.js builds that tools such as SvelteKit's adapter-netlify 5 run. Not the `esbuild` command
+line, nor its Go API: both are esbuild's binary, which Node.js does not run.
+
+- The lockfile goes into the output directory: `outdir`, or the directory of `outfile`. It is written once esbuild has
+  written the output, after every other plugin's `onEnd`; with `watch()`, `rebuild()` and `serve()` (which writes the
+  output too) after every build. A failed build changes nothing.
+- It lists the packages of the input files of every output file esbuild writes (its metafile, which bundle-lockfile
+  turns on, and takes out of the result again unless the build asked for it): modules, CSS `@import`ed from packages
+  and files the `file` and `copy` loaders put into the output. Modules that only re-export count; tree-shaken modules,
+  externals and modules a browser field maps to `false` do not. Modules of plugins (a namespace) count if their path is
+  a file.
+- Several builds into one directory (other entry points) share one lockfile.
+- `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile, and no failure. Their packages are listed where their output's bytes end up in another hooked build's output, or in a file
+  written into an output after the build ([coverage](coverage.md#also-listed)). Angular's esbuild builder builds that
+  way and writes the files itself: it gets no lockfile.
+- Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
+  below `node_modules` are left alone.
+- A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
+  `buildSync()` throws it, `watch()` prints it and goes on watching. esbuild 0.16 and older (no `context()`) fail a
+  build that writes an output.
+- Style sheets that a plugin inlines (esbuild-sass-plugin's Sass partials) are not in the metafile: not listed.
+
 ## Next.js
 
 Next runs several compilers, so a build writes one lockfile per compiler output, below `distDir` (`.next` by default):
@@ -152,7 +182,7 @@ packages) and `server/` (what the server bundles). The adapter then fills its ou
 | adapter-node 6 (SvelteKit 3) | copied to `build/client/` | copied to `build/server/`, with its lockfile (which lists adapter-node, bundled into the server build) |
 | adapter-node 5 (SvelteKit 2) | copied to `build/client/` | bundled again with Rollup into `build/`; its lockfile lists the server output's packages ([nested bundle](format.md#nested-bundles)) and adapter-node's own files, which it copies to `.svelte-kit/adapter-node/` first |
 | adapter-netlify 7 (SvelteKit 3) | copied to `build/` | serverless: copied to `.netlify/v1/server/`, with its lockfile; edge function: bundled with all its dependencies by Rolldown, lockfile in `.netlify/v1/edge-functions/` (also lists adapter-netlify's own files) |
-| adapter-netlify 5 (SvelteKit 2; 6 is not tested) | copied to `build/` | serverless: copied to `.netlify/server/`, with its lockfile; edge function: bundled by esbuild, no lockfile |
+| adapter-netlify 5 (SvelteKit 2; 6 is not tested) | copied to `build/` | serverless: copied to `.netlify/server/`, with its lockfile; edge function: bundled with all its dependencies by esbuild, lockfile in `.netlify/edge-functions/` |
 
 Dependencies the server imports are not bundled by default (Vite's SSR build and adapter-node keep the project's
 `dependencies` external): the server loads them from `node_modules` at runtime, so they are in no bundle-lockfile.

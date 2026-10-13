@@ -31,12 +31,14 @@ flowchart LR
   cjs -- "@rspack/core/dist/index.js<br/>(rspack 1; require() of rspack 2)" --> rspatch["rspack's Compiler.prototype.compile<br/>patched (each copy once)"]
   esm -- "@rspack/core/dist/index.js<br/>(rspack 2: @rspack/cli, Rsbuild)" --> rspatch
   cjs -- "rollup/dist/shared/rollup.js<br/>(rollup command line, workbox-build)" --> rpatch["rollup() / rollupInternal() wrapped"]
+  cjs -- "esbuild/lib/main.js<br/>(require and import of esbuild)" --> epatch["exports replaced by a copy:<br/>build() context() buildSync() wrapped"]
   esm -- "rollup/dist/es/rollup.js (Vite 5-7)<br/>rolldown/dist/index.mjs (Vite 8)" --> wrap["entry module replaced by a wrapper<br/>(esm-wrap.cjs): rollup() rolldown()<br/>watch() build() wrapped"]
 
   wpatch -- "every top-level compiler,<br/>on its first compile()" --> wplugin["BundleLockfilePlugin<br/>(adapters/webpack-family.cjs)"]
   rspatch -- "every top-level compiler<br/>of rspack 1.1+" --> wplugin
   rpatch -- "every build" --> rplugin["bundle-lockfile Rollup plugin,<br/>appended last (adapters/rollup.cjs)"]
   wrap -- "every build" --> rplugin
+  epatch -- "every build, context" --> eplugin["bundle-lockfile esbuild plugin,<br/>appended last (adapters/esbuild.cjs)"]
 ```
 
 ## What a build does
@@ -311,6 +313,43 @@ Where rspack's compilations differ:
 A compilation of rspack 2.2 is partly gone after the next watch rebuild (reading its modules throws): nothing keeps
 one beyond its build.
 
+## esbuild
+
+esbuild's API is `lib/main.js` of the `esbuild` (or `esbuild-wasm`) package, CommonJS, also when a build script
+`import`s it. Its exports are getters without setters (`__toCommonJS`), so the adapter cannot patch them: its
+`onCjsLoad` returns `{ exports }`, a copy of every export with `build()`, `context()` and `buildSync()` wrapped, and the
+CommonJS hook puts that copy in the module's place (`module.exports`, before any `require()` or `import` of it returns).
+The copy's `default` is the copy: esbuild's own is its inner exports object, which code compiled with ES-module
+interop (`__importDefault`) calls, and which would bypass the wrappers.
+
+```mermaid
+sequenceDiagram
+  participant S as build script
+  participant E as esbuild (wrapped copy)
+  participant P as bundle-lockfile plugin
+  participant C as core
+  participant D as disk
+  S->>E: build(options) / context(options)
+  E->>P: setup: metafile on (the caller's choice remembered)
+  E->>D: writes the output files
+  E->>P: onEnd(result), after the other plugins' onEnd
+  P->>C: inputs of every output in the metafile -> packages
+  C->>D: under the lock: read the lockfile, merge, write it (and the export copy)
+  P->>E: errors: the problems (build() rejects), metafile removed unless asked for
+```
+
+- `buildSync()` takes no plugins: it gets `metafile: true`, and its result is processed the same way after it returns.
+- The input keys of a metafile are paths relative to `absWorkingDir`, with esbuild's own forms: `<namespace>:<path>`
+  (a plugin's module: a file if the path is absolute, or relative and there), `(disabled):<path>` (a browser field's
+  `false`: no code of it ships), `?query` and `#hash` suffixes. Every input of an output counts, also one without bytes
+  in it (a module that only re-exports); a tree-shaken one is in no output.
+- A build with `write: false` (or without `outdir` and `outfile`) writes nothing itself: its outputs' packages go to
+  `core/generated.cjs`, by content and entry file, as for Rollup's `generate()`.
+- Vite 5 – 7 build with esbuild too: dependency pre-bundling and its scan (their plugins `vite:dep-pre-bundle`,
+  `vite:dep-scan`) and `vite.config.*` (`externalize-deps` with `inject-file-scope-variables`): left alone.
+- esbuild before 0.17 has no `context()` (rebuilds were `build({ incremental })`): a call that would write an output
+  fails (strict mode) instead of writing no lockfile.
+
 ## webpack: which file a module is
 
 A module counts as the file webpack itself names it by (its `nameForCondition`: the path `module.rules` match it
@@ -331,6 +370,7 @@ src/adapters/webpack.cjs  webpack 4/5 and Next.js: hooks webpack's Compiler
 src/adapters/rspack.cjs   rspack: hooks rspack's Compiler (every copy loaded)
 src/adapters/webpack-family.cjs  webpack and rspack: which source files are in a compiler's emitted output (the plugin)
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
+src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that reads the metafile's inputs per output
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
@@ -358,7 +398,7 @@ the build, reading or writing a lockfile, its export copy or a copy of it (also 
 never replaced, and two lockfiles at one export path), taking or creating the lock, nowhere to write
 (`BUNDLE_LOCKFILE_INLINE=0` without an export directory), a bundled package without a `package.json`, patching or
 wrapping a bundler, a bundler it recognizes but does not know (an entry without the functions to wrap, a compiler of
-another shape, Rollup before 2.78), attaching to a compiler, an unsupported rspack (1.0), installing the ESM hooks in a
+another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an unsupported rspack (1.0), installing the ESM hooks in a
 bundler process (or a Node.js without them), a settings file that cannot be read, a setting that is not recognized or
 cannot work (`config.invalid`), another copy of bundle-lockfile preloaded too - and the adapter of the build takes the
 recorded problems at the end of its hooks:
@@ -368,6 +408,7 @@ recorded problems at the end of its hooks:
 | webpack 4/5, rspack, Next.js, Rsbuild | a compilation error (webpack 5: `WebpackError` without stack): webpack reports it, emits nothing (`emitOnErrors: false`, the production default) and the build fails with exit code 1 | a compilation error, from `afterEmit` (its callback gets no error) |
 | a compiler the plugin cannot be applied to | a compilation error in each of its compilations (if not even `thisCompilation` can be tapped: `compile()` calls back with the error) | – |
 | Rollup, Rolldown, Vite | `this.error()` in `generateBundle` | `writeBundle` rejects; `closeBundle` throws, except in watch mode, where it prints the error |
+| esbuild | – | `onEnd` returns the problems as errors: `build()` and `rebuild()` reject, `watch()` prints them; `buildSync()` throws |
 | a bundler that could not be hooked (patching or wrapping it failed, or it is of a shape the adapter does not know) | loading it fails: its `require()` or `import` throws the error (also in a worker or child process whose exit code nobody reads) | |
 | no build (a setting, the settings file, a second copy) | the process exits with code 1 (unless it already fails) | |
 
@@ -386,8 +427,9 @@ is a bundler counts.
 To add a bundler:
 1. Write `src/adapters/<name>.cjs` (the interface is described at the top of `src/hooks.cjs`):
    - `name` (or `names`, if it serves several bundlers, for `BUNDLE_LOCKFILE_DISABLE`);
-   - for a CommonJS bundler: `onCjsLoad(exports, request, resolve)`, which recognizes and patches it, and `cjsFiles`,
-     the files it patches, which the ESM hooks report when Node loads them without the CommonJS hook;
+   - for a CommonJS bundler: `onCjsLoad(exports, request, resolve)`, which recognizes and patches it (or returns
+     `{ exports }` to replace exports it cannot patch), and `cjsFiles`, the files it patches, which the ESM hooks report
+     when Node loads them without the CommonJS hook;
    - for an ES module one: `esmEntries`, `esmWrap` and `esmPackages` (the packages whose processes get the
      loader-thread hooks);
    - write through `core/outputs.cjs`, so that shared output directories work.

@@ -1108,9 +1108,10 @@ test('hooks: a throwing adapter is reported and does not break require()', () =>
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
   const script = `const M = require('module'); const before = M._extensions['.js']; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._extensions['.js'] === before);`;
-  // the rollup and rspack adapters hook CommonJS modules too (Rollup's CommonJS build, rspack): only off with all names
-  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK', 'true'],
-    ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false']]) {
+  // the rollup, rspack and esbuild adapters hook CommonJS modules too (Rollup's CommonJS build, rspack, esbuild): only
+  // off with all names
+  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild', 'true'],
+    ['webpack,rollup,rolldown,vite,rspack', 'false'], ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false'], ['esbuild', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
     assert.equal(r.stdout.trim(), untouched, `BUNDLE_LOCKFILE_DISABLE=${disable}: ${r.stderr}`);
   }
@@ -3434,7 +3435,7 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
-  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown or all');
+  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
   for (const k of ['INLINE', 'STRICT', 'DEBUG']) {
     for (const v of ['yes', 'no', '2', 'disabled']) assert.equal(one({ [`BUNDLE_LOCKFILE_${k}`]: v }), `BUNDLE_LOCKFILE_${k}=${v} is not recognized (1, true or on; 0, false or off)`);
@@ -3455,8 +3456,171 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
   for (const v of ['package-lock.json', 'a/b/package-lock.json', 'main.js/package-lock.json']) assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: v }).invalid, [], v);
 });
 
+// esbuild: its lib/main.js as esbuild builds it - module.exports = __toCommonJS(node_exports): getters only, not
+// configurable, "default" the inner object
+function fakeEsbuild(version, impl = {}) {
+  const inner = {};
+  const api = { version, build: impl.build || (async (o) => ({ errors: [], warnings: [], options: o })), context: impl.context, buildSync: impl.buildSync || ((o) => ({ errors: [], options: o })), transform: async () => ({}) };
+  for (const [k, v] of Object.entries(api)) if (v !== undefined) Object.defineProperty(inner, k, { get: () => v, enumerable: true });
+  Object.defineProperty(inner, 'default', { get: () => inner, enumerable: true });
+  const exp = Object.defineProperty({}, '__esModule', { value: true });
+  for (const k of Object.keys(inner)) Object.defineProperty(exp, k, { get: () => inner[k], enumerable: true });
+  return exp;
+}
+const esbuildAdapter = () => require('../src/adapters/esbuild.cjs');
+const ESBUILD_MAIN = '/p/node_modules/esbuild/lib/main.js';
+
+test('esbuild adapter: metafile input keys -> files', () => {
+  const { fileOfInput } = esbuildAdapter();
+  const root = project({ 'node_modules/a/i.js': '', 'src/h#x.js': '', 'rel/p.js': '' });
+  assert.equal(fileOfInput('node_modules/a/i.js', root), J(root, 'node_modules/a/i.js'));
+  assert.equal(fileOfInput('(disabled):node_modules/a/i.js', root), null); // a browser field's false: no code of it
+  assert.equal(fileOfInput(`ns:${J(root, 'node_modules/a/i.js')}`, root), J(root, 'node_modules/a/i.js')); // a plugin's, absolute
+  assert.equal(fileOfInput('ns:rel/p.js', root), J(root, 'rel/p.js')); // relative, there
+  assert.equal(fileOfInput('virt:virtual:x', root), null); // virtual
+  assert.equal(fileOfInput('ns:rel/none.js', root), null);
+  assert.equal(fileOfInput('src/q.js?raw', root), J(root, 'src/q.js'));
+  assert.equal(fileOfInput('src/a.js#frag', root), J(root, 'src/a.js'));
+  assert.equal(fileOfInput('src/h#x.js', root), J(root, 'src/h#x.js')); // a "#" in the name of a file that is there
+  assert.equal(fileOfInput('', root), null);
+});
+
+test('esbuild adapter: replaces the getter-only exports with a copy whose build/context/buildSync add the plugin', async () => {
+  const a = esbuildAdapter();
+  let seen = null;
+  const exp = fakeEsbuild('0.28.2', { build: async (o) => { seen = o; return { errors: [] }; }, context: async (o) => { seen = o; return {}; } });
+  const r = a.onCjsLoad(exp, ESBUILD_MAIN, () => ESBUILD_MAIN);
+  assert.ok(r && r.exports);
+  const copy = r.exports;
+  assert.deepEqual(Object.keys(copy).sort(), Object.keys(exp).sort()); // every export kept
+  assert.equal(copy.default, copy); // ES-module interop reaches the wrappers too
+  assert.equal(copy.__esModule, true);
+  assert.equal(copy.transform, exp.transform);
+  assert.equal(copy.version, '0.28.2');
+  assert.equal(a.onCjsLoad(exp, ESBUILD_MAIN, () => ESBUILD_MAIN), undefined); // once
+  assert.equal(a.onCjsLoad(copy, ESBUILD_MAIN, () => ESBUILD_MAIN), undefined);
+  const names = (o) => (o.plugins || []).map(p => p.name);
+  const opts = { entryPoints: ['src/main.js'], outdir: 'dist', plugins: [{ name: 'user', setup() {} }] };
+  await copy.build(opts);
+  assert.deepEqual(names(seen), ['user', 'bundle-lockfile']);
+  assert.deepEqual(names(opts), ['user']); // the caller's options as they were
+  await copy.context({ outfile: 'dist/x.js' });
+  assert.deepEqual(names(seen), ['bundle-lockfile']);
+  await copy.build({ outdir: 'dist', plugins: [{ name: 'bundle-lockfile' }] }); // configured already
+  assert.deepEqual(names(seen), ['bundle-lockfile']);
+  // Vite 5 - 7's own builds, and outputs below node_modules, are left alone
+  for (const o of [{ outdir: 'node_modules/.vite/deps', plugins: [{ name: 'vite:dep-pre-bundle' }] }, { outdir: '.cache/deps', plugins: [{ name: 'vite:dep-pre-bundle' }] }, { write: false, plugins: [{ name: 'vite:dep-scan' }] }, { outdir: 'node_modules/.cache/x' },
+    { write: false, plugins: [{ name: 'externalize-deps' }, { name: 'inject-file-scope-variables' }] }]) { // (the last: Vite bundling its config)
+    await copy.build(o);
+    assert.equal(seen, o);
+  }
+  // other modules, and a lib/main.js of another package
+  assert.equal(a.onCjsLoad(fakeEsbuild('0.28.2'), '/p/node_modules/other/lib/main.js', () => ''), undefined);
+});
+
+test('esbuild adapter: an esbuild of a shape it does not know, or before 0.17, fails (strict) instead of writing no lockfile', () => withConfig({ strict: true }, async () => {
+  const a = esbuildAdapter();
+  problems.take();
+  assert.equal(a.onCjsLoad({ version: '0.28.2' }, ESBUILD_MAIN, () => ESBUILD_MAIN), undefined);
+  assert.match(problems.take().join('\n'), /exports no build\(\) and version bundle-lockfile knows/);
+  const old = a.onCjsLoad(fakeEsbuild('0.16.17'), ESBUILD_MAIN, () => ESBUILD_MAIN).exports;
+  await assert.rejects(old.build({ entryPoints: ['a.js'], outdir: 'dist' }), /needs esbuild 0\.17 or later/);
+  assert.throws(() => old.buildSync({ entryPoints: ['a.js'], outfile: 'dist/a.js' }), /needs esbuild 0\.17 or later/);
+  // not for builds it would not cover anyway
+  await old.build({ entryPoints: ['a.js'], write: false });
+  await old.build({ entryPoints: ['a.js'], outdir: 'node_modules/.vite/deps' });
+  assert.equal(problems.count(), 0);
+}));
+
+// runs the plugin of one build: its setup with the options, then onEnd with the result; returns onEnd's return value
+async function esbuildEnd(options, result) {
+  const plugin = esbuildAdapter().attach(options).plugins.at(-1);
+  let end = null;
+  plugin.setup({ initialOptions: options, onEnd: (fn) => { end = fn; } });
+  return end(result);
+}
+
+test('esbuild adapter: onEnd lists the packages of the inputs of every output, writes the lockfile, removes the forced metafile', async () => {
+  const pj = (name, version = '1.0.0') => ({ [`node_modules/${name}/package.json`]: { name, version } });
+  const root = project({ ...pj('a'), ...pj('reexp'), ...pj('shaken'), ...pj('font'), ...pj('dis'), ...pj('ns'), 'node_modules/a/i.js': '', 'src/main.js': '' });
+  fs.mkdirSync(J(root, 'dist'));
+  for (const f of ['main.js', 'main.css', 'f.woff2']) fs.writeFileSync(J(root, 'dist', f), f);
+  const metafile = {
+    inputs: { 'node_modules/shaken/i.js': {} }, // tree-shaken: in no output
+    outputs: {
+      'dist/main.js': { entryPoint: 'src/main.js', inputs: { 'src/main.js': { bytesInOutput: 9 }, 'node_modules/a/i.js': { bytesInOutput: 3 }, 'node_modules/reexp/index.js': { bytesInOutput: 0 }, '(disabled):node_modules/dis/i.js': { bytesInOutput: 102 }, [`ns:${J(root, 'node_modules/ns/i.js')}`]: { bytesInOutput: 5 }, 'virt:virtual:x': { bytesInOutput: 5 } }, imports: [{ path: 'ext', external: true }] },
+      'dist/main.css': { inputs: { 'node_modules/a/s.css': { bytesInOutput: 4 } } },
+      'dist/f.woff2': { inputs: { 'node_modules/font/f.woff2': { bytesInOutput: 9 } } },
+    },
+  };
+  const options = { entryPoints: ['src/main.js'], outdir: 'dist', absWorkingDir: root };
+  const result = { errors: [], warnings: [], metafile };
+  assert.equal(await esbuildEnd(options, result), undefined);
+  assert.equal(options.metafile, true); // turned on for the build
+  assert.equal('metafile' in result, false); // and taken out of the result: the caller did not ask for it
+  const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'font', 'ns', 'reexp']);
+  const [w] = lock['bundle-lockfile'].writers;
+  assert.deepEqual([...w.files].sort(), ['../f.woff2', '../main.css', '../main.js']);
+  assert.deepEqual(Object.keys(w.outputs).sort(), ['../main.css', '../main.js']); // JavaScript and CSS: for nested bundles
+  // asked for: kept
+  const asked = { errors: [], metafile };
+  await esbuildEnd({ ...options, metafile: true }, asked);
+  assert.equal(asked.metafile, metafile);
+  // a failed build wrote nothing: nothing recorded
+  fs.rmSync(J(root, 'dist', LOCK));
+  await esbuildEnd({ ...options }, { errors: [{ text: 'x' }], metafile });
+  assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false);
+});
+
+test('esbuild adapter: a problem is an onEnd error (the build rejects); write: false keeps the packages for the build that uses the output', () => withConfig({ strict: true }, async () => {
+  const generated = require('../src/core/generated.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/nopj/i.js': '' });
+  fs.mkdirSync(J(root, 'dist'));
+  fs.writeFileSync(J(root, 'dist/main.js'), 'x');
+  problems.take();
+  const bad = await esbuildEnd({ outdir: 'dist', absWorkingDir: root }, { errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { 'node_modules/nopj/i.js': { bytesInOutput: 1 } } } } } });
+  assert.equal(bad.errors.length, 1);
+  assert.match(bad.errors[0].text, /no package\.json with name and version in .*nopj/);
+  // write: false - nothing written, the packages by the output's content
+  const text = 'generated by esbuild, write: false';
+  assert.equal(await esbuildEnd({ outdir: 'out', write: false, absWorkingDir: root }, { errors: [], metafile: { outputs: { 'out/w.js': { entryPoint: 'src/w.js', inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 } } } } }, outputFiles: [{ path: J(root, 'out/w.js'), text, contents: Buffer.from(text) }] }), undefined);
+  assert.equal(fs.existsSync(J(root, 'out')), false);
+  assert.deepEqual(ids(generated.byContent(text)), ['a@1.0.0']);
+}));
+
+test('esbuild adapter: the CommonJS hook replaces esbuild\'s exports, for require(), import and ES-module interop', () => {
+  const root = project({
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: '0.28.2', main: 'lib/main.js' },
+    'node_modules/esbuild/lib/main.js': `"use strict";
+var __defProp = Object.defineProperty;
+var node_exports = {};
+for (const [k, v] of Object.entries({ version: '0.28.2', build: async (o) => o, context: async (o) => o, buildSync: (o) => ({ plugins: o.plugins, metafile: { outputs: {} } }) })) __defProp(node_exports, k, { get: () => v, enumerable: true });
+__defProp(node_exports, 'default', { get: () => node_exports, enumerable: true });
+const out = __defProp({}, '__esModule', { value: true });
+for (const k of Object.keys(node_exports)) __defProp(out, k, { get: () => node_exports[k], enumerable: true });
+module.exports = out;
+0 && (module.exports = { build, buildSync, context, version });`,
+    'cjs.cjs': `const e = require('esbuild'); const d = require('esbuild').default;
+const names = (o) => (o.plugins || []).map(p => p.name).join(',');
+const __importDefault = (m) => (m && m.__esModule ? m : { default: m });
+Promise.all([e.build({ outdir: 'd' }), d.build({ outdir: 'd' }), __importDefault(e).default.context({ outdir: 'd' })]).then(r => console.log(r.map(names).join(' '), names(e.buildSync({ outdir: 'd' }))));`,
+    'esm.mjs': `import * as ns from 'esbuild'; import def, { build } from 'esbuild';
+const names = (o) => (o.plugins || []).map(p => p.name).join(',');
+console.log((await Promise.all([ns.build({ outdir: 'd' }), def.build({ outdir: 'd' }), build({ outdir: 'd' })])).map(names).join(' '));`,
+  });
+  const env = { ...strictEnv(undefined), NODE_OPTIONS: `--require ${J(SRC, 'register.cjs')}` };
+  for (const k of Object.keys(env)) if (k.startsWith('BUNDLE_LOCKFILE_') && k !== 'BUNDLE_LOCKFILE_STRICT') delete env[k];
+  const cjs = spawnSync(process.execPath, ['cjs.cjs'], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(cjs.stdout, 'bundle-lockfile bundle-lockfile bundle-lockfile \n', cjs.stderr); // (buildSync takes no plugins: none added)
+  const esm = spawnSync(process.execPath, ['esm.mjs'], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(esm.stdout.trim(), 'bundle-lockfile bundle-lockfile bundle-lockfile', esm.stderr);
+  const off = spawnSync(process.execPath, ['esm.mjs'], { cwd: root, env: { ...env, BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, encoding: 'utf8' });
+  assert.equal(off.stdout, '  \n', off.stderr);
+});
+
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
-  const names = ['webpack', 'rollup', 'rspack'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
+  const names = ['webpack', 'rollup', 'rspack', 'esbuild'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
   assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
 });
 
