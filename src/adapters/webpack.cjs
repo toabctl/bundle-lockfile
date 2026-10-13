@@ -30,10 +30,15 @@ function patchCompiler(Compiler, where) {
   p[PATCHED] = true;
   const orig = p.compile;
   p.compile = function (...args) {
-    // compile() runs for run(), watch() and child compilers; webpack < 4 has no hooks and is ignored
-    if (!this[SEEN] && this.hooks && this.hooks.thisCompilation && !this.isChild()) {
+    // compile() runs for run(), watch() and child compilers
+    if (!this[SEEN] && !this.isChild()) {
       this[SEEN] = true;
-      if (attach(this, listeners, where, args, 'webpack')) return undefined;
+      if (this.hooks && this.hooks.thisCompilation) {
+        if (attach(this, listeners, where, args, 'webpack')) return undefined;
+      } else {
+        // webpack before 4 (plugin() instead of hooks): its build writes no lockfile - the process fails at exit
+        problems.problem(`webpack before 4 is not supported (a Compiler without hooks, from ${where}): its builds write no lockfile`);
+      }
     }
     return orig.apply(this, args);
   };
@@ -86,6 +91,10 @@ module.exports = {
       if (exp.name === 'Compiler') { // webpack/lib/Compiler.js - or another class called Compiler, elsewhere
         patch = () => { if (!patchCompiler(exp, resolve()) && module.exports.cjsFiles[0].test(request)) unknownCompiler(resolve()); };
       } else if (exp.Compiler && exp.Compilation && exp.version && !exp.rspackVersion) patch = () => patchCompiler(exp.Compiler, resolve()); // webpack namespace (not rspack's: rspack.cjs)
+    } else if (request.includes('webpack') && exp && typeof exp === 'object' && typeof exp.webpack === 'function' && !NEXT_WEBPACK.test(request)) {
+      // a vendored copy exported as a plain object around webpack's namespace (umi's @umijs/bundler-webpack/compiled/webpack)
+      const w = exp.webpack;
+      if (w.Compiler && w.Compilation && w.version && !w.rspackVersion) patch = () => { if (!patchCompiler(w.Compiler, resolve())) unknownCompiler(resolve()); };
     } else if (request.includes('webpack')) {
       if (exp && typeof exp === 'object' && NEXT_WEBPACK.test(request)) patch = () => patchNext(exp, resolve());
       else if (module.exports.cjsFiles[0].test(request)) patch = () => unknownCompiler(resolve()); // webpack's lib/Compiler.js exports no class

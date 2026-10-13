@@ -272,11 +272,13 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 
 ## Limitations
 
+- **Recognized, not hooked** — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile): Turbopack
+  (Next.js 16's default build: use `next build --webpack`), Parcel, the `rolldown` command line, `@vercel/ncc`,
+  webpack < 4, rspack 0.x.
 - **Not hooked** — no lockfile, and no failure: the `esbuild` command line and Go API, Angular's esbuild builder
-  (it writes the files itself), Parcel, Turbopack (Next.js 16's default build), the `rolldown` command line, Bun's own
-  runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), webpack < 4, rspack 0.x, and a
-  bundler in a process that `NODE_OPTIONS` (or the node shim) does not reach. Check in CI that every lockfile the
-  package should ship exists.
+  (it writes the files itself), Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not
+  installed), and a bundler in a process that `NODE_OPTIONS` (or the node shim) does not reach. Check in CI that every
+  lockfile the package should ship exists.
 - **Older Node.js:** before 24.12 (25.2 on 25), ES-module bundlers (Vite, Rolldown, rspack 2, Rollup through
   `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on one Rsbuild
   build; [which processes](docs/bundlers.md#which-processes-are-hooked)).

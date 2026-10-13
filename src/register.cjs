@@ -91,6 +91,10 @@ if (!config.isDisabled('all')) {
     enabled++;
   }
   if (enabled) {
+    // builds of bundlers it recognizes but does not hook (Turbopack, Parcel, the rolldown command line, ncc)
+    const unsupported = require('./core/unsupported.cjs');
+    hooks.register(unsupported.adapter);
+    if (require('worker_threads').isMainThread) unsupported.check();
     hooks.install(); // nothing to do: leave Node's module loading alone
     require('./core/copies.cjs').install(); // fs copies out of packages, see there
   }
