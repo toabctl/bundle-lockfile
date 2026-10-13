@@ -4872,6 +4872,12 @@ test('webpack adapter: a vendored webpack exported as a plain object around its 
   const O = fakeCompiler();
   webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
   assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
+  // the exports of a module in a require() cycle (Node.js gives them a prototype that warns about reading a property
+  // they do not have, as webpack 5.0's lib/ files are): only own properties are read
+  const read = [];
+  const cyclic = Object.create(new Proxy({}, { get: (t, k) => { read.push(k); return undefined; } }));
+  webpack.onCjsLoad(cyclic, '/p/node_modules/webpack/lib/WebpackOptionsApply.js', () => '/p/node_modules/webpack/lib/WebpackOptionsApply.js');
+  assert.deepEqual(read, []);
 });
 
 test('oracles/esm-entries: every installed copy of an entry against its wrapper, as Node.js loads both', () => {
