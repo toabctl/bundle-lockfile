@@ -139,13 +139,20 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
     if (own) for (const d of ancestors(own)) boundary.add(d);
   }
   const monorepos = [...boundary].map(membersOf).filter(Boolean);
-  const firstParty = config.firstParty.map(p => globTest(posix(path.isAbsolute(p) ? path.relative(process.cwd(), p) : p)));
+  // BUNDLE_LOCKFILE_FIRST_PARTY: absolute globs, tested on real paths - so also with the glob's literal prefix as its
+  // real path (a checkout through a symbolic link, macOS's /tmp)
+  const firstParty = config.firstParty.flatMap((g) => {
+    const parts = posix(g).split('/');
+    const at = parts.findIndex(s => /[*?{]/.test(s));
+    const prefix = posix(real((at < 0 ? parts : parts.slice(0, at)).join('/') || '/'));
+    const resolved = at < 0 ? prefix : [prefix.replace(/\/$/, ''), ...parts.slice(at)].join('/');
+    return [...new Set([posix(g), resolved])].map(globTest);
+  });
   const states = new Map(); // dir -> first-party?
   const isFirstParty = (dir) => {
     if (states.has(dir)) return states.get(dir);
     const j = manifest(dir);
-    const rel = posix(path.relative(process.cwd(), dir));
-    const yes = boundary.has(dir) || monorepos.some(m => m(dir)) || firstParty.some(t => t(rel))
+    const yes = boundary.has(dir) || monorepos.some(m => m(dir)) || firstParty.some(t => t(posix(dir)))
       || (!!j && typeof j.name === 'string' && [...boundary].some(a => real(path.join(a, 'node_modules', j.name)) === dir))
       || (!!j && pnpFirstParty(dir));
     states.set(dir, yes);
