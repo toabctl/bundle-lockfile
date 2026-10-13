@@ -35,7 +35,7 @@ const NAMES = ['FILE', 'EXPORT_DIR', 'EXPORT_BASE', 'INLINE', 'STRICT', 'DEBUG',
   'REGISTER', 'CONFIG', 'NODE_SHIM', 'NODE_SEEN'].map(n => `BUNDLE_LOCKFILE_${n}`);
 const FROM_FILE = NAMES.filter(n => !/_(CONFIG|REGISTER|NODE_SHIM|NODE_SEEN)$/.test(n));
 // The names BUNDLE_LOCKFILE_DISABLE takes: the adapters' names (src/adapters/*.cjs name, names), and all
-const ADAPTER_NAMES = ['webpack', 'rspack', 'vite', 'rollup', 'rolldown', 'esbuild', 'parcel', 'angular'];
+const ADAPTER_NAMES = ['webpack', 'rspack', 'vite', 'rollup', 'rolldown', 'esbuild', 'parcel', 'angular', 'next'];
 const ESM_HOOKS = ['auto', 'sync', 'async', 'off'];
 const TREES = ['off', 'on', 'only'];
 const invalid = []; // what is set but not recognized, or cannot work: register.cjs reports each (core/problems.cjs)

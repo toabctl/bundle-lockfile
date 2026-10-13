@@ -19,6 +19,8 @@ the source maps show none of its code.
 
 ## Also listed
 
+- **the runtime packages of a Next.js server**: what Next traces for its server (`.nft.json`), in a lockfile of their
+  own ([Next.js](bundlers.md#nextjs)).
 - **webpack and rspack child compilations whose output is shipped**: workers (`worker-loader`, also inlined;
   monaco-editor-webpack-plugin's) and workbox's `InjectManifest` service worker. Child compilations that only run at
   build time (html-webpack-plugin's template, mini-css-extract-plugin's loader, vanilla-extract's compiler) are not.
@@ -55,9 +57,9 @@ the source maps show none of its code.
 - packages the bundler leaves out: externals, CDN scripts, an unresolvable `require(variable)`;
 - modules that exist only in the bundler's input file system (webpack-virtual-modules, unplugin's virtual modules): in a
   package directory that is not on disk, no package's (a warning); inside an installed package, listed as that package;
-- packages a server loads from `node_modules` at runtime (see [Next.js](bundlers.md#nextjs),
-  [SvelteKit](bundlers.md#sveltekit)): image scans of a shipped `node_modules` read them from its `package.json` files,
-  directory scans do not ([which scans](../README.md#sbom-tools));
+- packages a server loads from `node_modules` at runtime (see [SvelteKit](bundlers.md#sveltekit)), except Next.js'
+  (below): image scans of a shipped `node_modules` read them from its `package.json` files, directory scans do not
+  ([which scans](../README.md#sbom-tools));
 - files put into the output without the bundler, e.g. `cp node_modules/x/dist/x.js dist/` in a script; files copied
   out of a package by reading and writing them, or in another process (except files written into an output after the
   build whose path there contains `node_modules/<package>/`), e.g. `public/` files taken from a package once, by hand;

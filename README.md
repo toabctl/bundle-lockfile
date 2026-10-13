@@ -11,8 +11,9 @@ package builds), or a project that publishes an SBOM with its releases. It is no
 - a dependency graph: the lockfile is an inventory of the shipped packages, without who depends on whom
   ([format](docs/format.md#fields));
 - a replacement for the project's own lockfile, which still pins what is installed;
-- a scan of what a server loads from `node_modules` at runtime (externals, Next.js' and SvelteKit's server
-  dependencies): ship that `node_modules`, and image scans report its packages ([which scans](#sbom-tools)).
+- a scan of what a server loads from `node_modules` at runtime (externals, SvelteKit's server dependencies): ship that
+  `node_modules`, and image scans report its packages ([which scans](#sbom-tools)). Next.js' server is the exception:
+  its runtime packages get a lockfile of their own, from Next's traces ([details](docs/bundlers.md#nextjs)).
 
 ## The problem
 
@@ -125,7 +126,7 @@ POSIX `sh` with `readlink -f` and `head -c`. How it finds `register.cjs` and the
 ### Outputs that do not ship as files
 
 When the output does not ship as the files the bundler wrote — embedded into a Go binary (`go:embed`), packed into a
-jar, gzipped, or copied away without its `bundle-lockfile/` directory (Next.js' static export and standalone output) —
+jar, gzipped, or copied away without its `bundle-lockfile/` directory (Next.js' static export) —
 also write the lockfiles to an export directory, and ship that:
 
 ```sh
@@ -286,15 +287,16 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 - **Older Node.js:** on 20, 22 before 22.22.3 and 24 before 24.11.1, ES-module bundlers (Vite, Rolldown, rspack 2,
   Rollup through `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on
   one Rsbuild build; [which processes](docs/bundlers.md#which-processes-are-hooked)).
-- **Not in the lockfile:** packages a server loads from `node_modules` at runtime, files put into the output without
-  the bundler (a shell `cp`, another process), vendored code without a `package.json`, and in webpack 5.108+ a
-  package of which only inlined constants are used ([what is listed](docs/coverage.md)).
+- **Not in the lockfile:** packages a server loads from `node_modules` at runtime (except Next.js'), files put into the
+  output without the bundler (a shell `cp`, another process), vendored code without a `package.json`, and in webpack
+  5.108+ a package of which only inlined constants are used ([what is listed](docs/coverage.md)).
 - **Shipped, not executed:** a lazily loaded chunk that is never opened, and a package of which one function is used,
   are listed.
 - **Dev servers** list what they compiled so far: not the packages of lazily compiled dynamic imports.
 - **Outputs that move:** an output whose files the build process copies elsewhere with fs (Nitro's `.output/public`)
-  gets a copy of its lockfile there. Next.js' static export and standalone output, and copies made otherwise (`cp`,
-  another process), leave the lockfiles behind: use an [export directory](#outputs-that-do-not-ship-as-files).
+  gets a copy of its lockfile there, and Next.js' standalone output gets copies of the lockfiles. Next.js' static
+  export, and copies made otherwise (`cp`, another process), leave the lockfiles behind: use an
+  [export directory](#outputs-that-do-not-ship-as-files).
 
 ## SBOM tools
 

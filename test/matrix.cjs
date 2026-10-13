@@ -25,6 +25,13 @@ const nextApp = (version, react) => ({
   deps: { next: version, react, 'react-dom': react, 'lodash-es': '4.18.1', uuid: '9.0.1', ms: '2.1.3', nanoid: '3.3.20', 'is-number': '7.0.0' },
 });
 
+// test/apps/next-runtime: canaries (BLCANARY markers) required by the server at request time, moved into node_modules
+// after the install (as test/apps/canary's)
+const nextRuntime = (version, react, installer = { type: 'npm' }) => ({
+  app: 'next-runtime', bundler: 'next', installer, deps: { next: version, react, 'react-dom': react },
+  postInstall: 'cd pkgs && mv bl-canary-rt bl-canary-legacy bl-canary-ext bl-canary-bundled ../node_modules/ && cd .. && rmdir pkgs',
+});
+
 // dependencies vs devDependencies: what is shipped depends on what is imported, not on the section.
 // Build tools are devDependencies as in real projects.
 const devdeps = (installer) => ({
@@ -406,6 +413,10 @@ const fixtures = {
   'next15': next('15.5.27', '19.3.0'),
   'next16': next('16.4.0', '19.3.0'),
   'next15-app': nextApp('15.5.27', '19.3.0'),
+  // the server's runtime packages (test/apps/next-runtime): canaries the server loads from node_modules at runtime
+  'next16-runtime': nextRuntime('16.4.0', '19.3.0'),
+  'next15-runtime': nextRuntime('15.5.27', '19.3.0'),
+  'next16-runtime-pnpm10': nextRuntime('16.4.0', '19.3.0', { type: 'pnpm', version: '10.34.6' }),
   'next16-app': nextApp('16.4.0', '19.3.0'),
   // next-rspack 15.5: @rspack/core 1.4 (CommonJS); 16.4: @next/rspack-core 1.0.3, which is @rspack/core 2.0 (an ES module)
   'next15-rspack': nextRspack(next('15.5.27', '19.3.0'), '15.5.27'),
@@ -599,18 +610,23 @@ const DEV_RSBUILD = [...DEV_W5, '@rsbuild/core@2.2.12', '@rspack/core@2.2.8', 'n
 const RSTEST = "./node_modules/.bin/rstest run && test -z \"$(find . -path ./node_modules -prune -o -path '*/bundle-lockfile/package-lock.json' -print)\"";
 // Next.js with next-rspack: the lockfiles of the webpack builds of the same app and version (their oracle's lists;
 // @edge-runtime/cookies and server-only: Next's vendored copies in next/dist/compiled/)
+// runtime: the server's runtime packages, the oracle's (Next's optional dependencies, sharp and its platform packages,
+// are not pinned)
 const NEXT_PAGES = (next, swc) => ({ '': [`@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
-  server: [], 'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', `next@${next}`] });
+  server: [], 'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', `next@${next}`], runtime: 'oracle' });
 const NEXT_APP = (next, swc) => ({ '': [`@swc/helpers@${swc}`, 'ms@2.1.3', `next@${next}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
   server: ['@edge-runtime/cookies@6.0.0', 'is-number@7.0.0', 'nanoid@3.3.20', `next@${next}`],
-  'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'server-only@0.0.1'] });
+  'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'server-only@0.0.1'], runtime: 'oracle' });
 const NEXT_RSPACK_ENV = { ...NEXT_ENV, NEXT_RSPACK_APP: '1' };
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle
 function nextCase(fixture, version, react, flags = '') {
   return {
     fixture, cmd: `./node_modules/.bin/next build ${flags}`.trim(), oracleArgs: flags, outDir: '.next', env: NEXT_ENV,
-    expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', `next@${version}`, `react@${react}`], expectExcludes: ['uuid@9.0.1'],
+    expectIncludes: ['ms@2.1.3', 'lodash-es@4.18.1', `next@${version}`, `react@${react}`],
+    // uuid: imported and unused, so in no bundle - but the server output keeps it external, and Next copies it into
+    // the standalone output (also for a page it prerendered): a runtime package
+    expectExcludesIn: Object.fromEntries(['', 'server', 'server/chunks'].map(k => [k, ['uuid@9.0.1']])),
   };
 }
 
@@ -623,7 +639,10 @@ function nextCase(fixture, version, react, flags = '') {
 //   nodeOptionsWith  (register) => NODE_OPTIONS of the build, instead of nodeOptions + bundle-lockfile's --require
 //   expect     expected name@version list of the single output, or null = no lockfile must be written
 //   expectIncludes / expectExcludes  packages that must / must not appear in any output (multi-compiler builds)
-//   expectIn   { "<output dir relative to outDir>": [name@version, ...] }: exactly these outputs with these packages
+//   expectIn   { "<output dir relative to outDir>": [name@version, ...] | "oracle" }: exactly these outputs with these
+//              packages ("oracle": the output must be there, its packages are the oracle's - lists that would drift)
+//   expectIncludesIn / expectExcludesIn  { "<output dir>": [name@version, ...] }: packages that must / must not be in
+//              that output
 //   outDir     where the bundler writes (default dist); every lockfile below it is checked against the oracle
 //   oracleArgs extra arguments for the oracle (e.g. next build flags)
 //   installed  name@version that must be installed in the fixture's node_modules (checked before the build)
@@ -654,6 +673,11 @@ function nextCase(fixture, version, react, flags = '') {
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
 //   canaryUnlisted  canaries (test/apps/canary) in the output that are not listed - a documented limit (say why at the
 //              case); exactly these, so the limit is pinned
+//   canaryDirs  directories (relative to the fixture) whose canaries count as shipped too: where a server loads its runtime
+//              packages from (node_modules, for a Next.js server that is not standalone)
+//   runtimeTrace  { routes: [...] }: the output is a standalone Next.js server (server.js); it is started with
+//              test/oracles/runtime-tracer.cjs, every route is requested, and every package it loaded from node_modules
+//              must be in the output's lockfile ("" output) - a lower bound, independent of Next's traces
 //   expectSources  path fragments ("/"-separated, e.g. "node_modules/preact/hooks/"): each must be part of a source file
 //              of the oracle's build (its --sources), so the files the case is about are bundled at all
 //   allowWarnings  [RegExp]: Node.js warnings the build may print (the text after "(node:<pid>) "), besides `warnings`
@@ -1445,9 +1469,35 @@ const cases = [
   // a second build restores the modules from webpack's persistent cache in .next/cache: the same packages in each lockfile
   { name: 'Next.js 16.4.0 --webpack, warm build from .next/cache = cold build', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
     cmd: ['./node_modules/.bin/next build --webpack', `${NEXT_LOCKS} > .cold.json`, './node_modules/.bin/next build --webpack', `${NEXT_LOCKS} | cmp .cold.json -`].join(' && ') },
-  // output: 'standalone': .next/standalone has the traced server files, not the lockfiles (see README: export dir)
-  { name: "Next.js 16.4.0 --webpack, output: 'standalone': .next/standalone gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
-    outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1' }, expect: null },
+  // output: 'standalone': .next/standalone has the traced server files: the runtime packages' lockfile, and the copies of
+  // the lockfiles of the outputs Next copied there (the oracle's: BLTEST_ORACLE_STANDALONE)
+  { name: "Next.js 16.4.0 --webpack, output: 'standalone': .next/standalone gets the runtime packages and the bundles' lockfiles", fixture: 'next16',
+    cmd: './node_modules/.bin/next build --webpack', outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1' },
+    oracleArgs: '--webpack', expectIncludes: ['next@16.4.0', 'react@19.3.0', 'ms@2.1.3'], runtimeTrace: { routes: ['/'] } },
+  // the server's runtime packages (.next/runtime): bl-canary-rt (a page's require at request time), bl-canary-legacy (no
+  // package.json in .next/standalone: a deep .cjs require), bl-canary-ext (serverExternalPackages, App Router) - and not
+  // bl-canary-bundled, which the server output bundles (its lockfile lists it); every listed canary is in node_modules
+  ...[['16.4.0', 'next16-runtime'], ['15.5.27', 'next15-runtime']].flatMap(([v, fixture]) => [
+    { name: `Next.js ${v} --webpack: the server's runtime packages in .next/runtime`, fixture, cmd: `./node_modules/.bin/next build${v.startsWith('16') ? ' --webpack' : ''}`,
+      outDir: '.next', env: NEXT_ENV, oracleArgs: v.startsWith('16') ? '--webpack' : '', canaryDirs: ['node_modules'],
+      expectIncludes: ['bl-canary-rt@1.0.0', 'bl-canary-legacy@1.0.0', 'bl-canary-ext@1.0.0', 'bl-canary-bundled@1.0.0', `next@${v}`] },
+    { name: `Next.js ${v} --webpack, output: 'standalone': the runtime packages where the standalone server loads them`, fixture,
+      cmd: `./node_modules/.bin/next build${v.startsWith('16') ? ' --webpack' : ''}`, outDir: '.next/standalone',
+      env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1' }, oracleArgs: v.startsWith('16') ? '--webpack' : '',
+      expectIncludes: ['bl-canary-rt@1.0.0', 'bl-canary-legacy@1.0.0', 'bl-canary-ext@1.0.0', 'bl-canary-bundled@1.0.0'], runtimeTrace: { routes: ['/', '/r'] } },
+  ]),
+  // pnpm: Next and its dependencies below node_modules/.pnpm, which .next/standalone mirrors
+  { name: "Next.js 16.4.0 --webpack, pnpm 10.34.6, output: 'standalone': the runtime packages", fixture: 'next16-runtime-pnpm10',
+    cmd: './node_modules/.bin/next build --webpack', outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1' },
+    oracleArgs: '--webpack', expectIncludes: ['bl-canary-rt@1.0.0', 'bl-canary-legacy@1.0.0', 'bl-canary-ext@1.0.0', 'bl-canary-bundled@1.0.0', 'next@16.4.0'],
+    runtimeTrace: { routes: ['/', '/r'] } },
+  // Turbopack is not hooked (STRICT=0: a warning): no bundle lockfiles, but the runtime packages, from Turbopack's
+  // traces; bl-canary-bundled is in Turbopack's server output, which no lockfile covers
+  { name: "Next.js 16.4.0 Turbopack, output: 'standalone', STRICT=0: only the runtime packages", fixture: 'next16-runtime',
+    cmd: './node_modules/.bin/next build --turbopack', outDir: '.next/standalone',
+    env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1', BUNDLE_LOCKFILE_STRICT: '0' }, oracleArgs: '--turbopack',
+    expectIncludes: ['bl-canary-rt@1.0.0', 'bl-canary-legacy@1.0.0', 'bl-canary-ext@1.0.0'], canaryUnlisted: ['bl-canary-bundled@1.0.0'],
+    runtimeTrace: { routes: ['/', '/r'] } },
   // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see
   // docs/bundlers.md); the export directory has them
   { name: "Next.js 16.4.0 --webpack, output: 'export': out/ gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
@@ -1605,11 +1655,11 @@ const cases = [
     ['2.2.12, yarn 4.18.1 Plug\'n\'Play', 'rsbuild2.2-yarn4-pnp', 'yarn build']].map(([what, fixture, cmd]) => (
     { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not hook: recognized, it fails (strict);
-  // STRICT=0: no lockfile
+  // STRICT=0: no bundle lockfile, but the server's runtime packages (from Turbopack's traces)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: fails)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV,
     expectError: /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile/ },
-  { name: 'Next.js 16.4.0 Turbopack, BUNDLE_LOCKFILE_STRICT=0 (unsupported: no lockfile)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next',
-    env: { ...NEXT_ENV, BUNDLE_LOCKFILE_STRICT: '0' }, expect: null },
+  { name: 'Next.js 16.4.0 Turbopack, BUNDLE_LOCKFILE_STRICT=0 (unsupported: only the runtime packages)', fixture: 'next16', cmd: './node_modules/.bin/next build',
+    outDir: '.next', env: { ...NEXT_ENV, BUNDLE_LOCKFILE_STRICT: '0' }, expectIn: { runtime: 'oracle' } },
   // frameworks and plugins on rspack
   // Next.js with next-rspack: the same compilers, built by rspack, the same lockfiles as with webpack (exact lists: the
   // oracle's of the webpack cases above). The oracle's stats plugin works on rspack's compilers too

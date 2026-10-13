@@ -11,6 +11,8 @@ output directory):
   plugin: one per top-level compiler, in its `output.path` (placeholders such as `[fullhash]` resolved). None in an
   output directory that another plugin removed after the build (only the export copy). Below, "webpack" stands for
   both.
+- Next.js: also one for its server's runtime packages, in `<distDir>/runtime/` (and with `output: 'standalone'` in
+  `<distDir>/standalone/`), whose writer's files are the trace files it was made from ([Next.js](bundlers.md#nextjs)).
 - Vite, Rollup, Rolldown: one per output of a build that writes, in its `dir`, or the directory of its `file`
   (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
   `node_modules` (e.g. Vite's dependency pre-bundling) - except below `node_modules/.cache/`, where tools build what

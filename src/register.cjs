@@ -15,7 +15,7 @@ const config = require('./core/config.cjs'); // (also applies the settings file 
   if (wt.isInternalThread || (!wt.isMainThread && !wt.parentPort)) return;
 }
 
-const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters/rspack.cjs', './adapters/esbuild.cjs', './adapters/parcel.cjs', './adapters/angular.cjs'];
+const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters/rspack.cjs', './adapters/esbuild.cjs', './adapters/parcel.cjs', './adapters/angular.cjs', './adapters/next.cjs'];
 // yarn's own entry point (process.argv[1]): yarn 1's bin/yarn.js (npm's and distributions' package, corepack's copy
 // <COREPACK_HOME>/v1/yarn/1.x/bin/yarn.js) or a bin/yarn link to it, a yarn 2+ release (.yarn/releases/yarn-4.x.cjs),
 // corepack's yarn (dist/yarn.js) and its copies of releases (<COREPACK_HOME>/v1/yarn/4.x/yarn.js) - not other scripts
