@@ -58,6 +58,8 @@ the source maps show none of its code.
   build whose path there contains `node_modules/<package>/`), e.g. `public/` files taken from a package once, by hand;
 - other package files a loader or plugin inlines into a module, except style sheets and the files style sheets
   embed: e.g. GLSL `#include`s (glslify);
+- style sheets that an esbuild plugin inlines (esbuild-sass-plugin's Sass partials): esbuild records only the file
+  the plugin loaded;
 - in Vite, Rollup and Rolldown: a package's image or font that a style sheet's `url()` inlines as a `data:` URL (Vite's
   `build.assetsInlineLimit`, 4 KiB by default): no module, asset or file the build records names it;
 - a package file webpack pulls in under a first-party match resource (`<name>!=!<loaders>!<file>`), e.g.

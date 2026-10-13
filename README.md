@@ -2,7 +2,7 @@
 
 Records which npm packages end up in a JavaScript bundle and writes them as a `package-lock.json` next to the build
 output, without changing the project's build config. Supports webpack 4 and 5 (also the copy inside Next.js), rspack
-1.1+ and 2 (also inside Rsbuild), and Vite, Rollup and Rolldown (also inside SvelteKit).
+1.1+ and 2 (also inside Rsbuild), Vite, Rollup and Rolldown (also inside SvelteKit), and esbuild's JavaScript API.
 
 It is for whoever builds and ships a bundled JavaScript application and needs its SBOM to list what is shipped:
 distribution packagers and image builders (it is developed for [melange](https://github.com/chainguard-dev/melange)
@@ -41,8 +41,8 @@ webpack processed, which includes tree-shaken packages and build-time loaders, a
 ## How it works
 
 1. `register.cjs`, preloaded with `NODE_OPTIONS="--require ..."`, hooks Node.js's module loading. When the build
-   loads webpack, rspack, Rollup or Rolldown, it patches the bundler so that every build gets bundle-lockfile's
-   plugin. The project's config and dependencies stay as they are.
+   loads webpack, rspack, Rollup, Rolldown or esbuild, it patches the bundler so that every build gets
+   bundle-lockfile's plugin. The project's config and dependencies stay as they are.
 2. After the bundler has decided what goes into the output, the plugin takes the source files of the modules in the
    chunks the build writes, and the package files that reach the output otherwise: shipped workers, copied files,
    style sheets `@import`ed from packages ([what is listed](docs/coverage.md)).
@@ -264,6 +264,7 @@ must not go on without doing what was asked of it. Every setting in full, and wh
 | SvelteKit | 2, 3 | adapter-static, adapter-node, adapter-netlify ([details](docs/bundlers.md#sveltekit)) |
 | Rollup | 4 | also `@rollup/wasm-node` |
 | Rolldown | 1 | not the `rolldown` command line |
+| esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line ([details](docs/bundlers.md#esbuild)) |
 
 Watch mode writes the lockfile after every rebuild; rspack's dev servers serve it from memory. The tested versions,
 Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, bun, turbo, workspaces) are in
@@ -271,10 +272,11 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 
 ## Limitations
 
-- **Not hooked** — no lockfile, and no failure: esbuild, Parcel, Turbopack (Next.js 16's default build), the
-  `rolldown` command line, Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not
-  installed), webpack < 4, rspack 0.x, and a bundler in a process that `NODE_OPTIONS` (or the node shim) does not
-  reach. Check in CI that every lockfile the package should ship exists.
+- **Not hooked** — no lockfile, and no failure: the `esbuild` command line and Go API, Angular's esbuild builder
+  (it writes the files itself), Parcel, Turbopack (Next.js 16's default build), the `rolldown` command line, Bun's own
+  runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), webpack < 4, rspack 0.x, and a
+  bundler in a process that `NODE_OPTIONS` (or the node shim) does not reach. Check in CI that every lockfile the
+  package should ship exists.
 - **Older Node.js:** before 24.12 (25.2 on 25), ES-module bundlers (Vite, Rolldown, rspack 2, Rollup through
   `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on one Rsbuild
   build; [which processes](docs/bundlers.md#which-processes-are-hooked)).

@@ -1,0 +1,282 @@
+'use strict';
+// esbuild's JavaScript API (esbuild and esbuild-wasm 0.17 and later): build(), context() (rebuild, watch, serve) and
+// buildSync(). Its CommonJS entry (lib/main.js, where esbuild's API insists on being) exports getters only, which
+// cannot be patched: onCjsLoad returns a copy of its exports with build(), context() and buildSync() wrapped (see
+// hooks.cjs). Every build then gets one more plugin, last, which turns on the metafile and, in onEnd - after esbuild
+// has written the output - maps the input files of every output (metafile.outputs[*].inputs) to their packages and
+// writes <output dir>/<BUNDLE_LOCKFILE_FILE>. A problem fails the build: onEnd returns it as an error, which rejects
+// build() and rebuild() (watch mode prints it and keeps watching). buildSync() takes no plugins: its result's metafile.
+// The command line and the Go API are esbuild's Go binary: not hooked.
+const fs = require('fs');
+const path = require('path');
+const config = require('../core/config.cjs');
+const packages = require('../core/packages.cjs');
+const outputs = require('../core/outputs.cjs');
+const problems = require('../core/problems.cjs');
+const generated = require('../core/generated.cjs');
+const { hashOf } = require('../core/hashes.cjs');
+const { portable, exportPath } = require('../core/paths.cjs');
+
+const NAME = 'bundle-lockfile';
+const WRAPPED = Symbol.for('bundle-lockfile.esbuild.wrapped'); // on the original exports and on their replacement
+// esbuild's API, in the package (esbuild-wasm has the same one); Yarn's pnpm linker's store: see core/layout.cjs
+const MAIN = /[\\/](esbuild|esbuild-wasm)[\\/]lib[\\/]main\.js$/;
+// Vite 5 - 7's own esbuild builds, never shipped: dependency pre-bundling (into its cache directory, wherever that is),
+// scanning for dependencies, and bundling its config file (write: false, with these two plugins), whose packages run
+// at build time
+const VITE_OWN = new Set(['vite:dep-pre-bundle', 'vite:dep-scan']);
+const VITE_CONFIG = ['externalize-deps', 'inject-file-scope-variables'];
+const vitesOwn = (plugins) => plugins.some(p => VITE_OWN.has(p.name)) || VITE_CONFIG.every(n => plugins.some(p => p.name === n));
+const JS = /\.[cm]?js$/i, CSS = /\.css$/i;
+const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+
+// The file of a metafile input key (relative to the build's absWorkingDir), or null:
+// - (disabled):<file> is the empty module esbuild puts where a browser field maps a module to false: no code of it ships
+// - <namespace>:<path> (a plugin's module): the file if the path is absolute, or relative to the working directory and
+//   there (when in doubt, a file: listing a package too many is safer than missing one); else a virtual module
+// - otherwise a path relative to the working directory; ?query and #hash are esbuild's suffixes, not the file's (a "#"
+//   in a file's name: the file with it, if it is there)
+function fileOfInput(key, wd) {
+  if (typeof key !== 'string' || !key) return null;
+  if (key.startsWith('(disabled):')) return null;
+  let p = key;
+  const ns = /^([^:\\/]+):(.*)$/s.exec(key);
+  if (ns && !/^[A-Za-z]$/.test(ns[1])) { // (a drive letter is no namespace)
+    p = ns[2];
+    if (!path.isAbsolute(p)) {
+      const abs = path.resolve(wd, p.split('?')[0]);
+      if (!p || !fs.existsSync(abs)) return null;
+    }
+  }
+  let f = path.resolve(wd, p);
+  const q = f.indexOf('?');
+  if (q >= 0) f = f.slice(0, q);
+  const hash = f.lastIndexOf('#');
+  if (hash > Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) && !fs.existsSync(f)) f = f.slice(0, hash);
+  return f;
+}
+
+// The output files of a metafile, absolute, with the files of their inputs: Map(output -> [file]). Inputs with no
+// bytes in an output count (a module that only re-exports: its package is in the import chain of what ships); inputs
+// only in the top-level "inputs" were tree-shaken away and are in no output. Externals are no inputs.
+function filesOfOutputs(metafile, wd) {
+  const out = new Map();
+  for (const [o, info] of Object.entries((metafile && metafile.outputs) || {})) {
+    const files = [];
+    for (const key of Object.keys((info && info.inputs) || {})) {
+      const f = fileOfInput(key, wd);
+      if (f) files.push(f);
+    }
+    out.set(path.resolve(wd, o), files);
+  }
+  return out;
+}
+
+// The entry points of the options as files relative to the working directory, for the writer id: a list of paths, of
+// { in, out }, or an object { out: in }
+function entriesOf(options, wd) {
+  const e = options.entryPoints;
+  const rel = (v) => (typeof v === 'string' ? portable(wd, path.resolve(wd, v)) : v && typeof v.in === 'string' ? portable(wd, path.resolve(wd, v.in)) : null);
+  if (Array.isArray(e)) return e.map(rel);
+  if (e && typeof e === 'object') return Object.fromEntries(Object.entries(e).map(([k, v]) => [k, rel(v)]));
+  return null;
+}
+
+// Where a build writes, from its options: { dir, wd } (dir: the output directory, null if it writes no files itself:
+// write: false, or neither outdir nor outfile), or null for a build that is not bundle-lockfile's to cover (below
+// node_modules: a tool's cache).
+function placeOf(options) {
+  const wd = typeof options.absWorkingDir === 'string' ? options.absWorkingDir : process.cwd();
+  const dir = options.write === false ? null
+    : typeof options.outdir === 'string' ? path.resolve(wd, options.outdir)
+      : typeof options.outfile === 'string' ? path.dirname(path.resolve(wd, options.outfile)) : null;
+  if (dir && dir.split(path.sep).includes('node_modules')) return null;
+  return { dir, wd };
+}
+
+// The writer of a build's lockfile (see core/outputs.cjs): its entry points and output, without paths of this machine.
+// A context's rebuilds are the same writer; separate builds into one directory (other entry points) are not.
+function writerOf(options, wd) {
+  const out = typeof options.outfile === 'string' ? ['outfile', portable(wd, path.resolve(wd, options.outfile))]
+    : ['outdir', portable(wd, path.resolve(wd, options.outdir || '.'))];
+  return JSON.stringify(['esbuild', entriesOf(options, wd), ...out]);
+}
+
+// The packages of a build's outputs, and the record of each JavaScript and CSS output for nested bundles: hashes
+// { file: "sha256-<hex>" } and contents { file: [package paths] }.
+function collect(metafile, wd, entries) {
+  const byOutput = filesOfOutputs(metafile, wd);
+  const sources = [...new Set([...byOutput.values()].flat())];
+  const { all, byFile } = packages.packagesOfFiles(sources, { context: realOr(wd), entries });
+  return { byOutput, all, byFile };
+}
+
+const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs) || {})
+  .map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
+
+// A build that has run (no errors): writes its lockfile, or keeps the packages of what it generated in memory.
+// Calls done(failure | null) once the lockfile has landed.
+function finish(options, result, done) {
+  const place = placeOf(options);
+  if (!place) { config.debug('esbuild: output below node_modules, left alone'); return done(null); }
+  const { dir, wd } = place;
+  const metafile = result && result.metafile;
+  try {
+    if (!metafile || typeof metafile !== 'object' || !metafile.outputs) {
+      problems.problem(`esbuild: a build into ${dir || 'memory'} has no metafile: its packages are unknown`);
+      return done(null);
+    }
+    const entries = entryFiles(metafile, wd);
+    const { byOutput, all, byFile } = collect(metafile, wd, entries);
+    const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
+    // written by esbuild? Not with write: false (nor without outdir and outfile)
+    const written = dir && [...byOutput.keys()].some(f => fs.existsSync(f));
+    if (!written) {
+      for (const of of (result.outputFiles || [])) {
+        const pkgs = pkgsOf(byOutput.get(of.path) || []);
+        if (JS.test(of.path) || CSS.test(of.path)) generated.addChunk(of.text !== undefined ? of.text : of.contents, pkgs);
+        else generated.addAsset(of.contents, pkgs);
+      }
+      for (const e of entries) generated.addEntry(e, all);
+      config.debug('esbuild: a build that writes nothing itself, with', all.length, 'packages, kept for the build that uses its output');
+      return done(null);
+    }
+    const files = [...byOutput.keys()];
+    const hashes = {}, contents = {};
+    let pkgs = all;
+    for (const [file, inputs] of byOutput) {
+      if (!JS.test(file) && !CSS.test(file)) continue;
+      const own = pkgsOf(inputs);
+      // a JavaScript file with the bytes of a generate-only build's chunk (core/generated.cjs)
+      let gen = null;
+      if (JS.test(file) && generated.any()) { try { gen = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
+      if (gen) pkgs = packages.unique(pkgs, gen);
+      const h = hashOf(file);
+      if (h) { hashes[file] = h; contents[file] = packages.unique(own, gen || []).map(p => p.path); }
+    }
+    const target = path.join(dir, config.file);
+    const writer = writerOf(options, wd);
+    outputs.record(target, writer, pkgs, realOr(wd), files, { disk: true, outputs: hashes, contents });
+    outputs.emitted(target, writer);
+    const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
+    outputs.prune(target, writer, exists, () => {
+      outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
+        if (err) problems.problem(`esbuild: could not write ${target}`, err);
+        else if (config.inline || exportPath(target)) config.debug('esbuild: wrote', [config.inline && target, exportPath(target)].filter(Boolean).join(' and '));
+        done(null);
+      });
+    });
+  } catch (e) {
+    problems.problem(`esbuild: could not collect the bundled packages of ${dir || 'a build that writes nothing itself'}`, e);
+    done(null);
+  }
+}
+
+// The plugin of one build() / context() call. options: the options of that call (with this plugin).
+function createPlugin() {
+  return {
+    name: NAME,
+    setup(build) {
+      const options = build.initialOptions;
+      // the metafile is what this plugin reads: on, also where the caller did not ask for it (and removed again from
+      // the result then: the caller gets what it asked for)
+      const asked = options.metafile === true;
+      options.metafile = true;
+      build.onEnd((result) => new Promise((resolve) => {
+        const end = () => {
+          if (!asked && result) delete result.metafile;
+          let errors = null;
+          problems.failIfAny((err) => { errors = [{ text: err.message.replace(/\n$/, ''), pluginName: NAME }]; });
+          resolve(errors ? { errors } : undefined);
+        };
+        if (!result || (result.errors && result.errors.length)) return end(); // a failed build wrote nothing
+        finish(options, result, end);
+      }));
+    },
+  };
+}
+
+const flat = (plugins) => (Array.isArray(plugins) ? plugins.filter(p => p && typeof p === 'object') : []);
+
+// The options of a build() / context() call with the plugin, unless it has it already, is Vite's own, or writes below
+// node_modules; the caller's object is left as it is.
+function attach(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return options;
+  const plugins = flat(options.plugins);
+  if (plugins.some(p => p.name === NAME)) return options;
+  if (vitesOwn(plugins)) { config.debug("esbuild: Vite's own build (dependency pre-bundling or scan, its config), left alone"); return options; }
+  if (!placeOf(options)) { config.debug('esbuild: output below node_modules, left alone'); return options; }
+  config.debug('esbuild: adding the plugin to a build');
+  return { ...options, plugins: [...(Array.isArray(options.plugins) ? options.plugins : []), createPlugin()] };
+}
+
+// buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs
+// synchronously up to the write, which is queued: a process that exits right away still writes it - see
+// core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
+function wrapSync(fn) {
+  return function (options, ...rest) {
+    if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
+    const asked = options.metafile === true;
+    const result = fn.call(this, { ...options, metafile: true }, ...rest);
+    finish(options, result, () => {});
+    if (!asked) delete result.metafile;
+    problems.failIfAny((err) => { throw err; });
+    return result;
+  };
+}
+
+// esbuild before 0.17 (build() with incremental / watch, no context()): not supported. A call that writes an output
+// bundle-lockfile would cover fails (strict mode) instead of writing no lockfile; others (Vite 3 / 4's own builds,
+// write: false) go on.
+function wrapOld(fn, version, sync) {
+  return function (options, ...rest) {
+    const place = options && typeof options === 'object' ? placeOf(options) : null;
+    if (place && place.dir && !vitesOwn(flat(options.plugins))) {
+      problems.problem(`esbuild ${version}: bundle-lockfile needs esbuild 0.17 or later; this build of ${place.dir} would write no lockfile`);
+      let failure = null;
+      problems.failIfAny((err) => { failure = err; });
+      if (failure && sync) throw failure;
+      if (failure) return Promise.reject(failure);
+    }
+    return fn.call(this, options, ...rest);
+  };
+}
+
+module.exports = {
+  name: 'esbuild',
+  cjsFiles: [MAIN],
+  onCjsLoad(exp, request, resolve) {
+    if (!request.endsWith('main.js') || !MAIN.test(request) || !exp || typeof exp !== 'object' || exp[WRAPPED]) return undefined;
+    if (typeof exp.build !== 'function' || typeof exp.version !== 'string') {
+      problems.problem(`esbuild: ${resolve()} exports no build() and version bundle-lockfile knows: its builds would write no lockfile`);
+      return undefined;
+    }
+    const [major, minor] = exp.version.split('.').map(Number);
+    const old = major === 0 && minor < 17;
+    // a copy: every export as it is now (esbuild's getters return the same functions every time), with build(),
+    // context() and buildSync() wrapped; "default" is the copy itself, for code compiled with ES-module interop
+    // (esbuild's own default is its inner exports object, which would bypass the wrappers)
+    const copy = {};
+    for (const k of Object.keys(exp)) copy[k] = exp[k];
+    if (old) {
+      copy.build = wrapOld(exp.build, exp.version, false);
+      if (typeof exp.buildSync === 'function') copy.buildSync = wrapOld(exp.buildSync, exp.version, true);
+    } else {
+      const build = exp.build, context = exp.context;
+      copy.build = function (options, ...rest) { return build.call(this, attach(options), ...rest); };
+      if (typeof context === 'function') copy.context = function (options, ...rest) { return context.call(this, attach(options), ...rest); };
+      if (typeof exp.buildSync === 'function') copy.buildSync = wrapSync(exp.buildSync);
+    }
+    copy.default = copy;
+    Object.defineProperty(copy, '__esModule', { value: true });
+    Object.defineProperty(copy, WRAPPED, { value: true });
+    try { Object.defineProperty(exp, WRAPPED, { value: true, configurable: true }); } catch { /* frozen: the module is replaced anyway */ }
+    config.debug(`esbuild: wrapped ${exp.version} from`, resolve());
+    return { exports: copy };
+  },
+  // for tests and the metafile importer
+  fileOfInput,
+  filesOfOutputs,
+  writerOf,
+  attach,
+};

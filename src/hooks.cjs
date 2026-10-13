@@ -3,7 +3,8 @@
 //
 // An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, esmEntries?, esmPackages?, esmWrap?(id, name, fn) }.
 // - onCjsLoad(exports, request, resolve) is called for every CommonJS module once it has run (and an ES module that
-//   require() loads), and patches the bundler when it recognizes it. request is the module's file name as adapters
+//   require() loads), and patches the bundler when it recognizes it - or returns { exports }, which replace the module's
+//   exports (esbuild's are getters, which cannot be patched). request is the module's file name as adapters
 //   recognize bundler files by (see core/layout.cjs logical: a package in Yarn's store as node_modules/<name>), resolve()
 //   its real file name. cjsFiles (RegExps of file paths): the modules onCjsLoad patches, which the ESM hooks report also
 //   when Node loads them without the CommonJS hook (see esm-wrap.cjs cjsSource).
@@ -46,17 +47,23 @@ function failLoad(before) {
 }
 
 const failedOn = new Set(); // adapters whose inspection failed: warned once per process
+// The exports an adapter returned ({ exports }) to replace the module's, or undefined: none did.
 function onCjsLoad(exp, filename) {
   const request = logical(filename), resolve = () => filename;
+  let replaced;
   for (const a of adapters) {
     if (!a.onCjsLoad) continue;
     const before = problems.count();
-    try { a.onCjsLoad(exp, request, resolve); } catch (e) {
+    try {
+      const r = a.onCjsLoad(exp, request, resolve);
+      if (r && typeof r === 'object' && 'exports' in r) exp = replaced = r.exports;
+    } catch (e) {
       // recognizing a module only reads it: a failure there is no bundler the adapter could not patch
       if (!failedOn.has(a.name)) { failedOn.add(a.name); config.warn(`${a.name} adapter failed while inspecting ${filename}:`, e); }
     }
     failLoad(before);
   }
+  return replaced;
 }
 
 // Every CommonJS module once it has run: Module.prototype._compile, which runs a module's code - also the code another
@@ -74,7 +81,12 @@ function installCjs() {
   const report = (module, filename) => {
     if (!module || seen.has(module)) return;
     seen.add(module);
-    onCjsLoad(module.exports, filename);
+    // (only exports an adapter replaced: some modules' exports are a getter, e.g. of an ES module require() loaded)
+    const exp = onCjsLoad(module.exports, filename);
+    if (exp === undefined) return;
+    const before = problems.count();
+    try { module.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
+    failLoad(before);
   };
   const compile = Module.prototype._compile;
   if (typeof compile === 'function') {

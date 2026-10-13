@@ -68,6 +68,9 @@ const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'np
     '@rollup/plugin-typescript': '12.3.0', typescript: '5.9.3', tslib: '2.8.1' },
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
 // Rollup's and Rolldown's JavaScript APIs, called by a build script (build.mjs <mode>), and the rolldown command line
+const esbuildApp = (esbuild, installer = { type: 'npm' }, extra = {}) => ({ app: 'esbuild', bundler: 'esbuild', installer,
+  deps: { esbuild, 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20', 'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.2', 'is-number': '7.0.0', ...extra },
+  packageJson: { type: 'module', scripts: { build: 'node build.mjs build' } } });
 const rollupApi = (rollup = '4.64.2', rolldown = '1.2.13', extra = {}) => ({ app: 'rollup-api', bundler: 'rollup', installer: { type: 'npm' },
   deps: { rollup, rolldown, '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20', 'normalize.css': '8.0.1', ...extra },
   packageJson: { type: 'module', scripts: { build: 'node build.mjs rollup' } } });
@@ -173,6 +176,14 @@ const fixtures = {
   'rollup-api': rollupApi('4.64.2', '1.2.13', { '@rollup/wasm-node': '4.64.2' }),
   // the oldest releases of the supported majors
   'rollup-api-floor': rollupApi('4.0.2', '1.0.0'),
+  // esbuild's JavaScript API (test/apps/esbuild/build.mjs): the floor, the version of Vite 5, the latest; installers
+  'esbuild': esbuildApp('0.28.2'),
+  'esbuild-0.19': esbuildApp('0.19.12'),
+  'esbuild-floor': esbuildApp('0.17.0'),
+  'esbuild-0.16': esbuildApp('0.16.17'),
+  'esbuild-pnpm10': esbuildApp('0.28.2', { type: 'pnpm', version: '10.34.6' }),
+  'esbuild-yarn4-pnp': esbuildApp('0.28.2', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
+  'esbuild-wasm': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-wasm': '0.28.2' }),
   // a project directory with "#" in its name, which is no fragment of the module ids
   'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
@@ -358,6 +369,7 @@ const fixtures = {
   'canary-rspack2.2': canary('rspack', { '@rspack/core': '2.2.8', '@rspack/cli': '2.2.8' }, { scripts: { build: 'rspack build' } }),
   'canary-vite8': canary('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
+  'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
   'edge-manifests-wp5': manifests('webpack', WEBPACK),
   'edge-manifests-vite8': manifests('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
@@ -371,6 +383,9 @@ const VITE_BOTH = [...VITE_EXPECT, 'is-number@7.0.0'].sort();
 // watch mode: the build, the rebuild without the lazy chunk (ms@2.1.3), the rebuild with it again
 const VITE_WATCH_BUILDS = [VITE_EXPECT, VITE_EXPECT.filter(p => p !== 'ms@2.1.3'), VITE_EXPECT];
 const ROLLUP_API = ['lodash-es@4.18.1', 'nanoid@3.3.20'];
+// test/apps/esbuild: not uuid (imported, unused); debug with its own ms@2.0.0; bootstrap-icons' font (the file loader)
+// and normalize.css (@imported by the CSS)
+const ESBUILD = ['bootstrap-icons@1.13.2', 'debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'normalize.css@8.0.1'];
 // watch modes: the build, the rebuild without nanoid, the rebuild with it again
 const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
 const CANARY_JS = ['bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0', 'bl-canary-used@1.0.0'];
@@ -819,7 +834,8 @@ const cases = [
   // the same for the Rollup adapter, in each kind of build it hooks
   ...[['Vite 8.3.3', 'vite8-npm', 'npm run -s build', 'vite'], ['Vite 7.3.7', 'vite7-npm', 'npm run -s build', 'vite'],
     ['Rollup 4 command line', 'rollup-cli', 'npm run -s build', 'rollup'], ['Rollup 4 JavaScript API', 'rollup-api', 'node build.mjs rollup', 'rollup'],
-    ['Rolldown 1 JavaScript API', 'rollup-api', 'node build.mjs rolldown', 'rolldown']].flatMap(([what, fixture, cmd, kind]) => [
+    ['Rolldown 1 JavaScript API', 'rollup-api', 'node build.mjs rolldown', 'rolldown'], ['esbuild 0.28.2 build()', 'esbuild', 'node build.mjs build', 'esbuild'],
+    ['esbuild 0.28.2 context()', 'esbuild', 'node build.mjs context', 'esbuild'], ['esbuild 0.28.2 buildSync()', 'esbuild', 'node build.mjs sync', 'esbuild']].flatMap(([what, fixture, cmd, kind]) => [
     { name: `strict: failing adapter fails the build (${what})`, fixture, cmd, nodeOptions: FAULT,
       // (Vite 8 fails already when it bundles its config with Rolldown: a build that writes nothing itself)
       expectError: new RegExp(`bundle-lockfile: the lockfile would be missing or incomplete[\\s\\S]*${kind}: could not collect the bundled packages of .+: injected fault`) },
@@ -844,7 +860,7 @@ const cases = [
     { name: `strict: a misspelled setting fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export' },
       expectError: /BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ },
     { name: `strict: a value that is not recognized fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'rsbuild' },
-      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown or all/ }]),
+      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild or all/ }]),
   ...[['webpack 5', 'wp5-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].map(([what, fixture]) => (
     { name: `STRICT=0: a misspelled setting is a warning (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export', BUNDLE_LOCKFILE_STRICT: '0' },
       expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ })),
@@ -1054,6 +1070,25 @@ const cases = [
     cmd: `${PARALLEL_VITE} && ${VITE_BIN} build --config vite.second.config.mjs`, expect: VITE_BOTH, oracle: false },
   // Rollup's and Rolldown's JavaScript APIs (build.mjs). The oracle is the same build with Rollup's command line and
   // source maps (rollup.config.mjs), also for Rolldown's builds: the same packages
+  // esbuild's JavaScript API: every build() and context() gets the plugin; buildSync() its metafile
+  ...['build', 'context', 'outfile', 'sync'].map(mode => (
+    { name: `esbuild 0.28.2 JavaScript API: ${mode}`, fixture: 'esbuild', cmd: `node build.mjs ${mode}`, expect: ESBUILD, oracleArgs: mode, oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  { name: 'esbuild 0.28.2 JavaScript API: context().watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'esbuild',
+    cmd: 'node build.mjs watch', expect: ESBUILD, watchBuilds: [ESBUILD, ESBUILD.filter(p => p !== 'nanoid@3.3.20'), ESBUILD], oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild 0.28.2: two build()s into one directory, one lockfile with the packages of both', fixture: 'esbuild', cmd: 'node build.mjs two',
+    expect: [...ESBUILD, 'is-number@7.0.0'].sort(), oracleArgs: 'two', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild 0.28.2: write: false writes no lockfile', fixture: 'esbuild', cmd: 'node build.mjs write-false', expect: null },
+  { name: 'esbuild 0.28.2: export directory only (an output Go embeds)', fixture: 'esbuild', cmd: 'node build.mjs build', exportOnly: true, expect: ESBUILD,
+    oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild: BUNDLE_LOCKFILE_DISABLE=esbuild', fixture: 'esbuild', cmd: 'node build.mjs build', env: { BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, expect: null },
+  { name: 'esbuild-wasm 0.28.2: build()', fixture: 'esbuild-wasm', cmd: 'node build.mjs build', env: { BLTEST_ESBUILD_PKG: 'esbuild-wasm' }, expect: ESBUILD,
+    oracleMissing: ['bootstrap-icons@1.13.2'] },
+  ...[['0.19.12 (Vite 5\'s)', 'esbuild-0.19'], ['0.17.0 (the oldest supported)', 'esbuild-floor'], ['0.28.2, pnpm 10', 'esbuild-pnpm10'], ['0.28.2, yarn 4 Plug\'n\'Play', 'esbuild-yarn4-pnp']].map(([what, fixture]) => (
+    { name: `esbuild ${what}: build()`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'node build.mjs build', expect: ESBUILD, oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  { name: 'esbuild 0.16.17 (before context()): a build fails instead of writing no lockfile', fixture: 'esbuild-0.16', cmd: 'node build.mjs build',
+    expectError: /bundle-lockfile needs esbuild 0\.17 or later/ },
+  { name: 'esbuild 0.16.17, BUNDLE_LOCKFILE_STRICT=0: a warning, no lockfile', fixture: 'esbuild-0.16', cmd: 'node build.mjs build', env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /WARNING: esbuild 0\.16\.17: bundle-lockfile needs esbuild 0\.17 or later/ },
   { name: 'Rollup 4 JavaScript API: rollup()', fixture: 'rollup-api', cmd: 'node build.mjs rollup', expect: ROLLUP_API },
   // Rollup's WebAssembly build: its ES entry (JavaScript API) and its CommonJS build (command line) are hooked too
   { name: 'Rollup 4 (@rollup/wasm-node) JavaScript API: rollup()', fixture: 'rollup-api', cmd: 'node build.mjs rollup-wasm', expect: ROLLUP_API },
@@ -1144,12 +1179,13 @@ const cases = [
     oracleArgs: 'client,server', expectIncludes: [...SVELTE_CLIENT('3.0.1'), '@sveltejs/adapter-node@6.0.0'], expectExcludes: ['ms@2.1.3'] },
   // adapter-netlify: a serverless function gets a copy of the server output, with its lockfile (ms stays external, the
   // function loads it from node_modules); an edge function bundles the server output with all its dependencies -
-  // with Rolldown (adapter-netlify 7, SvelteKit 3: a lockfile, ms in it), with esbuild (adapter-netlify 5, SvelteKit
-  // 2: unsupported, none)
+  // with Rolldown (adapter-netlify 7, SvelteKit 3), with esbuild's API (adapter-netlify 5, SvelteKit 2): a lockfile, ms
+  // in it
   { name: 'SvelteKit 2 (Vite 7), adapter-netlify, serverless function', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: '.netlify/server',
     env: { SVELTEKIT_ADAPTER: 'netlify' }, oracleArgs: '--dir .netlify/server', expectIncludes: ['@sveltejs/kit@2.70.3', 'svelte@5.57.2'], expectExcludes: ['ms@2.1.3'] },
-  { name: 'SvelteKit 2 (Vite 7), adapter-netlify, edge function (esbuild: unsupported, no lockfile)', fixture: 'sveltekit2', cmd: 'npm run -s build',
-    outDir: '.netlify', env: { SVELTEKIT_ADAPTER: 'netlify', NETLIFY_EDGE: '1' }, expect: null },
+  { name: 'SvelteKit 2 (Vite 7), adapter-netlify, edge function (esbuild)', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: '.netlify/edge-functions',
+    env: { SVELTEKIT_ADAPTER: 'netlify', NETLIFY_EDGE: '1' }, oracleArgs: '--dir .netlify/edge-functions',
+    expectIncludes: ['@sveltejs/kit@2.70.3', 'lodash-es@4.18.1', 'ms@2.1.3', 'svelte@5.57.2'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-netlify, serverless function', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: '.netlify/v1/server',
     env: { SVELTEKIT_ADAPTER: 'netlify' }, oracleArgs: '--dir .netlify/v1/server', expectIncludes: ['@sveltejs/kit@3.0.1', 'svelte@5.57.2'], expectExcludes: ['ms@2.1.3'] },
   { name: 'SvelteKit 3 (Vite 8), adapter-netlify, edge function (Rolldown)', fixture: 'sveltekit3', cmd: 'npm run -s build', outDir: '.netlify/v1/edge-functions',
@@ -1418,8 +1454,9 @@ const cases = [
         'node_modules/socket.io-client/build/esm/', 'node_modules/engine.io-client/build/esm/'] })),
   // canaries: every marker in the output is listed (run.cjs), and every listed canary's marker is in the output: both
   // versions of bl-canary-dup, not the unused bl-canary-unused
-  ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['rollup 4.64.2', 'canary-rollup']].map(([what, fixture]) => (
+  ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['rollup 4.64.2', 'canary-rollup'], ['esbuild 0.28.2', 'canary-esbuild']].map(([what, fixture]) => (
     { name: `canaries: ${what}`, fixture, cmd: 'npm run -s build', expect: [...CANARY_JS, ...(fixture === 'canary-rollup' ? [] : ['bl-canary-css@1.0.0'])].sort(),
+      ...(fixture === 'canary-esbuild' && { oracleArgs: '--script esbuild.mjs' }),
       // Vite writes no source maps for CSS: its oracle does not see bl-canary-css (here its marker does)
       ...(fixture === 'canary-vite8' && { oracleMissing: ['bl-canary-css@1.0.0'] }) })),
 ];
