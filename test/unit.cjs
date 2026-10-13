@@ -3554,6 +3554,28 @@ test('esbuild adapter: metafile input keys -> files', () => {
   assert.equal(fileOfInput('', root), null);
 });
 
+test('esbuild adapter: an image a style sheet inlines as a data: URL counts for the style sheet\'s output (only among its imports in the metafile)', () => {
+  const { filesOfOutputs } = esbuildAdapter();
+  const root = '/p';
+  // esbuild 0.28 with loader { '.svg': 'dataurl' }: the inlined icon is an input of no output; the font (file loader)
+  // is the input of an output of its own; tree-shaken.css was dropped; an external url() is no input
+  const metafile = {
+    inputs: {
+      'src/app.css': { bytes: 1, imports: [{ path: 'node_modules/icons/bell.svg', kind: 'url-token' }, { path: 'node_modules/f/f.woff2', kind: 'url-token' },
+        { path: 'node_modules/b/b.css', kind: 'import-rule' }, { path: 'https://cdn/x.svg', kind: 'url-token', external: true }] },
+      'node_modules/icons/bell.svg': { bytes: 1, imports: [] }, 'node_modules/f/f.woff2': { bytes: 1, imports: [] }, 'node_modules/b/b.css': { bytes: 1, imports: [] },
+      'src/tree-shaken.css': { bytes: 1, imports: [{ path: 'node_modules/gone/g.svg', kind: 'url-token' }] }, 'node_modules/gone/g.svg': { bytes: 1, imports: [] },
+    },
+    outputs: {
+      'dist/index.css': { inputs: { 'src/app.css': { bytesInOutput: 9 }, 'node_modules/b/b.css': { bytesInOutput: 9 } } },
+      'dist/f-X.woff2': { inputs: { 'node_modules/f/f.woff2': { bytesInOutput: 9 } } },
+    },
+  };
+  const got = filesOfOutputs(metafile, root);
+  assert.deepEqual(got.get(J(root, 'dist/index.css')).sort(), ['/p/node_modules/b/b.css', '/p/node_modules/icons/bell.svg', '/p/src/app.css'].map(f => J(f)));
+  assert.deepEqual(got.get(J(root, 'dist/f-X.woff2')), [J(root, 'node_modules/f/f.woff2')]);
+});
+
 test('esbuild adapter: replaces the getter-only exports with a copy whose build/context/buildSync add the plugin', async () => {
   const a = esbuildAdapter();
   let seen = null;

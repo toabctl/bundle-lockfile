@@ -59,13 +59,25 @@ function fileOfInput(key, wd) {
 // The output files of a metafile, absolute, with the files of their inputs: Map(output -> [file]). Inputs with no
 // bytes in an output count (a module that only re-exports: its package is in the import chain of what ships); inputs
 // only in the top-level "inputs" were tree-shaken away and are in no output. Externals are no inputs.
+// A file a style sheet's url() names that is an input of no output was inlined into it (the dataurl, base64, text or
+// binary loader: an image as a data: URL), and counts for that output too: esbuild lists it only among the style
+// sheet's imports (kind url-token), not among the output's inputs. (With the file loader it is an output of its own.)
 function filesOfOutputs(metafile, wd) {
   const out = new Map();
-  for (const [o, info] of Object.entries((metafile && metafile.outputs) || {})) {
+  const outputs = Object.entries((metafile && metafile.outputs) || {});
+  const inputs = (metafile && metafile.inputs) || {};
+  const inOutput = new Set(outputs.flatMap(([, info]) => Object.keys((info && info.inputs) || {})));
+  for (const [o, info] of outputs) {
     const files = [];
     for (const key of Object.keys((info && info.inputs) || {})) {
       const f = fileOfInput(key, wd);
       if (f) files.push(f);
+      const imports = inputs[key] && Array.isArray(inputs[key].imports) ? inputs[key].imports : [];
+      for (const i of imports) {
+        if (!i || i.kind !== 'url-token' || i.external || typeof i.path !== 'string' || inOutput.has(i.path) || !inputs[i.path]) continue;
+        const inlined = fileOfInput(i.path, wd);
+        if (inlined) files.push(inlined);
+      }
     }
     out.set(path.resolve(wd, o), files);
   }

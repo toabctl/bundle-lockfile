@@ -35,8 +35,9 @@ the source maps show none of its code.
     postcss-import and Tailwind through their webpack loaders, also in a Vue single-file component's `<style>` block
     and an Angular component's styles;
   - images and fonts from packages that a style sheet inlines as `data:` URLs: in webpack and rspack builds (also
-    those mini-css-extract-plugin builds at build time, in no chunk), and in Vite builds from 6.1 on (an image that
-    JavaScript inlines with `new URL(..., import.meta.url)`: from Vite 7 on);
+    those mini-css-extract-plugin builds at build time, in no chunk), in esbuild builds (the `dataurl`, `base64`,
+    `text` and `binary` loaders), and in Vite builds from 6.1 on (an image that JavaScript inlines with
+    `new URL(..., import.meta.url)`: from Vite 7 on);
   - other files: a shader's `#include`s (glslify-loader), JSON a loader or plugin merges into a module.
 
   Not in Rolldown's `build()` and `watch()` (which `vite build --watch` on Vite 8 calls), nor with a plugin from the

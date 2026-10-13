@@ -1473,9 +1473,11 @@ const cases = [
       // inlines: its oracle does not see the style sheets' and the image's packages (here their markers do)
       oracleMissing: fixture.startsWith('canary-vite') ? [...CANARY_INLINED.all, CANARY_URL] : CANARY_INLINED.js })),
   // esbuild: the shader include comes from an esbuild plugin's onLoad (its watchFiles), which bundle-lockfile does not
-  // read yet; the image a style sheet inlines is an input of esbuild's (dataurl loader); new URL() is left as it is
+  // read yet; the image a style sheet inlines (dataurl loader) is only among the style sheet's imports in the metafile,
+  // and the oracle's source maps have no source for a data: URL (its marker here shows it); new URL() is left as it is
   { name: 'canaries: esbuild 0.28.2', fixture: 'canary-esbuild', cmd: 'npm run -s build', oracleArgs: '--script esbuild.mjs',
-    expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => p !== 'bl-canary-glsl@1.0.0').sort(), canaryUnlisted: ['bl-canary-glsl@1.0.0'] },
+    expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => p !== 'bl-canary-glsl@1.0.0').sort(), canaryUnlisted: ['bl-canary-glsl@1.0.0'],
+    oracleMissing: ['bl-canary-icon@1.0.0'] },
   // Vite records the images a style sheet inlines as data: URLs from 6.1 on (vitejs/vite#18979), those JavaScript
   // inlines with new URL() from 7 on: before, nothing the build records names their files - their markers are in the
   // output, their packages not listed
