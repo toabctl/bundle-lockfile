@@ -104,8 +104,8 @@ const RSPACK_FEATURES_DEPS = { 'css-loader': '7.1.5', sass: '1.105.1', 'sass-loa
 const rspackFeatures = (version) => ({ app: 'rspack-features', bundler: 'rspack', installer: { type: 'npm' },
   deps: { '@rspack/core': version, '@rspack/cli': version, ...RSPACK_FEATURES_DEPS }, packageJson: { scripts: { build: 'rspack build' } } });
 // Rsbuild: the webpack5 app (test/apps/rsbuild, src/index.js) built by `rsbuild build`, with normalize.css copied
-const rsbuild = (version, installer = { type: 'npm' }) => ({ app: 'rsbuild', bundler: 'rsbuild', installer,
-  deps: { '@rsbuild/core': version, ...APP_DEPS, 'normalize.css': '8.0.1' }, packageJson: { scripts: { build: 'rsbuild build' } } });
+const rsbuild = (version, installer = { type: 'npm' }, extra = {}) => ({ app: 'rsbuild', bundler: 'rsbuild', installer,
+  deps: { '@rsbuild/core': version, ...APP_DEPS, 'normalize.css': '8.0.1', ...extra }, packageJson: { scripts: { build: 'rsbuild build' } } });
 // module federation on rspack (test/apps/rspack-federation): rspack 2's ModuleFederationPlugin needs
 // @module-federation/runtime-tools installed (rspack 1.7 depends on its own); @module-federation/enhanced: RSPACK_MF=enhanced
 const rspackFederation = (version, extra = {}) => ({ app: 'rspack-federation', bundler: 'rspack', installer: { type: 'npm' },
@@ -322,7 +322,8 @@ const fixtures = {
   'rsbuild1.2-npm': rsbuild('1.2.19'),
   'rsbuild1.7-npm': rsbuild('1.7.6'),
   // (@rstest/core: Rstest, which bundles the tests with this Rsbuild)
-  'rsbuild2.2-npm': { ...rsbuild('2.2.12'), devDeps: { '@rstest/core': '0.12.3' } },
+  // @rspack/core pinned: rsbuild dev serves it (DEV_RSBUILD), and @rsbuild/core 2.2.12 takes any ~2.2.8
+  'rsbuild2.2-npm': { ...rsbuild('2.2.12', { type: 'npm' }, { '@rspack/core': '2.2.8' }), devDeps: { '@rstest/core': '0.12.3' } },
   'rsbuild2.2-bun': rsbuild('2.2.12', { type: 'bun' }),
   'rsbuild2.2-yarn4-pnp': rsbuild('2.2.12', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'rspack-federation2.2': rspackFederation('2.2.8', { '@module-federation/runtime-tools': '2.9.2', '@module-federation/enhanced': '2.9.2' }),
