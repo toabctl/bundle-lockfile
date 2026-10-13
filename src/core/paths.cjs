@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
+const { storeRoot, logical } = require('./layout.cjs');
 
 // A directory and every directory above it, up to the root.
 function* ancestors(dir) {
@@ -22,9 +23,12 @@ const posix = (p) => p.split(path.sep).join('/');
 // node_modules/<name> or node_modules/@scope/<name>. That is how npm, yarn (incl. PnP zip paths
 // .../x.zip/node_modules/<name>) and pnpm (.pnpm/<id>/node_modules/<name>) lay packages out, and it
 // ignores package.json files inside a package - e.g. dist/esm/package.json = {"type":"module"} or
-// preact/hooks/package.json = {"name": "preact-hooks", ...}, which are not packages.
+// preact/hooks/package.json = {"name": "preact-hooks", ...}, which are not packages. Yarn's pnpm linker:
+// node_modules/.store/<slug>/package (see core/layout.cjs).
 function packageRoot(file) {
   const parts = file.split(path.sep);
+  const s = storeRoot(parts);
+  if (s >= 0) return s < parts.length - 1 ? parts.slice(0, s + 1).join(path.sep) : null;
   const i = parts.lastIndexOf('node_modules');
   if (i < 0) return null;
   const n = parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1;
@@ -52,18 +56,50 @@ function unvirtual(p) {
   return unvirtual(path.join(path.dirname(m[1]), '../'.repeat(Number(m[2])), m[3] || '.'));
 }
 
+// An option value as a writer id records it (core/outputs.cjs: the same on every machine): an absolute path in a package
+// as from its last node_modules (node_modules/pkg/x.js - Yarn's global cache, pnpm's global store and a store layout
+// as node_modules/<name>, see core/layout.cjs), any other absolute path relative to base, other values as they are.
+function portable(base, v) {
+  if (typeof v !== 'string' || !path.isAbsolute(v)) return v;
+  const parts = logical(unvirtual(v)).split(path.sep);
+  const i = parts.lastIndexOf('node_modules');
+  if (i >= 0 && i < parts.length - 1) return parts.slice(i).join('/');
+  return base ? posix(path.relative(base, v)) : v;
+}
+
 // Where the export copy of the lockfile `target` goes (BUNDLE_LOCKFILE_EXPORT_DIR, or null): the target's path
-// mirrored below the export dir - relative to BUNDLE_LOCKFILE_EXPORT_BASE if it is below that, else its absolute
-// path without the root (/srv/app/dist/bundle-lockfile/package-lock.json -> <export>/srv/app/dist/bundle-lockfile/
-// package-lock.json; Windows: C:\app\... -> <export>/C/app/...). The file name stays package-lock.json, which syft
-// requires, and outputs of different builds and processes never collide.
+// mirrored below the export dir. Without BUNDLE_LOCKFILE_EXPORT_BASE: its absolute path without the root
+// (/srv/app/dist/bundle-lockfile/package-lock.json -> <export>/srv/app/dist/bundle-lockfile/package-lock.json; Windows:
+// C:\app\... -> <export>/C/app/...). With it: relative to the base if it is below it (also through symbolic links: the
+// base and the target are compared as given and by their real paths), else the absolute path below <export>/_outside_base/,
+// so that no target outside the base lands where one inside it does (/w/tmp/dist and /tmp/dist with the base /w). The
+// file name stays package-lock.json, which syft requires.
+const OUTSIDE_BASE = '_outside_base';
 function exportPath(target) {
   if (!config.exportDir) return null;
   const abs = path.resolve(target);
-  const rel = config.exportBase && path.relative(config.exportBase, abs);
-  const inBase = rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); // also <base>/..cache
+  if (!config.exportBase) return path.join(config.exportDir, mirrored(abs));
+  const rel = below(config.exportBase, abs) || below(realish(config.exportBase), realish(abs));
+  return rel ? path.join(config.exportDir, rel) : path.join(config.exportDir, OUTSIDE_BASE, mirrored(abs));
+}
+// an absolute path as a relative one: without its root, a drive letter as a directory
+function mirrored(abs) {
   const { root } = path.parse(abs);
-  return path.join(config.exportDir, inBase ? rel : path.join(root.replace(/[:\\/]+/g, '') || '.', abs.slice(root.length)));
+  return path.join(root.replace(/[:\\/]+/g, '') || '.', abs.slice(root.length));
+}
+// p relative to dir if it is below it (also <dir>/..cache), else null
+function below(dir, p) {
+  const rel = path.relative(dir, p);
+  return rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel) ? rel : null;
+}
+// the real path of p, as far as it exists (a lockfile's directory may not be there yet)
+function realish(p) {
+  const rest = [];
+  for (let d = p; ; d = path.dirname(d)) {
+    try { return path.join(fs.realpathSync(d), ...rest.reverse()); } catch { /* not there */ }
+    if (path.dirname(d) === d) return p;
+    rest.push(path.basename(d));
+  }
 }
 
-module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, exportPath };
+module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, portable, exportPath, OUTSIDE_BASE };

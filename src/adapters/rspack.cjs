@@ -14,35 +14,30 @@
 // core/problems.cjs). rspack 0.x is left alone.
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
-const { APPLIED, BundleLockfilePlugin, attach } = require('./webpack-family.cjs');
+const { APPLIED, BundleLockfilePlugin, attach, versionOf } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.rspack.patched'); // Compiler.prototype
 const SEEN = Symbol.for('bundle-lockfile.rspack.seen');       // compiler: listeners have run
 
-// [major, minor] of an rspack version
-const versionOf = (v) => String(v || '').split('.').map(Number);
-
 // Called once for every top-level compiler, before its first compilation. Tools can add their own (onCompiler).
 const listeners = [(compiler, where) => {
   const version = compiler.webpack && compiler.webpack.rspackVersion;
-  const [major, minor] = versionOf(version);
+  const [major] = versionOf(version);
   if (!(major >= 1)) { config.debug('rspack: version', version, 'is not supported, left alone'); return; }
-  if (major === 1 && minor < 1) {
-    problems.problem(`rspack ${version} is not supported (it needs 1.1 or later): no lockfile for ${compiler.outputPath || 'the compiler'}`);
-    return;
-  }
+  // (rspack 1.0: the plugin records that it is not supported, see webpack-family.cjs)
   if (compiler[APPLIED]) { config.debug('rspack: plugin already in the config of compiler', compiler.name || '(unnamed)'); return; }
   config.debug('rspack: applying to compiler', compiler.name || '(unnamed)', 'rspack', version, 'output', compiler.outputPath, 'via', where);
   new BundleLockfilePlugin(config.file, where).apply(compiler);
 }];
 const onCompiler = (fn) => { listeners.push(fn); };
 
+// Returns whether Compiler looks like rspack's Compiler (it has no newCompilation, which webpack.cjs requires), patched
+// now or before.
 function patchCompiler(Compiler, where) {
-  if (typeof Compiler !== 'function') return;
+  if (typeof Compiler !== 'function') return false;
   const p = Compiler.prototype;
-  // rspack's Compiler (it has no newCompilation, which webpack.cjs requires)
-  if (!p || !['compile', 'run', 'watch', 'isChild', 'runAsChild', 'createChildCompiler'].every(k => typeof p[k] === 'function')) return;
-  if (p[PATCHED]) return;
+  if (!p || !['compile', 'run', 'watch', 'isChild', 'runAsChild', 'createChildCompiler'].every(k => typeof p[k] === 'function')) return false;
+  if (p[PATCHED]) return true;
   p[PATCHED] = true;
   const orig = p.compile;
   p.compile = function (...args) {
@@ -53,6 +48,14 @@ function patchCompiler(Compiler, where) {
     return orig.apply(this, args);
   };
   config.debug('rspack: patched Compiler from', where);
+  return true;
+}
+
+// @rspack/core's Compiler, of a version from 1.0 on, that is not of the shape rspack.cjs knows: its builds would write no
+// lockfile - a problem (in strict mode loading it fails, see hooks.cjs). rspack 0.x is left alone.
+function patchRspack(Compiler, version, where) {
+  if (patchCompiler(Compiler, where) || !(versionOf(version)[0] >= 1)) return;
+  problems.problem(`rspack: the Compiler of rspack ${version} (${where}) is not one bundle-lockfile knows (compile, run, watch, isChild, runAsChild, createChildCompiler): its builds would write no lockfile`);
 }
 
 module.exports = {
@@ -68,13 +71,15 @@ module.exports = {
   BundleLockfilePlugin, // usable directly in an rspack config, without injection
   onCompiler,
   esmWrap(id, name, value) {
-    if (id !== 'rspack' || name !== 'Compiler') return null;
-    try { patchCompiler(value, '@rspack/core (ES module)'); } catch (e) { problems.problem('rspack: could not patch @rspack/core', e); }
+    // (an entry without a Compiler: hooks.cjs found() reports it)
+    if (id !== 'rspack' || name !== 'Compiler' || typeof value !== 'function') return null;
+    // the ES module entry is rspack 2's (or later)
+    try { patchRspack(value, '2', '@rspack/core (ES module)'); } catch (e) { problems.problem('rspack: could not patch @rspack/core', e); }
     return value; // the class itself, patched
   },
   onCjsLoad(exp, request, resolve) {
     // only the export of @rspack/core: a function (rspack()) with its version and Compiler (webpack's says version)
     if (typeof exp !== 'function' || typeof exp.rspackVersion !== 'string' || typeof exp.Compiler !== 'function') return;
-    try { patchCompiler(exp.Compiler, resolve()); } catch (e) { problems.problem(`rspack: could not patch ${resolve()}`, e); }
+    try { patchRspack(exp.Compiler, exp.rspackVersion, resolve()); } catch (e) { problems.problem(`rspack: could not patch ${resolve()}`, e); }
   },
 };

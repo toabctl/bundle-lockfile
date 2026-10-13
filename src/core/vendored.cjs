@@ -45,8 +45,9 @@ function globTest(pattern) {
   return (rel) => res.some(re => re.test(rel));
 }
 
-// pnpm-workspace.yaml "packages": a block list or a flow list, quoted or not, with comments
-function pnpmPackages(text) {
+// pnpm-workspace.yaml "packages": a block list or a flow list, quoted or not, with comments (any line endings)
+function pnpmPackages(yaml) {
+  const text = yaml.replace(/\r\n?/g, '\n');
   const out = [];
   const flow = text.match(/^packages:\s*\[([^\]]*)\]/m);
   if (flow) return flow[1].split(',').map(s => s.replace(/#.*/, '').trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
@@ -152,16 +153,21 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
   };
   const owners = new Map(); // dir -> package | null, outside node_modules
   // The vendored package a file outside node_modules (real path) belongs to, or null (first-party): the package.json
-  // files up to a first-party directory or a private package (a first-party package), that one included
+  // files up to a first-party directory, that one included. A private package.json is first-party - unless a
+  // vendorable one further out has it (vendor/preact/hooks/package.json, private, in a copy of preact): it is no
+  // boundary, as inside node_modules (nestedIn).
   function ownerOf(file) {
     const dir = path.dirname(file);
     if (owners.has(dir)) return owners.get(dir);
     const chain = [];
     for (const d of ancestors(dir)) {
-      const j = manifest(d), stop = isFirstParty(d) || (!!j && j.private === true);
+      const j = manifest(d), stop = isFirstParty(d);
       if (j) chain.push({ dir: d, j: stop ? { name: j.name } : j });
       if (stop) break;
     }
+    // a private package.json with no vendorable one further out: a first-party package, where the walk stops
+    const priv = chain.findIndex(c => c.j.private === true);
+    if (priv >= 0 && !chain.slice(priv + 1).some(c => isVendorable(c.j))) chain.length = priv + 1;
     const found = innermost(chain);
     if (found) note(found);
     owners.set(dir, found);

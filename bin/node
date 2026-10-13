@@ -12,7 +12,8 @@
 #    back here and is skipped then; asdf's and nodenv's shims run their node by its path. The scripts passed through
 #    are in BUNDLE_LOCKFILE_NODE_SEEN, which register.cjs clears, so that the processes node starts begin anew.
 #    Looked up on every start: PATH can change (nvm).
-# Without a register.cjs (none next to the shim, or BUNDLE_LOCKFILE_REGISTER names no file) node would build without
+# Without a register.cjs (none next to the shim, or BUNDLE_LOCKFILE_REGISTER names no file, or a relative path: node
+# would take it for a package name, in every directory a process runs in) node would build without
 # bundle-lockfile, silently missing lockfiles: it fails instead, as bundle-lockfile does (BUNDLE_LOCKFILE_STRICT=0: a
 # warning, and node runs without it; BUNDLE_LOCKFILE_DISABLE=all: node runs). Read from the environment only: this
 # script does not read the settings file.
@@ -25,8 +26,11 @@ if [ -z "$reg" ]; then
     [ -f "$r" ] && { reg=$(readlink -f "$r" 2>/dev/null || printf '%s' "$r"); break; }
   done
   [ -n "$reg" ] || missing="no register.cjs next to $self (../src/register.cjs or ../register.cjs)"
-elif [ ! -f "$reg" ]; then
-  missing="BUNDLE_LOCKFILE_REGISTER names no file: $reg"; reg=
+else
+  case "$reg" in
+    /*) [ -f "$reg" ] || { missing="BUNDLE_LOCKFILE_REGISTER names no file: $reg"; reg=; } ;;
+    *) missing="BUNDLE_LOCKFILE_REGISTER is not an absolute path: $reg"; reg= ;;
+  esac
 fi
 if [ -n "$reg" ]; then
   have=
@@ -57,10 +61,11 @@ if [ -n "$reg" ]; then
   BUNDLE_LOCKFILE_NODE_SHIM=$self; export BUNDLE_LOCKFILE_NODE_SHIM
 else
   # the values as bundle-lockfile reads them (core/config.cjs): case-insensitive, spaces around them ignored
-  oifs=$IFS; IFS=" $(printf '\t')"
+  oifs=$IFS; nl='
+'; IFS=" $(printf '\t')$nl"
   n=0; for w in ${BUNDLE_LOCKFILE_STRICT:-}; do n=$((n + 1)); v=$w; done # the whole value, trimmed: one word
   strict=1; [ "$n" = 1 ] && case "$v" in 0|[Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]) strict= ;; esac
-  IFS=" ,$(printf '\t')"
+  IFS=" ,$(printf '\t')$nl"
   all=; for w in ${BUNDLE_LOCKFILE_DISABLE:-}; do case "$w" in [Aa][Ll][Ll]) all=1 ;; esac; done
   IFS=$oifs
   if [ -z "$all" ]; then

@@ -15,13 +15,16 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // core/vendored.cjs: vendor/left-pad). null for a location outside the context that is not in an ancestor's
 // node_modules either (Yarn's global cache, a shared store, a vendored copy above the context): that path differs
 // between machines and must not end up in the lockfile.
+// a package directory in node_modules: node_modules/<name> (not a tool's node_modules/.cache), also in Yarn's store
+// (node_modules/.store/<slug>/package, see core/layout.cjs)
+const PACKAGE_DIR = /(^|\/)node_modules\/([^/.]|\.store\/[^/]+\/package(\/|$))/;
 function locationKey(base, dir) {
   const rel = posix(path.relative(base, dir));
   if (path.isAbsolute(rel)) return null; // another drive
   const down = rel.replace(/^(\.\.\/)+/, '');
-  if (down !== rel) return down.startsWith('node_modules/') && /(^|\/)node_modules\/[^/.]/.test(down) ? rel : null;
+  if (down !== rel) return down.startsWith('node_modules/') && PACKAGE_DIR.test(down) ? rel : null;
   if (!rel || rel === '..') return null; // a context inside the package
-  return /(^|\/)node_modules\//.test(rel) && !/(^|\/)node_modules\/[^/.]/.test(rel) ? null : rel; // not node_modules/.cache
+  return /(^|\/)node_modules\//.test(rel) && !PACKAGE_DIR.test(rel) ? null : rel; // not node_modules/.cache
 }
 
 // The key of a package at `location` (see locationKey) as npm lays packages out, where the key starts with
