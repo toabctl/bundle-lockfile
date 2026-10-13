@@ -22,11 +22,15 @@ const STYLE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss|sss)$/i;
 // every resolver; tsconfig.json and the bases it extends; Babel, browserslist, PostCSS, SWC and ESLint settings).
 const CODE = /\.([cm]?[jt]sx?|node|vue|svelte|astro)$/i;
 const CONFIG = /^(package\.json|[jt]sconfig(\..*)?\.json|\.babelrc(\..*)?|babel\.config\.json|\.browserslistrc|browserslist|\.postcssrc(\..*)?|\.swcrc|\.eslintrc(\..*)?|\.npmrc|\.yarnrc(\.yml)?)$/i;
-// (a path, query strings allowed: whether such a file is a package's is up to the caller)
+// (a path, query strings allowed, relative to the working directory; whether such a file is a package's is up to the
+// caller). No directories: webpack 5's snapshots also have those a module's build looked into
+// (@vanilla-extract/webpack-plugin's loader: node_modules/@vanilla-extract, the package's directory, ...). A path that
+// is not there (any more) counts by its name.
 function inlinedFile(f) {
   if (typeof f !== 'string') return false;
   const file = f.split('?')[0];
-  return !!file && !CODE.test(file) && !CONFIG.test(path.basename(file));
+  if (!file || CODE.test(file) || CONFIG.test(path.basename(file))) return false;
+  try { return !fs.statSync(file).isDirectory(); } catch { return true; }
 }
 
 // Bundled code from a package the lockfile cannot list as itself must not go unnoticed: listed as the package around

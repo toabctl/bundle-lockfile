@@ -1,6 +1,6 @@
 // The canary app built with esbuild's JavaScript API (src/index.js: the JavaScript and the CSS); the shader through an
-// esbuild plugin (include-plugin.mjs's include, from onLoad, its file in watchFiles), the image a style sheet uses
-// inlined as a data: URL
+// esbuild plugin (what include-plugin.mjs does for Rollup and Vite, in onLoad: the included file in watchFiles), the image
+// a style sheet uses inlined as a data: URL
 // BLTEST_ESBUILD_ORACLE=<dir> (oracles/esbuild.cjs): with source maps, into <dir>
 import fs from 'node:fs';
 import { createRequire } from 'node:module';

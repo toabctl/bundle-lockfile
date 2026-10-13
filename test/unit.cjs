@@ -515,15 +515,22 @@ test('webpack adapter: files a shipped module\'s loaders inlined from packages (
   assert.deepEqual(lockedNames(plugin().lockfile(c)), ['glsl-noise', 'locales', 'vendor-copy']);
 });
 
-test('packages: inlinedFile - files a loader or plugin inlines, not code or build tools\' settings', () => {
+test('packages: inlinedFile - files a loader or plugin inlines, not code, build tools\' settings or directories', () => {
   const { inlinedFile } = require('../src/core/packages.cjs');
-  for (const f of ['/p/node_modules/x/a.glsl', '/p/node_modules/x/i.svg', '/p/node_modules/x/f.woff2', '/p/node_modules/x/de.json', '/p/node_modules/x/s.scss',
-    '/p/node_modules/x/a.css?inline', '/p/node_modules/x/LICENSE', '/p/node_modules/x/m.wasm']) assert.equal(inlinedFile(f), true, f);
-  for (const f of ['/p/node_modules/x/a.js', '/p/node_modules/x/a.mjs', '/p/node_modules/x/a.ts', '/p/node_modules/x/a.d.ts', '/p/node_modules/x/a.d.mts',
-    '/p/node_modules/x/a.tsx', '/p/node_modules/x/c.vue', '/p/node_modules/x/c.svelte', '/p/node_modules/x/b.node', '/p/node_modules/x/package.json',
-    '/p/node_modules/@tsconfig/x/tsconfig.json', '/p/node_modules/@vue/tsconfig/tsconfig.dom.json', '/p/node_modules/x/jsconfig.json',
-    '/p/node_modules/x/.babelrc', '/p/node_modules/x/.babelrc.json', '/p/node_modules/x/babel.config.json', '/p/node_modules/x/.browserslistrc',
-    '/p/node_modules/x/.postcssrc.json', '/p/node_modules/x/.swcrc', '/p/node_modules/x/.eslintrc.json', '', null]) assert.equal(inlinedFile(f), false, f);
+  const yes = ['node_modules/x/a.glsl', 'node_modules/x/i.svg', 'node_modules/x/f.woff2', 'node_modules/x/de.json', 'node_modules/x/s.scss',
+    'node_modules/x/LICENSE', 'node_modules/x/m.wasm'];
+  const no = ['node_modules/x/a.js', 'node_modules/x/a.mjs', 'node_modules/x/a.ts', 'node_modules/x/a.d.ts', 'node_modules/x/a.d.mts',
+    'node_modules/x/a.tsx', 'node_modules/x/c.vue', 'node_modules/x/c.svelte', 'node_modules/x/b.node', 'node_modules/x/package.json',
+    'node_modules/@tsconfig/x/tsconfig.json', 'node_modules/@vue/tsconfig/tsconfig.dom.json', 'node_modules/x/jsconfig.json',
+    'node_modules/x/.babelrc', 'node_modules/x/.babelrc.json', 'node_modules/x/babel.config.json', 'node_modules/x/.browserslistrc',
+    'node_modules/x/.postcssrc.json', 'node_modules/x/.swcrc', 'node_modules/x/.eslintrc.json'];
+  const root = project(Object.fromEntries([...yes, ...no].map(f => [f, 'x'])));
+  for (const f of yes) assert.equal(inlinedFile(J(root, f)), true, f);
+  assert.equal(inlinedFile(`${J(root, 'node_modules/x/s.scss')}?inline`), true);
+  for (const f of no) assert.equal(inlinedFile(J(root, f)), false, f);
+  // directories (webpack 5's snapshots have those a loader looked into), no path; a file that is gone counts by its name
+  for (const f of [J(root, 'node_modules/x'), J(root, 'node_modules/@tsconfig'), '', null]) assert.equal(inlinedFile(f), false, f);
+  assert.equal(inlinedFile(J(root, 'node_modules/x/gone.svg')), true);
 });
 
 test('webpack adapter: inlined child compilations count, build-time ones do not', () => {
@@ -4532,4 +4539,12 @@ test('test helper: the canary check decodes data: URLs (base64 and percent-encod
   assert.deepEqual(dataUrls(`${b64} a ${pct} data:text/plain,%E0%A4%A`), [svg, svg]); // (a malformed one is skipped)
   const root = project({ 'dist/a.css': b64, 'dist/b.css': pct.replace('bl-canary-icon', 'bl-canary-other') });
   assert.deepEqual(canaries(J(root, 'dist')), ['bl-canary-icon@1.0.0', 'bl-canary-other@1.0.0']);
+});
+test('webpack adapter: directories among a module\'s file dependencies (webpack 5 snapshots) are no files it inlined', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('@vanilla-extract/webpack-plugin'), 'node_modules/@vanilla-extract/webpack-plugin/loader/dist/x.js': '' });
+  const nm = (f) => J(root, 'node_modules', f);
+  const c = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'src/styles.css.js'), buildInfo: { snapshot: {
+    getFileIterable: () => [J(root, 'src/styles.css.js'), nm('@vanilla-extract'), nm('@vanilla-extract/webpack-plugin'), nm('@vanilla-extract/webpack-plugin/loader/dist')] } } }] }] });
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), []);
 });
