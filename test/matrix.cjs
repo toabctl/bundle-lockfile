@@ -1235,7 +1235,7 @@ const cases = [
   { name: 'Parcel: BUNDLE_LOCKFILE_DISABLE=parcel', fixture: 'parcel', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'parcel' }, expect: null },
   // a failing adapter (Parcel's command line wraps the lines of an error at the terminal's width: \s+)
   { name: 'strict: failing adapter fails the build (Parcel 2.16.4)', fixture: 'parcel', cmd: 'npm run -s build', nodeOptions: FAULT,
-    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of \S+:\s+injected fault/ },
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of\s+\S+:\s+injected fault/ },
   { name: 'STRICT=0: failing adapter does not break the build (Parcel 2.16.4)', fixture: 'parcel', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages/ },
   // (Parcel 2.0.0's own dependencies are ranges, ^2.0.0: its runtime, @parcel/runtime-js, is the latest 2.x)
