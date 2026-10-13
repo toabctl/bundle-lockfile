@@ -18,6 +18,7 @@ What is supported and tested, which processes are hooked, and what is particular
 | Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
+| Parcel | 2 | 2.0 (with the 2.16 plugins its ranges install), 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
   older Node.js versions only some processes get ([which processes](#which-processes-are-hooked)).
@@ -45,13 +46,13 @@ Package managers tested ([details](../test/README.md#environments)):
 | Next.js, SvelteKit, Rollup, Rolldown, Rslib | npm (the `rollup` command line also yarn 4 Plug'n'Play and pnpm) |
 | esbuild | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 | Nuxt | pnpm 10 |
+| Parcel | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
 
 Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile): Turbopack (Next.js
-16's default build; known when `next build` ends), Parcel (its `run()`, not `parcel watch` or `serve`), the `rolldown`
-command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack < 4 and rspack 0.x (when a compiler
+16's default build; known when `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack < 4 and rspack 0.x (when a compiler
 compiles).
 
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Angular's
@@ -61,8 +62,8 @@ esbuild builder (it builds with `write: false` and writes the files itself), Bun
 ## Which processes are hooked
 
 The CommonJS bundlers — webpack (also Next.js' copy), rspack 1, Rollup's CommonJS build (`require('rollup')`, the
-`rollup` command line), esbuild's API (also through `import`) — are hooked in every process that preloads
-bundle-lockfile. The ES-module bundlers — Vite,
+`rollup` command line), esbuild's API (also through `import`), Parcel's `@parcel/core` — are hooked in every process
+that preloads bundle-lockfile. The ES-module bundlers — Vite,
 which imports Rollup and Rolldown as ES modules, Rolldown, rspack 2, Rollup through `import` — need a Node.js ESM
 hook:
 - Node.js 24.12, 25.2 and later: hooked in every process.
@@ -156,6 +157,22 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   `node /opt/bundle-lockfile/bin/bundle-lockfile-from-metafile meta.json` writes it into the directory of the outputs
   (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one). It sees no
   `watchFiles` and no files copied with fs; it reads the settings and fails as a build would.
+
+## Parcel
+
+Every Parcel gets bundle-lockfile's reporter — `parcel build`, `parcel watch` and `new Parcel()` of its JavaScript
+API — the way Parcel's own command line adds its reporters (`additionalReporters`), without a
+`.parcelrc`. Reporters are no part of `.parcel-cache`: a build with a cache that a build without bundle-lockfile left
+writes the lockfile too.
+
+- The lockfile goes into each target's `distDir`, once Parcel wrote the bundles (`buildSuccess`); in watch mode after
+  every rebuild. A failed build changes nothing.
+- It lists the packages of the assets of every bundle (also of bundles inlined into others), except those the
+  scope-hoisting packager leaves out (no side effects, no used symbol, not referenced). CSS `@import`s and files a
+  style sheet's `url()` loads (fonts) are assets. So is Parcel's runtime, which loads lazy bundles: Parcel generates it
+  as a file of `@parcel/runtime-js`, which is listed.
+- Sass and Less partials (`@use`, `@import`) are inlined by Parcel's transformers and no assets: not listed.
+- A problem fails the build: the reporter throws, Parcel reports the build as failed.
 
 ## Next.js
 

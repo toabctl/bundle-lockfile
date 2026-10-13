@@ -2,7 +2,8 @@
 
 Records which npm packages end up in a JavaScript bundle and writes them as a `package-lock.json` next to the build
 output, without changing the project's build config. Supports webpack 4 and 5 (also the copy inside Next.js), rspack
-1.1+ and 2 (also inside Rsbuild), Vite, Rollup and Rolldown (also inside SvelteKit), and esbuild's JavaScript API.
+1.1+ and 2 (also inside Rsbuild), Vite, Rollup and Rolldown (also inside SvelteKit), esbuild's JavaScript API, and
+Parcel 2.
 
 It is for whoever builds and ships a bundled JavaScript application and needs its SBOM to list what is shipped:
 distribution packagers and image builders (it is developed for [melange](https://github.com/chainguard-dev/melange)
@@ -41,7 +42,7 @@ webpack processed, which includes tree-shaken packages and build-time loaders, a
 ## How it works
 
 1. `register.cjs`, preloaded with `NODE_OPTIONS="--require ..."`, hooks Node.js's module loading. When the build
-   loads webpack, rspack, Rollup, Rolldown or esbuild, it patches the bundler so that every build gets
+   loads webpack, rspack, Rollup, Rolldown, esbuild or Parcel, it patches the bundler so that every build gets
    bundle-lockfile's plugin. The project's config and dependencies stay as they are.
 2. After the bundler has decided what goes into the output, the plugin takes the source files of the modules in the
    chunks the build writes, and the package files that reach the output otherwise: shipped workers, copied files,
@@ -265,6 +266,7 @@ must not go on without doing what was asked of it. Every setting in full, and wh
 | Rollup | 4 | also `@rollup/wasm-node` |
 | Rolldown | 1 | not the `rolldown` command line |
 | esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line ([details](docs/bundlers.md#esbuild)) |
+| Parcel | 2 | `parcel build`, `parcel watch`, its JavaScript API ([details](docs/bundlers.md#parcel)) |
 
 Watch mode writes the lockfile after every rebuild; rspack's dev servers serve it from memory. The tested versions,
 Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, bun, turbo, workspaces) are in
@@ -273,8 +275,8 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 ## Limitations
 
 - **Recognized, not hooked** — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile): Turbopack
-  (Next.js 16's default build: use `next build --webpack`), Parcel, the `rolldown` command line, `@vercel/ncc`,
-  webpack < 4, rspack 0.x.
+  (Next.js 16's default build: use `next build --webpack`), the `rolldown` command line, `@vercel/ncc`, webpack < 4,
+  rspack 0.x.
 - **Not hooked** — no lockfile, and no failure: the `esbuild` command line and Go API (their metafile gives one:
   [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Angular's esbuild builder (it writes the files itself),
   Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), and a bundler in a

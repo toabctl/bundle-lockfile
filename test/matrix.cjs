@@ -70,6 +70,11 @@ const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'np
     '@rollup/plugin-typescript': '12.3.0', typescript: '5.9.3', tslib: '2.8.1' },
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
 // Rollup's and Rolldown's JavaScript APIs, called by a build script (build.mjs <mode>), and the rolldown command line
+// Parcel 2 (test/apps/parcel): the parcel command line, and build.mjs for its JavaScript API
+const parcelApp = (parcel, installer = { type: 'npm' }) => ({ app: 'parcel', bundler: 'parcel', installer,
+  deps: { parcel, '@parcel/core': parcel, '@parcel/config-default': parcel, 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20',
+    'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.2', 'is-number': '7.0.0' },
+  packageJson: { scripts: { build: 'parcel build src/index.html --dist-dir dist' } } });
 const esbuildApp = (esbuild, installer = { type: 'npm' }, extra = {}) => ({ app: 'esbuild', bundler: 'esbuild', installer,
   deps: { esbuild, 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20', 'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.2', 'is-number': '7.0.0', ...extra },
   packageJson: { type: 'module', scripts: { build: 'node build.mjs build' } } });
@@ -189,6 +194,11 @@ const fixtures = {
   'esbuild-yarn4-pnp': esbuildApp('0.28.2', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'esbuild-wasm': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-wasm': '0.28.2' }),
   'esbuild-features': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-sass-plugin': '3.7.0', sass: '1.105.1', bulma: '1.0.4', 'sanitize.css': '13.0.0' }),
+  // Parcel 2: the latest, the first release; installers
+  'parcel': parcelApp('2.16.4'),
+  'parcel-floor': parcelApp('2.0.0'),
+  'parcel-pnpm10': parcelApp('2.16.4', { type: 'pnpm', version: '10.34.6' }),
+  'parcel-yarn4-pnp': parcelApp('2.16.4', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   // a project directory with "#" in its name, which is no fragment of the module ids
   'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
@@ -400,6 +410,7 @@ const fixtures = {
     { type: 'module', scripts: { build: 'node rolldown.mjs build' } })])),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
   'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
+  'canary-parcel': canary('parcel', { parcel: '2.16.4', '@parcel/transformer-glsl': '2.16.4' }, { scripts: { build: 'parcel build parcel.html --dist-dir dist' } }),
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
   'edge-manifests-wp5': manifests('webpack', WEBPACK),
   'edge-manifests-vite8': manifests('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
@@ -416,6 +427,9 @@ const ROLLUP_API = ['lodash-es@4.18.1', 'nanoid@3.3.20'];
 // test/apps/esbuild: not uuid (imported, unused); debug with its own ms@2.0.0; bootstrap-icons' font (the file loader)
 // and normalize.css (@imported by the CSS)
 const ESBUILD = ['bootstrap-icons@1.13.2', 'debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'normalize.css@8.0.1'];
+// test/apps/parcel: as ESBUILD (the font through a style sheet's url()), is-number; and Parcel's runtime, which loads
+// the lazy bundle (a file Parcel generates in @parcel/runtime-js)
+const PARCEL = (v) => [...ESBUILD, 'is-number@7.0.0', `@parcel/runtime-js@${v}`].sort();
 // watch modes: the build, the rebuild without nanoid, the rebuild with it again
 const ROLLUP_WATCH_BUILDS = [ROLLUP_API, ['lodash-es@4.18.1'], ROLLUP_API];
 const CANARY_JS = ['bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0', 'bl-canary-used@1.0.0'];
@@ -965,7 +979,7 @@ const cases = [
     { name: `strict: a misspelled setting fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export' },
       expectError: /BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ },
     { name: `strict: a value that is not recognized fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'rsbuild' },
-      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild or all/ }]),
+      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel or all/ }]),
   ...[['webpack 5', 'wp5-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].map(([what, fixture]) => (
     { name: `STRICT=0: a misspelled setting is a warning (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export', BUNDLE_LOCKFILE_STRICT: '0' },
       expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ })),
@@ -1207,6 +1221,27 @@ const cases = [
   { name: 'esbuild 0.28.2: export directory only (an output Go embeds)', fixture: 'esbuild', cmd: 'node build.mjs build', exportOnly: true, expect: ESBUILD,
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'esbuild: BUNDLE_LOCKFILE_DISABLE=esbuild', fixture: 'esbuild', cmd: 'node build.mjs build', env: { BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, expect: null },
+  // Parcel 2: every Parcel gets the reporter (the command line, the JavaScript API, watch mode); not uuid (unused); the
+  // font has no source map (the oracle's)
+  { name: 'Parcel 2.16.4: parcel build', fixture: 'parcel', cmd: 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Parcel 2.16.4: JavaScript API, run()', fixture: 'parcel', cmd: 'node build.mjs api', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Parcel 2.16.4: JavaScript API, watch(): every rebuild writes the lockfile, with the packages of that build', fixture: 'parcel', cmd: 'node build.mjs watch',
+    expect: PARCEL('2.16.4'), watchBuilds: [PARCEL('2.16.4'), PARCEL('2.16.4').filter(p => p !== 'is-number@7.0.0'), PARCEL('2.16.4')],
+    oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // reporters are no part of Parcel's cache: a build after one without bundle-lockfile (a warm .parcel-cache) writes it
+  { name: 'Parcel 2.16.4: a build with a cache from a build without bundle-lockfile', fixture: 'parcel', cmd: 'NODE_OPTIONS= npm run -s build && rm -rf dist && npm run -s build',
+    expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Parcel 2.16.4: export directory only', fixture: 'parcel', cmd: 'npm run -s build', exportOnly: true, expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Parcel: BUNDLE_LOCKFILE_DISABLE=parcel', fixture: 'parcel', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'parcel' }, expect: null },
+  // a failing adapter (Parcel's command line wraps the lines of an error at the terminal's width: \s+)
+  { name: 'strict: failing adapter fails the build (Parcel 2.16.4)', fixture: 'parcel', cmd: 'npm run -s build', nodeOptions: FAULT,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of \S+:\s+injected fault/ },
+  { name: 'STRICT=0: failing adapter does not break the build (Parcel 2.16.4)', fixture: 'parcel', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages/ },
+  // (Parcel 2.0.0's own dependencies are ranges, ^2.0.0: its runtime, @parcel/runtime-js, is the latest 2.x)
+  ...[['2.0.0 (the first release)', 'parcel-floor', '2.16.4'], ['2.16.4, pnpm 10', 'parcel-pnpm10', '2.16.4'], ['2.16.4, yarn 4 Plug\'n\'Play', 'parcel-yarn4-pnp', '2.16.4']].map(([what, fixture, v]) => (
+    { name: `Parcel ${what}: parcel build`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'npm run -s build', expect: PARCEL(v), oracleMissing: ['bootstrap-icons@1.13.2'],
+      ...(fixture === 'parcel-floor' && { installed: ['@parcel/core@2.0.0'] }) })),
   { name: 'esbuild-wasm 0.28.2: build()', fixture: 'esbuild-wasm', cmd: 'node build.mjs build', env: { BLTEST_ESBUILD_PKG: 'esbuild-wasm' }, expect: ESBUILD,
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   ...[['0.19.12 (Vite 5\'s)', 'esbuild-0.19'], ['0.17.0 (the oldest supported)', 'esbuild-floor'], ['0.28.2, pnpm 10', 'esbuild-pnpm10'], ['0.28.2, yarn 4 Plug\'n\'Play', 'esbuild-yarn4-pnp']].map(([what, fixture]) => (
@@ -1638,6 +1673,13 @@ const cases = [
   { name: 'canaries: rolldown-vite 7.3.1', fixture: 'canary-rolldown-vite7', cmd: 'npm run -s build', expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL] },
   { name: 'canaries: Vite 8.3.3, plugin in the config (no NODE_OPTIONS)', fixture: 'canary-vite8', cmd: 'npm run -s build', inject: false,
     env: { VITE_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL] },
+  // Parcel (parcel.html: its own style sheet, see src/parcel.js): the @imported style sheet, the images (a style sheet's
+  // url(), new URL()) are assets of their own; @parcel/transformer-glsl leaves the shader's #include line as it is, so
+  // nothing of bl-canary-glsl is shipped (no marker, not listed); the oracle's source maps have no source for the
+  // images. Parcel's runtime resolves new URL()'s asset at run time: @parcel/runtime-js
+  { name: 'canaries: Parcel 2.16.4', fixture: 'canary-parcel', cmd: 'npm run -s build', oracleArgs: 'parcel.html',
+    expect: [...CANARY_JS, ...CANARY_INLINED.all.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_URL, '@parcel/runtime-js@2.16.4'].sort(),
+    oracleMissing: ['bl-canary-icon@1.0.0', CANARY_URL] },
   // Vite records the images a style sheet inlines as data: URLs from 6.1 on (vitejs/vite#18979), those JavaScript
   // inlines with new URL() from 7 on: before, nothing the build records names their files - their markers are in the
   // output, their packages not listed

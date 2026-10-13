@@ -33,7 +33,7 @@ output is written is printed and the watcher goes on. A bundler that cannot be h
 | `could not read the settings file <file>` | `config.json` next to `register.cjs`, or the file `BUNDLE_LOCKFILE_CONFIG` names, is not a JSON object, cannot be read, or (named) does not exist | fix the file or `BUNDLE_LOCKFILE_CONFIG` ([settings](configuration.md#invalid-settings-fail-the-build)) |
 | `rspack <version> is not supported (it needs 1.1 or later)` | rspack 1.0 or 0.x | upgrade rspack |
 | `Next.js built with Turbopack, which bundle-lockfile does not hook …` | `next build` with Turbopack (Next.js 16's default, `--turbopack` before) | `next build --webpack`, or next-rspack |
-| `Parcel is not hooked …`, `the rolldown command line is not hooked …`, `@vercel/ncc builds with a webpack of its own …`, `webpack before 4 is not supported …` | a bundler bundle-lockfile recognizes but does not hook: its build would ship without a lockfile | build with a [supported bundler](../README.md#supported) (Rolldown: its JavaScript API or Vite), or `BUNDLE_LOCKFILE_STRICT=0` where no lockfile is needed |
+| `the rolldown command line is not hooked …`, `@vercel/ncc builds with a webpack of its own …`, `webpack before 4 is not supported …` | a bundler bundle-lockfile recognizes but does not hook: its build would ship without a lockfile | build with a [supported bundler](../README.md#supported) (Rolldown: its JavaScript API or Vite), or `BUNDLE_LOCKFILE_STRICT=0` where no lockfile is needed |
 | `Rolldown <version>: could not read the files its plugins inlined (…): style sheets @imported from packages would be missing from <lockfile>` | a Rolldown (also Vite 8's) whose plugin contexts bundle-lockfile does not know, in a build with style sheets and without the build object `rolldown()` returns (`build()`, `watch()`, `vite build --watch`) | report it; build with `rolldown()` (`vite build` without `--watch`) |
 | `BUNDLE_LOCKFILE_… is set, but is no setting of bundle-lockfile`, `… is not recognized`, `… is none of …`, `… is not an absolute path`, `… without BUNDLE_LOCKFILE_EXPORT_DIR`, `… needs module.registerHooks …`, `the settings file … sets …` | a setting bundle-lockfile does not recognize, or that cannot work ([settings](configuration.md#invalid-settings-fail-the-build)) | fix the name or the value |
 | `another copy of bundle-lockfile is preloaded too: <register.cjs>` | two `--require`s of bundle-lockfile (e.g. one in the environment, one added by the recipe) | preload one |
@@ -70,8 +70,8 @@ They do not fail the build:
   lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
   shim](configuration.md#the-node-shim). `BUNDLE_LOCKFILE_DISABLE` may be set.
 - The bundler is not supported: the `esbuild` command line (build with its JavaScript API instead), Angular's esbuild
-  builder, Bun's own runtime (with `BUNDLE_LOCKFILE_STRICT=0` also those that fail in strict mode: Turbopack, Parcel,
-  the `rolldown` command line, ncc, webpack < 4, rspack 0.x).
+  builder, Bun's own runtime (with `BUNDLE_LOCKFILE_STRICT=0` also those that fail in strict mode: Turbopack, the
+  `rolldown` command line, ncc, webpack < 4, rspack 0.x).
 - On Node.js before 24.12 (25.2 on 25), Vite, Rollup, Rolldown and rspack 2 are hooked only in some processes: a
   programmatic build may need `BUNDLE_LOCKFILE_ESM_HOOKS=async` ([which
   processes](bundlers.md#which-processes-are-hooked)).
