@@ -13,6 +13,7 @@ const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
+const rolldownWatch = require('./rolldown-watch.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -177,8 +178,19 @@ function failClose(ctx, err) {
   throw err;
 }
 
-function createPlugin(kind, inputOptions) {
+// kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler
+// the plugin is added to (undefined: not known, a plugin from a config)
+function createPlugin(kind, inputOptions, engine) {
   const cwd = realCwd();
+  const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
+  let unreadable = null; // what keeps the files Rolldown's plugins inlined from being recorded (see rolldown-watch.cjs)
+  // Rollup: a build's watch files are only those of the modules it transforms (graph.watchFiles). A rebuild in watch mode
+  // takes unchanged modules from the previous build's cache, with their transform dependencies but without adding them
+  // there: a style sheet's @imports would leave the lockfile on every rebuild that does not change it. So the cache's
+  // modules' transform dependencies (from the options hook: Rollup drops the cache before buildStart) are taken for the
+  // modules this build did not transform (bundle-lockfile's transform hook did not see them).
+  let cachedDependencies = new Map(); // module id -> its transform dependencies, in the cache the build started from
+  let transformed = new Set();        // module ids this build transformed
   const buildOf = (bundle) => ({ context: cwd, entries: Object.values(bundle).filter(f => f.type === 'chunk' && f.isEntry).map(f => fileOf(f.facadeModuleId)).filter(Boolean) });
   // per output of the build, by its output options object: Rollup and Rolldown pass the same one to every hook of an
   // output, and outputs written at the same time (Promise.all of write()s, as the rollup command line does) can share
@@ -225,11 +237,46 @@ function createPlugin(kind, inputOptions) {
         } };
       },
     }),
+    // (Rollup: the options of the build, before Rollup takes the cache out of them)
+    ...(engine !== 'rolldown' && {
+      options(raw) {
+        cachedDependencies = new Map();
+        const modules = raw && raw.cache && Array.isArray(raw.cache.modules) ? raw.cache.modules : [];
+        for (const m of modules) if (m && typeof m.id === 'string' && Array.isArray(m.transformDependencies)) cachedDependencies.set(m.id, m.transformDependencies);
+        return null;
+      },
+    }),
     buildStart(options) {
       if (closed || !(this && this.meta && this.meta.rolldownVersion)) { written.clear(); modulesOf.clear(); ordinals.clear(); }
       closed = false;
+      transformed = new Set();
+      if (isRolldown(this)) unreadable = rolldownWatch.start(this);
       if (!inputOptions || inputOptions.input === undefined) input = options && options.input;
       since = Date.now() - 2000; // file systems with coarse timestamps
+    },
+    // Rolldown: the load and transform hooks' plugin contexts, whose addWatchFile records the files plugins inline (see
+    // rolldown-watch.cjs); before every other plugin's normal hooks (Vite's CSS plugin: a transform). Rollup: the
+    // modules a build transforms (see cachedDependencies)
+    ...(engine !== 'rollup' && {
+      load: {
+        order: 'pre',
+        handler(id) {
+          if (!isRolldown(this)) return null;
+          const problem = rolldownWatch.wrap(this);
+          if (problem) unreadable = problem;
+          rolldownWatch.loading(this, id);
+          return null;
+        },
+      },
+    }),
+    transform: {
+      order: 'pre',
+      handler(code, id) {
+        if (!isRolldown(this)) { transformed.add(id); return null; }
+        const problem = rolldownWatch.wrap(this);
+        if (problem) unreadable = problem;
+        return null;
+      },
     },
     renderStart(out) {
       if (!ordinals.has(out)) ordinals.set(out, ordinals.size);
@@ -295,7 +342,24 @@ function createPlugin(kind, inputOptions) {
             }
           }
           for (const id of ids) { const file = fileOf(id); if (file) sources.push(file); }
-          const inlined = inlinedFiles(await watchFilesOf(this, build), this);
+          // Rolldown: the files plugins inlined into this output's modules, as recorded (rolldown-watch.cjs), and the
+          // build's watch files if rolldown() returned the build. Neither, in a build with style (style modules, CSS
+          // files): the style sheets @imported from packages would be missing - a problem
+          const watched = [...await watchFilesOf(this, build)];
+          if (isRolldown(this)) {
+            const recorded = unreadable ? null : rolldownWatch.filesOf(this, ids);
+            if (recorded) watched.push(...recorded);
+            const style = [...ids].some(id => STYLE.test(fileOf(id) || '')) || Object.values(bundle).some(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
+            if (!recorded && !build && style) {
+              problems.problem(`${kind}: Rolldown ${this.meta.rolldownVersion}: could not read the files its plugins inlined (${unreadable || 'the build was not seen starting'}): style sheets @imported from packages would be missing from ${path.join(dir, config.file)}`);
+            }
+          }
+          if (!isRolldown(this) && cachedDependencies.size) {
+            let all = [];
+            try { all = [...this.getModuleIds()]; } catch { /* none */ }
+            for (const id of all) if (!transformed.has(id) && cachedDependencies.has(id)) watched.push(...cachedDependencies.get(id));
+          }
+          const inlined = inlinedFiles(watched, this);
           sources.push(...inlined);
           const { all, byFile } = packages.packagesOfFiles(sources, buildOf(bundle));
           const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
@@ -361,7 +425,7 @@ function attach(id, options) {
   const kind = plugins.some(p => typeof p.name === 'string' && VITE.test(p.name)) ? 'vite' : id;
   if (config.isDisabled(kind)) { config.debug(`${kind}: disabled`); return options; }
   config.debug(`${kind}: adding the plugin to a ${id}() call`);
-  return { ...options, plugins: [...[].concat(options.plugins == null ? [] : options.plugins), createPlugin(kind, options)] };
+  return { ...options, plugins: [...[].concat(options.plugins == null ? [] : options.plugins), createPlugin(kind, options, id)] };
 }
 
 const each = (id, v) => (Array.isArray(v) ? v.map(o => attach(id, o)) : attach(id, v));

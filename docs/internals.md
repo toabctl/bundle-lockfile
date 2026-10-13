@@ -178,9 +178,22 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   `.browserslistrc`, ...; JSON other than that counts).
   - In Vite, Rollup and Rolldown builds: such files among the build's watch files (`this.addWatchFile`; Vite's CSS
     plugin adds what a style sheet `@import`s, from Vite 6.1 on also the files its `url()`s inline) that are no module
-    of the build - not even one that was tree-shaken. Rolldown provides them only on the build object `rolldown()`
-    returns, so Rolldown's `build()` and `watch()` functions — which `vite build --watch` on Vite 8 calls — do not
-    list them.
+    of the build - not even one that was tree-shaken.
+  - Rollup records a build's watch files only from the modules it transforms: a rebuild in watch mode takes unchanged
+    modules from the previous build's cache, without adding their transform dependencies. The plugin reads the
+    cache's modules' `transformDependencies` in its `options` hook (Rollup drops the cache before `buildStart`) and
+    takes them for the modules its own `transform` hook did not see in this build.
+  - Rolldown provides the watch files only on the build object `rolldown()` returns, not to its plugins (no
+    `getWatchFiles`, rolldown#819), and its `build()` and `watch()` functions — which `vite build --watch` on Vite 8
+    calls — not at all. So `adapters/rolldown-watch.cjs` wraps `addWatchFile` on Rolldown's plugin context classes
+    (`PluginContextImpl`, and its subclasses for the load and transform hooks, each with its own `addWatchFile`): the
+    plugin meets an instance of each in its own `buildStart`, `load` and `transform` hooks (`order: 'pre'`, before
+    Vite's CSS plugin) and wraps the method of the prototype that has it, once per copy of Rolldown. Each call is
+    recorded for the build whose `data` the context has (one per build, shared by all plugins' contexts) and the module
+    it is made for (`moduleId`, `currentLoadingModule`; none: the whole build's); a module's records start over when
+    it is loaded again. An output takes the records of its chunks' modules and those of no module, and the build's
+    watch files where `rolldown()` returned them. A Rolldown build with style (style modules, CSS files) with neither
+    is a problem: its style sheets `@import`ed from packages would be missing.
   - In webpack and rspack builds: such files among the file dependencies of a shipped module, which its loaders
     record (`this.addDependency`): Sass partials (sass-loader), Less `@import`s (less-loader), postcss-import's and
     Tailwind's style sheets (postcss-loader) - of a style sheet, and of any module whose loaders compile style (a Vue
@@ -378,6 +391,7 @@ src/adapters/rspack.cjs   rspack: hooks rspack's Compiler (every copy loaded)
 src/adapters/webpack-family.cjs  webpack and rspack: which source files are in a compiler's emitted output (the plugin)
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
 src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that reads the metafile's inputs per output
+src/adapters/rolldown-watch.cjs  Rolldown: the files its plugins inlined (addWatchFile of its plugin contexts), per build and module
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
