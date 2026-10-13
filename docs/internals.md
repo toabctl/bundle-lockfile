@@ -82,7 +82,7 @@ sequenceDiagram
   alt only generates (worker, legacy polyfills, generate()) or output below node_modules
     P->>C: keep each chunk's packages in memory, by content and by entry file
   else writes
-    P->>P: source files: chunk modules, assets' original files, style files among the watch files
+    P->>P: source files: chunk modules, assets' original files, inlined files among the watch files
     P->>C: packages, plus those of in-memory builds whose bytes are in this bundle or whose entry a module imports with a query, recorded with the hashes and packages of its JS and CSS files
   end
   B->>D: writes the output files
@@ -171,18 +171,24 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   written output (a chunk or JavaScript asset with that content), or where a module imports the build's entry file
   with a query (`?worker&inline`). So are the package files their assets were emitted from (a worker's font), by the
   asset's bytes: the main build emits them again without naming the file.
-- **style sheets that a style sheet `@import`s from a package** (CSS, Sass, Less, Stylus; inlined into it, so they are
-  no modules): in Vite, Rollup and Rolldown builds the style files among the build's watch files. Rolldown provides
-  those only on the build object `rolldown()` returns, so Rolldown's `build()` and `watch()` functions — which `vite
-  build --watch` on Vite 8 calls — do not list them. In webpack and rspack builds the style files among the file
-  dependencies of a shipped module, which its loaders record: Sass partials (sass-loader), Less `@import`s
-  (less-loader), postcss-import's and Tailwind's style sheets (postcss-loader) - of a style sheet, and of any module
-  whose loaders compile style (a Vue single-file component's `<style lang="scss">`, `App.vue?vue&type=style`, whose
-  file is `App.vue`; an Angular component's styles). A style module's file dependencies in packages that are no code
-  (images, fonts) are listed too: what its CSS embeds as `data:` URLs, from asset modules mini-css-extract-plugin
-  builds at build time, in no chunk. A style module that recorded no file dependencies at all (rspack before 1.3.14;
-  webpack 5 when its snapshot failed) lists every style sheet below `node_modules` among the compilation's file
-  dependencies.
+- **files a loader or plugin inlines into a module** (style sheets a style sheet `@import`s, images and fonts it
+  inlines as `data:` URLs, a shader's `#include`s, JSON merged in): no modules, recorded only by the loader or plugin
+  that read them. A recorded file counts if it is no code and no build tool's settings by its name
+  (`packages.inlinedFile`: not `.js`, `.ts`, `.d.ts`, `.vue`, ..., not `package.json`, `tsconfig*.json`, `.babelrc`,
+  `.browserslistrc`, ...; JSON other than that counts).
+  - In Vite, Rollup and Rolldown builds: such files among the build's watch files (`this.addWatchFile`; Vite's CSS
+    plugin adds what a style sheet `@import`s, from Vite 6.1 on also the files its `url()`s inline) that are no module
+    of the build - not even one that was tree-shaken. Rolldown provides them only on the build object `rolldown()`
+    returns, so Rolldown's `build()` and `watch()` functions — which `vite build --watch` on Vite 8 calls — do not
+    list them.
+  - In webpack and rspack builds: such files among the file dependencies of a shipped module, which its loaders
+    record (`this.addDependency`): Sass partials (sass-loader), Less `@import`s (less-loader), postcss-import's and
+    Tailwind's style sheets (postcss-loader) - of a style sheet, and of any module whose loaders compile style (a Vue
+    single-file component's `<style lang="scss">`, `App.vue?vue&type=style`, whose file is `App.vue`; an Angular
+    component's styles) -, glslify-loader's includes, a style module's images and fonts (what its CSS embeds as
+    `data:` URLs, from asset modules mini-css-extract-plugin builds at build time, in no chunk). A style module that
+    recorded no file dependencies at all (rspack before 1.3.14; webpack 5 when its snapshot failed) lists every
+    style sheet below `node_modules` among the compilation's file dependencies.
 - **files other plugins write into the output after the build** (Vite, Rollup, Rolldown: in a `closeBundle` hook that
   runs before bundle-lockfile's; webpack and rspack on the real disk: in an `afterEmit` hook that runs before
   bundle-lockfile's, or in the emit hook): JavaScript files with the bytes of a chunk of a build that writes nothing

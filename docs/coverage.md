@@ -29,13 +29,18 @@ the source maps show none of its code.
   @vitejs/plugin-legacy's polyfills, workbox-build's service worker (vite-plugin-pwa, workbox-webpack-plugin's
   `GenerateSW`), and any `generate()` or `build.write: false` build. Their packages are listed where their bytes end up
   in a written output, or where a module imports their entry with `?worker&inline`.
-- **style sheets `@import`ed from packages**, which are inlined and so are no modules: CSS, Sass, Less and Stylus in
-  Vite, Rollup and Rolldown; Sass, Less, postcss-import and Tailwind through their webpack loaders, also in a Vue
-  single-file component's `<style>` block and an Angular component's styles. Not in Rolldown's `build()` and `watch()`
-  (which `vite build --watch` on Vite 8 calls), nor with a plugin from the config in a Rolldown or Vite 8 build without
-  the preload.
-- **images and fonts from packages that webpack inlines into extracted CSS** as `data:` URLs (mini-css-extract-plugin
-  builds those asset modules at build time, in no chunk).
+- **files a loader or plugin inlines into a module**, which are no modules of their own, as the build records them (a
+  loader's `this.addDependency`, a plugin's `this.addWatchFile`):
+  - style sheets `@import`ed from packages: CSS, Sass, Less and Stylus in Vite, Rollup and Rolldown; Sass, Less,
+    postcss-import and Tailwind through their webpack loaders, also in a Vue single-file component's `<style>` block
+    and an Angular component's styles;
+  - images and fonts from packages that a style sheet inlines as `data:` URLs: in webpack and rspack builds (also
+    those mini-css-extract-plugin builds at build time, in no chunk), and in Vite builds from 6.1 on (an image that
+    JavaScript inlines with `new URL(..., import.meta.url)`: from Vite 7 on);
+  - other files: a shader's `#include`s (glslify-loader), JSON a loader or plugin merges into a module.
+
+  Not in Rolldown's `build()` and `watch()` (which `vite build --watch` on Vite 8 calls), nor with a plugin from the
+  config in a Rolldown or Vite 8 build without the preload.
 - **files other plugins write into the output after the build**, e.g. vite-plugin-pwa's `sw.js`,
   vite-plugin-static-copy's copies, a copy in webpack's `afterEmit` hook (filemanager-webpack-plugin's) (see
   [limits](internals.md#files-written-after-the-build)).
@@ -56,12 +61,16 @@ the source maps show none of its code.
 - files put into the output without the bundler, e.g. `cp node_modules/x/dist/x.js dist/` in a script; files copied
   out of a package by reading and writing them, or in another process (except files written into an output after the
   build whose path there contains `node_modules/<package>/`), e.g. `public/` files taken from a package once, by hand;
-- other package files a loader or plugin inlines into a module, except style sheets and the files style sheets
-  embed: e.g. GLSL `#include`s (glslify);
+- files a plugin inlines without recording them: vite-plugin-glsl's `#include`s in a production build, the icons
+  unplugin-icons inlines from `@iconify-json/*` packages (from a virtual module);
+- in Vite 5 and 6.0: a package's image or font that a style sheet's `url()` inlines as a `data:` URL (Vite's
+  `build.assetsInlineLimit`, 4 KiB by default), and before Vite 7 one that JavaScript inlines with `new URL()`: no
+  module, asset or file the build records names it;
+- files of packages that configure the build, which loaders and plugins read: `package.json` files, `tsconfig.json`
+  and the bases it extends (`@tsconfig/*`), type declarations (`@types/*`), Babel, browserslist, PostCSS, SWC and
+  ESLint settings;
 - style sheets that an esbuild plugin inlines (esbuild-sass-plugin's Sass partials): esbuild records only the file
   the plugin loaded;
-- in Vite, Rollup and Rolldown: a package's image or font that a style sheet's `url()` inlines as a `data:` URL (Vite's
-  `build.assetsInlineLimit`, 4 KiB by default): no module, asset or file the build records names it;
 - a package file webpack pulls in under a first-party match resource (`<name>!=!<loaders>!<file>`), e.g.
   vanilla-extract's placeholder in `@vanilla-extract/webpack-plugin`;
 - a package whose only use is a small constant that webpack 5.108+ inlined (`optimization.inlineExports`, on by
@@ -77,6 +86,8 @@ the source maps show none of its code.
 
 ## Listed although not shipped
 
+- the package of a file a loader or plugin records but inlines nothing from (one that is no code and no build tool's
+  settings by its name);
 - the package of a Sass partial with only variables that a style sheet `@import`s (it adds
   no bytes);
 - the packages of the style sheets a Vite SSR build imports, although it emits no CSS (plugins such as

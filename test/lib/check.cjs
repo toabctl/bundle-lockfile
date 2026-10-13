@@ -94,8 +94,20 @@ function unlocated(f) {
   return [...(m.outside || []), ...(m.unknown || [])];
 }
 
+// The data: URLs in a text, decoded (base64, or percent-encoded): what a bundler inlined into a file - an image a style
+// sheet uses, below the inline limit
+function dataUrls(text) {
+  const out = [];
+  for (const m of text.matchAll(/data:[\w.+-]+\/[\w.+-]+((?:;[\w.+-]+=[\w.+-]+)*)(;base64)?,([^"'()\s]*)/g)) {
+    try { out.push(m[2] ? Buffer.from(m[3], 'base64').toString('latin1') : decodeURIComponent(m[3])); } catch { /* not decodable */ }
+  }
+  return out;
+}
+
 // The canaries in the files below dir (test/apps/canary): name@version of each BLCANARY:<name>@<version> in their bytes,
-// gzip and brotli copies unpacked - what is shipped, whatever the bundler reports. Sorted, unique
+// gzip and brotli copies unpacked, data: URLs in them decoded - what is shipped, whatever the bundler reports. Sorted,
+// unique
+const MARKER = /BLCANARY:((?:@[\w.-]+\/)?[\w.-]+@\d+\.\d+\.\d+)/g;
 function canaries(dir) {
   const found = new Set();
   const walk = (d) => {
@@ -105,11 +117,12 @@ function canaries(dir) {
       if (!e.isFile()) continue;
       let bytes = fs.readFileSync(p);
       try { if (p.endsWith('.gz')) bytes = zlib.gunzipSync(bytes); else if (p.endsWith('.br')) bytes = zlib.brotliDecompressSync(bytes); } catch { /* not compressed */ }
-      for (const m of bytes.toString('latin1').matchAll(/BLCANARY:((?:@[\w.-]+\/)?[\w.-]+@\d+\.\d+\.\d+)/g)) found.add(m[1]);
+      const text = bytes.toString('latin1');
+      for (const t of [text, ...dataUrls(text)]) for (const m of t.matchAll(MARKER)) found.add(m[1]);
     }
   };
   if (fs.existsSync(dir)) walk(dir);
   return [...found].sort();
 }
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, canaries, sameMap, same, show };
+module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, canaries, dataUrls, sameMap, same, show };

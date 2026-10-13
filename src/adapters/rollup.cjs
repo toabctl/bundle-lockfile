@@ -20,7 +20,7 @@ const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native 
 // Vite 8's dependency pre-bundling (vite dev): a build into its cache directory, never shipped
 const PRE_BUNDLE = 'vite:dep-pre-bundle';
 const JS = /\.[cm]?js$/i;
-const { STYLE } = packages; // those a style sheet @imports from packages are inlined by Vite's CSS plugin, no modules
+const { STYLE } = packages;
 
 const flat = (plugins) => [].concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
 const moduleIds = (chunk) => chunk.moduleIds || Object.keys(chunk.modules || {});
@@ -49,12 +49,27 @@ function outputWriter(kind, input, out, ordinal, cwd) {
   return JSON.stringify([kind, inputs, out.format || null, ordinal, typeof out.entryFileNames === 'string' ? out.entryFileNames : null, ...(file ? [file] : [])]);
 }
 
-// Files the build depends on besides its modules (this.addWatchFile: Vite's CSS plugin adds the files a style sheet
-// @imports). Rollup has them in the plugin context; Rolldown only on the RolldownBuild that rolldown() returned.
+// The build's watch files: its modules, and the files its plugins read and inlined into a module (this.addWatchFile:
+// Vite's CSS plugin adds the style sheets a style sheet @imports, and from Vite 6.1 on the images and fonts it inlines
+// as data: URLs). Rollup has them in the plugin context; Rolldown only on the RolldownBuild that rolldown() returned.
 async function watchFilesOf(ctx, build) {
   try { if (typeof ctx.getWatchFiles === 'function') return ctx.getWatchFiles(); } catch { /* none */ }
   try { if (build) { const w = await build.watchFiles; if (Array.isArray(w)) return w; } } catch { /* none */ }
   return [];
+}
+
+// The files among the build's watch files that its plugins inlined (packages.inlinedFile), absolute: those that are no
+// module of the build (also not one that was tree-shaken: modules are bundled or not, never inlined).
+function inlinedFiles(watchFiles, ctx) {
+  let ids;
+  try { ids = new Set([...ctx.getModuleIds()].map(fileOf).filter(Boolean)); } catch { ids = new Set(); }
+  const out = [];
+  for (const f of watchFiles) {
+    if (typeof f !== 'string' || !path.isAbsolute(f) || !packages.inlinedFile(f)) continue;
+    const file = path.normalize(f);
+    if (!ids.has(file)) out.push(file);
+  }
+  return out;
 }
 
 // Packages of the output of generate-only builds that ends up in this bundle (see core/generated.cjs): chunks and
@@ -76,11 +91,13 @@ function generatedIn(bundle, ids) {
 // - a chunk: its modules' packages and those of generate-only builds in it - not those of style sheets Vite took out
 //   of it into CSS files (a style module without ?inline, ?raw or ?url, if the bundle has CSS files)
 // - a CSS file: the style modules of the chunks that import it (Vite's viteMetadata.importedCss; if no chunk does,
-//   all of the bundle's), the style sheets they @import from packages (styles: watch files, not known per CSS file),
-//   the files it was emitted from
+//   all of the bundle's), the files the build's plugins inlined (inlined: watch files, not known per CSS file), the
+//   files it was emitted from
+// - a chunk also: the files the build's plugins inlined that are no style sheets (a shader's #includes: not known per
+//   chunk either)
 // - a JavaScript asset (Vite's worker chunks): the generate-only chunk it is, the files it was emitted from
 // ids: the bundle's module ids; originals: asset -> files it was emitted from; byFile: packagesOfFiles(sources).byFile.
-function outputContents(bundle, dir, ids, originals, styles, byFile) {
+function outputContents(bundle, dir, ids, originals, inlined, byFile) {
   const hashes = {}, contents = {};
   const all = Object.values(bundle);
   const css = all.filter(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
@@ -94,13 +111,14 @@ function outputContents(bundle, dir, ids, originals, styles, byFile) {
     if (f.type === 'chunk') {
       const own = moduleIds(f).filter(id => !extracted(id));
       ofFiles(into, own.map(fileOf).filter(Boolean));
+      ofFiles(into, inlined.filter(i => !STYLE.test(i)));
       for (const p of generatedIn({ [f.fileName]: f }, own).values()) into.add(p.path);
       hashes[file] = sha256(f.code);
     } else if (css.includes(f)) {
       const importers = all.filter(c => c.type === 'chunk' && c.viteMetadata && c.viteMetadata.importedCss && c.viteMetadata.importedCss.has(f.fileName));
       const from = importers.length ? importers.flatMap(moduleIds) : [...ids];
       ofFiles(into, from.filter(extracted).map(fileOf));
-      ofFiles(into, styles);
+      ofFiles(into, inlined);
       ofFiles(into, originals.get(f) || []);
       hashes[file] = sha256(f.source);
     } else if (JS.test(f.fileName)) {
@@ -275,12 +293,11 @@ function createPlugin(kind, inputOptions) {
             }
           }
           for (const id of ids) { const file = fileOf(id); if (file) sources.push(file); }
-          const styles = [];
-          for (const f of await watchFilesOf(this, build)) if (typeof f === 'string' && STYLE.test(f) && path.isAbsolute(f)) styles.push(f);
-          sources.push(...styles);
+          const inlined = inlinedFiles(await watchFilesOf(this, build), this);
+          sources.push(...inlined);
           const { all, byFile } = packages.packagesOfFiles(sources, buildOf(bundle));
           const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
-          const { hashes, contents } = outputContents(bundle, dir, ids, originals, styles, byFile);
+          const { hashes, contents } = outputContents(bundle, dir, ids, originals, inlined, byFile);
           const target = path.join(dir, config.file);
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });

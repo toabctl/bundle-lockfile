@@ -1,0 +1,4 @@
+/* inlined into this style sheet, no modules (Vite: watch files; webpack and rspack: modules of their own): a package's
+   style sheet @imported, and a package's image under the inline limit, as a data: URL */
+@import 'bl-canary-import/index.css';
+.bl-canary-icon { background-image: url('../node_modules/bl-canary-icon/icon.svg'); }

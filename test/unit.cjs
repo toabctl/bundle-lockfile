@@ -486,8 +486,44 @@ test('webpack adapter: style sheets a shipped style module\'s loaders inlined fr
     ] }],
   });
   c.modules = [{ resource: src('d.scss'), buildInfo: { fileDependencies: new Set([nm('unshipped', 'u.scss')]) } }]; // in no chunk
-  // (jsasset's logo.svg: a dependency of a module that is no style, which embeds no image in CSS; the loader's files: code)
-  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['bulma', 'icons', 'inlined', 'nless', 'rel', 'sfc', 'tw']);
+  // (jsasset's logo.svg: a file a loader of a module that is no style read - and inlined, as an svg-inline-loader would;
+  // the loader's files: code; bulma's package.json: read by the resolver)
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['bulma', 'icons', 'inlined', 'jsasset', 'nless', 'rel', 'sfc', 'tw']);
+});
+
+test('webpack adapter: files a shipped module\'s loaders inlined from packages (glslify includes, merged JSON), not code or build settings', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('glsl-noise'), ...pj('locales'), ...pj('@types/node'), ...pj('@tsconfig/node22'), ...pj('babel-preset'), ...pj('helper'),
+    ...pj('browserslist-config'), ...pj('unshipped'), ...pj('vendor-copy'), 'vendor/v/package.json': { name: 'vendor-copy', version: '2.0.0' } });
+  const nm = (name, f) => J(root, 'node_modules', name, f);
+  const src = (f) => J(root, 'src', f);
+  const c = compilation({
+    context: root,
+    chunks: [{ files: ['main.js'], modules: [
+      // glslify-loader: a shader's #pragma glslify: import of a package's file (webpack 5: in the snapshot, inside a
+      // concatenated module); a loader merging a package's locale JSON
+      { modules: [{ resource: src('shader.glsl'), buildInfo: { snapshot: { getFileIterable: () => [src('shader.glsl'), nm('glsl-noise', 'simplex/3d.glsl')] } } }] },
+      { resource: src('i18n.js'), buildInfo: { fileDependencies: new Set([src('i18n.js'), nm('locales', 'de.json')]) } },
+      // ts-loader, babel-loader: type declarations, TypeScript and Babel settings and package.json files are read at build time
+      { resource: src('main.ts'), buildInfo: { fileDependencies: new Set([src('main.ts'), nm('@types/node', 'index.d.ts'), nm('@tsconfig/node22', 'tsconfig.json'),
+        nm('babel-preset', '.babelrc'), nm('browserslist-config', '.browserslistrc'), nm('helper', 'package.json'), nm('helper', 'index.cjs')]) } },
+      // a vendored copy outside node_modules: its file counts as the copy
+      { resource: src('v.js'), buildInfo: { fileDependencies: new Set([src('v.js'), J(root, 'vendor/v/data.txt')]) } },
+    ] }],
+  });
+  c.modules = [{ resource: src('d.js'), buildInfo: { fileDependencies: new Set([nm('unshipped', 'u.glsl')]) } }]; // in no chunk
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['glsl-noise', 'locales', 'vendor-copy']);
+});
+
+test('packages: inlinedFile - files a loader or plugin inlines, not code or build tools\' settings', () => {
+  const { inlinedFile } = require('../src/core/packages.cjs');
+  for (const f of ['/p/node_modules/x/a.glsl', '/p/node_modules/x/i.svg', '/p/node_modules/x/f.woff2', '/p/node_modules/x/de.json', '/p/node_modules/x/s.scss',
+    '/p/node_modules/x/a.css?inline', '/p/node_modules/x/LICENSE', '/p/node_modules/x/m.wasm']) assert.equal(inlinedFile(f), true, f);
+  for (const f of ['/p/node_modules/x/a.js', '/p/node_modules/x/a.mjs', '/p/node_modules/x/a.ts', '/p/node_modules/x/a.d.ts', '/p/node_modules/x/a.d.mts',
+    '/p/node_modules/x/a.tsx', '/p/node_modules/x/c.vue', '/p/node_modules/x/c.svelte', '/p/node_modules/x/b.node', '/p/node_modules/x/package.json',
+    '/p/node_modules/@tsconfig/x/tsconfig.json', '/p/node_modules/@vue/tsconfig/tsconfig.dom.json', '/p/node_modules/x/jsconfig.json',
+    '/p/node_modules/x/.babelrc', '/p/node_modules/x/.babelrc.json', '/p/node_modules/x/babel.config.json', '/p/node_modules/x/.browserslistrc',
+    '/p/node_modules/x/.postcssrc.json', '/p/node_modules/x/.swcrc', '/p/node_modules/x/.eslintrc.json', '', null]) assert.equal(inlinedFile(f), false, f);
 });
 
 test('webpack adapter: inlined child compilations count, build-time ones do not', () => {
@@ -1773,6 +1809,32 @@ test('rollup adapter: style sheets a style sheet @imports from packages (watch f
     const added = built.plugins.find(p => p.name === 'bundle-lockfile');
     await rollupBuild(added, { outDir: J(root, 'c'), chunks: [{ fileName: 'i.js', code: 'style c', modules: [] }] });
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'c', LOCK), 'utf8')), ['bootstrap', 'sanitize.css']);
+  } finally { process.chdir(cwd); }
+});
+
+test('rollup adapter: files plugins inlined - watch files that are no module of the build (data: URLs, shader includes)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('icons'), ...pj('glsl'), ...pj('tree'), ...pj('@tsconfig/strictest'), ...pj('a') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const nm = (name, f) => J(root, 'node_modules', name, f);
+    // Vite 6.1+: the image a style sheet inlines as a data: URL; a plugin's shader #include; Rolldown: the tsconfig
+    // files; a JSON module that was tree-shaken (a module of the build, in no chunk: not inlined); the modules themselves
+    const watch = [J(root, 'src/main.js'), J(root, 'src/app.css'), nm('icons', 'bell.svg'), nm('glsl', 'noise.glsl'), nm('@tsconfig/strictest', 'tsconfig.json'),
+      nm('tree', 'data.json'), nm('a', 'i.js')];
+    const modules = [J(root, 'src/main.js'), J(root, 'src/app.css'), nm('a', 'i.js'), `\0${nm('tree', 'data.json')}?commonjs-proxy`];
+    const ctx = { getWatchFiles: () => watch, getModuleIds: () => modules.values() };
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'), ctx,
+      chunks: [{ fileName: 'i.js', code: 'inlined', modules: [J(root, 'src/main.js'), nm('a', 'i.js')] }], assets: [{ fileName: 'i.css', source: 'css' }] });
+    const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+    assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'glsl', 'icons']);
+    // for nested bundles: the CSS file has every inlined file's package, the chunk those that are no style's
+    const w = lock['bundle-lockfile'].writers[0];
+    const names = (f) => w.contents[f].map(i => lock.packages[w.packages[i]].name).sort(); // indices into the writer's packages
+    assert.deepEqual(names('../i.css'), ['glsl', 'icons']);
+    assert.deepEqual(names('../i.js'), ['a', 'glsl', 'icons']);
   } finally { process.chdir(cwd); }
 });
 
@@ -4460,4 +4522,14 @@ test('strict: an entry wrapper evaluated where bundle-lockfile is not loaded fai
     `globalThis[Symbol.for('bundle-lockfile.esm')] = { wrap: (id, n, fn) => () => 2, found() {} };
      const m = await import(${JSON.stringify(pathToFileURLHref(J(root, 'strict.mjs')))}); console.log('loaded', m.rollup());`]);
   assert.deepEqual([hooked.stdout, hooked.stderr], ['loaded 2\n', '']);
+});
+
+test('test helper: the canary check decodes data: URLs (base64 and percent-encoded)', () => {
+  const { dataUrls, canaries } = require('./lib/check.cjs');
+  const svg = "<svg><!-- BLCANARY:bl-canary-icon@1.0.0 --></svg>";
+  const b64 = `url(data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')})`;
+  const pct = `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`;
+  assert.deepEqual(dataUrls(`${b64} a ${pct} data:text/plain,%E0%A4%A`), [svg, svg]); // (a malformed one is skipped)
+  const root = project({ 'dist/a.css': b64, 'dist/b.css': pct.replace('bl-canary-icon', 'bl-canary-other') });
+  assert.deepEqual(canaries(J(root, 'dist')), ['bl-canary-icon@1.0.0', 'bl-canary-other@1.0.0']);
 });
