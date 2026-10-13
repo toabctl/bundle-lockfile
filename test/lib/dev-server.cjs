@@ -1,5 +1,6 @@
 'use strict';
-// Starts a dev server (cwd = fixture; `rspack serve`, `rsbuild dev`, given with --port <a free port> added), fetches the
+// Starts a dev server (cwd = fixture; `rspack serve`, `rsbuild dev`, given with --host 127.0.0.1 --port <a free port>
+// added: on the loopback interface only, not every interface of the machine it runs on), fetches the
 // lockfile it serves from memory, /bundle-lockfile/package-lock.json, and stops it. Fails if the server does not serve
 // it within 3 minutes, or if anything was written to the output directory (dist/) on the real disk; then writes the
 // fetched lockfile to dist/, where run.cjs checks it (as memfs-build.cjs does).
@@ -25,7 +26,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 (async () => {
   const port = await freePort();
   // its own process group, so that the server's own child processes stop with it
-  const server = spawn(cmd, [...args, '--port', String(port)], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const server = spawn(cmd, [...args, '--host', '127.0.0.1', '--port', String(port)], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   server.stdout.on('data', (d) => { output += d; });
   server.stderr.on('data', (d) => { output += d; });
@@ -47,10 +48,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   // the dev middleware answers once the first build is done; until the server listens, the request fails. Other paths
   // may be answered with the app's page (Rsbuild's history fallback): only a lockfile counts
-  // on localhost, IPv4 or IPv6: Rsbuild 2 listens on what "localhost" resolves to first for it - only ::1 in a container
-  // without IPv6 networking (GitHub's) - while fetch() connects to 127.0.0.1 there and gives up: both are asked
-  const url = `http://localhost:${port}/${LOCKFILE}`;
-  const urls = [`http://127.0.0.1:${port}/${LOCKFILE}`, `http://[::1]:${port}/${LOCKFILE}`];
+  const url = `http://127.0.0.1:${port}/${LOCKFILE}`;
   const until = Date.now() + TIMEOUT;
   let text = null;
   while (text === null) {
@@ -59,13 +57,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     if (Date.now() > until) return fail(`${cmd} has not ${what} within ${TIMEOUT / 60000} minutes`);
     try {
       const body = onDisk ? fs.readFileSync(path.join(dist, LOCKFILE), 'utf8') : await (async () => {
-        for (const u of urls) {
-          try {
-            const res = await fetch(u), t = res.ok ? await res.text() : '';
-            if (JSON.parse(t).lockfileVersion) return t;
-          } catch { /* not listening there (yet), or not the lockfile */ }
-        }
-        return '';
+        const res = await fetch(url);
+        return res.ok ? res.text() : '';
       })();
       if (JSON.parse(body).lockfileVersion) text = body;
     } catch { /* not listening yet, not written yet, or not the lockfile */ }

@@ -1,0 +1,7 @@
+# The actions the workflow uses are pinned by commit SHA: Dependabot proposes the update when a new release is out.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

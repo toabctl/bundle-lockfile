@@ -8,9 +8,15 @@ on:
 permissions:
   contents: read
 
+# a newer push to a pull request replaces its run; every push to main runs to the end
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container: cgr.dev/chainguard/wolfi-base:latest
     strategy:
       fail-fast: false
@@ -23,12 +29,15 @@ jobs:
       - name: Install tools
         run: apk add --no-cache nodejs-${{ matrix.node }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Unit tests
         run: node --test test/unit.cjs
 
   # the output format against the tools that read it (test/contract.cjs)
   contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container: cgr.dev/chainguard/wolfi-base:latest
     name: contract (syft, Trivy)
     env:
@@ -37,6 +46,8 @@ jobs:
       - name: Install tools
         run: apk add --no-cache nodejs-24 syft trivy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Tool versions
         run: syft version && trivy --version
       - name: Contract tests
@@ -44,6 +55,7 @@ jobs:
 
   matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Wolfi, so the matrix runs against the same node/npm/yarn/bun/syft/trivy packages the build environments use
     container: cgr.dev/chainguard/wolfi-base:latest
     strategy:
@@ -60,6 +72,8 @@ jobs:
       - name: Install tools
         run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
       - name: Run matrix
@@ -69,6 +83,7 @@ jobs:
   # (e.g. GitLab and Coder build with it)
   node22:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: cgr.dev/chainguard/wolfi-base:latest
     strategy:
       fail-fast: false
@@ -86,6 +101,8 @@ jobs:
       - name: Install tools
         run: apk add --no-cache nodejs-22 npm yarn bun syft trivy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
       - name: Run matrix
@@ -95,6 +112,7 @@ jobs:
   # each kind - webpack 5, Vite 8 and the Rollup and Rolldown APIs (loader-thread hooks), rspack 2
   node20:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: cgr.dev/chainguard/wolfi-base:latest
     name: matrix (Node 20, a few builds)
     env:
@@ -104,6 +122,8 @@ jobs:
       - name: Install tools
         run: apk add --no-cache nodejs-20 npm yarn bun syft trivy
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES"
       - name: Run matrix
