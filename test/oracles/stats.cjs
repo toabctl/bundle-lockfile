@@ -20,10 +20,12 @@ function filesFromStats(json, context, copied = []) {
   const files = new Set(copied);
   // file of a module: nameForCondition = resource path; identifiers can carry prefixes like "javascript/esm|/abs/path"
   const resourceOf = (m) => ((m.identifier || '').split('!').pop().split('|').find(s => path.isAbsolute(s)) || '').split('?')[0];
+  // (the stats keep the resolver's escape of a "#" in a path: "\0#" in webpack, "\u200b#" in rspack)
+  const plain = (f) => f.replace(/\0#/g, '#').replace(/\u200b#/g, '#');
   const fileOf = (m, byId) => {
     const own = (m.nameForCondition || resourceOf(m)).split('?')[0];
     const issuer = m.issuer && byId.get(m.issuer);
-    return issuer && issuer.nameForCondition && resourceOf(issuer) === own ? issuer.nameForCondition.split('?')[0] : own;
+    return plain(issuer && issuer.nameForCondition && resourceOf(issuer) === own ? issuer.nameForCondition.split('?')[0] : own);
   };
   // files of these modules of one compilation's stats
   const filesOf = (stats, modules) => {

@@ -1,4 +1,6 @@
 const path = require('path');
+// BLTEST_HEAP_FILE=<file>: the build's own heap limit (MB) written there (run.cjs checks the NODE_OPTIONS it ran with)
+if (process.env.BLTEST_HEAP_FILE) require('fs').writeFileSync(process.env.BLTEST_HEAP_FILE, String(Math.round(require('v8').getHeapStatistics().heap_size_limit / 1048576)));
 const plugins = [];
 try { const H = require('html-webpack-plugin'); plugins.push(new H()); } catch {} // child compiler, where installed
 module.exports = {

@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     container: cgr.dev/chainguard/wolfi-base:latest
     name: contract (syft, Trivy)
+    env:
+      BLTEST_REQUIRE_SBOM: '1' # a missing syft or trivy fails the job instead of skipping their checks
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-24 syft trivy
@@ -52,6 +54,8 @@ jobs:
         # each shard installs and runs its own fixtures (test/lib/shard.cjs); 8 shards per Node version
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     name: matrix (Node ${{ matrix.node }}, ${{ matrix.shard }}/8)
+    env:
+      BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy
@@ -75,7 +79,9 @@ jobs:
       # the fixtures of the ESM-hooked bundlers (also rspack 2 and Rsbuild 2) and of webpack and rspack 1 under Yarn
       # Plug'n'Play (whose CommonJS modules Node 22 loads without Module._load, see src/hooks.cjs), and their cases
       # (gen.cjs and run.cjs select the same ones)
-      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack)'
+      # (wp5-tsx: tsx's own loader thread next to bundle-lockfile's)
+      FIXTURES: '^(vite|nested|sveltekit|rollup|peer-deps|mixed-output|wp5-yarn[34]-pnp|wp5-tsx|rspack2|rspack-features2|rsbuild2|rspack-copies|rspack1\.7-yarn4-pnp|rspack-federation2|rspack-monaco2|rspack-workspace2|rslib|next16-rspack|next16-app-rspack)'
+      BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools
         run: apk add --no-cache nodejs-22 npm yarn bun syft trivy
@@ -84,3 +90,21 @@ jobs:
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
       - name: Run matrix
         run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
+
+  # Node 20 (the oldest supported, 20.6+: module.register; no isInternalThread in its loader thread): a few builds of
+  # each kind - webpack 5, Vite 8 and the Rollup and Rolldown APIs (loader-thread hooks), rspack 2
+  node20:
+    runs-on: ubuntu-latest
+    container: cgr.dev/chainguard/wolfi-base:latest
+    name: matrix (Node 20, a few builds)
+    env:
+      FIXTURES: '^(wp5-npm|vite8-npm|rollup-api|rspack2\.2-npm)$'
+      BLTEST_REQUIRE_SBOM: '1'
+    steps:
+      - name: Install tools
+        run: apk add --no-cache nodejs-20 npm yarn bun syft trivy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Generate fixtures
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES"
+      - name: Run matrix
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES"
