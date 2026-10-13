@@ -50,7 +50,10 @@ function ownFile(file, roots) {
 
 // files: absolute paths of bundled source files. Returns Map(file -> [packages]) ({ name, version, license, path }) of
 // the ones another build produced: the packages that build recorded for that file, or - recorded by a version without
-// them - all packages of its output.
+// them - all packages of its output. A JavaScript or CSS file in the output of a writer whose record has only some of
+// its outputs (outputCount) that is none of those it has may be one of the others: all packages of the writers whose
+// record was cut - one package too many rather than the packages inlined into it missing.
+const OUTPUT = /\.([cm]?js|css)$/i;
 function nestedByFile(files) {
   state.metas.clear(); // lockfiles change between builds (watch mode)
   const out = new Map();
@@ -61,10 +64,19 @@ function nestedByFile(files) {
     if (!file) continue;
     for (const dir of ancestors(path.dirname(file))) {
       const meta = metaOf(dir);
-      const writer = meta && meta.writers.find(w => w.outputs[file]);
+      if (!meta) continue;
+      const writer = meta.writers.find(w => w.outputs[file]);
       if (writer) {
         if (writer.outputs[file] === hashOf(file)) out.set(f, writer.contents[file] || writer.pkgs);
         else config.debug('built by another build, but changed since:', file);
+        break;
+      }
+      const cut = meta.writers.filter(w => w.outputCount > Object.keys(w.outputs).length);
+      if (cut.length && OUTPUT.test(file)) {
+        const pkgs = new Map();
+        for (const w of cut) for (const p of w.pkgs) if (!pkgs.has(p.path)) pkgs.set(p.path, p);
+        config.debug('maybe built by another build whose record has only some of its outputs:', file);
+        out.set(f, [...pkgs.values()]);
         break;
       }
     }

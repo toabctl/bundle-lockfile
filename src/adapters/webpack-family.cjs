@@ -215,6 +215,7 @@ function bundledFiles(compilation) {
 // dependencies in node_modules (copy-webpack-plugin 6.2 adds a copied directory only as one; at most MAX_CONTEXT_FILES
 // entries are looked at). Empty files are left out: they would equal every empty asset.
 const MAX_CONTEXT_FILES = 20000;
+const warnedContext = new WeakSet(); // compilers warned about MAX_CONTEXT_FILES (once each, not on every rebuild)
 function packageFilesBySize(compilation) {
   const bySize = new Map(), seen = new Set();
   const add = (f) => {
@@ -236,6 +237,10 @@ function packageFilesBySize(compilation) {
     }
   };
   for (const d of compilation.contextDependencies || []) if (typeof d === 'string' && d.split(path.sep).includes('node_modules')) walk(d);
+  if (entries > MAX_CONTEXT_FILES && !warnedContext.has(compilation.compiler)) {
+    warnedContext.add(compilation.compiler);
+    config.warn(`more than ${MAX_CONTEXT_FILES} files below the directories in node_modules that ${outputDir(compilation)}'s build depends on: assets copied from them without naming their source were not all compared`);
+  }
   return bySize;
 }
 

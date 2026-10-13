@@ -3,6 +3,7 @@
 // read-merge-write, and atomic replacement, so that readers without the lock never see a partial file.
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const problems = require('./problems.cjs');
 
 // Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
@@ -46,15 +47,19 @@ const sameFile = (a, b) => a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b
 
 // The lock (with stats st) is older than staleAfter - by this machine's clock and by the file system's: a lock on a
 // network file system has the server's time, and a client whose clock is ahead must not take over a live lock. The file
-// system's time is that of a file made for it next to the lock (if that cannot be made: this machine's clock).
+// system's time is that of a file made for it next to the lock (if that cannot be made: this machine's clock). A lock
+// from further ahead in time than staleAfter is no live one either (touch -d 2099 would otherwise hold it forever).
 function isStale(l, st, staleAfter) {
-  if (Date.now() - st.mtimeMs <= staleAfter) return false;
-  const probe = `${l}.${process.pid}.${Math.random().toString(36).slice(2)}.now`;
+  if (Math.abs(Date.now() - st.mtimeMs) <= staleAfter) return false;
+  const probe = `${l}.${unique()}.now`;
   try {
     fs.closeSync(fs.openSync(probe, 'wx'));
-    try { return fs.lstatSync(probe).mtimeMs - st.mtimeMs > staleAfter; } finally { fs.unlinkSync(probe); }
+    try { return Math.abs(fs.lstatSync(probe).mtimeMs - st.mtimeMs) > staleAfter; } finally { fs.unlinkSync(probe); }
   } catch { return true; }
 }
+
+// a part of a file name no other process or call uses (no name another user could make in advance)
+const unique = () => `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
 
 // Removes the stale lock `l` that had the stats `st` - not a lock another process has taken since: it is moved away
 // first (only one process can move it), and put back if it is not the stale one. Returns whether the lock is gone, or
@@ -62,7 +67,7 @@ function isStale(l, st, staleAfter) {
 // A file system without hard links cannot put back the very file: an empty lock in its place keeps the others out, and
 // stays until it is stale (its holder releases only its own file).
 function takeStale(l, st) {
-  const away = `${l}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
+  const away = `${l}.${unique()}.stale`;
   try { fs.renameSync(l, away); } catch (e) { return e.code === 'ENOENT'; } // ENOENT: another process took it first
   try {
     if (sameFile(fs.lstatSync(away), st)) return true;
@@ -74,11 +79,16 @@ function takeStale(l, st) {
   return true;
 }
 
-// Writes atomically: concurrent processes and readers see the old or the new file, never a partial one.
+// Writes atomically: concurrent processes and readers see the old or the new file, never a partial one. The temporary
+// file is a new one (wx: never through a symbolic link or into a file that is there).
 function writeAtomic(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-  try { fs.writeFileSync(tmp, content); fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch {} throw e; }
+  const tmp = `${file}.${unique()}.tmp`;
+  const fd = fs.openSync(tmp, 'wx');
+  try {
+    try { fs.writeFileSync(fd, content); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+  } catch (e) { try { fs.unlinkSync(tmp); } catch {} throw e; }
 }
 
 module.exports = { lock, takeStale, writeAtomic };
