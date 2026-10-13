@@ -7,6 +7,7 @@ const problems = require('./problems.cjs');
 const copies = require('./copies.cjs');
 const nested = require('./nested.cjs');
 const vendored = require('./vendored.cjs');
+const via = require('./via.cjs');
 const { readPackage, readManifest } = require('./manifest.cjs');
 const { packageRoot, realRoot, unvirtual } = require('./paths.cjs');
 
@@ -75,8 +76,9 @@ const realFile = (file) => { try { return unvirtual(fs.realpathSync(file)); } ca
 // - a file this process copied out of a package that still has its bytes (core/copies.cjs): as that file
 // - any other file, and a workspace package reached through a node_modules symlink: first-party (none), unless the
 //   build's scope (where, see core/vendored.cjs scope()) finds it in a vendored copy outside node_modules
-// Packages are looked up once per package directory.
-function resolver(where = null) {
+// Packages are looked up once per package directory. via (optional): a core/via.cjs collector, told the packages the
+// resolver found as a copy made with fs (fs-copy) or as a vendored copy (vendored).
+function resolver(where = null, via = null) {
   const byLinked = new Map(); // package directory as reached -> { root: its real location, told: debug message written }
   const byReal = new Map();   // real package directory -> package | null
   const inside = new Map();   // real directory inside a package -> the vendored copy there | null
@@ -94,15 +96,17 @@ function resolver(where = null) {
     byReal.set(root, p);
     return p;
   };
+  const tell = (cls, pkgs) => { if (via) via.add(cls, pkgs); return pkgs; };
   return (f) => {
     const file = f.split('?')[0];
     if (!path.isAbsolute(file)) return [];
-    let at = file, linked = packageRoot(file);
+    let at = file, linked = packageRoot(file), copied = false;
     if (!linked) {
       const src = copies.sourceOf(file);
-      if (src) { linked = packageRoot(src); at = src; config.debug('a copy of', src, ':', file); }
+      if (src) { linked = packageRoot(src); at = src; copied = true; config.debug('a copy of', src, ':', file); }
     }
-    const owner = (real) => { const o = where && where.ownerOf(real); return o ? [o] : []; };
+    const found = (pkgs) => (copied ? tell('fs-copy', pkgs) : pkgs);
+    const owner = (real) => { const o = where && where.ownerOf(real); return o ? tell('vendored', [o]) : []; };
     if (!linked) return owner(realFile(file));
     if (!byLinked.has(linked)) byLinked.set(linked, { root: realRoot(linked) });
     const entry = byLinked.get(linked), { root } = entry;
@@ -115,7 +119,8 @@ function resolver(where = null) {
     const dir = path.dirname(path.join(root, path.relative(linked, at)));
     if (!inside.has(dir)) inside.set(dir, vendored.nestedIn(p, p.path, path.join(dir, 'x'), manifest)); // also in the package around a root without one
     const copy = inside.get(dir);
-    return copy ? [copy, p] : [p];
+    if (copy) tell('vendored', [copy]);
+    return found(copy ? [copy, p] : [p]);
   };
 }
 
@@ -138,19 +143,24 @@ function packagesForFiles(files, build) {
 // resolver) and those inside files another build produced (core/nested.cjs), the former first - a package's own
 // package.json over what another build recorded for it. A file another build produced is that build's output, no
 // vendored copy. build (optional): see packagesForFiles. all: each package once; byFile: Map(file -> [packages]) of
-// the files (as given) that bring any.
+// the files (as given) that bring any; ownByFile: the same of the packages the files belong to themselves (not those
+// inside a file another build produced); via: a core/via.cjs collector with the packages found as a copy made with fs,
+// a vendored copy or inside another build's output (nested).
 function packagesOfFiles(files, build) {
-  const of = resolver(build ? vendored.scope(build) : null);
+  const found = via.collector();
+  const of = resolver(build ? vendored.scope(build) : null, found);
   const nestedOf = nested.nestedByFile(files);
-  const own = [], inner = [], byFile = new Map();
+  const own = [], inner = [], byFile = new Map(), ownByFile = new Map();
   for (const f of files) {
     const p = nestedOf.has(f) ? [] : of(f), n = nestedOf.get(f) || [];
     own.push(...p);
     inner.push(n);
+    found.add('nested', n);
     const pkgs = unique(p, n);
     if (pkgs.length) byFile.set(f, pkgs);
+    if (p.length) ownByFile.set(f, p);
   }
-  return { all: unique(own, ...inner), byFile };
+  return { all: unique(own, ...inner), byFile, ownByFile, via: found };
 }
 
 module.exports = { STYLE, CODE, inlinedFile, unique, packagesForFiles, packagesOfFiles };

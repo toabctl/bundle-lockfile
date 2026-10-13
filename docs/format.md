@@ -37,12 +37,13 @@ A webpack build that bundles `debug` 2.6.9 (with its own `ms` 2.0.0) and `ms` 2.
     "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" }
   },
   "bundle-lockfile": {
-    "v": 1,
+    "v": 2,
     "context": "../..",
     "self": "dist/bundle-lockfile",
     "writers": [
       { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
-        "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms"] }
+        "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms"],
+        "bundler": { "name": "webpack", "version": "5.111.1" }, "via": { "chunk": [0, 1, 2] } }
     ]
   }
 }
@@ -180,8 +181,10 @@ is no string or `{type}` object (an array in `license`: no license).
 The `"bundle-lockfile"` field is bundle-lockfile's own record. Tools that read `package-lock.json` (syft, Trivy, npm)
 ignore it. It has no machine-specific paths: paths are relative to the lockfile or the context, ids are hashes of the
 configuration.
-- `v`: the record's version, `1`. A record without it, or of another version, is not read: a build writing into its
-  directory does not keep its writers' packages.
+- `v`: the record's version, `2`. A record without it, or of another version (version 1: bundle-lockfile before
+  `bundler` and `via`), is not read: a build writing into its directory replaces it without keeping its writers'
+  packages, and a build bundling a file of its output fails ([nested bundles](#nested-bundles)) until that output is
+  built again.
 - `context`: the directory the keys are relative to, relative to the lockfile's directory (both as configured, so a
   context reached through a symlink stays `../..`).
 - `self`: the lockfile's directory relative to the context. A copy of the lockfile somewhere else — at another depth
@@ -194,9 +197,30 @@ configuration.
   - `id`;
   - `packages` (keys);
   - up to 20 of its output `files`, and the `count` of all of them;
-  - for Vite, Rollup and Rolldown: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with more:
-    their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`), for
-    [nested bundles](#nested-bundles).
+  - for Vite, Rollup, Rolldown and esbuild: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with
+    more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`),
+    for [nested bundles](#nested-bundles);
+  - `bundler`: the bundler that ran, `{ "name", "version" }` as it reports itself (`webpack`, `rspack`, `rollup`,
+    `rolldown`, `vite`, `esbuild`; Vite's version where Vite gives it to plugins). It is the bundler that wrote the
+    output, not a package of it;
+  - `via`: how it found each package, `{ "<class>": [indices into its packages] }`. A package found in several ways is
+    listed under each class:
+
+    | Class | The package's files reached the output as |
+    |---|---|
+    | `chunk` | modules of the chunks the build writes |
+    | `child` | modules of a shipped webpack or rspack child compilation (a worker, a service worker) |
+    | `asset` | files a Vite, Rollup or Rolldown asset was emitted from (a font, an image) |
+    | `copy-source` | files copied into the output by a plugin that names their source (copy-webpack-plugin) |
+    | `copy-bytes` | files copied into the output without a name of their source, matched by their bytes |
+    | `style` | style sheets a loader or plugin inlined into a module (`@import`, Sass partials) |
+    | `inlined` | other files a loader or plugin inlined (an image as a `data:` URL, a shader's `#include`, JSON) |
+    | `inlined-exports` | modules in no chunk whose exports rspack inlined where they are used |
+    | `generated` | the output of a build that writes nothing itself, found by its bytes or its entry (a Vite worker, workbox's service worker) |
+    | `late` | files another plugin wrote into the output after the build |
+    | `fs-copy` | files copied out of the package with fs, in the build's process |
+    | `nested` | files another build wrote, whose lockfile lists the package ([nested bundles](#nested-bundles)) |
+    | `vendored` | a [vendored copy](#which-package-a-file-belongs-to) |
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time.
 - `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or

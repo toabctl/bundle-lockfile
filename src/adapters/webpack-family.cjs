@@ -10,6 +10,7 @@ const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
+const via = require('../core/via.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const { posix, packageRoot, portable, exportPath } = require('../core/paths.cjs');
 
@@ -19,6 +20,7 @@ const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
 const CLOSED = Symbol.for('bundle-lockfile.webpack.closed');   // compiler: its shutdown hook has run
 const SOURCE = Symbol('bundle-lockfile.webpack.source');       // compilation: { src: lockfile content, early: asset names then, disk, asset }
 const BUNDLED = Symbol('bundle-lockfile.webpack.bundled');     // compilation: its bundledFiles()
+const KINDS = Symbol('bundle-lockfile.webpack.kinds');         // compilation: how bundledFiles() found each file (see core/via.cjs)
 const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: files its latest build copied in the emit hook
 const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: copiedUnnamed() before the assets were optimized
 const STARTED = Symbol('bundle-lockfile.webpack.started');     // compilation: when it started (ms; see filesWrittenAfter)
@@ -110,18 +112,21 @@ function inlinedDependencies(m, issuerOf) {
 const isStyle = (m, f) => packages.STYLE.test(f.split('?')[0]) || (typeof m.resource === 'string' && /[?&]type=style\b/.test(m.resource));
 
 // seen (optional): { modules: Set of the modules walked, unrecorded: whether a style module recorded no file
-// dependencies at all }
-function sourcesOf(compilation, modules, into = new Set(), seen = null) {
+// dependencies at all, mark (optional): mark(file, class) is told how each file was found (see core/via.cjs): cls for
+// the modules' files (chunk, child), style or inlined for the files their loaders inlined }
+function sourcesOf(compilation, modules, into = new Set(), seen = null, cls = 'chunk') {
   const issuerOf = issuers(compilation);
+  const mark = (seen && seen.mark) || (() => {});
   const walk = (list) => {
     for (const m of list) {
       if (seen) seen.modules.add(m);
       const f = sourceFile(m, issuerOf);
       if (f) {
         into.add(f);
+        mark(f, cls);
         const style = isStyle(m, f) || (!m.resource && (() => { const i = issuerOf(m); return !!(i && typeof i.resource === 'string' && isStyle(i, i.resource)); })());
         const deps = inlinedDependencies(m, issuerOf);
-        if (deps) for (const d of deps) into.add(d); else if (style && seen) seen.unrecorded = true;
+        if (deps) for (const d of deps) { into.add(d); mark(d, packages.STYLE.test(d) ? 'style' : 'inlined'); } else if (style && seen) seen.unrecorded = true;
       }
       if (m.modules) walk(m.modules);
     }
@@ -178,14 +183,19 @@ function inlinedModules(compilation, shipped) {
 //   Copies that do not name their source: see copiedUnnamed.
 // - rspack: the style sheets of styleFallback before 1.3.14, the modules whose exports were inlined (inlinedModules), and
 //   the files CopyRspackPlugin copied (copiedRspack: its sourceFilename is relative to the copy pattern, not the context).
+// Also sets compilation[KINDS]: Map(file -> Set of the classes it was found by, see core/via.cjs).
 function bundledFiles(compilation) {
   const files = new Set();
+  const kinds = new Map();
+  const mark = (f, cls) => { if (!kinds.has(f)) kinds.set(f, new Set()); kinds.get(f).add(cls); };
+  compilation[KINDS] = kinds;
   const rspack = isRspack(compilation.compiler);
   const ship = (c, chunks) => {
-    const own = new Set(), seen = { modules: new Set(), unrecorded: false };
-    for (const chunk of chunks) sourcesOf(c, chunkModules(c, chunk), own, seen);
-    if (seen.unrecorded) for (const f of styleFallback(c)) own.add(f);
-    if (rspack) for (const f of inlinedModules(c, seen.modules)) own.add(f);
+    const own = new Set(), seen = { modules: new Set(), unrecorded: false, mark };
+    const cls = c === compilation ? 'chunk' : 'child';
+    for (const chunk of chunks) sourcesOf(c, chunkModules(c, chunk), own, seen, cls);
+    if (seen.unrecorded) for (const f of styleFallback(c)) { own.add(f); mark(f, 'style'); }
+    if (rspack) for (const f of inlinedModules(c, seen.modules)) { own.add(f); mark(f, 'inlined-exports'); }
     for (const f of own) files.add(f);
     return own;
   };
@@ -204,10 +214,15 @@ function bundledFiles(compilation) {
 
   for (const { info } of compilation.getAssets ? compilation.getAssets() : []) {
     if (!info || typeof info.sourceFilename !== 'string' || (rspack && info.copied)) continue;
-    files.add(path.resolve(compilation.compiler.context, info.sourceFilename));
+    const f = path.resolve(compilation.compiler.context, info.sourceFilename);
+    files.add(f);
+    mark(f, 'copy-source');
   }
   const copies = compilation[UNNAMED] || (rspack ? copiedRspack(compilation) : copiedUnnamed(compilation));
-  for (const [name, list] of copies) if (hasAsset(compilation, name)) for (const f of list) files.add(f);
+  for (const [name, list] of copies) {
+    if (!hasAsset(compilation, name)) continue;
+    for (const f of list) { files.add(f); mark(f, copies.bytes && copies.bytes.has(name) ? 'copy-bytes' : 'copy-source'); }
+  }
   return files;
 }
 
@@ -253,6 +268,7 @@ function packageFilesBySize(compilation) {
 // only if there are such assets: compilation.modules is costly in rspack.
 function copiedUnnamed(compilation) {
   const files = new Map();
+  files.bytes = new Set(); // (all of them: matched by their bytes)
   let unnamed = [];
   for (const name of assetNames(compilation)) {
     const a = assetOf(compilation, name);
@@ -274,7 +290,7 @@ function copiedUnnamed(compilation) {
     let buf;
     try { const s = a.source.source(); buf = Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { continue; }
     const copy = candidates.find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
-    if (copy) { files.set(a.name, [copy]); config.debug('webpack: asset', a.name, 'is a copy of', copy); }
+    if (copy) { files.set(a.name, [copy]); files.bytes.add(a.name); config.debug('webpack: asset', a.name, 'is a copy of', copy); }
   }
   return files;
 }
@@ -289,9 +305,10 @@ function copiedUnnamed(compilation) {
 // every package file with that name: one package too many rather than one missing. A copy whose name no file ends
 // with is matched by its bytes alone, as copiedUnnamed does. The candidates are looked up by their file name, so the
 // cost is that of one pass over the dependencies (OHIF copies hundreds of files, and depends on thousands).
-// Returns Map(asset name -> [package files]).
+// Returns Map(asset name -> [package files]), with .bytes: the names of the copies matched by their bytes alone.
 function copiedRspack(compilation) {
   const files = new Map();
+  files.bytes = new Set();
   const copied = [];
   for (const name of assetNames(compilation)) {
     const a = assetOf(compilation, name);
@@ -325,7 +342,7 @@ function copiedRspack(compilation) {
     if (!candidates.length && buf && buf.length) {
       if (!bySize) bySize = packageFilesBySize(compilation);
       const copy = (bySize.get(buf.length) || []).find(f => same(f));
-      if (copy) list = [copy];
+      if (copy) { list = [copy]; files.bytes.add(a.name); }
     }
     if (list.length) { files.set(a.name, list); config.debug('rspack: asset', a.name, 'is a copy of', list.join(' ')); }
   }
@@ -425,6 +442,7 @@ const failCompilation = (compilation) => problems.failIfAny((err) => compilation
 // build; readAsset(name, callback(Buffer | null)); done(files) gets Map(asset name -> absolute path of the file).
 function copiedInEmit(compilation, early, previous, readAsset, done) {
   const files = new Map(), unnamed = [];
+  files.bytes = new Set(); // the names matched by their bytes (see core/via.cjs)
   for (const name of assetNames(compilation).filter(n => !early.has(n))) {
     const a = assetOf(compilation, name), info = (a && a.info) || {};
     if (typeof info.sourceFilename === 'string') files.set(name, path.resolve(compilation.compiler.context, info.sourceFilename));
@@ -432,14 +450,18 @@ function copiedInEmit(compilation, early, previous, readAsset, done) {
   }
   if (!unnamed.length && !previous.size) return done(files);
   const deps = new Set(compilation.fileDependencies || []);
-  for (const [name, f] of previous) if (!hasAsset(compilation, name) && deps.has(f)) files.set(name, f);
+  for (const [name, f] of previous) {
+    if (hasAsset(compilation, name) || !deps.has(f)) continue;
+    files.set(name, f);
+    if (previous.bytes && previous.bytes.has(name)) files.bytes.add(name);
+  }
   const bySize = unnamed.length ? packageFilesBySize(compilation) : new Map();
   if (!bySize.size) return done(files);
   let pending = unnamed.length;
   for (const name of unnamed) {
     readAsset(name, (buf) => {
       const copy = ((buf && bySize.get(buf.length)) || []).find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
-      if (copy) files.set(name, copy);
+      if (copy) { files.set(name, copy); files.bytes.add(name); }
       if (--pending === 0) done(files);
     });
   }
@@ -481,16 +503,34 @@ class BundleLockfilePlugin {
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
 
   // Content of the lockfile this compilation emits: its packages, plus those of other compilers that write
-  // the same lockfile (see core/outputs.cjs). extra: more files in the output (see copiedInEmit); more: more packages
-  // (files written into the output after the build, generate-only output emitted late)
-  lockfile(compilation, extra = [], more = []) {
+  // the same lockfile (see core/outputs.cjs). copied: files copied into the output in the emit hook (see copiedInEmit);
+  // late: { generated, late } packages of generate-only output emitted late and of files written into the output after
+  // the build
+  lockfile(compilation, copied = new Map(), late = {}) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
+    const kinds = new Map(compilation[KINDS] || []);
+    for (const [name, f] of copied) kinds.set(f, new Set([...(kinds.get(f) || []), copied.bytes && copied.bytes.has(name) ? 'copy-bytes' : 'copy-source']));
     const build = { context: compiler.context, entries: entryFiles(compilation) }; // for vendored copies
     const gen = compilation[GENERATED] || (compilation[GENERATED] = generatedAssets(compilation));
-    const pkgs = packages.unique(packages.packagesOfFiles([...bundled, ...extra], build).all, gen, more);
+    const result = packages.packagesOfFiles([...bundled, ...copied.values()], build);
+    const found = via.ofFiles(result, kinds);
+    found.add('generated', gen); found.add('generated', late.generated); found.add('late', late.late);
+    const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || []);
     return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
-      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler) });
+      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
+  }
+
+  // { name, version } of the bundler of a compiler (core/lockfile.cjs): rspack's version, webpack 5's, or webpack 4's
+  // from the package.json of the Compiler module's package
+  bundler(compiler) {
+    if (isRspack(compiler)) return { name: 'rspack', version: compiler.webpack.rspackVersion };
+    if (compiler.webpack && typeof compiler.webpack.version === 'string') return { name: 'webpack', version: compiler.webpack.version };
+    if (this.bundlerVersion === undefined) {
+      this.bundlerVersion = null;
+      try { this.bundlerVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(this.compilerFile), '..', 'package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+    }
+    return { name: 'webpack', ...(this.bundlerVersion ? { version: this.bundlerVersion } : {}) };
   }
 
   apply(compiler) {
@@ -509,7 +549,7 @@ class BundleLockfilePlugin {
       compilation[STARTED] = Date.now() - 2000; // (file systems with coarse timestamps)
       // a plugin that makes webpack seal the compilation again (needAdditionalSeal): new chunks and assets
       const unseal = hook(compilation.hooks, 'unseal');
-      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, UNNAMED, SOURCE, GENERATED]) delete compilation[k]; });
+      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, KINDS, UNNAMED, SOURCE, GENERATED]) delete compilation[k]; });
       // webpack 5 and rspack: copied files, before the optimize stages change their bytes (copiedUnnamed, copiedRspack)
       const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');
@@ -579,9 +619,9 @@ class BundleLockfilePlugin {
             if (after.length) config.debug(`${kindOf(compiler)}: files written into`, dir, 'after the build:', after.map(l => path.relative(dir, l.file)).join(' '));
           } catch (e) { problems.problem(`${kindOf(compiler)}: could not check the files written into ${dir} after the build`, e); }
         }
-        const more = [...late, ...after.flatMap(l => l.pkgs)];
-        if (copied.size || more.length) {
-          try { this.lockfile(compilation, [...copied.values()], more); write = true; } catch (e) { problems.problem(`${kindOf(compiler)}: could not collect the packages of ${dir}`, e); }
+        const more = { generated: late, late: after.flatMap(l => l.pkgs) };
+        if (copied.size || more.generated.length || more.late.length) {
+          try { this.lockfile(compilation, copied, more); write = true; } catch (e) { problems.problem(`${kindOf(compiler)}: could not collect the packages of ${dir}`, e); }
         }
         // the files webpack wrote: assets the emit hook deleted or added (compression-webpack-plugin <= 6 with
         // deleteOriginalAssets on webpack 4 replaces main.js by main.js.gz) were not known when the lockfile was rendered

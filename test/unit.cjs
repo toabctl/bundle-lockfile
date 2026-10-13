@@ -205,10 +205,56 @@ test('toPackageLock: every key starts with node_modules/, and the record gives t
   const read = readMeta(json, dir).writers[0].pkgs;
   assert.deepEqual(read.map(p => p.path).sort(), all.map(p => p.path).sort());
   assert.equal(toPackageLock(read, ctx, { dir, writers: [{ id: 'w', files: [J(ctx, 'dist/main.js')], paths: read.map(p => p.path) }] }), json);
-  // a record without "locations" (v0.0.3): its keys are the locations
+  // a record without "locations": its keys are the locations
   const old = JSON.stringify({ lockfileVersion: 3, packages: { '': {}, '../node_modules/b': { name: 'b', version: '1.0.0' } },
-    'bundle-lockfile': { v: 1, context: '../..', writers: [{ id: 'w', files: [], packages: ['../node_modules/b'] }] } });
+    'bundle-lockfile': { v: 2, context: '../..', writers: [{ id: 'w', files: [], packages: ['../node_modules/b'] }] } });
   assert.deepEqual(readMeta(old, dir).writers[0].pkgs.map(p => p.path), [J(root, 'node_modules/b')]);
+});
+
+test('toPackageLock: a writer\'s bundler and how it found its packages (via), read back by another process', () => {
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const via = require('../src/core/via.cjs');
+  const ctx = J(path.sep, 'p'), dir = J(ctx, 'dist/bundle-lockfile');
+  const a = pkg('a', '1.0.0', J(ctx, 'node_modules/a')), b = pkg('b', '1.0.0', J(ctx, 'node_modules/b')), c = pkg('c', '1.0.0', J(ctx, 'node_modules/c'));
+  const found = via.collector();
+  found.add('style', [b]); found.add('chunk', [b, a]); found.add('child', [c]); found.add('late', [c]);
+  assert.throws(() => found.add('guessed', [a]), /unknown via class guessed/);
+  const w = { id: 'w', files: [J(ctx, 'dist/main.js')], paths: [a.path, b.path, c.path], bundler: { name: 'webpack', version: '5.111.1' }, via: found.byPath };
+  const json = toPackageLock([a, b, c], ctx, { dir, writers: [w] });
+  const rec = JSON.parse(json)['bundle-lockfile'];
+  assert.equal(rec.v, 2);
+  // the classes in core/via.cjs order, each with indices into the writer's packages
+  assert.deepEqual(rec.writers[0].packages, ['node_modules/a', 'node_modules/b', 'node_modules/c']);
+  assert.deepEqual(rec.writers[0].bundler, { name: 'webpack', version: '5.111.1' });
+  assert.deepEqual(Object.entries(rec.writers[0].via), [['chunk', [0, 1]], ['child', [2]], ['style', [1]], ['late', [2]]]);
+  // another process reads them back and writes the same bytes
+  const r = readMeta(json, dir).writers[0];
+  assert.deepEqual(r.bundler, { name: 'webpack', version: '5.111.1' });
+  assert.deepEqual([...r.via].map(([p, s]) => [p, [...s].sort()]).sort(), [[a.path, ['chunk']], [b.path, ['chunk', 'style']], [c.path, ['child', 'late']]]);
+  assert.equal(toPackageLock(r.pkgs, ctx, { dir, writers: [{ ...r, paths: r.pkgs.map(p => p.path) }] }), json);
+  // without them: no fields
+  const plain = JSON.parse(toPackageLock([a], ctx, { dir, writers: [{ id: 'w', files: [], paths: [a.path] }] }))['bundle-lockfile'].writers[0];
+  assert.equal(plain.bundler, undefined);
+  assert.equal(plain.via, undefined);
+});
+
+test('packagesOfFiles: how each file\'s packages were found - modules by the class the adapter gives, copies made with fs, vendored copies', () => {
+  const via = require('../src/core/via.cjs');
+  const copies = require('../src/core/copies.cjs');
+  const root = project({
+    'package.json': { name: 'app', version: '1.0.0', private: true },
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/a/i.js': 'a',
+    'node_modules/a/inner/package.json': { name: 'inner', version: '2.0.0' }, 'node_modules/a/inner/i.js': 'inner',
+    'node_modules/s/package.json': { name: 's', version: '1.0.0' }, 'node_modules/s/s.scss': 's',
+    'node_modules/c/package.json': { name: 'c', version: '1.0.0' }, 'node_modules/c/c.js': 'c',
+    'public/c.js': 'c',
+  });
+  copies.record(J(root, 'node_modules/c/c.js'), J(root, 'public/c.js'));
+  const files = [J(root, 'node_modules/a/i.js'), J(root, 'node_modules/a/inner/i.js'), J(root, 'node_modules/s/s.scss'), J(root, 'public/c.js')];
+  const result = packages.packagesOfFiles(files, { context: root, entries: [] });
+  const found = via.ofFiles(result, new Map([[J(root, 'node_modules/s/s.scss'), new Set(['style'])]]));
+  const byName = Object.fromEntries(result.all.map(p => [p.name, [...(found.byPath.get(p.path) || [])].sort()]));
+  assert.deepEqual(byName, { a: ['chunk'], inner: ['chunk', 'vendored'], s: ['style'], c: ['chunk', 'fs-copy'] });
 });
 
 test('toPackageLock: packages outside the project get keys without their machine-specific path', () => {
@@ -1748,8 +1794,8 @@ test('strict: a nested build\'s lockfile that cannot be read fails the build tha
   const lock = (record) => JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {} }, ...(record === undefined ? {} : { 'bundle-lockfile': record }) });
   const cases = [
     ['not JSON', '{ "lockfileVersion": 3,', 'is not JSON'],
-    ['another version', lock({ v: 2, context: '.', writers: [] }), 'has a record of version 2, which this bundle-lockfile does not read'],
-    ['another shape', lock({ v: 1, context: 1, writers: 'x' }), 'has a bundle-lockfile record of a shape it does not read'],
+    ['another version', lock({ v: 1, context: '.', writers: [] }), 'has a record of version 1, which this bundle-lockfile does not read (it reads version 2): build it again with this one'],
+    ['another shape', lock({ v: 2, context: 1, writers: 'x' }), 'has a bundle-lockfile record of a shape it does not read'],
   ];
   for (const [what, content, why] of cases) {
     const root = project({ 'island/dist/main.js': 'x', 'island/dist/bundle-lockfile/package-lock.json': content });
@@ -2331,28 +2377,41 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
   const NONE = Symbol('no packages');
   const field = (m, packages = {}) => JSON.stringify({ lockfileVersion: 3, ...(packages === NONE ? {} : { packages }), 'bundle-lockfile': m });
   for (const json of [
-    field({ v: 1, context: '.', writers: [{ id: 'x', packages: ['node_modules/a'] }] }, NONE), // no packages
-    field({ v: 1, context: '.', writers: [] }, ['node_modules/a']),                                  // packages as an array
-    field({ v: 1, context: '.', writers: {} }), field({ v: 1, context: 1, writers: [] }), field({ v: 2, context: '.', writers: [] }),
+    field({ v: 2, context: '.', writers: [{ id: 'x', packages: ['node_modules/a'] }] }, NONE), // no packages
+    field({ v: 2, context: '.', writers: [] }, ['node_modules/a']),                                  // packages as an array
+    field({ v: 2, context: '.', writers: {} }), field({ v: 2, context: 1, writers: [] }),
+    // a record of another version (an older bundle-lockfile's, a newer one's)
+    field({ v: 1, context: '.', writers: [{ id: 'x', packages: ['node_modules/a'] }] }, { 'node_modules/a': { name: 'a', version: '1.0.0' } }),
+    field({ v: 3, context: '.', writers: [] }),
     field(null), field([]), 'null', '[]', '"x"', '{not json',
   ]) assert.equal(readMeta(json, '/d'), null, json);
   // malformed parts of a writer are left out, the rest is read
-  const meta = readMeta(field({ v: 1, context: '.', outside: 'node_modules/b', writers: [
+  const meta = readMeta(field({ v: 2, context: '.', outside: 'node_modules/b', writers: [
     null, 'x', { id: 1 }, { id: 'w', files: 'dist/a.js', count: '3', outputs: ['x'], packages: [1, 'node_modules/a', 'node_modules/none', 'toString', 'node_modules/noversion'],
-      contents: { 'dist/a.js': [0, 1, 3, 9, -1, 0.5, 'node_modules/a'], 'dist/b.js': 'x' } }, // indices into the strings of packages
+      contents: { 'dist/a.js': [0, 1, 3, 9, -1, 0.5, 'node_modules/a'], 'dist/b.js': 'x' }, // indices into the strings of packages
+      bundler: { name: 'webpack', version: 5 }, via: { chunk: [0, 1, 9, 'x'], unknown: [0], style: 'x' } },
   ] }, { 'node_modules/a': { name: 'a', version: '1.0.0' }, 'node_modules/noversion': { name: 'n' } }), '/d');
   const pa = { name: 'a', version: '1.0.0', path: J('/d/node_modules/a') };
-  assert.deepEqual(meta.writers, [{ id: 'w', files: [], count: undefined, outputs: {}, outputCount: undefined, contents: { [J('/d/dist/a.js')]: [pa] }, pkgs: [pa] }]);
+  assert.deepEqual(meta.writers, [{ id: 'w', bundler: { name: 'webpack' }, via: new Map([[pa.path, new Set(['chunk'])]]), files: [], count: undefined, outputs: {},
+    outputCount: undefined, contents: { [J('/d/dist/a.js')]: [pa] }, pkgs: [pa] }]);
   // such a file on disk: replaced by a lockfile of this build
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   const target = J(root, 'dist', LOCK);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, field({ v: 1, context: '.', writers: [{ id: 'x', packages: ['node_modules/a'] }] }, NONE));
+  fs.writeFileSync(target, field({ v: 2, context: '.', writers: [{ id: 'x', packages: ['node_modules/a'] }] }, NONE));
   const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
   assert.deepEqual(lockedNames(outputs.record(target, 'w', [a], root, [], { disk: true })), ['a']);
   outputs.emitted(target, 'w');
   await new Promise((resolve, reject) => outputs.rewrite(target, outputs.writeDisk(target), (err) => (err ? reject(err) : resolve())));
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a']);
+  // a lockfile an older bundle-lockfile wrote there (a record of version 1): replaced too, without its writers
+  fs.writeFileSync(target, field({ v: 1, context: '.', writers: [{ id: 'x', files: ['../main.js'], packages: ['node_modules/b'] }] },
+    { 'node_modules/b': { name: 'b', version: '1.0.0' } }));
+  fs.writeFileSync(J(root, 'dist/main.js'), '');
+  await new Promise((resolve, reject) => outputs.rewrite(target, outputs.writeDisk(target), (err) => (err ? reject(err) : resolve())));
+  const now = JSON.parse(fs.readFileSync(target, 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(now)), ['a']);
+  assert.equal(now['bundle-lockfile'].v, 2);
 });
 
 test('lock: a lock another process holds is waited for, then skipped with a warning; a stale one is taken over at once', () => {
