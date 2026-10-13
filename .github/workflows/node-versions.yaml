@@ -1,0 +1,75 @@
+name: node-versions
+
+# The Node.js versions at which the hooks behave differently (test/node-versions.json): the unit tests and a few
+# builds per hook path on each. test.yaml runs the "pr" ones on every pull request; all of them run weekly, and on
+# changes to the hooks.
+on:
+  workflow_call:
+    inputs:
+      set:
+        description: 'pr: the versions marked "pr"; all: every version'
+        type: string
+        default: pr
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
+  push:
+    branches: [main]
+    paths: ['src/hooks.cjs', 'src/esm-*', 'src/register.cjs', 'test/node-versions.json', '.github/workflows/node-versions.yaml']
+  pull_request:
+    paths: ['src/hooks.cjs', 'src/esm-*', 'src/register.cjs', 'test/node-versions.json', '.github/workflows/node-versions.yaml']
+
+permissions:
+  contents: read
+
+# not github.workflow: called from test.yaml, that is the caller's name, whose group this run would wait for
+concurrency:
+  group: node-versions-${{ github.ref }}-${{ inputs.set || 'all' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.list.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: list
+        env:
+          SET: ${{ inputs.set || 'all' }}
+        # each: { version, major, npm, fixtures } (a version's own npm and fixtures, else Wolfi's npm and the file's)
+        run: |
+          echo "versions=$(jq -c --arg set "$SET" '.fixtures as $f | [.versions[] | select($set == "all" or .pr)
+            | { version, major: (.version | split(".") | .[0]), npm: (if .npm then "npm~\(.npm)" else "npm" end),
+                fixtures: (.fixtures // $f) }]' test/node-versions.json)" >> "$GITHUB_OUTPUT"
+
+  node:
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: cgr.dev/chainguard/wolfi-base:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(needs.versions.outputs.versions) }}
+    name: Node ${{ matrix.node.version }}
+    env:
+      BLTEST_REQUIRE_SBOM: '1'
+    steps:
+      - name: Install tools
+        run: |
+          apk add --no-cache "nodejs-${{ matrix.node.major }}~${{ matrix.node.version }}" "${{ matrix.node.npm }}" yarn bun syft trivy
+          # apk's ~ matches a version prefix: the run is for exactly this version
+          test "$(node -v)" = "v${{ matrix.node.version }}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
+      - name: Unit tests
+        run: node --test test/unit.cjs
+      - name: Generate fixtures
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="${{ matrix.node.fixtures }}"
+      - name: Run matrix
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="${{ matrix.node.fixtures }}"

@@ -108,8 +108,9 @@ jobs:
       - name: Run matrix
         run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
 
-  # Node 20 (the oldest supported, 20.6+: module.register; no isInternalThread in its loader thread): a few builds of
-  # each kind - webpack 5, Vite 8 and the Rollup and Rolldown APIs (loader-thread hooks), rspack 2
+  # Node 20 (its newest; the oldest supported is in test/node-versions.json; module.register, no isInternalThread in its
+  # loader thread): a few builds of each kind - webpack 5, Vite 8 and the Rollup and Rolldown APIs (loader-thread
+  # hooks), rspack 2
   node20:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -128,3 +129,10 @@ jobs:
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES"
       - name: Run matrix
         run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES"
+
+  # the Node.js versions at which the hooks behave differently (test/node-versions.json): those marked "pr" here;
+  # node-versions.yaml runs all of them weekly and when the hooks change
+  node-versions:
+    uses: ./.github/workflows/node-versions.yaml
+    with:
+      set: pr

@@ -59,7 +59,8 @@ The details are in [docs/internals.md](docs/internals.md).
 ## Quick start
 
 Requirements:
-- Node.js 20.6 or later (builds are tested on Linux with Node.js 22, 24 and 26; [details](docs/bundlers.md#supported));
+- Node.js 20.18 or later, the oldest that is tested (builds are tested on Linux with Node.js 20, 22, 24 and 26;
+  [details](docs/bundlers.md#supported));
 - a [supported bundler](#supported), started by Node.js.
 
 There is no npm or Wolfi package yet: use a git checkout. Nothing is installed into the project.

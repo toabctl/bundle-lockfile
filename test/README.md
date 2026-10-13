@@ -42,8 +42,13 @@ CI splits the matrix into shards that run as parallel jobs. Both scripts take:
 ### Environments
 
 - Node.js 24 and 26 (Wolfi's `nodejs-24`, `nodejs-26`); Node.js 22 for the fixtures above; Node.js 20 for a few
-  (webpack 5, Vite 8, the Rollup and Rolldown APIs, rspack 2.2). Next.js 12 itself does not
-  build on Node.js 25 and later, which removed the `SlowBuffer` its compiled `jsonwebtoken` uses.
+  (webpack 5, Vite 8, the Rollup and Rolldown APIs, rspack 2.2). Next.js 12 itself does not build on Node.js 25 and
+  later, which removed the `SlowBuffer` its compiled `jsonwebtoken` uses.
+- The versions at which the hooks behave differently ([`node-versions.json`](node-versions.json), each with the
+  reason): the unit tests and a few fixtures per hook path (CommonJS, Yarn Plug'n'Play, tsx, the Rollup and Rolldown
+  APIs, Vite 7 and 8, rspack 2; on Node.js 20.18 those that support it) on each. Wolfi keeps the older builds of each
+  line (`apk add 'nodejs-24~24.12.0'`). Pull requests run those marked `pr` (`.github/workflows/test.yaml`);
+  `.github/workflows/node-versions.yaml` runs all of them weekly and on changes to the hooks.
 - webpack: npm 8/9/10/11 and the npm on `PATH` (Wolfi's `npm`), npx, `turbo run` (turbo passes `NODE_OPTIONS` to its
   tasks, also in its strict env mode), direct `node_modules/.bin` calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4
   (Plug'n'Play, also with the global cache, node-modules and pnpm linker), pnpm 8/9/10/11/12 (10 also with its global

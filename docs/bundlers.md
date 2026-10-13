@@ -25,9 +25,11 @@ What is supported and tested, which processes are hooked, and what is particular
   after every rebuild.
   The dev servers of rspack (`rspack serve`, `rsbuild dev`) serve it from memory (webpack's dev server goes the same
   way, through its in-memory output file system, but is not tested).
-- **Node.js:** 20.6 or later. Builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite,
-  Rollup, Rolldown, SvelteKit, rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn
-  Plug'n'Play; the unit tests also run on 20. Node.js 25 and Linux distributions other than Wolfi are not tested.
+- **Node.js:** 20.18 or later, the oldest that is tested (Vite 7 and 8, Rolldown, rspack 2 and Rsbuild 2 need
+  20.19). Builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite, Rollup, Rolldown,
+  SvelteKit, rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn Plug'n'Play; a
+  few on 20. The unit tests and a few builds per kind of hook also run on the releases at which the hooks behave
+  differently, from 20.18.2 to 26.4.0 ([which](../test/node-versions.json)). Node.js 25 and Linux distributions other than Wolfi are not tested.
   Next.js 12 does not build on Node.js 25 and later.
 - **SBOM tools:** every lockfile of the matrix is read by syft and Trivy (Wolfi's current versions; [which
   scans](../README.md#sbom-tools)).

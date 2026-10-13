@@ -3961,8 +3961,10 @@ test('hooks: a package\'s require() of a deprecated built-in module warns as wit
   const run = (target, preload) => spawnSync(process.execPath, [...(preload ? ['--require', J(SRC, 'register.cjs')] : []), J(root, 'main.js'), target],
     { encoding: 'utf8', cwd: root, env: { ...process.env, NODE_OPTIONS: '' } }).stdout.trim();
   for (const target of ['a', J(root, 'app.js')]) assert.equal(run(target, true), run(target, false), target);
-  // where this Node.js warns at all (21+), first-party code still does with bundle-lockfile
-  if (Number(process.versions.node.split('.')[0]) >= 22) {
+  // where this Node.js tells the callers apart (it warns for first-party code only: 24 and later, and 22 but for some
+  // releases - 22.13.1 and 22.22.2 warn for the package too, with or without bundle-lockfile), so does it with it
+  const major = Number(process.versions.node.split('.')[0]);
+  if (major >= 24 || (major === 22 && run('a', false) === '')) {
     assert.equal(run('a', true), '');
     assert.match(run(J(root, 'app.js'), true), /warning DEP0040/);
   }
