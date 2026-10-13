@@ -569,7 +569,7 @@ const cases = [
   // the packages are in .yarn/cache/<zip>/node_modules/: keyed node_modules/<name>[@<version>], as those in a global cache
   { name: "yarn 4.18.1 Plug'n'Play", fixture: 'wp5-yarn4-pnp', cmd: 'yarn build', expect: W5, expectKeys: OUTSIDE_KEYS_W5 },
   // keys must not carry the path to the cache, which differs between machines
-  { name: "yarn 4.18.1 Plug'n'Play, global cache", fixture: 'wp5-yarn4-pnp-global-cache', cmd: 'yarn build', expect: W5,
+  { name: "yarn 4.18.1 Plug'n'Play, global cache", outside: 'Yarn\'s global cache, outside the project', fixture: 'wp5-yarn4-pnp-global-cache', cmd: 'yarn build', expect: W5,
     expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/ms': 'ms@2.0.0',
       'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/nanoid': 'nanoid@3.3.20', 'node_modules/yallist': 'yallist@5.0.0' } },
   { name: 'yarn 4.18.1 node-modules linker', fixture: 'wp5-yarn4-node-modules', cmd: 'yarn build', expect: W5 },
@@ -590,7 +590,7 @@ const cases = [
   { name: 'pnpm 10.34.6', fixture: 'wp5-pnpm10', cmd: '$PNPM run build', expect: W5 },
   // packages in pnpm's global virtual store, outside the project: keys without the machine-specific path, like Yarn's
   // global cache
-  { name: 'pnpm 10.34.6, global virtual store', fixture: 'wp5-pnpm10-global-store', cmd: '$PNPM run build', expect: W5, expectKeys: OUTSIDE_KEYS_W5 },
+  { name: 'pnpm 10.34.6, global virtual store', outside: 'pnpm\'s global virtual store, outside the project', fixture: 'wp5-pnpm10-global-store', cmd: '$PNPM run build', expect: W5, expectKeys: OUTSIDE_KEYS_W5 },
   { name: 'pnpm 11.28.5', fixture: 'wp5-pnpm11', cmd: '$PNPM run build', expect: W5 },
   // pnpm 12 verifies the lockfile against the registry before `run`; offline that retries for minutes
   { name: 'pnpm 12.9.1', fixture: 'wp5-pnpm12', cmd: '$PNPM --config.verify-deps-before-run=false run build', expect: W5 },
@@ -836,9 +836,9 @@ const cases = [
   { name: 'Vite 8.3.3, pnpm 9', fixture: 'vite8-pnpm9', cmd: '$PNPM run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, pnpm 11', fixture: 'vite8-pnpm11', cmd: '$PNPM run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // packages outside the project (pnpm's global virtual store, Yarn's global cache): keys without the machine-specific path
-  { name: 'Vite 8.3.3, pnpm 10 global virtual store', fixture: 'vite8-pnpm10-global-store', cmd: '$PNPM run build', expect: VITE_EXPECT,
+  { name: 'Vite 8.3.3, pnpm 10 global virtual store', outside: 'pnpm\'s global virtual store, outside the project', fixture: 'vite8-pnpm10-global-store', cmd: '$PNPM run build', expect: VITE_EXPECT,
     expectKeys: OUTSIDE_KEYS_VITE, oracleMissing: ['normalize.css@8.0.1'] },
-  { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play, global cache", fixture: 'vite8-yarn4-pnp-global-cache', cmd: 'yarn build', expect: VITE_EXPECT,
+  { name: "Vite 8.3.3, yarn 4.18.1 Plug'n'Play, global cache", outside: 'Yarn\'s global cache, outside the project', fixture: 'vite8-yarn4-pnp-global-cache', cmd: 'yarn build', expect: VITE_EXPECT,
     expectKeys: OUTSIDE_KEYS_VITE, oracleMissing: ['normalize.css@8.0.1'] },
   // a monorepo's app built in its directory: the packages are in the root's node_modules, keyed without the ../../
   { name: 'Vite 8.3.3, an app of an npm workspaces monorepo', fixture: 'vite-monorepo', cmd: 'npm run -s build -w packages/app', outDir: 'packages/app/dist',
@@ -1123,7 +1123,7 @@ const cases = [
     expect: NESTED_EXPECT },
   // the island's output vendored with cp into the app (copied/island/dist, one level deeper): its lockfile is a copy's,
   // whose packages are kept by name and version
-  { name: 'nested: Vite 8 island copied (cp) into the app, bundled by webpack 5', fixture: 'nested-island-wp5', env: { NESTED_ENTRY: 'vendored' },
+  { name: 'nested: Vite 8 island copied (cp) into the app, bundled by webpack 5', outside: 'the copy\'s record (another place than the island\'s output) does not know the packages\' locations: unknown', fixture: 'nested-island-wp5', env: { NESTED_ENTRY: 'vendored' },
     cmd: './node_modules/.bin/vite build --config island/vite.config.mjs && mkdir -p copied/island && cp -r island/dist copied/island/dist && ./node_modules/.bin/webpack --config webpack.config.js',
     expect: NESTED_EXPECT, expectKeys: { 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/nanoid': 'nanoid@3.3.20' },
     oracle: false },
@@ -1214,7 +1214,7 @@ const cases = [
     { name: `rspack ${v}, yarn 4.18.1 node-modules linker`, fixture: `rspack${line}-yarn4-node-modules`, cmd: 'yarn build', expect: W5 },
     { name: `rspack ${v}, bun`, fixture: `rspack${line}-bun`, cmd: 'bun run build', expect: W5 }]),
   { name: 'rspack 2.2.8, pnpm 11.28.5', fixture: 'rspack2.2-pnpm11', cmd: '$PNPM run build', expect: W5 },
-  { name: 'rspack 2.2.8, pnpm 10.34.6, global virtual store', fixture: 'rspack2.2-pnpm10-global-store', cmd: '$PNPM run build', expect: W5,
+  { name: 'rspack 2.2.8, pnpm 10.34.6, global virtual store', outside: 'pnpm\'s global virtual store, outside the project', fixture: 'rspack2.2-pnpm10-global-store', cmd: '$PNPM run build', expect: W5,
     expectKeys: OUTSIDE_KEYS_W5 },
   // programmatic builds through rspack's JavaScript API
   ...[['1.7.12', '1.7'], ['2.2.8', '2.2']].flatMap(([v, line]) => [

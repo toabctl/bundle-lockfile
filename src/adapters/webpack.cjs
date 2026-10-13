@@ -50,13 +50,19 @@ function unknownCompiler(where) {
 // In Next 12-15, next/dist/compiled/webpack/webpack.js only exports init() when it is loaded; init() then fills
 // in exports.webpack (Object.assign(exports, require('./bundle5')())). Next 16 fills the exports when the module
 // is loaded (no init()). Patch an already filled copy right away, and otherwise right after init().
+// With next-rspack, Next.js fills its webpack with rspack's exports (rspackVersion): rspack.cjs hooks that Compiler.
 function patchNext(exp, where) {
-  if (exp.webpack && exp.webpack.Compiler && !patchCompiler(exp.webpack.Compiler, where)) unknownCompiler(where);
+  const patch = () => {
+    const w = exp.webpack;
+    if (!w || !w.Compiler || typeof w.rspackVersion === 'string') return;
+    if (!patchCompiler(w.Compiler, where)) unknownCompiler(where);
+  };
+  patch();
   if (typeof exp.init !== 'function' || exp.init[PATCHED]) return;
   const init = exp.init;
   exp.init = function (...args) {
     const r = init.apply(this, args);
-    try { if (exp.webpack && !patchCompiler(exp.webpack.Compiler, where)) unknownCompiler(where); } catch (e) { problems.problem(`webpack: could not patch Next.js' webpack (${where})`, e); }
+    try { patch(); } catch (e) { problems.problem(`webpack: could not patch Next.js' webpack (${where})`, e); }
     return r;
   };
   exp.init[PATCHED] = true;
