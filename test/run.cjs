@@ -9,10 +9,14 @@
 //      in the output's bytes
 //   3. syft (if on PATH) reads exactly those packages from outDir via javascript-lock-cataloger
 //   4. Trivy (if on PATH) reads exactly those packages from outDir via its npm (package-lock.json) analyzer
+//   5. the build printed no Node.js warning that the matrix does not expect (warnings / allowWarnings in matrix.cjs);
+//      BLTEST_WARNINGS=collect records every one in <fixtures-dir>/.warnings.jsonl instead (a census)
+//   6. the ES-module entries the adapters wrap, as installed in the fixture, agree with their wrappers when Node.js
+//      loads both (oracles/esm-entries.cjs; once per fixture)
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { fixtures, cases } = require('./matrix.cjs');
+const { fixtures, cases, warnings: WARNINGS } = require('./matrix.cjs');
 const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
@@ -28,6 +32,7 @@ if (process.env.BLTEST_REQUIRE_SBOM === '1' && !(hasSyft && hasTrivy)) {
   console.error(`BLTEST_REQUIRE_SBOM=1, but ${[!hasSyft && 'syft', !hasTrivy && 'trivy'].filter(Boolean).join(' and ')} not on PATH`);
   process.exit(1);
 }
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
 const TIMEOUT = 15 * 60 * 1000; // per command: a hanging build (e.g. an installer retrying the registry offline) fails its case
 
 function run(cmd, cwd, env) {
@@ -50,6 +55,44 @@ function trivyPackages(bom) {
     .map(c => ({ id: `${c.group ? `${c.group}/` : ''}${c.name}@${c.version}`, purl: c.purl || '', licensed: !!(c.licenses || []).length }));
 }
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+// Node.js's warnings in a build's output, "(node:<pid>) [<code>] <Type>Warning: <message>": each one expected by the
+// matrix (warnings), or by the case (allowWarnings) - a new one may come from bundle-lockfile, and builds that fail
+// on any warning would fail with it. module.register() is deprecated from Node.js 26 on (DEP0205):
+// BUNDLE_LOCKFILE_ESM_HOOKS=async calls it, so there DEP0205 is expected, and nowhere else.
+const WARNING = /^\(node:\d+\) ((?:\[([A-Z]+\d+)\] )?[A-Za-z]*Warning: .*)$/gm;
+function checkWarnings(c, output, env) {
+  const all = [...output.matchAll(WARNING)].map(m => ({ text: m[1], code: m[2] || '' }));
+  if (process.env.BLTEST_WARNINGS === 'collect') {
+    for (const w of all) fs.appendFileSync(path.join(FX, '.warnings.jsonl'), `${JSON.stringify({ case: c.name, fixture: c.fixture, node: process.versions.node, warning: w.text })}\n`);
+    return all.length ? `${all.length} warning(s) collected` : null;
+  }
+  const dep0205 = env.BUNDLE_LOCKFILE_ESM_HOOKS === 'async' && NODE_MAJOR >= 26;
+  const expected = [...WARNINGS.map(w => w.match), ...(c.allowWarnings || [])];
+  const other = all.filter(w => !(dep0205 && w.code === 'DEP0205') && !expected.some(re => re.test(w.text)));
+  if (other.length) throw new Error(`Node.js warnings the case does not expect:\n    ${[...new Set(other.map(w => w.text))].join('\n    ')}`);
+  if (dep0205 && !all.some(w => w.code === 'DEP0205')) throw new Error('BUNDLE_LOCKFILE_ESM_HOOKS=async on Node.js 26+: expected DEP0205 (module.register() is deprecated)');
+  return all.length ? `${all.length} expected warning(s)` : null;
+}
+
+// The ES-module entries the adapters wrap, against Node.js (oracles/esm-entries.cjs): once per fixture, without
+// bundle-lockfile; a fixture with a copy whose wrapper does not agree fails every case of it
+const entryChecks = new Map(); // fixture -> note | null | Error
+function checkEntries(c, dir) {
+  if (!entryChecks.has(c.fixture)) {
+    try {
+      const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
+      const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_')));
+      const list = JSON.parse(sh(`${node} ${path.join(__dirname, 'oracles/esm-entries.cjs')}`, dir, { ...env, NODE_OPTIONS: '' }).trim().split('\n').pop());
+      const bad = list.filter(r => !r.ok);
+      entryChecks.set(c.fixture, bad.length ? new Error(`ESM entries whose wrapper disagrees with Node.js:\n    ${bad.map(r => `${r.file} (${r.id}@${r.version}): ${r.error}`).join('\n    ')}`)
+        : list.length ? `ESM entries agree: ${[...new Set(list.map(r => `${r.id}@${r.version}`))].join(' ')}` : null);
+    } catch (e) { entryChecks.set(c.fixture, e); }
+  }
+  const r = entryChecks.get(c.fixture);
+  if (r instanceof Error) throw r;
+  return r;
+}
 
 function runCase(c) {
   const fx = fixtures[c.fixture];
@@ -90,6 +133,8 @@ function runCase(c) {
   const nodeOptions = [caseOptions(c.nodeOptions), c.inject === false ? '' : `--require ${register}`, caseOptions(c.nodeOptionsAfter)].filter(Boolean).join(' ');
   const env = { ...base, NODE_OPTIONS: nodeOptions };
   const notes = [];
+  const entries = checkEntries(c, dir);
+  if (entries) notes.push(entries);
   // heapMB: the build's own process records its heap limit (test/apps/webpack5/webpack.config.js), checked after it
   const heapFile = path.join(dir, '.heap');
   fs.rmSync(heapFile, { force: true });
@@ -112,6 +157,8 @@ function runCase(c) {
     return `failed as expected (${c.expectError})`;
   }
   const build = run(c.cmd, dir, env);
+  const warned = checkWarnings(c, build.stdout + build.stderr, env);
+  if (warned) notes.push(warned);
   if (c.expectOutput && !c.expectOutput.test(build.stdout + build.stderr)) throw new Error(`build output does not match ${c.expectOutput}`);
   if (c.heapMB) {
     if (!fs.existsSync(heapFile)) throw new Error(`the build recorded no heap limit (${heapFile})`);
@@ -265,7 +312,6 @@ function sbomScenario(c, sc, dir, env) {
 
 let failed = 0, skipped = 0;
 const selected = cases.filter(c => inShard.has(c.fixture) && (!filter || new RegExp(filter).test(c.name)));
-const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
 // minNode { <major>: <oldest minor> }: a listed major from that minor on, a newer major than every listed one
 const minNodeOk = (min) => {
   const [ma, mi] = process.versions.node.split('.').map(Number);

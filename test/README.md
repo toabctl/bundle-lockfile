@@ -90,7 +90,16 @@ A case that expects a lockfile checks every lockfile the build writes:
   JavaScript, a shader's `#include`). A case may name the canaries a bundler version cannot list (`canaryUnlisted`,
   e.g. Vite before 6.1 records no inlined images): exactly those must be unlisted, so the limit is pinned;
 - if `syft` and `trivy` are on `PATH` (as in CI, which sets `BLTEST_REQUIRE_SBOM=1`: without them the run fails): each
-  reads exactly those packages, each with a license and a `pkg:npm` purl (syft: from its `javascript-lock-cataloger`).
+  reads exactly those packages, each with a license and a `pkg:npm` purl (syft: from its `javascript-lock-cataloger`);
+- the build printed no Node.js warning (`(node:<pid>) ...Warning: ...`) that the matrix does not expect: each expected
+  one is listed with its cause (`warnings` in `matrix.cjs`, or a case's `allowWarnings`). With
+  `BUNDLE_LOCKFILE_ESM_HOOKS=async` on Node.js 26 and later, `module.register()`'s deprecation (DEP0205) is required,
+  elsewhere it fails the case. `BLTEST_WARNINGS=collect` records every warning in `<fixtures>/.warnings.jsonl`
+  instead of checking them, to take a census;
+- the ES-module entries the adapters wrap (Rollup's, Rolldown's, rspack 2's), every copy installed in the fixture,
+  agree with their wrappers when Node.js loads both without bundle-lockfile ([`oracles/esm-entries.cjs`](oracles/esm-entries.cjs),
+  once per fixture): the wrapper links (a `default` the module does not have, or one it misses, would be a
+  SyntaxError), and has every export of the module, with the same value.
 
 Cases can also require exact keys, the notes and warnings in the build output, and the packages after each watch
 rebuild.

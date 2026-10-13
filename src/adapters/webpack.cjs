@@ -91,8 +91,11 @@ module.exports = {
       if (exp.name === 'Compiler') { // webpack/lib/Compiler.js - or another class called Compiler, elsewhere
         patch = () => { if (!patchCompiler(exp, resolve()) && module.exports.cjsFiles[0].test(request)) unknownCompiler(resolve()); };
       } else if (exp.Compiler && exp.Compilation && exp.version && !exp.rspackVersion) patch = () => patchCompiler(exp.Compiler, resolve()); // webpack namespace (not rspack's: rspack.cjs)
-    } else if (request.includes('webpack') && exp && typeof exp === 'object' && typeof exp.webpack === 'function' && !NEXT_WEBPACK.test(request)) {
-      // a vendored copy exported as a plain object around webpack's namespace (umi's @umijs/bundler-webpack/compiled/webpack)
+    } else if (request.includes('webpack') && exp && typeof exp === 'object' && Object.prototype.hasOwnProperty.call(exp, 'webpack')
+      && typeof exp.webpack === 'function' && !NEXT_WEBPACK.test(request)) {
+      // a vendored copy exported as a plain object around webpack's namespace (umi's @umijs/bundler-webpack/compiled/webpack).
+      // Only an own property is read: the exports of a module in a require() cycle have a prototype that warns about
+      // reading one they do not have ("Accessing non-existent property ... inside circular dependency", webpack 5.0's)
       const w = exp.webpack;
       if (w.Compiler && w.Compilation && w.version && !w.rspackVersion) patch = () => { if (!patchCompiler(w.Compiler, resolve())) unknownCompiler(resolve()); };
     } else if (request.includes('webpack')) {

@@ -478,6 +478,9 @@ const LIB = path.join(__dirname, 'lib');
 // the tracing agents of the *-apm fixtures, from the fixture (run.cjs: {fixture}); dd-trace without an agent to send to
 const OTEL = '--experimental-loader={fixture}/node_modules/@opentelemetry/instrumentation/hook.mjs';
 const DD = '{fixture}/node_modules/dd-trace';
+// Node.js's warnings about those agents' ways in (see the cases)
+const EXPERIMENTAL_LOADER = /^ExperimentalWarning: `--experimental-loader` may be removed in the future; instead use `register\(\)`:$/;
+const MODULE_REGISTER = /^\[DEP0205\] DeprecationWarning: `module\.register\(\)` is deprecated\. Use `module\.registerHooks\(\)` instead\.$/;
 const DD_ENV = { DD_TRACE_AGENT_URL: 'http://127.0.0.1:9', DD_TRACE_TELEMETRY_ENABLED: 'false', DD_INSTRUMENTATION_TELEMETRY_ENABLED: 'false',
   DD_TRACE_STARTUP_LOGS: 'false', DD_REMOTE_CONFIGURATION_ENABLED: 'false' };
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
@@ -617,6 +620,7 @@ function nextCase(fixture, version, react, flags = '') {
 //              case); exactly these, so the limit is pinned
 //   expectSources  path fragments ("/"-separated, e.g. "node_modules/preact/hooks/"): each must be part of a source file
 //              of the oracle's build (its --sources), so the files the case is about are bundled at all
+//   allowWarnings  [RegExp]: Node.js warnings the build may print (the text after "(node:<pid>) "), besides `warnings`
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
@@ -684,11 +688,14 @@ const cases = [
     cmd: `cp ${LIB}/webpack.config.strip.ts webpack.config.ts && ./node_modules/.bin/webpack --config webpack.config.ts; s=$?; rm -f webpack.config.ts; exit $s` },
   { name: 'rspack 2.2.8, rspack.config.ts through ts-node/register', fixture: 'rspack2.2-ts-node', expect: W5,
     cmd: `printf '{"compilerOptions":{"module":"commonjs"}}' > tsconfig.json && cp ${LIB}/rspack.config.enum.ts rspack.config.ts && ./node_modules/.bin/rspack build -c rspack.config.ts` },
-  // tracing agents next to bundle-lockfile, before and after its --require (see wp5-apm): exactly the build's packages
+  // tracing agents next to bundle-lockfile, before and after its --require (see wp5-apm): exactly the build's packages.
+  // Node.js warns about OpenTelemetry's --experimental-loader, and on 26 about dd-trace's initialize.mjs, which calls
+  // module.register() (DEP0205; bundle-lockfile uses module.registerHooks there)
   ...[['webpack 5', 'wp5-apm', W5, {}], ['Vite 8.3.3', 'vite8-apm', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }],
     ['rspack 2.2.8', 'rspack2.2-apm', W5, {}]].flatMap(([what, fixture, expect, extra]) => [
-    ['OpenTelemetry\'s loader before', { nodeOptions: OTEL }], ['OpenTelemetry\'s loader after', { nodeOptionsAfter: OTEL }],
-    ['dd-trace --import initialize.mjs', { nodeOptionsAfter: `--import ${DD}/initialize.mjs` }],
+    ['OpenTelemetry\'s loader before', { nodeOptions: OTEL, allowWarnings: [EXPERIMENTAL_LOADER] }],
+    ['OpenTelemetry\'s loader after', { nodeOptionsAfter: OTEL, allowWarnings: [EXPERIMENTAL_LOADER] }],
+    ['dd-trace --import initialize.mjs', { nodeOptionsAfter: `--import ${DD}/initialize.mjs`, allowWarnings: [MODULE_REGISTER] }],
     ['dd-trace --import register.js', { nodeOptionsAfter: `--import ${DD}/register.js` }],
     ['dd-trace --require before', { nodeOptions: `--require ${DD}/init` }], ['dd-trace --require after', { nodeOptionsAfter: `--require ${DD}/init` }],
   ].map(([how, opts]) => ({ name: `${what}, ${how} bundle-lockfile`, fixture, cmd: 'npm run -s build', env: DD_ENV, expect, ...extra, ...opts }))),
@@ -696,7 +703,7 @@ const cases = [
   ...[['webpack 5, yarn 4.18.1 pnpm linker', 'pkgmap-wp5-yarn4-pnpm', W5, {}],
     ['Vite 8.3.3, yarn 4.18.1 node-modules linker', 'pkgmap-vite8-yarn4-node-modules', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }]].map(([what, fixture, expect, extra]) => (
     { name: `${what}, package maps (nodeExperimentalPackageMap)`, fixture, cmd: 'yarn build', expect, ...extra, minNode: { 24: 20, 26: 4 },
-      expectOutput: /Package maps is an experimental feature/ })),
+      expectOutput: /Package maps is an experimental feature/, allowWarnings: [/^ExperimentalWarning: Package maps is an experimental feature and might change at any time$/] })),
   { name: 'webpack 5.111.1 in a directory with "#" in its name', fixture: 'wp5-c#', cmd: 'npm run -s build', expect: W5 },
   // older npm releases (installed and run with that npm); the default fixtures use the npm on PATH
   { name: 'npm 8.19.4', fixture: 'wp5-npm8', cmd: '$NPM run -s build', expect: W5 },
@@ -871,9 +878,11 @@ const cases = [
     fixture: 'edge-compression-wp4', env: { EDGE_COMPRESSION: 'two' }, cmd: `npm run -s build && ${WEBPACK_BIN} --config-name sw`, nodeOptions: LEGACY_SSL,
     expectIncludes: ['lodash-es@4.18.1', 'ms@2.1.3'] },
   // the virtual CSS module reads a placeholder file in @vanilla-extract/webpack-plugin, a build tool;
-  // @vanilla-extract/css only runs at build time
+  // @vanilla-extract/css only runs at build time. On Node.js 26 the `eval` package that @vanilla-extract/integration
+  // evaluates style files with reads every global, localStorage too, which warns (without bundle-lockfile as well)
   { name: 'edge: vanilla-extract virtual CSS (match resource)', fixture: 'edge-vanilla', cmd: 'npm run -s build',
-    expectIncludes: ['lodash-es@4.18.1'], expectExcludes: ['@vanilla-extract/webpack-plugin@2.3.27', '@vanilla-extract/css@1.21.2'] },
+    expectIncludes: ['lodash-es@4.18.1'], expectExcludes: ['@vanilla-extract/webpack-plugin@2.3.27', '@vanilla-extract/css@1.21.2'],
+    allowWarnings: [/^ExperimentalWarning: localStorage is not available because --localstorage-file was not provided\.$/] },
   // vendored copies: outside node_modules the innermost package.json of a package npm could have published (a name it
   // accepts, a version, not private, no VS Code extension's) below the first-party boundaries; inside a package, one
   // of another name; a package root without a package.json counts as the package around it. Hand-written: what is
@@ -1615,4 +1624,9 @@ const cases = [
       oracleMissing: CANARY_INLINED.all.filter(p => !unlisted.includes(p)) })),
 ];
 
-module.exports = { fixtures, cases };
+// Node.js warnings any build may print ({ match: RegExp of the text after "(node:<pid>) ", why }), each one explained:
+// a warning no build tool explains may come from bundle-lockfile (run.cjs checkWarnings)
+const warnings = [
+];
+
+module.exports = { fixtures, cases, warnings };

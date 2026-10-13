@@ -3513,6 +3513,48 @@ test('esm-wrap: withoutComments gives what the character-by-character version ga
   for (const s of samples) assert.equal(withoutComments(s), reference(s), JSON.stringify(s.slice(0, 40)));
 });
 
+test('esm-wrap: regular expression literals and the code in template literals start no comment or string', () => {
+  const { withoutComments, exportedNames } = require('../src/esm-wrap.cjs');
+  const hasDefault = (src) => exportedNames(src).has('default');
+  // by the ECMAScript grammar (written by hand): the module has a default export, or none
+  const cases = [
+    ['const r = /\\/*/; export default 1;\n', true], // \/* in a regular expression: no comment
+    ['const r = /[/*]/; export default 1;\n', true], // /* in a character class
+    ['if (/\\/\\*/.test(a)) b(); export { c as default };\n', true],
+    ["const r = /'/;\n/* export default x */\nexport const a = 1;\nconst s = 'q';\n", false], // ' in a regular expression: no string
+    ['const r = /"/g; // export default x\nexport { a };\n', false],
+    ['function f(s) { return /\'/.test(s) } // export default f\nexport { f };\n', false],
+    ['const r = x => typeof /`/; /* export default */ export { r };\n', false],
+    ['const t = `${\'`\'}`; /* export default x */ export const a = 1;\n', false], // a ` in a string in a ${}
+    ['const t = `a${`b${c}`}`; // export default t\nexport { t };\n', false], // nested template literals
+    ['const t = `${{ a: 1 }.a} // kept`; export default t;\n', true], // braces in a ${}; // in a template is no comment
+    ['const t = `${f(() => { return 1 })}`; /* export default */ export { t };\n', false],
+    ['const x = a / b; /* export default q */ export { c };\n', false], // division after a name
+    ['const x = (a) / b / c; /* export default */ export { x };\n', false], // after )
+    ['const x = a[0] / 2 /* export default */; export { x };\n', false], // after ]
+    ['i++ / 2; /* export default */ export { i };\n', false], // after x++
+    ['const x = 10 / 2; // export default\nexport { x };\n', false], // after a number
+    ['const x = o.in / 2; /* export default */ export { x };\n', false], // a property named like a keyword
+    ["const s = 'a' / 2; /* export default */ export { s };\n", false], // after a string
+    // in literals: code a bundle generates, no export of its own
+    ['const s = "export default";\nexport { a };\n', false],
+    ["const s = 'export { x as default }'; export { a };\n", false],
+    ['const t = `export default ${x}`; export { a };\n', false],
+    ['const t = `${`export default`}`; export { a };\n', false],
+    ['const r = /export default/; export { a };\n', false],
+    ["const s = 'a'; export default s;\n", true],
+    ['const t = `${a}`; export { t as default };\n', true],
+  ];
+  for (const [src, want] of cases) assert.equal(hasDefault(src), want, src);
+  // the names of string literals do not count (a string-named export: `export *` brings it)
+  assert.deepEqual([...exportedNames('export { a as "module.exports", b };')], ['b']);
+  // comments in the code of a ${} go, as anywhere else in code
+  assert.equal(withoutComments('`a${ b /* c */ }d`'), '`a${ b   }d`');
+  assert.equal(withoutComments('x = /\\/\\/ no/; // yes'), 'x = /\\/\\/ no/;  ');
+  // a / that cannot be a regular expression (no end on its line) divides
+  assert.equal(withoutComments('a = (/ 2\n// c\n)'), 'a = (/ 2\n \n)');
+});
+
 // a compilation of rspack 2: chunks, assets with their bytes (assets: name -> { info, bytes }), file dependencies,
 // all modules, options
 function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, exportsUsed = () => false }) {
@@ -4891,6 +4933,37 @@ test('webpack adapter: a vendored webpack exported as a plain object around its 
   const O = fakeCompiler();
   webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
   assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
+  // the exports of a module in a require() cycle (Node.js gives them a prototype that warns about reading a property
+  // they do not have, as webpack 5.0's lib/ files are): only own properties are read
+  const read = [];
+  const cyclic = Object.create(new Proxy({}, { get: (t, k) => { read.push(k); return undefined; } }));
+  webpack.onCjsLoad(cyclic, '/p/node_modules/webpack/lib/WebpackOptionsApply.js', () => '/p/node_modules/webpack/lib/WebpackOptionsApply.js');
+  assert.deepEqual(read, []);
+});
+
+test('oracles/esm-entries: every installed copy of an entry against its wrapper, as Node.js loads both', () => {
+  const es = (name, version, body, type = 'module') => ({
+    [`${name}/package.json`]: { name: name.split('node_modules/').pop(), version, ...(type ? { type } : {}) },
+    [`${name}/${name.endsWith('rspack/core') ? 'dist/index.js' : name.endsWith('rolldown') ? 'dist/index.mjs' : 'dist/es/rollup.js'}`]: body,
+  });
+  const root = project({
+    ...es('node_modules/rollup', '4.0.0', 'export function rollup() {}\nexport function watch() {}\nexport const VERSION = "export default";\n'),
+    // a copy of another version below another package (and pnpm's store), and one of a shape the adapter does not know
+    ...es('node_modules/vite/node_modules/rollup', '3.0.0', 'export const VERSION = 3;\n'),
+    ...es('node_modules/.pnpm/rolldown@1.0.0/node_modules/rolldown', '1.0.0', 'const r = /\\/*/; export function rolldown() {}\nexport default rolldown;\n'),
+    // rspack 1: CommonJS at the path of rspack 2's entry, not wrapped
+    ...es('node_modules/@rspack/core', '1.7.0', 'module.exports = {};\n', null),
+  });
+  const r = spawnSync(process.execPath, [J(__dirname, 'oracles/esm-entries.cjs')], { cwd: root, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const got = JSON.parse(r.stdout).map(({ file, id, version, ok, error }) => ({ file: file.split(path.sep).join('/'), id, version, ok, error }));
+  assert.deepEqual(got, [
+    { file: 'node_modules/.pnpm/rolldown@1.0.0/node_modules/rolldown/dist/index.mjs', id: 'rolldown', version: '1.0.0', ok: true, error: undefined },
+    { file: 'node_modules/rollup/dist/es/rollup.js', id: 'rollup', version: '4.0.0', ok: true, error: undefined },
+    { file: 'node_modules/vite/node_modules/rollup/dist/es/rollup.js', id: 'rollup', version: '3.0.0', ok: false, error: 'none of rollup, watch is a function' },
+  ]);
+  assert.deepEqual(fs.readdirSync(root).filter(f => f.startsWith('.esm-entries-')), []); // its wrappers are gone
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 // Rolldown's plugin context classes, as in its dist (1.0, 1.2): PluginContextImpl and its subclasses for load and
