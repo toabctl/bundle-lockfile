@@ -244,6 +244,7 @@ variable that is set wins. The defaults need no configuration.
 | `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are never listed as vendored copies |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated bundlers to skip: `webpack`, `rspack`, `vite`, `rollup`, `rolldown`, or `all` |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | `sync`, `async` or `off`: how ES-module bundlers are hooked, instead of choosing by Node.js version |
+| `BUNDLE_LOCKFILE_TREE` | `off` | `on`: also a `package.json` per package next to the lockfile, for image scans; `only`: instead of the lockfile |
 | `BUNDLE_LOCKFILE_REGISTER` | found by the shim | an absolute path: the `register.cjs` the node shim preloads (environment only) |
 | `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | an absolute path: the settings file (environment only) |
 
@@ -300,6 +301,7 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 | directory or file scans (`syft scan dir:` / `file:`, `trivy fs`, `trivy repo`) | yes | yes |
 | image scans (and `trivy rootfs`) | only with `--select-catalogers +javascript-lock-cataloger` | no: `trivy image` and `trivy rootfs` read no lockfiles (an APK's SBOM, which they read, lists npm packages only if it was made by scanning the package's files: melange's own SBOM generator lists none) |
 | a lockfile below `node_modules`, or not named `package-lock.json` | no | no |
+| with `BUNDLE_LOCKFILE_TREE=on`: image scans (and `trivy rootfs`) | yes, from the tree | yes, from the tree |
 
 A `node_modules` shipped with a server, whose packages are in no lockfile, is read the other way round: from its
 `package.json` files, by image scans (also `trivy rootfs`), not by directory scans (`trivy fs`; `syft scan dir:` only

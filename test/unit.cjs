@@ -3812,7 +3812,7 @@ test('settings file: config.json next to register.cjs sets what the environment 
 // what config.cjs finds invalid for an environment (BUNDLE_LOCKFILE_* variables of this process removed first)
 function invalidFor(vars) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_')));
-  const r = spawnSync(process.execPath, ['-e', `const c = require(${JSON.stringify(J(SRC, 'core/config.cjs'))}); console.log(JSON.stringify({ invalid: c.invalid, strict: c.strict, inline: c.inline, firstParty: c.firstParty }))`],
+  const r = spawnSync(process.execPath, ['-e', `const c = require(${JSON.stringify(J(SRC, 'core/config.cjs'))}); console.log(JSON.stringify({ invalid: c.invalid, strict: c.strict, inline: c.inline, firstParty: c.firstParty, tree: c.tree, file: c.file }))`],
     { env: { ...env, ...vars }, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
@@ -3823,12 +3823,19 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
   // every setting with a value it takes
   assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json', BUNDLE_LOCKFILE_EXPORT_DIR: '/x', BUNDLE_LOCKFILE_EXPORT_BASE: '/y',
     BUNDLE_LOCKFILE_INLINE: 'OFF', BUNDLE_LOCKFILE_STRICT: ' true ', BUNDLE_LOCKFILE_DEBUG: '', BUNDLE_LOCKFILE_FIRST_PARTY: '/app/lib/**, /**',
-    BUNDLE_LOCKFILE_DISABLE: ' Vite , rolldown', BUNDLE_LOCKFILE_ESM_HOOKS: 'Async', BUNDLE_LOCKFILE_REGISTER: '/r.cjs',
+    BUNDLE_LOCKFILE_DISABLE: ' Vite , rolldown', BUNDLE_LOCKFILE_ESM_HOOKS: 'Async', BUNDLE_LOCKFILE_TREE: ' On ', BUNDLE_LOCKFILE_REGISTER: '/r.cjs',
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
   assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
+  assert.equal(one({ BUNDLE_LOCKFILE_TREE: 'both' }), 'BUNDLE_LOCKFILE_TREE=both is none of off, on, only');
+  // the tree: off unless asked for (also for a value not recognized); only: the record in record.json, which no SBOM
+  // tool reads, next to the tree
+  assert.deepEqual([invalidFor({}).tree, invalidFor({ BUNDLE_LOCKFILE_TREE: 'both' }).tree, invalidFor({ BUNDLE_LOCKFILE_TREE: 'ON' }).tree], ['off', 'off', 'on']);
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_TREE: 'on' }).file, 'bundle-lockfile/package-lock.json');
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_TREE: 'only' }).file, 'bundle-lockfile/record.json');
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_TREE: 'only', BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' }).file, 'sbom/record.json');
   for (const k of ['INLINE', 'STRICT', 'DEBUG']) {
     for (const v of ['yes', 'no', '2', 'disabled']) assert.equal(one({ [`BUNDLE_LOCKFILE_${k}`]: v }), `BUNDLE_LOCKFILE_${k}=${v} is not recognized (1, true or on; 0, false or off)`);
   }
@@ -3846,6 +3853,53 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     assert.match(one({ BUNDLE_LOCKFILE_FILE: v }), /^BUNDLE_LOCKFILE_FILE=.* is not a relative path inside the output directory to a file named package-lock\.json outside node_modules/, v);
   }
   for (const v of ['package-lock.json', 'a/b/package-lock.json', 'main.js/package-lock.json']) assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: v }).invalid, [], v);
+});
+
+test('tree: a package.json per lockfile key, rewritten in place only when the packages change; no package\'s files', () => {
+  const { stubsOf, writeTree, inTree } = require('../src/core/tree.cjs');
+  const lock = (pkgs) => JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, ...pkgs } });
+  const json = lock({
+    'node_modules/a': { name: 'a', version: '1.0.0', license: 'MIT' },
+    'node_modules/a@2.0.0': { name: 'a', version: '2.0.0' },
+    'node_modules/ms-old': { name: 'ms', version: '2.0.0', license: 'MIT' }, // an alias: the stub has the name
+    'node_modules/@s/b/node_modules/c': { name: '@s/c', version: '1.0.0', license: '(MIT OR ISC)' },
+  });
+  const stubs = stubsOf(json);
+  // packages/<id of the key>/node_modules/<name>/package.json: a package root (the directory below the last node_modules)
+  for (const [rel] of stubs) assert.match(rel, /^packages\/[0-9a-f]{16}\/node_modules\/(@[^/]+\/)?[^/@]+\/package\.json$/, rel);
+  assert.deepEqual(stubs.map(([rel, c]) => [rel.split('/').slice(3, -1).join('/'), JSON.parse(c)]).sort((x, y) => JSON.stringify(x) < JSON.stringify(y) ? -1 : 1), [
+    ['@s/c', { name: '@s/c', version: '1.0.0', license: '(MIT OR ISC)' }], ['a', { name: 'a', version: '1.0.0', license: 'MIT' }],
+    ['a', { name: 'a', version: '2.0.0' }], ['ms', { name: 'ms', version: '2.0.0', license: 'MIT' }]]);
+  assert.equal(new Set(stubs.map(([rel]) => rel.split('/')[1])).size, 4); // one directory per key
+  assert.ok(stubs.every(([rel]) => inTree(J('/out/bundle-lockfile', rel))));
+  assert.ok(!inTree('/p/node_modules/a/package.json'));
+  const dir = J(project({}), 'dist/bundle-lockfile');
+  const files = () => { const out = []; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = J(d, e.name); if (e.isDirectory()) walk(f); else out.push(path.relative(dir, f).split(path.sep).join('/')); } }; walk(dir); return out.sort(); };
+  writeTree(dir, json);
+  assert.deepEqual(files(), stubs.map(([rel]) => rel).sort());
+  // the same packages: not written again
+  const one = J(dir, stubs[0][0]), mtime = fs.statSync(one).mtimeMs;
+  fs.utimesSync(one, new Date(0), new Date(0));
+  writeTree(dir, json);
+  assert.equal(fs.statSync(one).mtimeMs, 0);
+  // fewer packages: the others' stubs are gone, nothing left aside
+  writeTree(dir, lock({ 'node_modules/a': { name: 'a', version: '1.0.0', license: 'MIT' } }));
+  assert.deepEqual(files().map(f => f.split('/').slice(2).join('/')), ['node_modules/a/package.json']);
+  writeTree(dir, lock({}));
+  assert.deepEqual(files(), []);
+  assert.deepEqual(fs.readdirSync(dir), ['packages']);
+  assert.ok(mtime > 0);
+});
+
+test('tree: a copy of a stub made with fs is no copy of a package file', () => {
+  const copies = require('../src/core/copies.cjs');
+  const root = project({ 'dist/bundle-lockfile/packages/0123456789abcdef/node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const stub = J(root, 'dist/bundle-lockfile/packages/0123456789abcdef/node_modules/a/package.json');
+  fs.mkdirSync(J(root, 'build'), { recursive: true });
+  fs.copyFileSync(stub, J(root, 'build/x.json'));
+  copies.record(stub, J(root, 'build/x.json'));
+  assert.equal(copies.sourceOf(J(root, 'build/x.json')), null);
 });
 
 // esbuild: its lib/main.js as esbuild builds it - module.exports = __toCommonJS(node_exports): getters only, not

@@ -18,6 +18,9 @@
 //   BUNDLE_LOCKFILE_CONFIG      the settings file (default: config.json next to register.cjs: src/ in a checkout,
 //                               the installed directory in a package)
 //   BUNDLE_LOCKFILE_ESM_HOOKS   auto/sync/async/off (read by hooks.cjs)
+//   BUNDLE_LOCKFILE_TREE        off (default), on: also a package.json per package next to the lockfile, for image
+//                               scans (see core/tree.cjs); only: those instead of a package-lock.json (the record in
+//                               record.json, which no SBOM tool reads)
 // Any other BUNDLE_LOCKFILE_* variable, or a value that is not recognized, is invalid: reported by register.cjs.
 
 const fs = require('fs');
@@ -28,12 +31,13 @@ const env = process.env;
 // BUNDLE_LOCKFILE_EXPORTDIR would leave the export directory unset): it is reported, as are values that are not
 // recognized (see invalid). FROM_FILE: those a settings file may set (CONFIG names the file; REGISTER is read by the
 // node shim, a shell script, which does not read the file; NODE_SHIM and NODE_SEEN are the shim's own).
-const NAMES = ['FILE', 'EXPORT_DIR', 'EXPORT_BASE', 'INLINE', 'STRICT', 'DEBUG', 'FIRST_PARTY', 'DISABLE', 'ESM_HOOKS',
+const NAMES = ['FILE', 'EXPORT_DIR', 'EXPORT_BASE', 'INLINE', 'STRICT', 'DEBUG', 'FIRST_PARTY', 'DISABLE', 'ESM_HOOKS', 'TREE',
   'REGISTER', 'CONFIG', 'NODE_SHIM', 'NODE_SEEN'].map(n => `BUNDLE_LOCKFILE_${n}`);
 const FROM_FILE = NAMES.filter(n => !/_(CONFIG|REGISTER|NODE_SHIM|NODE_SEEN)$/.test(n));
 // The names BUNDLE_LOCKFILE_DISABLE takes: the adapters' names (src/adapters/*.cjs name, names), and all
 const ADAPTER_NAMES = ['webpack', 'rspack', 'vite', 'rollup', 'rolldown', 'esbuild'];
 const ESM_HOOKS = ['auto', 'sync', 'async', 'off'];
+const TREES = ['off', 'on', 'only'];
 const invalid = []; // what is set but not recognized, or cannot work: register.cjs reports each (core/problems.cjs)
 const fromFile = new Set(); // the settings the settings file set (not the environment)
 
@@ -93,14 +97,19 @@ function dir(k) {
 // the lockfile's path below an output directory: relative, inside it, named package-lock.json and not below a
 // node_modules directory - the only files syft and Trivy read. Unset or empty: the default. A backslash separates
 // directories only on Windows: elsewhere it is part of a name (sbom\package-lock.json is no file named package-lock.json).
+// With BUNDLE_LOCKFILE_TREE=only, the file next to it named record.json instead (see tree).
 function lockfilePath() {
   const v = value('BUNDLE_LOCKFILE_FILE') || 'bundle-lockfile/package-lock.json';
   const parts = path.sep === '\\' ? v.split(/[\\/]/) : v.split('/');
   if (path.isAbsolute(v) || parts.includes('..') || parts[parts.length - 1] !== 'package-lock.json' || parts.includes('node_modules')) {
     invalid.push(`BUNDLE_LOCKFILE_FILE=${v}${from('BUNDLE_LOCKFILE_FILE')} is not a relative path inside the output directory to a file named package-lock.json outside node_modules (the only files syft and Trivy read)`);
   }
-  return v;
+  return tree === 'only' ? [...parts.slice(0, -1), 'record.json'].join('/') : v;
 }
+
+// BUNDLE_LOCKFILE_TREE: any case, spaces ignored; unset or empty: off
+const tree = value('BUNDLE_LOCKFILE_TREE').trim().toLowerCase() || 'off';
+if (!TREES.includes(tree)) invalid.push(`${shown('BUNDLE_LOCKFILE_TREE')} is none of ${TREES.join(', ')}`);
 
 const disabled = new Set(value('BUNDLE_LOCKFILE_DISABLE').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 for (const n of disabled) if (n !== 'all' && !ADAPTER_NAMES.includes(n)) invalid.push(`BUNDLE_LOCKFILE_DISABLE names ${n}${from('BUNDLE_LOCKFILE_DISABLE')}, which is none of ${ADAPTER_NAMES.join(', ')} or all`);
@@ -133,6 +142,7 @@ module.exports = {
   ADAPTER_NAMES,
   esmHooksOf,
   file: lockfilePath(),
+  tree: TREES.includes(tree) ? tree : 'off',
   exportDir,
   exportBase,
   inline: flag('BUNDLE_LOCKFILE_INLINE', true),

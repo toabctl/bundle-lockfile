@@ -263,6 +263,26 @@ directory), e.g. `.output/public/bundle-lockfile/package-lock.json` for Nitro's 
 packages. Not with `BUNDLE_LOCKFILE_INLINE=0`, not where a lockfile is already, not into an output or a directory
 holding one, and not below `node_modules`.
 
+## The package.json tree
+
+Image scans read no lockfiles (see the README's [SBOM tools](../README.md#sbom-tools)); they read the `package.json`
+files of installed packages. With `BUNDLE_LOCKFILE_TREE=on`, every lockfile (and its export copy, and its copies) has a
+tree next to it with one `package.json` per entry: `bundle-lockfile/packages/<id>/node_modules/<name>/package.json`,
+with the entry's `name`, `version` and `license` only (`<id>`: the first 16 hex digits of the SHA-256 of the entry's
+key). Each is a package root by Trivy's rules (the directory below the last `node_modules`), so syft's image catalogers
+and `trivy rootfs` (also `trivy image`) report every package once, with its license; directory scans (`syft scan dir:`,
+`trivy fs`) read no `package.json` files and report the lockfile's packages, also once. Node.js and the bundlers never
+resolve into it: no output file is below it.
+
+The tree is written with the lockfile, under its lock, built aside and renamed into place: a rewrite with fewer
+packages leaves none of the others' stubs, and one with the same packages leaves the tree as it is. bundle-lockfile's
+own checks of the output (files written after the build, copies made with fs) leave the tree out. A tool that reads
+both a shipped tree and the lockfile lists each package twice: syft with both its lock and package catalogers (a
+melange SBOM generator that adds `javascript-lock-cataloger` to the image catalogers), so leave the setting off where the
+lockfile is read already. With `BUNDLE_LOCKFILE_TREE=only` there is no `package-lock.json`: the lockfile, record and
+all, is `record.json` next to the tree, for outputs that are scanned only as images. syft reports a stub as found by
+its `javascript-package-cataloger` ("installed node module manifest file"): bundled packages look installed.
+
 ## Several writers, one lockfile
 
 Builds that write to the same directory share its lockfile: it lists the packages of all of them.

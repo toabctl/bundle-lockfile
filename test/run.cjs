@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fixtures, cases, warnings: WARNINGS } = require('./matrix.cjs');
-const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, viaOf, sameMap, same, show } = require('./lib/check.cjs');
+const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, viaOf, treeOf, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
 const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
@@ -54,6 +54,9 @@ function trivyPackages(bom) {
   return (bom.components || []).filter(c => refs.has(c['bom-ref']))
     .map(c => ({ id: `${c.group ? `${c.group}/` : ''}${c.name}@${c.version}`, purl: c.purl || '', licensed: !!(c.licenses || []).length }));
 }
+// The npm packages of a `trivy rootfs` (or image) scan: from installed package.json files, components of no lockfile
+const trivyInstalled = (bom) => [...new Set((bom.components || []).filter(c => c.type === 'library' && (c.purl || '').startsWith('pkg:npm/'))
+  .map(c => `${c.group ? `${c.group}/` : ''}${c.name}@${c.version}`))].sort();
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // Node.js's warnings in a build's output, "(node:<pid>) [<code>] <Type>Warning: <message>": each one expected by the
@@ -184,6 +187,18 @@ function runCase(c) {
     notes.push(c.exportOnly ? 'export dir only' : 'export dir = inline');
   }
   const all = [...new Set(Object.values(got).flat())].sort();
+  // BUNDLE_LOCKFILE_TREE (src/core/tree.cjs): next to each lockfile under test, a package.json per entry - its name,
+  // version and license, at a package root; none without the setting
+  const tree = String(base.BUNDLE_LOCKFILE_TREE || '').trim().toLowerCase() || 'off';
+  for (const k of Object.keys(got)) {
+    const lf = path.join(lockDir, k, c.lockfile || LOCKFILE);
+    const stubs = treeOf(path.dirname(lf));
+    if (tree === 'off') { if (stubs) throw new Error(`${lf}: a package.json tree without BUNDLE_LOCKFILE_TREE`); continue; }
+    const lock = JSON.parse(fs.readFileSync(lf, 'utf8'));
+    const want = Object.entries(lock.packages).filter(([key]) => key).map(([, p]) => `${p.name}@${p.version} ${p.license || '-'}`).sort();
+    if (!stubs || JSON.stringify(stubs) !== JSON.stringify(want)) throw new Error(`${lf}: its tree has ${(stubs || ['(none)']).join(', ')}\n  want ${want.join(', ')}`);
+  }
+  if (tree !== 'off') notes.push(`tree ${tree}: a package.json per entry`);
 
   if (c.expect === null) {
     if (Object.keys(got).length) throw new Error(`expected no lockfile, got${show(got)}`);
@@ -250,12 +265,19 @@ function runCase(c) {
   // syft first: the oracle's build may write where the case's build wrote (adapter-netlify's .netlify/, Next's .next/
   // with output: 'export')
   if (hasSyft) {
+    // a directory scan reads the lockfile - none with BUNDLE_LOCKFILE_TREE=only, whose record no SBOM tool reads; one as
+    // of an image reads the tree (each package once)
     const s = JSON.parse(sh(`syft scan dir:${lockDir} -q -o json`, dir, base));
     const names = syftIds(s);
-    if (!same(names, all)) throw new Error(`syft read ${names.join(' ')}\n  want ${all.join(' ')}`);
+    if (!same(names, tree === 'only' ? [] : all)) throw new Error(`syft read ${names.join(' ')}\n  want ${tree === 'only' ? '(none)' : all.join(' ')}`);
     const bad = (s.artifacts || []).filter(p => p.foundBy !== 'javascript-lock-cataloger' || !p.purl.startsWith('pkg:npm/') || !(p.licenses || []).length);
     if (bad.length) throw new Error(`syft: unexpected cataloger/purl/license for ${bad.map(p => p.name).join(', ')}`);
-    notes.push('syft agrees');
+    if (tree !== 'off') {
+      const img = JSON.parse(sh(`syft scan dir:${lockDir} --override-default-catalogers image -q -o json`, dir, base));
+      const ids = (img.artifacts || []).filter(a => a.type === 'npm').map(a => `${a.name}@${a.version}`).sort();
+      if (JSON.stringify(ids) !== JSON.stringify([...new Set(ids)]) || !same(ids, all)) throw new Error(`syft (image catalogers) read ${ids.join(' ')}\n  want ${all.join(' ')}`);
+      notes.push('syft agrees, also as an image');
+    } else notes.push('syft agrees');
 
     for (const sc of c.sbom || []) notes.push(sbomScenario(c, sc, dir, base));
 
@@ -273,10 +295,14 @@ function runCase(c) {
   if (hasTrivy) {
     const pkgs = trivyPackages(JSON.parse(sh(`trivy fs -q --skip-version-check --format cyclonedx ${lockDir}`, dir, base)));
     const names = [...new Set(pkgs.map(p => p.id))].sort();
-    if (!same(names, all)) throw new Error(`trivy read ${names.join(' ')}\n  want ${all.join(' ')}`);
+    if (!same(names, tree === 'only' ? [] : all)) throw new Error(`trivy read ${names.join(' ')}\n  want ${tree === 'only' ? '(none)' : all.join(' ')}`);
     const bad = pkgs.filter(p => !p.purl.startsWith('pkg:npm/') || !p.licensed);
     if (bad.length) throw new Error(`trivy: unexpected purl/license for ${bad.map(p => p.id).join(', ')}`);
-    notes.push('trivy agrees');
+    if (tree !== 'off') {
+      const root = trivyInstalled(JSON.parse(sh(`trivy rootfs -q --skip-version-check --format cyclonedx ${lockDir}`, dir, base)));
+      if (!same(root, all)) throw new Error(`trivy rootfs read ${root.join(' ')}\n  want ${all.join(' ')}`);
+      notes.push('trivy agrees, also on the root file system');
+    } else notes.push('trivy agrees');
   }
 
   // oracle: same fixture, built without bundle-lockfile (keep only the case's own NODE_OPTIONS)

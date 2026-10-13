@@ -412,6 +412,7 @@ bin/bundle-lockfile-from-metafile  the lockfile from an esbuild metafile (the co
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/via.cjs        how each package was found (the record's "via")
+src/core/tree.cjs       BUNDLE_LOCKFILE_TREE: a package.json per lockfile entry, for image scans
 src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
 src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path, writer-id paths
 src/core/layout.cjs     Yarn's pnpm linker (node_modules/.store/<slug>/package): package roots, paths as node_modules/<name>

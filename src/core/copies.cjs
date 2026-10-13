@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const lru = require('./lru.cjs');
+const { inTree } = require('./tree.cjs');
 const { ancestors } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.copies.v2'); // v2: listeners; a copy of v1 has its own wrappers
@@ -39,7 +40,8 @@ function abs(p) {
 
 function record(src, dest, dir) {
   const s = abs(src), d = abs(dest);
-  if (!s || !d || !inPackage(s) || inPackage(d)) return;
+  // (a lockfile's package.json tree, core/tree.cjs, is no package's: copied with its output, not out of a package)
+  if (!s || !d || !inPackage(s) || inPackage(d) || inTree(s)) return;
   if (lru.set(dir ? state.dirs : state.files, d, s, MAX) && !state.warned) {
     // the oldest copies are forgotten: a bundled copy of one of them counts as first-party from now on
     state.warned = true;

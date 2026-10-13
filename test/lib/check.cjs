@@ -39,7 +39,8 @@ function readLockfiles(outDir, lockfile = LOCKFILE) {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) { walk(p); continue; }
-      if (e.name !== 'package-lock.json') continue;
+      // (BUNDLE_LOCKFILE_TREE=only: record.json, and no package-lock.json at all)
+      if (e.name !== 'package-lock.json' && e.name !== suffix[suffix.length - 1]) continue;
       const parts = path.relative(outDir, p).split(path.sep);
       if (parts.length < suffix.length || parts.slice(-suffix.length).join('/') !== lockfile) throw new Error(`unexpected lockfile ${p}`);
       result[parts.slice(0, -suffix.length).join('/')] = readLockfile(p);
@@ -161,4 +162,27 @@ function viaOf(f) {
   return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, [...v].sort()]));
 }
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, anchorIds, unlocated, canaries, dataUrls, viaOf, sameMap, same, show };
+// The package.json tree next to a lockfile (BUNDLE_LOCKFILE_TREE, docs/format.md) in its directory: "name@version
+// license" of each stub, sorted, or null if there is none. Throws for a file that is not at a package root
+// (packages/<16 hex digits>/node_modules/<name>/package.json) or whose name is not its directory's.
+function treeOf(dir) {
+  const root = path.join(dir, 'packages');
+  if (!fs.existsSync(root)) return null;
+  const out = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      const rel = path.relative(root, p).split(path.sep);
+      const name = rel.slice(2, -1).join('/');
+      if (!/^[0-9a-f]{16}$/.test(rel[0]) || rel[1] !== 'node_modules' || rel[rel.length - 1] !== 'package.json' || !name) throw new Error(`${p}: not a package root of the tree`);
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (j.name !== name) throw new Error(`${p}: names ${j.name}`);
+      out.push(`${j.name}@${j.version} ${j.license || '-'}`);
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+module.exports = { LOCKFILE, treeOf, readLockfile, readLockfiles, checkLocations, anchorIds, unlocated, canaries, dataUrls, viaOf, sameMap, same, show };
