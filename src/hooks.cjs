@@ -199,7 +199,7 @@ function installEsm(entries, cjsFiles) {
       Module.registerHooks({
         load(url, context, nextLoad) {
           const result = nextLoad(url, context);
-          try { return esmWrap.transform(url, result, entries, cjsFiles); } catch (e) {
+          try { return esmWrap.transform(url, result, entries, cjsFiles, config.strict); } catch (e) {
             // an entry module that cannot be wrapped would build without bundle-lockfile's plugin: it fails when it is
             // imported, with the reason (BUNDLE_LOCKFILE_STRICT=0: a warning, and the module as it is)
             if (config.strict) return esmWrap.unwrappable(url, e);

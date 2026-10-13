@@ -20,7 +20,7 @@ export function initialize(data) {
 export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context);
   try {
-    return transform(url, result, entries, cjsFiles);
+    return transform(url, result, entries, cjsFiles, strict);
   } catch (e) {
     return strict ? unwrappable(url, e) : result;
   }
