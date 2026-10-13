@@ -14,6 +14,8 @@ const { toPackageLock } = require('../src/core/lockfile.cjs');
 const J = (...p) => path.join(...p);
 const has = (cmd, arg) => spawnSync(cmd, [arg], { stdio: 'ignore' }).status === 0;
 const hasSyft = has('syft', 'version'), hasTrivy = has('trivy', '--version');
+// BLTEST_REQUIRE_SBOM=1 (CI): a tool that is missing fails its test instead of skipping it
+const missing = (has, tool) => !has && process.env.BLTEST_REQUIRE_SBOM !== '1' && `${tool} not on PATH`;
 
 function run(cmd, args) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 << 20 });
@@ -61,7 +63,7 @@ test('the lockfile: every key in node_modules/, every license one string', () =>
   assert.deepEqual(Object.fromEntries(entries.map(([, p]) => [`${p.name}@${p.version}`, norm(p.license || null)])), WANT);
 });
 
-test('syft reads every package, with its license', { skip: !hasSyft && 'syft not on PATH' }, () => {
+test('syft reads every package, with its license', { skip: missing(hasSyft, 'syft') }, () => {
   const doc = run('syft', ['scan', `dir:${out}`, '-q', '-o', 'json']);
   const got = {};
   for (const a of doc.artifacts || []) {
@@ -73,7 +75,7 @@ test('syft reads every package, with its license', { skip: !hasSyft && 'syft not
   assert.deepEqual(got, WANT);
 });
 
-test('Trivy (trivy fs) reads every package, with its license', { skip: !hasTrivy && 'trivy not on PATH' }, () => {
+test('Trivy (trivy fs) reads every package, with its license', { skip: missing(hasTrivy, 'trivy') }, () => {
   const bom = run('trivy', ['fs', '-q', '--skip-version-check', '--format', 'cyclonedx', out]);
   const got = {};
   for (const c of bom.components || []) {

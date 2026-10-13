@@ -41,16 +41,17 @@ CI splits the matrix into shards that run as parallel jobs. Both scripts take:
 
 ### Environments
 
-- Node.js 24 and 26 (Wolfi's `nodejs-24`, `nodejs-26`); Node.js 22 for the fixtures above. Next.js 12 itself does not
+- Node.js 24 and 26 (Wolfi's `nodejs-24`, `nodejs-26`); Node.js 22 for the fixtures above; Node.js 20 for a few
+  (webpack 5, Vite 8, the Rollup and Rolldown APIs, rspack 2.2). Next.js 12 itself does not
   build on Node.js 25 and later, which removed the `SlowBuffer` its compiled `jsonwebtoken` uses.
 - webpack: npm 8/9/10/11 and the npm on `PATH` (Wolfi's `npm`), npx, `turbo run` (turbo passes `NODE_OPTIONS` to its
   tasks, also in its strict env mode), direct `node_modules/.bin` calls, yarn 1, yarn 3 (Plug'n'Play), yarn 4
-  (Plug'n'Play, also with the global cache, and node-modules linker), pnpm 8/9/10/11/12 (10 also with its global
+  (Plug'n'Play, also with the global cache, node-modules and pnpm linker), pnpm 8/9/10/11/12 (10 also with its global
   virtual store) and bun.
 - Vite: npm, npx, pnpm 9/10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play, also with the
-  global cache, and node-modules linker), bun and npm workspaces (an app built in its own directory).
-- rspack: npm, npx, pnpm 10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play and node-modules
-  linker) and bun; Rsbuild: npm, bun, yarn 4 (Plug'n'Play); Rslib, Next.js with next-rspack: npm.
+  global cache, node-modules and pnpm linker), bun and npm workspaces (an app built in its own directory).
+- rspack: npm, npx, pnpm 10/11 (10 also with its global virtual store), yarn 1, yarn 4 (Plug'n'Play, node-modules and
+  pnpm linker) and bun; Rsbuild: npm, bun, yarn 4 (Plug'n'Play); Rslib, Next.js with next-rspack: npm.
 - yarn 2 is not tested: it calls `util.isDate`, which Node.js 23 removed, when it sets the times of zip entries from
   dates (e.g. for `file:` dependencies).
 
@@ -62,15 +63,18 @@ A case that expects a lockfile checks every lockfile the build writes:
 - in the output directory (not for export-only cases): its `self` and `context` lead back to it, and every key (or its
   `locations` entry) leads to a `package.json` with that name and version (except `outside` and `unknown` keys; in
   Yarn Plug'n'Play's cache, only that the zip is there);
-- with an export directory: the inline lockfiles equal the exported ones, or are absent when only exported;
+- with an export directory: the exported lockfiles are byte for byte the inline ones (or the inline ones are absent
+  when only exported), and their records lead back to the output directory;
+- no package is outside the project or of unknown location (`outside` and `unknown` in the record) unless the case
+  says why (a global store or cache, copies of outputs);
 - no other `package-lock.json` below the output directory (e.g. from a child compiler);
 - it lists the expected packages (exactly, or including / excluding given ones);
 - it agrees exactly with an oracle (`oracles/`): an independent build per bundler that derives the packages from the
   bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no code with the adapters. A
   case names the packages its oracle cannot see (CSS-only packages, fonts loaded by `url()`, copied files and service
   workers without source maps), or says why it has none;
-- if `syft` and `trivy` are on `PATH` (as in CI): each reads exactly those packages, each with a license and a
-  `pkg:npm` purl (syft: from its `javascript-lock-cataloger`).
+- if `syft` and `trivy` are on `PATH` (as in CI, which sets `BLTEST_REQUIRE_SBOM=1`: without them the run fails): each
+  reads exactly those packages, each with a license and a `pkg:npm` purl (syft: from its `javascript-lock-cataloger`).
 
 Cases can also require exact keys, the notes and warnings in the build output, and the packages after each watch
 rebuild.
@@ -87,9 +91,16 @@ The other cases check that no lockfile is written, or that the build fails with 
 - a bundled package without a `package.json`.
 
 All other cases run in strict mode, so a problem there would fail them. The unit tests cover the remaining paths:
-- a lock that cannot be taken;
+- a lock that cannot be taken, a stale one that cannot be removed, one that is a link to nothing, one that cannot be
+  made, a live one seen with a clock ahead (each in a child process with a time limit: never a busy loop);
+- a lockfile that cannot be read, a copy of one that cannot be re-anchored, a `package-lock.json` another tool wrote
+  (never replaced), two lockfiles at one export path;
 - a compiler the plugin cannot be applied to;
-- an ESM entry that cannot be wrapped, in the thread and in the loader thread;
+- an ESM entry that cannot be wrapped, in the thread and in the loader thread (its import fails), and one of a version
+  the adapter does not know;
+- a bundler an adapter cannot patch (webpack, rspack, Rollup) or does not know (a compiler of another shape, Rollup
+  before 2.78): its `require()` fails;
+- a Node.js without ESM hooks (20.0 - 20.5) in a bundler process;
 - ESM hooks that cannot be installed, in a bundler process and elsewhere;
 - the exit code of a process with problems no build took.
 
@@ -103,6 +114,8 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
 `locations` (a second build, then the first one again).
 
 **webpack**, besides installers and versions (also webpack 4 with pnpm):
+- a build script in TypeScript run by tsx (`tsx build.ts`, `node --import tsx build.ts`: tsx compiles webpack's
+  modules itself), a project directory with `#` in its name (also rspack)
 - a development build; watch-mode rebuilds (as in every watch case but the failing rebuild: one without an import,
   whose packages must leave the lockfile, then one with it again); warm builds from webpack's persistent cache (also
   with child compilers)
@@ -117,7 +130,9 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
   sheets loaders inline from packages (Sass, Less, Tailwind via PostCSS; webpack 4 and 5, also from the persistent
   cache), vanilla-extract's virtual CSS modules
 - module federation (a host, a remote, a shared package), a DLL, nested and inlined worker-loader workers (webpack 4
-  and 5), a workbox service worker, html-webpack-plugin 4 and 5 templates, a package file and a package directory copied
+  and 5), a workbox service worker (InjectManifest, and GenerateSW's generated one), Sass from a package in a Vue
+  single-file component's style block, a package image inlined as a `data:` URL into extracted CSS, a package file
+  copied into the output with fs in `afterEmit`, html-webpack-plugin 4 and 5 templates, a package file and a package directory copied
   by copy-webpack-plugin (5, 6.0 and 6.4 on webpack 4, 6.2 and 14 on webpack 5)
 - two compilers sharing an output directory (also with query strings in file names, configs that differ only in
   `resolve.alias`, and a failing watch rebuild); two compilers whose `output.path` with `[fullhash]` resolves to
@@ -139,8 +154,9 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
   Plug'n'Play; Vite 6 and 5 with npm (also their watch mode and vite-plugin-singlefile); rolldown-vite 7 (also its
   watch mode)
 - the loader-thread hooks also on Node.js 24 and 26 (`BUNDLE_LOCKFILE_ESM_HOOKS=async`); a programmatic build from a
-  package without a dependency on Vite (hooked on Node.js 24 and 26, on 22 only with
-  `BUNDLE_LOCKFILE_ESM_HOOKS=async`)
+  package without a dependency on Vite, in a project that has it installed (hooked on every version)
+- `vite dev` (dependency pre-bundling, also into a `cacheDir` outside `node_modules`), `vite preview` and Vitest write
+  no lockfile ([`lib/vite-servers.cjs`](lib/vite-servers.cjs))
 - `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite` (and `rollup,rolldown`, which leaves Vite hooked; with
   SvelteKit and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in
   Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS` (without and with the
@@ -160,9 +176,12 @@ into a copy of another output, a copied island bundled by webpack 5), and builds
   font from a package loaded by `url()` (Vite 7 and 8)
 
 **Rollup and Rolldown**:
-- the `rollup` command line (also `rollup -c -w` and a TypeScript config)
+- the `rollup` command line (also `rollup -c -w`, a TypeScript config, and two configs of one input each with its own
+  `output.file` in one directory); `BUNDLE_LOCKFILE_FILE=package-lock.json` with an output in the project's directory
+  (its own lockfile is not replaced, the build fails)
 - builds through Rollup's and Rolldown's JavaScript APIs: `rollup()`, `rolldown()` (also its `write()` without `dir`
-  or `file`), Rolldown's `build()`, `watch()` of both; two outputs of one build written into one directory at the same
+  or `file`; two `write()`s of one build, with a file copied into the first output before `close()`), Rolldown's
+  `build()`, `watch()` of both; two outputs of one build written into one directory at the same
   time; a project directory with `#` in its name; two builds with the plugin in their options (no `NODE_OPTIONS`) into
   one directory; `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked
 - Rollup 4.0.2, Rolldown 1.0.0 and `@rollup/wasm-node` (its API and its command line)
@@ -177,7 +196,7 @@ and reads the stats:
   (Plug'n'Play and node-modules linker) and bun; 2.2 also with pnpm 11 and pnpm 10's global virtual store; rspack 1.0
   fails the build (with `BUNDLE_LOCKFILE_STRICT=0`: a warning, no lockfile)
 - `npx rspack`, `node_modules/.bin/rspack`, `rspack()` from a CommonJS and from an ES module script, and from a package
-  that does not depend on rspack (hooked on Node.js 24.12+, on 22 only with `BUNDLE_LOCKFILE_ESM_HOOKS=async`)
+  that does not depend on rspack, in a project that has it installed (hooked on every version)
 - activation (`BUNDLE_LOCKFILE_DISABLE=rspack`, `=webpack` leaving rspack hooked, existing `NODE_OPTIONS`,
   `BUNDLE_LOCKFILE_FILE`), a failing adapter, a development build, watch-mode rebuilds, warm builds from the persistent
   cache, externals

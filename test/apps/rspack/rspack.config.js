@@ -1,6 +1,8 @@
 // The webpack5 app built by rspack (src/index.js), with switches as the edge apps have. It does not load rspack itself
 // (tools/build.mjs imports it as an ES module only): the version comes from its package.json
 const path = require('path');
+// BLTEST_HEAP_FILE=<file>: the build's own heap limit (MB) written there (run.cjs checks the NODE_OPTIONS it ran with)
+if (process.env.BLTEST_HEAP_FILE) require('fs').writeFileSync(process.env.BLTEST_HEAP_FILE, String(Math.round(require('v8').getHeapStatistics().heap_size_limit / 1048576)));
 const major = Number(require('@rspack/core/package.json').version.split('.')[0]);
 const out = path.join(__dirname, 'dist');
 // RSPACK_CACHE=1: the persistent cache, so a second build restores the modules instead of building them (rspack 1:

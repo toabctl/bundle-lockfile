@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fixtures, cases } = require('./matrix.cjs');
-const { LOCKFILE, readLockfiles, checkLocations, sameMap, same, show } = require('./lib/check.cjs');
+const { LOCKFILE, readLockfiles, checkLocations, unlocated, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
 const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
@@ -22,6 +22,11 @@ const FX = path.resolve(fxDir);
 const REGISTER = path.resolve(__dirname, '../src/register.cjs');
 const hasSyft = spawnSync('syft', ['version'], { stdio: 'ignore' }).status === 0;
 const hasTrivy = spawnSync('trivy', ['--version'], { stdio: 'ignore' }).status === 0;
+// BLTEST_REQUIRE_SBOM=1 (CI): without syft and Trivy the matrix fails instead of skipping their checks
+if (process.env.BLTEST_REQUIRE_SBOM === '1' && !(hasSyft && hasTrivy)) {
+  console.error(`BLTEST_REQUIRE_SBOM=1, but ${[!hasSyft && 'syft', !hasTrivy && 'trivy'].filter(Boolean).join(' and ')} not on PATH`);
+  process.exit(1);
+}
 const TIMEOUT = 15 * 60 * 1000; // per command: a hanging build (e.g. an installer retrying the registry offline) fails its case
 
 function run(cmd, cwd, env) {
@@ -82,12 +87,10 @@ function runCase(c) {
   const nodeOptions = [c.nodeOptions, c.inject === false ? '' : `--require ${register}`].filter(Boolean).join(' ');
   const env = { ...base, NODE_OPTIONS: nodeOptions };
   const notes = [];
-
-  if (c.heapMB) {
-    const heap = Number(sh('node -p \'Math.round(require("v8").getHeapStatistics().heap_size_limit/1048576)\'', dir, env));
-    if (heap < c.heapMB || heap > c.heapMB + 300) throw new Error(`heap limit ${heap}MB, expected ~${c.heapMB}MB`);
-    notes.push(`heap ${heap}MB`);
-  }
+  // heapMB: the build's own process records its heap limit (test/apps/webpack5/webpack.config.js), checked after it
+  const heapFile = path.join(dir, '.heap');
+  fs.rmSync(heapFile, { force: true });
+  if (c.heapMB) env.BLTEST_HEAP_FILE = heapFile;
 
   for (const spec of c.installed || []) {
     const at = spec.lastIndexOf('@');
@@ -107,6 +110,12 @@ function runCase(c) {
   }
   const build = run(c.cmd, dir, env);
   if (c.expectOutput && !c.expectOutput.test(build.stdout + build.stderr)) throw new Error(`build output does not match ${c.expectOutput}`);
+  if (c.heapMB) {
+    if (!fs.existsSync(heapFile)) throw new Error(`the build recorded no heap limit (${heapFile})`);
+    const heap = Number(fs.readFileSync(heapFile, 'utf8'));
+    if (heap < c.heapMB || heap > c.heapMB + 300) throw new Error(`the build's heap limit ${heap}MB, expected ~${c.heapMB}MB`);
+    notes.push(`the build's heap ${heap}MB`);
+  }
   const inline = readLockfiles(outDir, c.lockfile);
   // with an export dir, its copies are the lockfiles under test; the inline ones must be the same, or absent
   const lockDir = exportDir ? path.join(exportDir, path.relative(dir, outDir)) : outDir;
@@ -114,6 +123,13 @@ function runCase(c) {
   if (exportDir) {
     const want = c.exportOnly ? {} : got;
     if (!sameMap(inline, want)) throw new Error(`inline lockfiles${show(inline)}\n  want${show(want) || ' none'}`);
+    // the same bytes (the export copy is the lockfile, record and all); its record is the inline lockfile's
+    const lf = c.lockfile || LOCKFILE;
+    for (const k of Object.keys(got)) {
+      const exported = path.join(lockDir, k, lf), at = path.dirname(path.join(outDir, k, lf));
+      if (!c.exportOnly && fs.readFileSync(exported, 'utf8') !== fs.readFileSync(path.join(outDir, k, lf), 'utf8')) throw new Error(`${exported} is not the inline lockfile's copy`);
+      checkLocations(exported, at);
+    }
     notes.push(c.exportOnly ? 'export dir only' : 'export dir = inline');
   }
   const all = [...new Set(Object.values(got).flat())].sort();
@@ -123,6 +139,10 @@ function runCase(c) {
     return `no lockfile, as expected${c.expectOutput ? `; output matches ${c.expectOutput}` : ''}`;
   }
   if (!Object.keys(got).length) throw new Error('no lockfile written');
+  // packages outside the project or whose location is not known: only where the case says why (outside: '<reason>')
+  const nowhere = Object.keys(got).flatMap(k => unlocated(path.join(lockDir, k, c.lockfile || LOCKFILE)));
+  if (nowhere.length && !c.outside) throw new Error(`packages outside the project or of unknown location (the case does not say why): ${[...new Set(nowhere)].join(' ')}`);
+  if (nowhere.length) notes.push(`${new Set(nowhere).size} outside or of unknown location (${c.outside})`);
   // also the copies SvelteKit's adapters make of Vite's output (from .svelte-kit/output/): re-anchored where they are
   const located = Object.keys(inline).reduce((n, k) => n + checkLocations(path.join(outDir, k, c.lockfile || LOCKFILE)), 0);
   if (located) notes.push(`${located} locations`);
@@ -230,4 +250,6 @@ for (const c of selected) {
   try { console.log(`PASS  ${c.name}: ${runCase(c)}`); } catch (e) { failed++; console.log(`FAIL  ${c.name}: ${e.message}`); }
 }
 console.log(`\n${selected.length - failed - skipped}/${selected.length - skipped} passed${skipped ? `, ${skipped} skipped` : ''}`);
+// a selection that runs nothing (a regex that matches no case, a renamed fixture) is no pass
+if (selected.length - skipped === 0) { console.log('no case ran'); process.exit(1); }
 process.exit(failed ? 1 : 0);

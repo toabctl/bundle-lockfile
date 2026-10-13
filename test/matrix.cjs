@@ -56,7 +56,9 @@ const FEATURES = { 'lodash-es': '4.18.1', 'is-number': '7.0.0', nanoid: '3.3.20'
   terser: '5.51.2', 'core-js': '3.50.0', systemjs: '6.15.1', 'vite-plugin-pwa': '2.0.0', 'workbox-build': '7.4.1', 'workbox-window': '7.4.1',
   'vite-plugin-static-copy': '4.1.1', sass: '1.105.1', bulma: '1.0.4', less: '4.9.1', 'normalize.less': '1.0.0',
   // the service worker's own imports with PWA_INJECT=1 (injectManifest)
-  'workbox-precaching': '7.4.1', 'workbox-routing': '7.4.1', 'workbox-strategies': '7.4.1' };
+  'workbox-precaching': '7.4.1', 'workbox-routing': '7.4.1', 'workbox-strategies': '7.4.1',
+  // a font only the worker loads (new URL(...)): emitted by the worker's build, again by the app's
+  'bootstrap-icons': '1.13.2' };
 const features = (version, legacy) => ({ app: 'vite-features', bundler: 'vite', installer: { type: 'npm' },
   deps: { vite: version, '@vitejs/plugin-legacy': legacy, ...FEATURES }, packageJson: { type: 'module', scripts: { build: 'vite build' } } });
 // the rollup command line (Rollup's CommonJS build)
@@ -67,7 +69,7 @@ const rollupCli = { app: 'rollup-cli', bundler: 'rollup', installer: { type: 'np
   packageJson: { type: 'module', scripts: { build: 'rollup -c' } } };
 // Rollup's and Rolldown's JavaScript APIs, called by a build script (build.mjs <mode>), and the rolldown command line
 const rollupApi = (rollup = '4.64.2', rolldown = '1.2.13', extra = {}) => ({ app: 'rollup-api', bundler: 'rollup', installer: { type: 'npm' },
-  deps: { rollup, rolldown, '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20', ...extra },
+  deps: { rollup, rolldown, '@rollup/plugin-node-resolve': '16.0.3', 'lodash-es': '4.18.1', nanoid: '3.3.20', 'normalize.css': '8.0.1', ...extra },
   packageJson: { type: 'module', scripts: { build: 'node build.mjs rollup' } } });
 // SvelteKit: client and server builds, the service worker (a nested Vite build), adapter-static (copies the client
 // output to build/) and adapter-node (SVELTEKIT_ADAPTER=node: build/client and build/server; adapter-node 5 bundles
@@ -136,6 +138,9 @@ const fixtures = {
   'vite8-yarn4-pnp': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'vite7-yarn4-pnp': vite('7.3.7', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'vite8-yarn4-node-modules': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' }),
+  'vite8-yarn4-pnpm': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm' }),
+  // Vitest, which transforms the tests with Vite and ships nothing (test/apps/vite-spa/test)
+  'vite8-vitest': { ...vite('8.3.3'), devDeps: { vitest: '5.0.4' } },
   'vite8-bun': vite('8.3.3', { type: 'bun' }),
   'vite8-features': features('8.3.3', '8.2.3'),
   'vite7-features': features('7.3.7', '7.2.1'),
@@ -151,6 +156,7 @@ const fixtures = {
   'rollup-cli': rollupCli,
   // Rollup's CommonJS build under Yarn Plug'n'Play (on Node 22.22.3+ Node loads it without Module._load, see hooks.cjs)
   'rollup-cli-yarn4-pnp': { ...rollupCli, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' } },
+  'rollup-cli-yarn4-pnpm': { ...rollupCli, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm' } },
   // (@rollup/wasm-node: Rollup's WebAssembly build, its own entry modules)
   'rollup-api': rollupApi('4.64.2', '1.2.13', { '@rollup/wasm-node': '4.64.2' }),
   // the oldest releases of the supported majors
@@ -185,6 +191,12 @@ const fixtures = {
   // yarn 4's default: packages in the global cache, outside the project
   'wp5-yarn4-pnp-global-cache': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnp', globalCache: true } },
   'wp5-yarn4-node-modules': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' } },
+  // yarn 4's pnpm linker: every package in node_modules/.store/<slug>/package, node_modules/<name> links to it
+  'wp5-yarn4-pnpm': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm' } },
+  // the build run by tsx from a TypeScript build script (test/apps/webpack5/build.ts)
+  'wp5-tsx': { ...latest, installer: { type: 'npm' }, deps: { ...latest.deps, tsx: '4.23.15' } },
+  // a project directory with "#" in its name: webpack's resolver escapes it in module paths
+  'wp5-c#': { ...latest, installer: { type: 'npm' } },
   'wp5-npm8': { ...latest, installer: { type: 'npm', version: '8.19.4' } },
   'wp5-npm9': { ...latest, installer: { type: 'npm', version: '9.9.4' } },
   'wp5-npm10': { ...latest, installer: { type: 'npm', version: '10.9.9' } },
@@ -202,7 +214,11 @@ const fixtures = {
   'wp5-devdeps-pnpm11': devdeps({ type: 'pnpm', version: '11.28.5' }),
   'edge-alias': edge('edge-alias', { ms: '2.1.3', 'ms-old': 'npm:ms@2.0.0', debug: '2.6.9', 'debug-old': 'npm:debug@2.6.8' }),
   'edge-babel': edge('edge-babel', BABEL7),
-  'edge-css': edge('edge-css', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1' }),
+  // (bootstrap-icons: an image src/icons.css inlines as a data: URL, EDGE_CSS=inline)
+  'edge-css': edge('edge-css', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1', 'bootstrap-icons': '1.13.1' }),
+  // a Vue 3 single-file component whose <style lang="scss"> @imports Bootstrap's Sass (test/apps/edge-vue)
+  'edge-vue': edge('edge-vue', { vue: '3.5.43', 'vue-loader': '17.4.2', sass: '1.105.1', 'sass-loader': '16.0.8', 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2',
+    bootstrap: '5.3.8' }),
   'edge-asset': edge('edge-asset', { 'bootstrap-icons': '1.13.1' }),
   // style sheets from packages that loaders inline: Sass partials, Less @imports, Tailwind's CSS
   'edge-style': edge('edge-style', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', sass: '1.105.1', 'sass-loader': '17.0.1', bulma: '1.0.4',
@@ -280,6 +296,8 @@ const fixtures = {
     [`rspack${line}-yarn4-node-modules`, rspack(v, { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' })],
     [`rspack${line}-bun`, rspack(v, { type: 'bun' })]])),
   'rspack2.2-pnpm11': rspack('2.2.8', { type: 'pnpm', version: '11.28.5' }),
+  'rspack2.2-yarn4-pnpm': rspack('2.2.8', { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm' }),
+  'rspack2.2-c#': rspack('2.2.8'),
   'rspack2.2-pnpm10-global-store': rspack('2.2.8', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
   'rspack-features1.2': rspackFeatures('1.2.8'),
   'rspack-features1.7': rspackFeatures('1.7.12'),
@@ -345,10 +363,11 @@ const VENDORED = ['app-lib@1.0.0', 'container@1.0.0', 'inner-vendored@2.0.0', 'i
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
 // the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
 // (bulma: a Sass partial; normalize.less: a Less @import)
-const FEATURES_EXPECT = ['bulma@1.0.4', 'core-js@3.50.0', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'normalize.less@1.0.0',
+const FEATURES_EXPECT = ['bootstrap-icons@1.13.2', 'bulma@1.0.4', 'core-js@3.50.0', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.css@8.0.1', 'normalize.less@1.0.0',
   'sanitize.css@13.0.0', 'systemjs@6.15.1', 'workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'workbox-routing@7.4.1', 'workbox-strategies@7.4.1'];
-// not in source maps: style sheets (sanitize.css, bulma, normalize.less), the copy (normalize.css)
-const FEATURES_MISSING = ['bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'];
+// not in source maps: style sheets (sanitize.css, bulma, normalize.less), the copy (normalize.css), the worker's font
+// (bootstrap-icons)
+const FEATURES_MISSING = ['bootstrap-icons@1.13.2', 'bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'];
 const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'yallist@5.0.0'];
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
@@ -399,6 +418,12 @@ const WARM = 'rm -rf .cache-test && npm run -s build && cp dist/bundle-lockfile/
 // worker-loader workers: lodash-es in main.js, ms@2.1.3 in a worker, debug + its ms@2.0.0 in a worker inside it,
 // is-number in a worker inlined into main.js - with worker-loader's runtime that starts it from a Blob
 const WORKERS = ['debug@2.6.9', 'is-number@7.0.0', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'worker-loader@3.0.8'];
+// workbox GenerateSW: the app's lodash-es; in workbox-<hash>.js the runtime its precaching needs (checked in the file: its
+// modules from workbox-core, -precaching, -routing and -strategies)
+const WORKBOX_GENERATE = ['lodash-es@4.18.1', 'workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'workbox-routing@7.4.1', 'workbox-strategies@7.4.1'];
+// edge-vue: Vue's runtime (vue's own entry re-exports it and is left out: sideEffects false), vue-loader's
+// exportHelper, Bootstrap's Sass in main.css
+const VUE_EXPECT = ['@vue/reactivity@3.5.43', '@vue/runtime-core@3.5.43', '@vue/runtime-dom@3.5.43', '@vue/shared@3.5.43', 'bootstrap@5.3.8', 'vue-loader@17.4.2'];
 // rspack's two compilers (app, sw; RSPACK_SHARED) as two processes at the same time
 const RSPACK_BIN = './node_modules/.bin/rspack';
 const PARALLEL_RSPACK = `${RSPACK_BIN} build --config-name app & a=$!; ${RSPACK_BIN} build --config-name sw & b=$!; wait $a && wait $b`;
@@ -434,6 +459,9 @@ const FEDERATION_TS = { 'host/independent-packages/lodash_es': ['lodash-es@4.18.
 const MONACO = ['is-number@7.0.0', 'lodash-es@4.18.1', 'monaco-editor@0.52.2', 'ms@2.1.3'];
 // dev-server.cjs <command>: the lockfile a dev server serves from memory, written to dist/ afterwards
 const DEV_SERVER = `node ${path.join(__dirname, 'lib/dev-server.cjs')}`;
+// Vite's dev and preview servers (test/lib/vite-servers.cjs), and a vitest run, then no lockfile anywhere in the project
+const VITE_SERVERS = (mode) => `node ${path.join(__dirname, 'lib/vite-servers.cjs')} ${mode}`;
+const VITEST = "./node_modules/.bin/vitest run && test -z \"$(find . -path ./node_modules -prune -o -path '*/bundle-lockfile/package-lock.json' -print)\"";
 // what a dev server's first build bundles of the webpack5 app: rspack serve and rsbuild dev compile dynamic imports
 // lazily (lazyCompilation imports: true, their default for web apps), so nanoid's chunk is not built until the page
 // asks for it; and they add their client to the entries (HMR runtime from @rspack/core, the dev server's client)
@@ -474,7 +502,10 @@ function nextCase(fixture, version, react, flags = '') {
 //   projectLockfile  syft on the project's own lockfile (not ours) must include / exclude these - documents the difference
 //   sbom       functional checks: stage files into a package-like root, `syft scan dir:` it as SPDX JSON and
 //              require exactly these npm packages (name, version, purl, declared license, source file)
-//   heapMB     assert the configured --max-old-space-size reached node
+//   heapMB     the build's own process has about this heap limit: the configured --max-old-space-size reached it (the app's
+//              config writes it to BLTEST_HEAP_FILE: test/apps/webpack5, test/apps/rspack)
+//   outside    why the lockfiles may list packages outside the project or of unknown location ("outside", "unknown"
+//              in the record: a global store or cache, copies of outputs): without it, any such package fails the case
 //   expectOutput  RegExp the build's stdout+stderr must match
 //   expectError  RegExp: a known failure of the build tool - the build must fail, its output match (nothing else checked)
 //   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
@@ -542,6 +573,12 @@ const cases = [
     expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/lodash-es': 'lodash-es@4.18.1', 'node_modules/ms': 'ms@2.0.0',
       'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/nanoid': 'nanoid@3.3.20', 'node_modules/yallist': 'yallist@5.0.0' } },
   { name: 'yarn 4.18.1 node-modules linker', fixture: 'wp5-yarn4-node-modules', cmd: 'yarn build', expect: W5 },
+  // the pnpm linker: the packages below node_modules/.store, each keyed by its location there; webpack is hooked there too
+  { name: 'yarn 4.18.1 pnpm linker', fixture: 'wp5-yarn4-pnpm', cmd: 'yarn build', expect: W5 },
+  // a TypeScript build script run by tsx, which compiles webpack's modules itself (Module.prototype._compile)
+  { name: 'webpack API from a TypeScript build script, tsx build.ts', fixture: 'wp5-tsx', cmd: './node_modules/.bin/tsx build.ts', expect: W5 },
+  { name: 'webpack API from a TypeScript build script, node --import tsx build.ts', fixture: 'wp5-tsx', cmd: 'node --import tsx build.ts', expect: W5 },
+  { name: 'webpack 5.111.1 in a directory with "#" in its name', fixture: 'wp5-c#', cmd: 'npm run -s build', expect: W5 },
   // older npm releases (installed and run with that npm); the default fixtures use the npm on PATH
   { name: 'npm 8.19.4', fixture: 'wp5-npm8', cmd: '$NPM run -s build', expect: W5 },
   { name: 'npm 9.9.4', fixture: 'wp5-npm9', cmd: '$NPM run -s build', expect: W5 },
@@ -585,6 +622,14 @@ const cases = [
       'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/debug-old/node_modules/ms': 'ms@2.0.0' } },
   { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'] },
   { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
+  // a package's image inlined as a data: URL into the extracted CSS: mini-css-extract-plugin built the asset module at
+  // build time (importModule), in no chunk - not in the stats' modules of a chunk (oracleMissing)
+  { name: 'edge: a package image inlined as a data: URL into extracted CSS (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build',
+    env: { EDGE_CSS: 'inline' }, expect: ['bootstrap-icons@1.13.1', 'lodash-es@4.18.1'], oracleMissing: ['bootstrap-icons@1.13.1'] },
+  // a Vue single-file component's <style lang="scss"> @imports Bootstrap's Sass (no module of its own: oracleMissing);
+  // vue-loader's exportHelper is a module of the bundle
+  { name: 'edge: Sass from a package in a Vue single-file component\'s style block (vue-loader)', fixture: 'edge-vue', cmd: 'npm run -s build',
+    expect: VUE_EXPECT, oracleMissing: ['bootstrap@5.3.8'] },
   { name: 'edge: asset/resource from a package', fixture: 'edge-asset', cmd: 'npm run -s build', expectIncludes: ['bootstrap-icons@1.13.1'] },
   { name: 'edge: CSS from packages, webpack 5 native CSS (experiments.css)', fixture: 'edge-css', cmd: 'npm run -s build', env: { EDGE_CSS: 'native' },
     expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'] },
@@ -627,8 +672,16 @@ const cases = [
     expectIncludes: WORKERS },
   { name: 'edge: workbox InjectManifest service worker', fixture: 'edge-workbox', cmd: 'npm run -s build',
     expectIncludes: ['workbox-core@7.4.1', 'workbox-precaching@7.4.1', 'lodash-es@4.18.1'], expectExcludes: ['html-webpack-plugin@5.6.6', 'workbox-webpack-plugin@7.4.1'] },
+  // GenerateSW: sw.js and workbox-<hash>.js (workbox-core and -precaching inside) come from workbox-build's Rollup
+  // generate(): no webpack modules, so not in webpack's stats (oracleMissing)
+  { name: 'edge: workbox GenerateSW service worker (generated by workbox-build, emitted as assets)', fixture: 'edge-workbox', cmd: 'npm run -s build',
+    env: { EDGE_SW: 'generate' }, expect: WORKBOX_GENERATE, oracleMissing: WORKBOX_GENERATE.filter(p => p.startsWith('workbox-')) },
   // copy-webpack-plugin: a package file copied verbatim into the output is shipped; copied first-party files are not packages
   { name: 'edge: package file and directory copied by copy-webpack-plugin', fixture: 'edge-copy', cmd: 'npm run -s build', expect: COPIED_EXPECT },
+  // a plugin copies normalize.css into the output with fs in afterEmit (filemanager-webpack-plugin's copy action): no
+  // asset of webpack's (oracleMissing)
+  { name: 'edge: a package file copied into the output with fs after the build (afterEmit)', fixture: 'edge-copy', cmd: 'npm run -s build',
+    env: { EDGE_COPY: 'after-emit' }, expect: ['lodash-es@4.18.1', 'normalize.css@8.0.1'], oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'edge: package file and directory copied by copy-webpack-plugin 6.4, webpack 4', fixture: 'edge-copy-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: COPIED_EXPECT },
   // copies that do not name their source are matched by content to the package file they were copied from
@@ -852,9 +905,10 @@ const cases = [
   ...['8.3.3', '6.4.4'].map(v => ({ name: `Vite ${v}, vite build --app (client and SSR environments)`, fixture: `vite${v[0]}-npm`,
     cmd: './node_modules/.bin/vite build --app', env: { VITE_APP: '1' }, expectIn: { client: VITE_EXPECT, server: ['normalize.css@8.0.1'] }, oracle: false })),
   // a programmatic build from a package without a dependency on Vite (tools/build.mjs): hooked with the in-thread hooks;
-  // older Node versions install the loader-thread ones there only with BUNDLE_LOCKFILE_ESM_HOOKS=async (CI's Node 22 job)
-  { name: `Vite 8.3.3, programmatic build from a package without Vite (Node ${process.versions.node}: ${SYNC_HOOKS ? 'hooked' : 'not hooked'})`,
-    fixture: 'vite8-npm', cmd: 'node tools/build.mjs', expect: SYNC_HOOKS ? VITE_EXPECT : null, oracleMissing: ['normalize.css@8.0.1'] },
+  // older Node versions install the loader-thread ones there because the project (the working directory) has Vite
+  // installed (CI's Node 22 job; see the unit tests for a project without it)
+  { name: `Vite 8.3.3, programmatic build from a package without Vite, in a project with it installed (Node ${process.versions.node}: ${SYNC_HOOKS ? 'in-thread' : 'loader-thread'} hooks)`,
+    fixture: 'vite8-npm', cmd: 'node tools/build.mjs', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, programmatic build from a package without Vite, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'vite8-npm', cmd: 'node tools/build.mjs',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, BUNDLE_LOCKFILE_DISABLE=vite', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'vite' }, expect: null },
@@ -890,6 +944,17 @@ const cases = [
     expectIncludes: ['bulma@1.0.4', 'is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'], oracle: false },
   { name: 'Rollup 4 command line (rollup -c)', fixture: 'rollup-cli', cmd: 'npm run -s build', expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'] },
   { name: "Rollup 4 command line (rollup -c), yarn 4.18.1 Plug'n'Play", fixture: 'rollup-cli-yarn4-pnp', cmd: 'yarn build', expect: ROLLUP_API },
+  { name: 'Rollup 4 command line (rollup -c), yarn 4.18.1 pnpm linker', fixture: 'rollup-cli-yarn4-pnpm', cmd: 'yarn build', expect: ROLLUP_API },
+  // two configs of one input, each its own output.file in dist/: the bundle (lodash-es and nanoid inside), and the build
+  // with them external (none). No oracle: its --dir cannot take configs with output.file; the packages are the same
+  // ones as in the cases above (the same src/main.js, bundled)
+  { name: 'Rollup 4 command line: two configs of one input, each with its own output.file in dist/', fixture: 'rollup-cli',
+    cmd: './node_modules/.bin/rollup -c two.config.mjs', expect: ROLLUP_API, oracle: false },
+  // BUNDLE_LOCKFILE_FILE=package-lock.json and output.file in the project's directory: the project's package-lock.json is
+  // not replaced, and the build fails for it
+  { name: 'Rollup 4 command line: BUNDLE_LOCKFILE_FILE=package-lock.json in the project\'s directory never replaces its own lockfile', fixture: 'rollup-cli',
+    cmd: 'cp package-lock.json .project-lock.json && ./node_modules/.bin/rollup -c root.config.mjs; s=$?; cmp package-lock.json .project-lock.json && exit $s',
+    env: { BUNDLE_LOCKFILE_FILE: 'package-lock.json' }, expectError: /package-lock\.json is there and was not written by bundle-lockfile/ },
   { name: 'Rollup 4 command line, watch mode (rollup -c -w): every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-cli',
     cmd: `${ROLLUP_CLI_WATCH} nanoid`, expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   // the command line bundles a TypeScript config first, with a build that only generates: no lockfile of its own
@@ -906,6 +971,15 @@ const cases = [
       'node_modules/ms': 'ms@2.0.0', 'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/normalize.css': 'normalize.css@8.0.1' }, oracle: false },
   { name: "Vite 7.3.7, yarn 4.18.1 Plug'n'Play", fixture: 'vite7-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, yarn 4.18.1 node-modules linker', fixture: 'vite8-yarn4-node-modules', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vite 8.3.3, yarn 4.18.1 pnpm linker', fixture: 'vite8-yarn4-pnpm', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
+  // Vite's servers and Vitest ship nothing and write no lockfile (README): the dev server's dependency pre-bundling (a
+  // Rolldown build on Vite 8), also into a cache directory outside node_modules; vite preview; vitest run
+  { name: 'Vite 8.3.3, vite dev: dependency pre-bundling writes no lockfile', fixture: 'vite8-npm', cmd: VITE_SERVERS('dev'), expect: null },
+  { name: 'Vite 8.3.3, vite dev with cacheDir outside node_modules: no lockfile', fixture: 'vite8-npm', cmd: VITE_SERVERS('dev'), env: { VITE_CACHE_DIR: '.vite-cache' },
+    expect: null },
+  { name: 'Vite 8.3.3, vite preview: the build\'s lockfile, nothing more', fixture: 'vite8-npm', cmd: `npm run -s build && ${VITE_SERVERS('preview')}`, expect: VITE_EXPECT,
+    oracleMissing: ['normalize.css@8.0.1'] },
+  { name: 'Vitest 5 (Vite 8.3.3): no lockfile anywhere in the project', fixture: 'vite8-vitest', cmd: VITEST, expect: null },
   { name: 'Vite 8.3.3, bun', fixture: 'vite8-bun', cmd: 'bun run build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // vite build --watch: Rolldown's watch() (Vite 8), Rollup's (Vite 7); every rebuild writes the lockfile
   { name: 'Vite 8.3.3 watch mode: every rebuild writes the lockfile, with the packages of that build', fixture: 'vite8-npm', cmd: VITE_WATCH, expect: VITE_EXPECT,
@@ -939,7 +1013,7 @@ const cases = [
   { name: 'Vite 8.3.3: a vite build into a copy (cp) of another output', fixture: 'vite8-npm', env: { VITE_SHARED: '1' },
     cmd: `VITE_OUT_DIR=out/deeper/dist ${VITE_BIN} build && cp -r out/deeper/dist dist && ${VITE_BIN} build --config vite.second.config.mjs`,
     expect: VITE_BOTH, expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/is-number': 'is-number@7.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1',
-      'node_modules/ms': 'ms@2.0.0', 'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/normalize.css': 'normalize.css@8.0.1' }, oracle: false },
+      'node_modules/ms': 'ms@2.0.0', 'node_modules/ms@2.1.3': 'ms@2.1.3', 'node_modules/normalize.css': 'normalize.css@8.0.1' }, outside: 'the copy\'s record (another place than its output) does not know the packages\' locations: unknown', oracle: false },
   { name: 'Vite 7.3.7: two vite build processes, one output dir, then one of them again', fixture: 'vite7-npm', env: { VITE_SHARED: '1' },
     cmd: `${PARALLEL_VITE} && ${VITE_BIN} build --config vite.second.config.mjs`, expect: VITE_BOTH, oracle: false },
   // Rollup's and Rolldown's JavaScript APIs (build.mjs). The oracle is the same build with Rollup's command line and
@@ -959,6 +1033,10 @@ const cases = [
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: build()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-build', expect: ROLLUP_API },
   { name: 'Rolldown 1 JavaScript API: write() without dir or file (dist/)', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-nodir', expect: ROLLUP_API },
+  // two write()s of one build (Rolldown runs buildStart for each), then a file copied into the first output before
+  // close(): found there (normalize.css; copied, so not in the source maps: oracleMissingIn)
+  { name: 'Rolldown 1 JavaScript API: two write()s of one build, a package file copied into the first output before close()', fixture: 'rollup-api',
+    cmd: 'node build.mjs rolldown-writes', expectIn: { '': [...ROLLUP_API, 'normalize.css@8.0.1'].sort(), cjs: ROLLUP_API }, oracle: false },
   ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => (
     { name: `${what} JavaScript API in a directory with "#" in its name`, fixture: 'rollup-api-c#', cmd: `node build.mjs ${mode}`, expect: ROLLUP_API })),
   // two outputs written at the same time into one directory, in one format: each a writer with its own files and hashes
@@ -1143,10 +1221,10 @@ const cases = [
     { name: `rspack ${v}: programmatic build, require()`, fixture: `rspack${line}-npm`, cmd: 'node build.cjs', expect: W5 },
     { name: `rspack ${v}: programmatic build, import`, fixture: `rspack${line}-npm`, cmd: 'node build.mjs', expect: W5 }]),
   // from a package without a dependency on rspack (tools/build.mjs), which imports rspack 2 only as an ES module:
-  // hooked with the in-thread hooks; older Node versions install the loader-thread ones there only with
-  // BUNDLE_LOCKFILE_ESM_HOOKS=async (CI's Node 22 job)
-  { name: `rspack 2.2.8: programmatic build from a package without rspack (Node ${process.versions.node}: ${SYNC_HOOKS ? 'hooked' : 'not hooked'})`,
-    fixture: 'rspack2.2-npm', cmd: 'node tools/build.mjs', expect: SYNC_HOOKS ? W5 : null },
+  // hooked with the in-thread hooks; older Node versions install the loader-thread ones there because the project has
+  // rspack installed (CI's Node 22 job)
+  { name: `rspack 2.2.8: programmatic build from a package without rspack, in a project with it installed (Node ${process.versions.node}: ${SYNC_HOOKS ? 'in-thread' : 'loader-thread'} hooks)`,
+    fixture: 'rspack2.2-npm', cmd: 'node tools/build.mjs', expect: W5 },
   { name: 'rspack 2.2.8: programmatic build from a package without rspack, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'rspack2.2-npm',
     cmd: 'node tools/build.mjs', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: W5 },
   // build modes
@@ -1288,6 +1366,8 @@ const cases = [
   // Rslib: an ES module and a CommonJS build into dist/ (one lockfile); dependencies stay external (autoExternal)
   { name: 'Rslib 1.0.3: ES module and CommonJS into dist/, the bundled devDependency only', fixture: 'rslib1.0-npm', cmd: 'npm run -s build',
     expect: ['lodash-es@4.18.1'] },
+  { name: 'rspack 2.2.8, yarn 4.18.1 pnpm linker', fixture: 'rspack2.2-yarn4-pnpm', cmd: 'yarn build', expect: W5 },
+  { name: 'rspack 2.2.8 in a directory with "#" in its name', fixture: 'rspack2.2-c#', cmd: 'npm run -s build', expect: W5 },
 ];
 
 module.exports = { fixtures, cases };

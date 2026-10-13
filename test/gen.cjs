@@ -59,7 +59,9 @@ const installers = {
     fs.copyFileSync(path.join(tool(`@yarnpkg/cli-dist@${version}`, `yarn-${version}`), 'bin/yarn.js'), path.join(dir, rel));
     // a cache that stays, so installs work offline later: project-local, or - like yarn 4's default - the
     // global cache, kept in <dir>/.tools; yarn 1 on PATH delegates to yarnPath
-    const cache = globalCache ? `enableGlobalCache: true\nglobalFolder: ${path.join(TOOLS, 'yarn-global')}` : 'enableGlobalCache: false';
+    // (the pnpm linker hard-links the files of its store from the global folder's index: on the fixtures' file system)
+    const cache = globalCache ? `enableGlobalCache: true\nglobalFolder: ${path.join(TOOLS, 'yarn-global')}`
+      : `enableGlobalCache: false${linker === 'pnpm' ? `\nglobalFolder: ${path.join(TOOLS, 'yarn-global')}` : ''}`;
     fs.writeFileSync(path.join(dir, '.yarnrc.yml'), `yarnPath: ${rel}\nnodeLinker: ${linker}\n${cache}\nenableTelemetry: false\n`);
     fs.writeFileSync(path.join(dir, 'yarn.lock'), '');
     sh(`node ${rel} install`, dir);

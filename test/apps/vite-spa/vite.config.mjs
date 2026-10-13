@@ -8,11 +8,13 @@
 // VITE_SSR_NOEXTERNAL=1: with `vite build --ssr`, the dependencies are bundled too (ssr.noExternal)
 // VITE_APP=1: two environments for `vite build --app` (Vite 6+): the client into dist/client, an SSR build of
 // src/main.js into dist/server
+// VITE_CACHE_DIR=<dir>: Vite's cache directory (dependency pre-bundling of `vite dev`) instead of node_modules/.vite
 import { createRequire } from 'node:module';
 const plugins = [];
 if (process.env.VITE_SINGLEFILE) plugins.push((await import('vite-plugin-singlefile')).viteSingleFile());
 if (process.env.VITE_PLUGIN) plugins.push(createRequire(import.meta.url)(process.env.VITE_PLUGIN).bundleLockfile('vite'));
 export default {
+  ...(process.env.VITE_CACHE_DIR && { cacheDir: process.env.VITE_CACHE_DIR }),
   build: {
     outDir: process.env.VITE_OUT_DIR || 'dist', emptyOutDir: !process.env.VITE_SHARED,
     ...(process.env.VITE_WRITE_FALSE && { write: false }),

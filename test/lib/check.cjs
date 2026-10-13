@@ -47,18 +47,19 @@ function readLockfiles(outDir, lockfile = LOCKFILE) {
   return result;
 }
 
-// A lockfile's record is right where the lockfile is (f: its path, inline in the output): "self" from its context
-// leads back to it, and every package it lists is where the record says - its key, or its "locations" entry for a key
-// that is not the location, relative to the context is a directory whose package.json has that name and version (in
-// Yarn PnP's cache: in a zip that is there). Packages outside the project ("outside") and those whose location is not
-// known ("unknown") have none. Returns the number checked.
-function checkLocations(f) {
+// A lockfile's record is right where the lockfile is (f: its path; at: the directory its record is for - its own, or for
+// an export copy the one of the lockfile in the output): "self" from its context leads back to it, and every package it
+// lists is where the record says - its key, or its "locations" entry for a key that is not the location, relative to
+// the context is a directory whose package.json has that name and version (in Yarn PnP's cache: in a zip that is
+// there). Packages outside the project ("outside") and those whose location is not known ("unknown") have none.
+// Returns the number checked.
+function checkLocations(f, at = path.dirname(f)) {
   const lock = JSON.parse(fs.readFileSync(f, 'utf8'));
   const m = lock['bundle-lockfile'];
   if (!m || typeof m.context !== 'string') throw new Error(`${f}: no bundle-lockfile record`);
   const outside = new Set([...(m.outside || []), ...(m.unknown || [])]), locations = m.locations || {};
-  const context = path.resolve(path.dirname(f), m.context);
-  if (typeof m.self !== 'string' || path.resolve(context, m.self) !== path.resolve(path.dirname(f))) {
+  const context = path.resolve(at, m.context);
+  if (typeof m.self !== 'string' || path.resolve(context, m.self) !== path.resolve(at)) {
     throw new Error(`${f}: its record is not for where it is (context ${m.context}, self ${m.self})`);
   }
   let n = 0;
@@ -86,4 +87,10 @@ const sameMap = (a, b) => JSON.stringify(sortedKeys(a)) === JSON.stringify(sorte
 const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 const show = (m) => Object.entries(sortedKeys(m)).map(([k, v]) => `\n    ${k || '.'}: ${v.join(' ') || '(none)'}`).join('');
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, sameMap, same, show };
+// The keys of a lockfile's packages outside the project ("outside") or whose location is not known ("unknown")
+function unlocated(f) {
+  const m = JSON.parse(fs.readFileSync(f, 'utf8'))['bundle-lockfile'] || {};
+  return [...(m.outside || []), ...(m.unknown || [])];
+}
+
+module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, sameMap, same, show };

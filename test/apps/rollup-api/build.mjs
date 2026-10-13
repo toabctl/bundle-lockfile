@@ -5,6 +5,9 @@
 //   rolldown        rolldown() + write()
 //   rolldown-build  Rolldown's build()
 //   rolldown-nodir  rolldown() + write() without dir or file (Rolldown writes to dist/)
+//   rolldown-writes two write()s of one rolldown() build, into dist/ and dist/cjs/, then a package's file copied into
+//                   dist/ with fs before close(), as another plugin's closeBundle would (Rolldown runs buildStart for
+//                   every write())
 //   rollup-outputs, rolldown-outputs  two outputs into dist/ at the same time (main.js, main.min.js), as the rollup
 //                   command line writes them; fails unless the lockfile records each with its own file
 //   rollup-plugin, rolldown-plugin  the plugin in the build's options (BLTEST_PLUGIN: adapters/rollup.cjs, no
@@ -32,6 +35,13 @@ if (mode === 'rollup' || mode === 'rollup-wasm') {
 } else if (mode === 'rolldown') {
   const bundle = await (await import('rolldown')).rolldown(rolldownOptions);
   await bundle.write(output);
+  await bundle.close();
+} else if (mode === 'rolldown-writes') {
+  const bundle = await (await import('rolldown')).rolldown(rolldownOptions);
+  await bundle.write(output);
+  await bundle.write({ dir: path.join(dir, 'cjs'), format: 'cjs' });
+  fs.mkdirSync(path.join(dir, 'vendor'), { recursive: true });
+  fs.copyFileSync(createRequire(import.meta.url).resolve('normalize.css/normalize.css'), path.join(dir, 'vendor/normalize.css'));
   await bundle.close();
 } else if (mode === 'rolldown-nodir') {
   const bundle = await (await import('rolldown')).rolldown(rolldownOptions);

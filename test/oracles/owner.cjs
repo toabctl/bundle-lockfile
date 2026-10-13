@@ -2,10 +2,11 @@
 // The packages of bundled source files, for the oracles: written out here, sharing no code with the tool, and found
 // another way - the first-party directories are enumerated (workspace globs expanded with fs.globSync, the symbolic
 // links in node_modules listed, Yarn PnP's locators read) instead of tested directory by directory.
-//   - in node_modules: the directory below the last node_modules, at its real location; one without a package.json
-//     with name and version is the package around it; inside it, a vendored copy (below) of another name, for its files
+//   - in node_modules: the directory below the last node_modules (Yarn's pnpm linker: node_modules/.store/<x>/package),
+//     at its real location; one without a package.json with name and version is the package around it; inside it, a
+//     vendored copy (below) of another name, for its files
 //   - elsewhere: the innermost directory up from the file with a vendored copy's package.json, unless a first-party
-//     directory or a private package.json comes first
+//     directory comes first, or a private package.json that no vendored copy further out has inside it
 // A vendored copy's package.json: a name npm and Trivy accept, a version, not private, not a VS Code extension's
 // (publisher with engines.vscode), and no package.json further out (up to where the search stops) has its name.
 const fs = require('fs');
@@ -81,7 +82,8 @@ function packagesOf(files, { context = process.cwd() } = {}) {
     const parts = file.split(path.sep);
     const i = parts.lastIndexOf('node_modules');
     if (i >= 0 && i + 2 < parts.length) {
-      let rootParts = parts.slice(0, i + 1 + (parts[i + 1].startsWith('@') ? 2 : 1));
+      const store = parts[i + 1] === '.store' && parts[i + 3] === 'package' && i + 4 < parts.length; // Yarn's pnpm linker
+      let rootParts = parts.slice(0, store ? i + 4 : i + 1 + (parts[i + 1].startsWith('@') ? 2 : 1));
       let root = rootParts.join(path.sep);
       let j = json(path.join(root, 'package.json'));
       // without one: the package around it
@@ -106,14 +108,17 @@ function packagesOf(files, { context = process.cwd() } = {}) {
       continue;
     }
     if (fp.all) continue;
-    // the package.json files from the file up to a first-party directory or a private one, that one included
+    // the package.json files from the file up to a first-party directory, that one included; then up to the first
+    // private one, if no vendored copy is further out
     const around = [];
     for (const d of up(path.dirname(file))) {
       const n = json(path.join(d, 'package.json'));
-      const stop = fp.dirs.has(d) || (!!n && n.private === true);
+      const stop = fp.dirs.has(d);
       if (n) around.push({ n, ok: !stop && vendorable(n) });
       if (stop) break;
     }
+    const priv = around.findIndex(a => a.n.private === true);
+    if (priv >= 0 && !around.slice(priv + 1).some(a => a.ok)) around.length = priv + 1;
     const pick = around.findIndex((a, i) => a.ok && around.slice(i + 1).every(o => o.n.name !== a.n.name));
     if (pick >= 0) pkgs.add(`${around[pick].n.name}@${around[pick].n.version}`);
   }
