@@ -55,7 +55,9 @@ function licenseString(l) {
 // packages' paths; outputs (optional): { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, so
 // that a build that bundles one of them adds the packages in it (see core/nested.cjs); contents (optional):
 // { absolute path: [package paths] } of those files, the packages in each - recorded as indices into the writer's
-// "packages" (a file without them brings all of the writer's packages). The field also has "self": the lockfile's
+// "packages" (a file without them brings all of the writer's packages); outputCount (optional): the number of output
+// files, if outputs has only some of them (MAX_OUTPUTS; a reader then attributes a file it does not find to all of the
+// writer's packages, see core/nested.cjs). The field also has "self": the lockfile's
 // directory relative to the context, so that a reader can tell a copy elsewhere (whose "context" points elsewhere)
 // from the lockfile itself; "locations": { key: location relative to the context } of the packages whose key is not
 // their location (see npmKey); "outside": the keys of packages outside the project, which have no location in it; and
@@ -67,8 +69,11 @@ const entry = (p) => { const license = licenseString(p.license); return { name: 
 // A writer's "packages", "outputs" and "contents" (see toPackageLock).
 function outputsOf(w, keyOf, rel) {
   const packages = [...new Set([...w.paths].map(p => keyOf.get(p)).filter(Boolean))].sort(cmp);
-  const files = Object.entries(w.outputs || {}).map(([f, h]) => [f, rel(f), h]).sort((a, b) => cmp(a[1], b[1])).slice(0, MAX_OUTPUTS);
+  const all = Object.entries(w.outputs || {});
+  const files = all.map(([f, h]) => [f, rel(f), h]).sort((a, b) => cmp(a[1], b[1])).slice(0, MAX_OUTPUTS);
   if (!files.length) return { packages };
+  // (a writer of another process: its record had only some of them already)
+  const total = Math.max(all.length, typeof w.outputCount === 'number' ? w.outputCount : 0);
   const index = new Map(packages.map((k, i) => [k, i]));
   const contents = [];
   for (const [f, r] of files) {
@@ -76,7 +81,8 @@ function outputsOf(w, keyOf, rel) {
     if (!paths) continue;
     contents.push([r, [...new Set(paths.map(p => index.get(keyOf.get(p))).filter(i => i !== undefined))].sort((a, b) => a - b)]);
   }
-  return { packages, outputs: Object.fromEntries(files.map(([, r, h]) => [r, h])), ...(contents.length ? { contents: Object.fromEntries(contents) } : {}) };
+  return { packages, outputs: Object.fromEntries(files.map(([, r, h]) => [r, h])), ...(total > files.length ? { outputCount: total } : {}),
+    ...(contents.length ? { contents: Object.fromEntries(contents) } : {}) };
 }
 
 function toPackageLock(pkgs, context, meta) {
@@ -232,6 +238,7 @@ function readMeta(json, dir) {
         count: typeof w.count === 'number' ? w.count : undefined,
         outputs: isObject(w.outputs)
           ? Object.fromEntries(Object.entries(w.outputs).filter(([, h]) => typeof h === 'string').map(([f, h]) => [path.resolve(dir, f), h])) : {},
+        outputCount: typeof w.outputCount === 'number' ? w.outputCount : undefined,
         contents,
         pkgs: keys.map(pkgOf).filter(Boolean),
       };

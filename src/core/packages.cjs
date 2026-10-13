@@ -30,12 +30,14 @@ function unlisted(root, container) {
 // The real path of a file (symbolic links and Yarn PnP's virtual paths resolved), or the file as it is
 const realFile = (file) => { try { return unvirtual(fs.realpathSync(file)); } catch { return unvirtual(file); } };
 
-// A function that gives the package a bundled source file (absolute, query strings allowed) belongs to, or null:
+// A function that gives the packages a bundled source file (absolute, query strings allowed) belongs to ([] if none):
 // - in node_modules: the package directory below its last node_modules, at its real location - a package root
 //   without a usable package.json counts as the package around it (VS Code's stripped node_modules inside
-//   @gitlab/web-ide), and a vendored copy nested in the package counts for its files (see core/vendored.cjs)
+//   @gitlab/web-ide); a vendored copy nested in the package counts for its files (see core/vendored.cjs), and so
+//   does the package: it ships the copy, and only the package's own package.json says what it is (a package.json
+//   inside it can name any package, and must not hide the package that has it)
 // - a file this process copied out of a package that still has its bytes (core/copies.cjs): as that file
-// - any other file, and a workspace package reached through a node_modules symlink: first-party (null), unless the
+// - any other file, and a workspace package reached through a node_modules symlink: first-party (none), unless the
 //   build's scope (where, see core/vendored.cjs scope()) finds it in a vendored copy outside node_modules
 // Packages are looked up once per package directory.
 function resolver(where = null) {
@@ -58,24 +60,26 @@ function resolver(where = null) {
   };
   return (f) => {
     const file = f.split('?')[0];
-    if (!path.isAbsolute(file)) return null;
+    if (!path.isAbsolute(file)) return [];
     let at = file, linked = packageRoot(file);
     if (!linked) {
       const src = copies.sourceOf(file);
       if (src) { linked = packageRoot(src); at = src; config.debug('a copy of', src, ':', file); }
     }
-    if (!linked) return where ? where.ownerOf(realFile(file)) : null;
+    const owner = (real) => { const o = where && where.ownerOf(real); return o ? [o] : []; };
+    if (!linked) return owner(realFile(file));
     if (!byLinked.has(linked)) byLinked.set(linked, { root: realRoot(linked) });
     const entry = byLinked.get(linked), { root } = entry;
     if (root !== linked && packageRoot(path.join(root, 'x')) !== root) {
       if (!entry.told) { entry.told = true; config.debug('first-party package linked into node_modules:', linked, '->', root); }
-      return where ? where.ownerOf(path.join(root, path.relative(linked, at))) : null;
+      return owner(path.join(root, path.relative(linked, at)));
     }
     const p = packageAt(root);
-    if (!p) return null;
+    if (!p) return [];
     const dir = path.dirname(path.join(root, path.relative(linked, at)));
     if (!inside.has(dir)) inside.set(dir, vendored.nestedIn(p, p.path, path.join(dir, 'x'), manifest)); // also in the package around a root without one
-    return inside.get(dir) || p;
+    const copy = inside.get(dir);
+    return copy ? [copy, p] : [p];
   };
 }
 
@@ -91,7 +95,7 @@ function unique(...lists) {
 // per real package directory (see resolver).
 function packagesForFiles(files, build) {
   const of = resolver(build ? vendored.scope(build) : null);
-  return unique(Array.from(files, of).filter(Boolean));
+  return unique(Array.from(files, of).flat());
 }
 
 // The packages of bundled source files (absolute paths, query strings allowed): those the files belong to (see
@@ -104,10 +108,10 @@ function packagesOfFiles(files, build) {
   const nestedOf = nested.nestedByFile(files);
   const own = [], inner = [], byFile = new Map();
   for (const f of files) {
-    const p = nestedOf.has(f) ? null : of(f), n = nestedOf.get(f) || [];
-    if (p) own.push(p);
+    const p = nestedOf.has(f) ? [] : of(f), n = nestedOf.get(f) || [];
+    own.push(...p);
     inner.push(n);
-    const pkgs = unique(p ? [p] : [], n);
+    const pkgs = unique(p, n);
     if (pkgs.length) byFile.set(f, pkgs);
   }
   return { all: unique(own, ...inner), byFile };

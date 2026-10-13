@@ -109,13 +109,17 @@ Every key starts with `node_modules/`, as in npm's lockfiles; Trivy skips any ot
 **In `node_modules`**, a file belongs to the directory directly below the last `node_modules` in its path
 (`node_modules/<name>` or `node_modules/@scope/<name>`; with Yarn's pnpm linker `node_modules/.store/<slug>/package`,
 its key too), at its real location. Two exceptions:
-- A **vendored copy** inside that package holds the file. That is a directory whose `package.json`:
+- A **vendored copy** inside that package holds the file: the file belongs to the copy, and to the package too. That
+  is a directory whose `package.json`:
   - has a valid package name (as Trivy reads names) and a version;
   - is not private;
   - is no VS Code extension's (`publisher` with `engines.vscode`, which VS Code requires of every extension);
   - has a name that no `package.json` further out has.
 
-  So Next.js' `next/dist/compiled/@edge-runtime/cookies` is listed as `@edge-runtime/cookies`. Other `package.json`
+  So Next.js' `next/dist/compiled/@edge-runtime/cookies` is listed as `@edge-runtime/cookies`, and as `next`. The
+  package is listed with its copies because only its own `package.json` says what it is: one inside it can name any
+  package (`node_modules/evil/lib/package.json` saying `left-pad`), which must not hide the package that ships it.
+  Other `package.json`
   files inside a package are not packages: `dist/esm/package.json`, the private `preact/hooks/package.json`, or
   socket.io-client's `build/esm/package.json` with its own name.
 - The package directory has no `package.json` with name and version (VS Code's stripped `node_modules` inside
@@ -189,8 +193,9 @@ configuration.
   - `id`;
   - `packages` (keys);
   - up to 20 of its output `files`, and the `count` of all of them;
-  - for Vite, Rollup and Rolldown: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files, and
-    `contents`, the packages in each of them (indices into its `packages`), for [nested bundles](#nested-bundles).
+  - for Vite, Rollup and Rolldown: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with more:
+    their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`), for
+    [nested bundles](#nested-bundles).
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time.
 - `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or
@@ -270,7 +275,9 @@ packages in each (`contents`):
   style sheet imports which is not known);
 - a JavaScript asset (Vite's worker chunks): the packages of the build that produced it.
 
-Of an output with more than 500 such files, only the first 500 by path are recorded; the others are not attributed.
+Of an output with more than 500 such files, only the first 500 by path are recorded, and `outputCount` gives the
+number of all of them. A JavaScript or CSS file in that output which is none of the 500 may be one of the others: it
+brings all of the writer's packages (one package too many rather than the packages inlined into it missing).
 
 For every bundled file outside `node_modules`, bundle-lockfile looks for `<dir>/bundle-lockfile/package-lock.json`
 (`BUNDLE_LOCKFILE_FILE`, or its copy in the export directory) in the file's directory and each directory above it. In

@@ -110,7 +110,7 @@ flowchart TD
   real -- "no: workspace, link:" --> vend
   real -- yes --> pj{"package.json with<br/>name and version?"}
   pj -- yes --> inner{"in a vendored copy<br/>inside the package?"}
-  inner -- yes --> copyof
+  inner -- yes --> both["the vendored copy,<br/>and the package"]
   inner -- no --> pkg["name, version, license<br/>at its real location"]
   pj -- no --> around{"a package<br/>around it?"}
   around -- yes --> pkg
@@ -205,8 +205,9 @@ runs `buildStart` again for every `write()` of a build: the outputs of all of th
 A webpack or rspack compiler writing to the real disk looks at its output directory in its `afterEmit` hook, which
 runs after the other plugins' (`core/late.cjs`, shared by both).
 - Only files modified since 2 s before the build started count (for coarse file-system timestamps).
-- At most 20,000 entries of the output directory are looked at.
-- Files over 20 MiB are compared only if this process copied them with fs.
+- At most 20,000 entries of the output directory are looked at (with more: a warning).
+- Files over 20 MiB are compared only if this process copied them with fs (one whose path in the output names a
+  package: a warning).
 - An output directory that contains the working directory is not looked at.
 
 ## Vite, Rollup, Rolldown

@@ -48,12 +48,16 @@ function realRoot(root) {
 
 // Yarn PnP gives packages with peer dependencies one virtual path per dependent set, and its fs keeps them as
 // real paths: <dir>/__virtual__/<name>-virtual-<hash>/<depth>/<subpath> is <dir>/(../ x depth)<subpath>
-// (yarn's VirtualFS.resolveVirtual). Resolved, every instance is the one package in the cache.
+// (yarn's VirtualFS.resolveVirtual). Resolved, every instance is the one package in the cache. Only Yarn's virtual
+// folder (.yarn/__virtual__, in the project), never a directory of that name in a package: a package's own
+// __virtual__/x/2/node_modules/react would put its files onto the project's react. A depth beyond the root ends there.
 const VIRTUAL = /^(.*?[\\/](?:__virtual__|\$\$virtual))[\\/][^\\/]+[\\/](\d+)(?:[\\/](.*))?$/;
 function unvirtual(p) {
   const m = p.match(VIRTUAL);
   if (!m) return p;
-  return unvirtual(path.join(path.dirname(m[1]), '../'.repeat(Number(m[2])), m[3] || '.'));
+  const above = path.dirname(m[1]).split(/[\\/]/).filter(Boolean);
+  if (above.includes('node_modules')) return p;
+  return unvirtual(path.join(path.dirname(m[1]), '../'.repeat(Math.min(Number(m[2]), above.length)), m[3] || '.'));
 }
 
 // An option value as a writer id records it (core/outputs.cjs: the same on every machine): an absolute path in a package

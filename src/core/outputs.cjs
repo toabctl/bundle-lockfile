@@ -43,7 +43,8 @@ function there(file) {
 }
 
 // Writers of `target` recorded by other processes (in the lockfile on disk) whose files are still there (all:
-// also those whose files are gone), except those with an id in `own` (this process has their newest build):
+// also those whose files are gone; a writer that records none has nothing in the output, and is never kept), except
+// those with an id in `own` (this process has their newest build):
 // [{ id, pkgs, files, count, context, anchored }] (anchored: see readMeta). A lockfile that is gone since this process last read it was deleted with
 // the output directory - by this build's own output.clean, which deletes it with the other writers' files except
 // those clean.keep keeps: its record is still what the other processes put there, for their files that are left.
@@ -61,8 +62,8 @@ function foreign(target, own, all = false) {
     meta = outputs.read.get(target) || null;
   }
   if (!meta) return [];
-  return meta.writers.filter(w => !own.has(w.id) && (all || !w.files.length || w.files.some(there)))
-    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, context: meta.context, anchored: meta.anchored,
+  return meta.writers.filter(w => !own.has(w.id) && (all || w.files.some(there)))
+    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, outputCount: w.outputCount, context: meta.context, anchored: meta.anchored,
       contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
 }
 
@@ -99,13 +100,14 @@ function render(target, own) {
   if (!builds.length) return null;
   const checked = builds.map(stillThere(new Map()));
   const byPath = new Map();
-  for (const b of checked) for (const p of b.pkgs) byPath.set(p.path, p);
+  // this process's builds first: a package it read the package.json of, over another process's record of it
+  for (const b of checked) for (const p of b.pkgs) if (!byPath.has(p.path)) byPath.set(p.path, p);
   // keys are relative to one context; pick it independently of which writer finished last - this process's, and that of
   // another process's record only if it is no copy's (see readMeta) and has a package that is still where it says: the
   // context of a copy is not the project (two directories above it, for SvelteKit's build/)
   const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(p => !p.unknown && !p.outside)));
   const context = (valid.length ? valid : checked).map(b => b.context).sort(cmp)[0];
-  const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, contents: b.contents, paths: b.pkgs.map(p => p.path) }));
+  const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, outputCount: b.outputCount, contents: b.contents, paths: b.pkgs.map(p => p.path) }));
   return toPackageLock([...byPath.values()], context, { dir: path.dirname(target), writers });
 }
 

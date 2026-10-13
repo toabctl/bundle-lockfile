@@ -95,6 +95,11 @@ test("packagesForFiles: Yarn PnP virtual paths are the package in the cache", ()
   assert.equal(unvirtual('/p/.yarn/__virtual__/debug-virtual-9a75/0/cache/debug-npm-2.6.9.zip/node_modules/debug'), '/p/.yarn/cache/debug-npm-2.6.9.zip/node_modules/debug'.split('/').join(path.sep));
   assert.equal(unvirtual('/p/.yarn/__virtual__/debug-virtual-9a75/3/home/u/.yarn/berry/cache/d.zip/node_modules/debug'), '/home/u/.yarn/berry/cache/d.zip/node_modules/debug'.split('/').join(path.sep));
   assert.equal(unvirtual('/p/node_modules/a'), '/p/node_modules/a');
+  // a directory named __virtual__ in a package is the package's own, not Yarn's virtual folder; a depth too large for
+  // the path ends at the root (no RangeError from '../'.repeat())
+  assert.equal(unvirtual('/p/node_modules/evil/__virtual__/x/2/node_modules/react/index.js'), '/p/node_modules/evil/__virtual__/x/2/node_modules/react/index.js');
+  assert.equal(unvirtual('/p/.yarn/cache/e.zip/node_modules/evil/__virtual__/x/9/node_modules/react'), '/p/.yarn/cache/e.zip/node_modules/evil/__virtual__/x/9/node_modules/react');
+  assert.equal(unvirtual('/p/.yarn/__virtual__/d-virtual-1/99999999999/x'), `${path.sep}x`);
   // two virtual instances of one package (different peer dependencies): one entry, at the cache path
   const root = project({ '.yarn/cache/d.zip/node_modules/d/package.json': { name: 'd', version: '1.0.0' } });
   const pkgs = packagesForFiles(['virt-1', 'virt-2'].map(v => J(root, '.yarn/__virtual__', `d-${v}`, '0/cache/d.zip/node_modules/d/i.js')));
@@ -405,6 +410,23 @@ test('webpack adapter: files copied before the lockfile without naming their sou
     const expected = shape === 'webpack 5' ? ['a', 'dir', 'file'] : ['a', 'dir', 'file', 'img']; // webpack 4: img.png is no chunk's file
     assert.deepEqual(lockedNames(plugin().lockfile(c)), expected, shape);
   }
+});
+
+test('webpack adapter: more than 20,000 files below a copied directory in node_modules: not all compared, said once per compiler', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/dir/package.json': { name: 'dir', version: '1.0.0' } });
+  for (let i = 0; i < 20001; i++) fs.writeFileSync(J(root, `node_modules/dir/${i}.txt`), '');
+  const assets = new Map([['main.js', 'main'], ['copied.txt', 'unnamed']].map(([name, content]) => [name, { name, source: { size: () => content.length, source: () => content }, info: {} }]));
+  const compiler = { context: root, outputPath: J(root, `dist-${++outputDirs}`) };
+  const compilation = () => ({ // (a new one per build: the plugin keeps what it found on it)
+    compiler,
+    chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }],
+    modules: [], children: [], fileDependencies: new Set(), contextDependencies: new Set([J(root, 'node_modules/dir')]),
+    getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()],
+  });
+  const p = plugin();
+  const seen = warnings(() => { p.lockfile(compilation()); p.lockfile(compilation()); }); // two builds of one compiler
+  assert.equal(seen.length, 1, seen.join('\n'));
+  assert.match(seen[0], /^more than 20000 files below the directories in node_modules that \S+'s build depends on: assets copied from them without naming their source were not all compared$/);
 });
 
 test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched before the optimize stages', () => {
@@ -1803,26 +1825,35 @@ test('rollup adapter: files written after the build: over 20 MiB only this proce
       await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: dist, chunks: [{ fileName: 'index.js', code: `index ${dist}`, modules: [J(root, 'node_modules/app/i.js')] }], late });
       return lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8'));
     };
-    // its path names the package and it has its bytes, but it is over 20 MiB and not a copy this process made: not compared
-    assert.deepEqual(await build(J(root, 'd1'), () => {
-      fs.mkdirSync(J(root, 'd1/vendor/node_modules/big'), { recursive: true });
-      fs.writeFileSync(J(root, 'd1/vendor/node_modules/big/big.js'), big);
-    }), ['app']);
+    const warned = [], warn = config.warn;
+    config.warn = (...a) => warned.push(a.join(' '));
+    // its path names the package and it has its bytes, but it is over 20 MiB and not a copy this process made: not
+    // compared, and said so
+    try {
+      assert.deepEqual(await build(J(root, 'd1'), () => {
+        fs.mkdirSync(J(root, 'd1/vendor/node_modules/big'), { recursive: true });
+        fs.writeFileSync(J(root, 'd1/vendor/node_modules/big/big.js'), big);
+      }), ['app']);
+    } finally { config.warn = warn; }
+    assert.deepEqual(warned, [`${J(root, 'd1/vendor/node_modules/big/big.js')} is larger than 20 MiB: not compared with node_modules/big/big.js, whose package it may be a copy of`]);
+    warned.length = 0;
     // copied by this process with fs (recorded as copies.install's wrappers do): its package, whatever its size
     assert.deepEqual(await build(J(root, 'd2'), () => {
       copies.record(J(root, 'node_modules/big/big.js'), J(root, 'd2/big.js'));
       fs.copyFileSync(J(root, 'node_modules/big/big.js'), J(root, 'd2/big.js'));
     }), ['app', 'big']);
-    // more than 20,000 entries in the output: the rest is not looked at
+    // more than 20,000 entries in the output: the rest is not looked at, and that is said
     const many = J(root, 'd3/many');
     fs.mkdirSync(many, { recursive: true });
     const statted = new Set();
     const stat = fs.statSync;
     fs.statSync = function (p, ...rest) { if (typeof p === 'string' && p.startsWith(many)) statted.add(p); return stat.call(this, p, ...rest); };
+    config.warn = (...a) => warned.push(a.join(' '));
     try {
       await build(J(root, 'd3'), () => { for (let i = 0; i < 20100; i++) fs.writeFileSync(J(many, `${i}.txt`), ''); });
-    } finally { fs.statSync = stat; }
+    } finally { fs.statSync = stat; config.warn = warn; }
     assert.ok(statted.size > 19900 && statted.size <= 20000, `${statted.size} files looked at`);
+    assert.deepEqual(warned, [`more than 20000 entries in ${J(root, 'd3')}: the files written there after the build were not all checked for packages`]);
   } finally { process.chdir(cwd); }
 });
 
@@ -2165,7 +2196,7 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
       contents: { 'dist/a.js': [0, 1, 3, 9, -1, 0.5, 'node_modules/a'], 'dist/b.js': 'x' } }, // indices into the strings of packages
   ] }, { 'node_modules/a': { name: 'a', version: '1.0.0' }, 'node_modules/noversion': { name: 'n' } }), '/d');
   const pa = { name: 'a', version: '1.0.0', path: J('/d/node_modules/a') };
-  assert.deepEqual(meta.writers, [{ id: 'w', files: [], count: undefined, outputs: {}, contents: { [J('/d/dist/a.js')]: [pa] }, pkgs: [pa] }]);
+  assert.deepEqual(meta.writers, [{ id: 'w', files: [], count: undefined, outputs: {}, outputCount: undefined, contents: { [J('/d/dist/a.js')]: [pa] }, pkgs: [pa] }]);
   // such a file on disk: replaced by a lockfile of this build
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   const target = J(root, 'dist', LOCK);
@@ -2222,7 +2253,7 @@ test('lock: two processes never hold it at the same time', async () => {
   }
 });
 
-test('lockfile: a writer\'s record has at most 20 of its files (and their count) and 500 output hashes', () => {
+test('lockfile: a writer\'s record has at most 20 of its files and 500 output hashes (and their counts)', () => {
   const { readMeta } = require('../src/core/lockfile.cjs');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   const dir = J(root, 'dist/bundle-lockfile');
@@ -2235,9 +2266,23 @@ test('lockfile: a writer\'s record has at most 20 of its files (and their count)
   assert.deepEqual(w.files, files.slice(0, 20).map(f => `../${path.basename(f)}`)); // the first 20 by path
   assert.equal(Object.keys(w.outputs).length, 500);
   assert.equal(Object.keys(w.outputs)[499], '../o499.js');
+  assert.equal(w.outputCount, 600); // only some of them: their number
   const read = readMeta(json, dir).writers[0];
   assert.equal(read.count, 25);
   assert.equal(read.files.length, 20);
+  assert.equal(read.outputCount, 600);
+  // another build bundling one of the outputs the record does not have gets all of the writer's packages, not none
+  // (a JavaScript or CSS file: no other one); one the record has, with other bytes, is no output of it any more
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(J(dir, 'package-lock.json'), json);
+  for (const f of ['o550.js', 'o100.js', 'o560.txt']) fs.writeFileSync(J(root, 'dist', f), 'x');
+  const elsewhere = { context: os.tmpdir() };
+  assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o550.js')], elsewhere).all), ['a@1.0.0']);
+  assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o100.js')], elsewhere).all), []);
+  assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o560.txt')], elsewhere).all), []);
+  // a record with all of them has no count
+  const few = JSON.parse(toPackageLock([pkg], root, { dir, writers: [{ id: 'w', files, paths: [pkg.path], outputs: { [J(root, 'dist/o.js')]: 'sha256-0' } }] }));
+  assert.equal(few['bundle-lockfile'].writers[0].outputCount, undefined);
 });
 
 test('lockfile: the same build in another directory writes the same bytes (webpack and Rollup)', async () => {
@@ -2500,6 +2545,26 @@ test('copies of lockfiles: unknown packages give the same bytes whichever proces
   assert.equal(recordOf(b1).unknown, undefined);
 });
 
+test('outputs: another record in the output keeps no writer without files, and does not change this build\'s packages', async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0', license: 'MIT' }, 'node_modules/b/package.json': { name: 'b', version: '1.0.0' } });
+  const dist = J(root, 'dist'), target = J(dist, LOCK);
+  const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]), [b] = packagesForFiles([J(root, 'node_modules/b/i.js')]);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(J(dist, 'other.js'), '');
+  // on disk before the build (another process's, or put there by hand): a writer with no files, which has nothing in
+  // the output, and one whose file is there, with this build's package under another license
+  fs.writeFileSync(target, toPackageLock([b, { ...a, license: 'Unlicensed' }], root, { dir: path.dirname(target),
+    writers: [{ id: 'empty', files: [], paths: [b.path] }, { id: 'other', files: [J(dist, 'other.js')], paths: [a.path] }] }));
+  outputs.record(target, 'mine', [a], root, [J(dist, 'main.js')], { disk: true });
+  fs.writeFileSync(J(dist, 'main.js'), '');
+  outputs.emitted(target, 'mine');
+  await new Promise(resolve => outputs.rewrite(target, (j, cb) => { fs.writeFileSync(target, j); cb(); }, resolve));
+  const out = fs.readFileSync(target, 'utf8');
+  assert.deepEqual(nameVersions(out), ['node_modules/a = a@1.0.0']);
+  assert.equal(JSON.parse(out).packages['node_modules/a'].license, 'MIT'); // the package.json this process read
+  assert.deepEqual(recordOf(out).writers.map(w => w.id).filter(id => id === 'empty' || id === 'other'), ['other']);
+});
+
 test('copies of lockfiles: a record without "self" none of whose packages is there gives no context', async () => {
   const { root, kit, build, json } = svelteProject();
   const target = J(build, LOCK);
@@ -2678,7 +2743,9 @@ test('vendored: packages of files - copies outside and inside node_modules, pack
   assert.deepEqual(of('vendor/x/dist/i.js'), ['x@1.0.0 vendor/x']);           // the innermost copy, not dist/'s {type}
   assert.deepEqual(of('vendor/ext/i.js'), []);                                // a VS Code extension: first-party
   assert.deepEqual(of('node_modules/c/i.js'), ['c@1.0.0 node_modules/c']);
-  assert.deepEqual(of('node_modules/c/vendor/inner/i.js'), ['inner@1.0.0 node_modules/c/vendor/inner']);
+  // a copy inside a package, and the package that ships it: a package.json inside it can name any package, and must not
+  // hide the package itself (node_modules/evil/lib/package.json saying left-pad)
+  assert.deepEqual(of('node_modules/c/vendor/inner/i.js'), ['inner@1.0.0 node_modules/c/vendor/inner', 'c@1.0.0 node_modules/c']);
   assert.deepEqual(of('node_modules/c/build/esm/i.js'), ['c@1.0.0 node_modules/c']); // the package's own name
   assert.deepEqual(of('node_modules/c/hooks/i.js'), ['c@1.0.0 node_modules/c']);     // a private helper
   assert.deepEqual(of('node_modules/c/extensions/e/i.js'), ['c@1.0.0 node_modules/c']);
@@ -3458,6 +3525,50 @@ test('lock: a live lock is not taken over by a process whose clock is ahead (a n
   assert.equal(r.status, 0, r.stderr);
   assert.match(JSON.parse(r.stdout).join(), /could not lock/);
   assert.equal(fs.readFileSync(J(root, 'd/l.json.lock'), 'utf8'), 'live');
+});
+
+test('lock: a lock dated in the future is stale (it would hold every write off); a live one is not, for a clock behind', { skip: process.platform === 'win32' }, () => {
+  const root = project({});
+  fs.mkdirSync(J(root, 'd'));
+  const run = (clock) => {
+    const script = `const real = Date.now; Date.now = () => real() + (${clock});
+      const { lock } = require(${JSON.stringify(J(SRC, 'core/lock.cjs'))});
+      const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+      lock(${JSON.stringify(J(root, 'd/l.json'))}, { wait: 300 })(); console.log(JSON.stringify(problems.take()));`;
+    const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: strictEnv(undefined), timeout: 15000 });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  // touch -d 2099: taken over at once, and released
+  fs.writeFileSync(J(root, 'd/l.json.lock'), 'future');
+  const future = new Date('2099-01-01');
+  fs.utimesSync(J(root, 'd/l.json.lock'), future, future);
+  assert.deepEqual(run(0), []);
+  assert.deepEqual(fs.readdirSync(J(root, 'd')), [], 'nothing left behind');
+  // a live lock, by a process whose clock is two minutes behind the file system's: it looks as if from the future
+  fs.writeFileSync(J(root, 'd/l.json.lock'), 'live');
+  assert.match(run(-120000).join(), /could not lock/);
+  assert.equal(fs.readFileSync(J(root, 'd/l.json.lock'), 'utf8'), 'live');
+});
+
+test('lock: the temporary file of an atomic write is a new file, never one that is there', { skip: process.platform === 'win32' }, () => {
+  const { writeAtomic } = require('../src/core/lock.cjs');
+  const root = project({ 'victim.txt': 'mine' });
+  const open = fs.openSync, opened = [];
+  fs.openSync = function (p, flags, ...rest) { opened.push([path.basename(String(p)), flags]); return open.call(this, p, flags, ...rest); };
+  try { writeAtomic(J(root, 'out/file.json'), 'new'); } finally { fs.openSync = open; }
+  assert.equal(opened.length, 1);
+  assert.match(opened[0][0], /^file\.json\.\d+\.[0-9a-f]{16}\.tmp$/);
+  assert.equal(opened[0][1], 'wx');
+  assert.equal(fs.readFileSync(J(root, 'out/file.json'), 'utf8'), 'new');
+  assert.deepEqual(fs.readdirSync(J(root, 'out')), ['file.json']);
+  // a file where the temporary file would be (a symbolic link put there): the write fails, and leaves it alone
+  const at = J(root, 'out/x.json'), names = crypto.randomBytes;
+  crypto.randomBytes = () => Buffer.alloc(8);
+  fs.symlinkSync(J(root, 'victim.txt'), `${at}.${process.pid}.0000000000000000.tmp`);
+  try { assert.throws(() => writeAtomic(at, 'evil'), /EEXIST/); } finally { crypto.randomBytes = names; }
+  assert.equal(fs.readFileSync(J(root, 'victim.txt'), 'utf8'), 'mine');
+  assert.equal(fs.existsSync(at), false);
 });
 
 test('outputs: a shared lockfile that cannot be read (anything but "not there") is a problem: other processes\' packages would be lost', () => withConfig({ strict: true }, () => {

@@ -9,11 +9,14 @@ const config = require('./config.cjs');
 const packages = require('./packages.cjs');
 const generated = require('./generated.cjs');
 const copies = require('./copies.cjs');
-const { ancestors, packageRoot } = require('./paths.cjs');
+const { ancestors, packageRoot, posix } = require('./paths.cjs');
 
 const JS = /\.[cm]?js$/i;
 const MAX_SCAN = 20000;           // entries of an output directory looked at
 const MAX_LATE = 20 * 1024 * 1024; // larger files are not compared
+// what was not checked is said (a warning, once per directory or file): a package it would add may be missing
+const warned = new Set();
+const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); config.warn(msg); } };
 
 // The package a file copied into the output comes from: one this process copied out of a package with fs (see
 // core/copies.cjs), or dist/vendor/node_modules/normalize.css/normalize.css (e.g. vite-plugin-static-copy with a
@@ -25,7 +28,12 @@ function copiedFrom(file, rel, cwd) {
   if (!packageRoot(rel)) return null;
   const parts = rel.split(path.sep);
   const sub = parts.slice(parts.lastIndexOf('node_modules') + 1).join(path.sep);
-  try { if (fs.statSync(file).size > MAX_LATE) return null; } catch { return null; }
+  try {
+    if (fs.statSync(file).size > MAX_LATE) {
+      warnOnce(file, `${file} is larger than ${MAX_LATE / 1024 / 1024} MiB: not compared with node_modules/${posix(sub)}, whose package it may be a copy of`);
+      return null;
+    }
+  } catch { return null; }
   for (const dir of ancestors(cwd)) {
     const src = path.join(dir, 'node_modules', sub);
     if (copies.sameBytes(src, file)) { const pkgs = packages.packagesForFiles([src]); if (pkgs.length) return pkgs; }
@@ -60,7 +68,7 @@ function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
     }
   };
   walk(dir);
-  if (seen > MAX_SCAN) config.debug(`more than ${MAX_SCAN} entries in`, dir, '- files written after the build not all checked');
+  if (seen > MAX_SCAN) warnOnce(dir, `more than ${MAX_SCAN} entries in ${dir}: the files written there after the build were not all checked for packages`);
   return found;
 }
 
