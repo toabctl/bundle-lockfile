@@ -229,10 +229,12 @@ function createPlugin(kind, inputOptions) {
         try {
           // generate-only builds (Vite's workers and legacy polyfills, write: false, workbox-build, Vite 8 bundling its
           // config) write nothing themselves: their chunks' packages are kept for the build that uses them. An output
-          // below node_modules is a tool's cache (Vite's dependency pre-bundling) or such a build too (plugin-legacy's).
-          // without dir and file, Rolldown writes to dist/ (Rollup does not write at all); the hooks get neither
+          // below node_modules is a tool's cache (Vite's dependency pre-bundling) or such a build too - except below
+          // node_modules/.cache/, where tools build what ships: `nuxi build` builds into node_modules/.cache/nuxt/.nuxt
+          // when .nuxt is there, and Nitro copies the client's files from there into .output/public (see core/outputs.cjs
+          // outputCopy). Without dir and file, Rolldown writes to dist/ (Rollup does not write at all); the hooks get neither
           const dir = path.resolve(cwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
-          if (isWrite === false || dir.split(path.sep).includes('node_modules')) {
+          if (isWrite === false || (dir.split(path.sep).includes('node_modules') && !CACHE.test(dir + path.sep))) {
             const all = [];
             const bases = once(() => entryDirs(bundle));
             for (const f of Object.values(bundle)) {
@@ -360,6 +362,7 @@ function wrapBuild(id, fn) {
 }
 
 const PATCHED = Symbol.for('bundle-lockfile.rollup.cjs');
+const CACHE = /[\\/]node_modules[\\/]\.cache[\\/]/; // tools' build directories below node_modules (see generateBundle)
 // Rollup's CommonJS build: dist/shared/rollup.js has rollup() and rollupInternal(), which the rollup command line
 // (rollup.rollup), watch() (rollup.rollupInternal) and dist/rollup.js (require('rollup'), which copies rollup when it
 // loads, after this patch) call.

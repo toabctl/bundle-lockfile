@@ -197,6 +197,7 @@ function copied(src, dest, isDirectory) {
   } else {
     for (const f of known.keys()) if (f.startsWith(src + path.sep)) pairs.push([f, path.join(dest, path.relative(src, f))]);
   }
+  if (!pairs.length) outputCopy(src, dest, isDirectory);
   for (const [from, to] of pairs) {
     const target = known.get(from) || null;
     // the record of an export copy is anchored where its lockfile is, that of a copy where it is
@@ -210,6 +211,44 @@ function copied(src, dest, isDirectory) {
     config.debug('copied lockfile', from, '->', to, '- its record is for where it is now');
   }
 }
+
+// The output directory of a lockfile (target): the directory BUNDLE_LOCKFILE_FILE is below
+const outputDirOf = (target) => path.join(target, ...config.file.split('/').map(() => '..'));
+const within = (dir, p) => p === dir || p.startsWith(dir + path.sep);
+
+// A file of an output (one its writers in this process emit) or a directory in it copied with fs to a place outside
+// every output, without the lockfile: Nitro copies Nuxt's client output's _nuxt/ files one by one into
+// .output/public/_nuxt/, which ships - .nuxt/dist/client/bundle-lockfile/ stays behind. That copy of the output gets a
+// copy of its lockfile, where the copy's output directory is (as many directories up from the copy as the file is
+// below the output directory), followed like a copied lockfile: written again with every write of its lockfile.
+// Not with BUNDLE_LOCKFILE_INLINE=0 (no lockfile in outputs), nor where a lockfile is (another build's, a copy), nor in
+// node_modules. A copy of only some of the output's files lists all of its packages: more, not fewer.
+function outputCopy(src, dest, isDirectory) {
+  if (!config.inline) return;
+  const dirs = [...outputs.files.keys()].map(t => [t, outputDirOf(t)]);
+  for (const [target, odir] of dirs) {
+    if (!within(odir, src) || within(src, target)) continue; // (a directory with the lockfile in it: copied with it)
+    if (!isDirectory && !filesOf(target).has(src)) continue;
+    const up = path.relative(odir, src).split(path.sep).filter(Boolean).length;
+    const root = path.join(dest, ...Array(up).fill('..'));
+    // a place that is (in) an output, or has one in it (a file copied up into the project): no copy there
+    if (dirs.some(([, d]) => within(d, root) || within(root, d)) || root.split(path.sep).includes('node_modules')) return;
+    const copy = path.join(root, config.file);
+    if (outputs.copies.has(copy) || there(copy)) return;
+    let content = null;
+    try { content = fs.readFileSync(stateFile(target), 'utf8'); } catch { /* not written yet: when it is (follow) */ }
+    let json = null;
+    if (content !== null) {
+      json = reanchor(content, path.dirname(target), path.dirname(copy));
+      if (json === null) return; // no record anchored there
+      try { writeAtomic(copy, json); } catch (e) { problems.problem(`could not write ${copy}, the lockfile of a copy of ${odir}`, e); return; }
+    }
+    lru.set(outputs.copies, copy, { target, content: json }, MAX_COPIES);
+    config.debug('a copy of the output', odir, 'in', root, '- its lockfile:', copy);
+    return;
+  }
+}
+
 if (!outputs.listening) { outputs.listening = true; copies.onCopy(copied); } // once per process, also with copies of this module
 
 // The copies of `target` (see copied), with `content` - the target's new content - for where they are; a copy changed

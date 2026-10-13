@@ -202,6 +202,10 @@ const fixtures = {
   'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
   'nested-island-rollup': nestedVite('rollup -c island/rollup.config.mjs', '7.3.7',
     { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3', '@rollup/plugin-commonjs': '29.0.3' }),
+  // Nuxt 4 (Vite 8 client and server builds, Nitro): with pnpm, vite is only in pnpm's hidden node_modules/.pnpm/node_modules
+  // (nuxt depends on it, the project does not); Nitro copies the client output's _nuxt/ files into .output/public/
+  'nuxt4-pnpm10': { app: 'nuxt', bundler: 'nuxt', installer: { type: 'pnpm', version: '10.34.6' },
+    deps: { nuxt: '4.6.1', nuxi: '4.0.1', vue: '3.5.44', 'lodash-es': '4.18.1' }, packageJson: { type: 'module', scripts: { build: 'nuxt build' } } },
   'sveltekit2': sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7',
     '@sveltejs/adapter-netlify': '5.2.4' }),
   'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0',
@@ -1207,6 +1211,13 @@ const cases = [
   // node_modules at runtime (Vite's SSR build and adapter-node keep dependencies external), so in no lockfile.
   // SvelteKit 2 writes no source map for the service worker (nanoid's code is in build/service-worker.js); with
   // adapter-node, build/client (and with SvelteKit 3 build/server) are copies of SvelteKit's outputs, with their lockfiles
+  // Nuxt: the shipped client is .output/public (Nitro's copies of .nuxt/dist/client/_nuxt/): it gets a copy of the
+  // client's lockfile (core/outputs.cjs outputCopy); the server's is in .output/server. No oracle: Nitro bundles the
+  // server again with Rollup (its own build, hooked too), Nuxt's client build is Vite's
+  ...[['nuxt build', '$PNPM run build'], ['nuxi build (nuxi names no bundler: a bundler process by pnpm\'s hidden node_modules)', '$PNPM exec nuxi build']].map(([what, cmd]) => ({
+    name: `Nuxt 4.6.1, pnpm 10: ${what}`, fixture: 'nuxt4-pnpm10', outDir: '.output', oracle: false,
+    cmd: `${cmd} && test -f .output/public/bundle-lockfile/package-lock.json && test -f .output/server/bundle-lockfile/package-lock.json`,
+    expectIncludes: ['lodash-es@4.18.1'] })),
   { name: 'SvelteKit 2 (Vite 7), adapter-static', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build',
     expectIncludes: SVELTE_CLIENT('2.70.3'), expectExcludes: ['ms@2.1.3'], oracleMissing: ['nanoid@3.3.20'] },
   { name: 'SvelteKit 2 (Vite 7), adapter-node', fixture: 'sveltekit2', cmd: 'npm run -s build', outDir: 'build', env: { SVELTEKIT_ADAPTER: 'node' },

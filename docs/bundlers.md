@@ -14,6 +14,7 @@ What is supported and tested, which processes are hooked, and what is particular
 | Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
 | Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; [details](#vite-rollup-rolldown) |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
+| Nuxt | 4 (Vite 8, Nitro 2) | 4.6 | as Vite | `nuxt build`, `nuxi build`; [details](#nuxt) |
 | Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
@@ -41,6 +42,7 @@ Package managers tested ([details](../test/README.md#environments)):
 | Vite | npm, npx, pnpm 9 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules, pnpm), bun, npm workspaces |
 | Next.js, SvelteKit, Rollup, Rolldown, Rslib | npm (the `rollup` command line also yarn 4 Plug'n'Play and pnpm) |
 | esbuild | npm, pnpm 10, yarn 4 (Plug'n'Play) |
+| Nuxt | pnpm 10 |
 
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
@@ -192,3 +194,15 @@ loads.
 
 adapter-static with `precompress` processes every file of the output, the lockfile too: it writes
 `package-lock.json.gz` and `.br` next to it.
+
+## Nuxt
+
+`nuxt build` (and `nuxi build`) builds the client and the server with Vite into `.nuxt/dist/` - into
+`node_modules/.cache/nuxt/.nuxt/dist/` when `.nuxt` is there already (after `nuxt prepare`, a postinstall step) - and
+then Nitro bundles the server again with Rollup into `.output/server/` and copies the client's `_nuxt/` files into
+`.output/public/`. Shipped is `.output/`:
+
+| Output | Lockfile |
+|---|---|
+| `.output/public/` | a copy of the client's (Nitro copies its files with fs: [copies of outputs](format.md#copies-of-outputs)) |
+| `.output/server/` | Nitro's server build, with what it bundled; the server loads the packages in `.output/server/node_modules/` at runtime ([which scans read those](../README.md#sbom-tools)) |

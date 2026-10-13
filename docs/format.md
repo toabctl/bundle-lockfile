@@ -13,7 +13,9 @@ output directory):
   both.
 - Vite, Rollup, Rolldown: one per output of a build that writes, in its `dir`, or the directory of its `file`
   (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
-  `node_modules` (e.g. Vite's dependency pre-bundling).
+  `node_modules` (e.g. Vite's dependency pre-bundling) - except below `node_modules/.cache/`, where tools build what
+  they ship (Nuxt's build directory for `nuxi build`).
+- A copy of an output's files elsewhere, made with fs in the build's process: see [copies of outputs](#copies-of-outputs).
 
 With `BUNDLE_LOCKFILE_EXPORT_DIR`, every lockfile is also written below the export directory
 ([layout](configuration.md#the-export-directory)). A `package-lock.json` in a lockfile's place that bundle-lockfile
@@ -216,6 +218,16 @@ versions; a single file, or a directory holding a lockfile this process wrote), 
 place, and rewritten again whenever the original is, as long as the copy is unchanged. SvelteKit's adapters copy that
 way, so their copies are right where they are, also when files written after the build added packages after the copy.
 A copy made otherwise (`cp`, rsync, an image build) keeps its bytes, which syft and Trivy read as before.
+
+### Copies of outputs
+
+When such a process copies a file of an output (one its builds wrote) or a directory of it elsewhere, and the
+lockfile is not copied with it, the place of the copy gets a copy of the lockfile, written and followed the same way:
+where the copy's output directory is (as many directories up from the copy as the file is below the output
+directory), e.g. `.output/public/bundle-lockfile/package-lock.json` for Nitro's copies of
+`.nuxt/dist/client/_nuxt/*` into `.output/public/_nuxt/`. A copy of some of the output's files lists all of its
+packages. Not with `BUNDLE_LOCKFILE_INLINE=0`, not where a lockfile is already, not into an output or a directory
+holding one, and not below `node_modules`.
 
 ## Several writers, one lockfile
 
