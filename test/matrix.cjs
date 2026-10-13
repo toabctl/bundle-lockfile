@@ -415,7 +415,7 @@ const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 const MEMFS = `node ${path.join(__dirname, 'lib/memfs-build.cjs')}`; // into memfs, then copied to the disk
 const ROLLUP_CLI_WATCH = `node ${path.join(__dirname, 'lib/rollup-cli-watch.cjs')}`; // rollup -c -w, rebuilt twice
-// this Node.js has the in-thread ESM hooks (README: 24.12, 25.2 and later), which every process gets
+// this Node.js has the in-thread ESM hooks (docs/bundlers.md: 24.12, 25.2 and later), which every process gets
 const [NODE_MA, NODE_MI] = process.versions.node.split('.').map(Number);
 const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 2) || (NODE_MA === 24 && NODE_MI >= 12);
 // `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
@@ -905,8 +905,8 @@ const cases = [
   { name: 'Vite 7.3.7, library mode with two formats', fixture: 'vite7-npm', cmd: 'npm run -s build', env: { VITE_LIB: '1' }, expect: VITE_EXPECT,
     oracleMissing: ['normalize.css@8.0.1'] },
   // an SSR build keeps the dependencies external (the server loads them from node_modules): none of them is listed;
-  // with ssr.noExternal it bundles them. normalize.css is listed although an SSR build emits no CSS (README: listed
-  // although not shipped; a plugin can also put CSS into the JavaScript, so its style modules count)
+  // with ssr.noExternal it bundles them. normalize.css is listed although an SSR build emits no CSS (docs/coverage.md:
+  // listed although not shipped; a plugin can also put CSS into the JavaScript, so its style modules count)
   { name: 'Vite 8.3.3, SSR build (vite build --ssr): dependencies external', fixture: 'vite8-npm', cmd: './node_modules/.bin/vite build --ssr src/main.js',
     oracleArgs: '--ssr src/main.js', expect: ['normalize.css@8.0.1'], oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, SSR build with ssr.noExternal', fixture: 'vite8-npm', cmd: './node_modules/.bin/vite build --ssr src/main.js', env: { VITE_SSR_NOEXTERNAL: '1' },
@@ -991,8 +991,8 @@ const cases = [
   { name: "Vite 7.3.7, yarn 4.18.1 Plug'n'Play", fixture: 'vite7-yarn4-pnp', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, yarn 4.18.1 node-modules linker', fixture: 'vite8-yarn4-node-modules', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, yarn 4.18.1 pnpm linker', fixture: 'vite8-yarn4-pnpm', cmd: 'yarn build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
-  // Vite's servers and Vitest ship nothing and write no lockfile (README): the dev server's dependency pre-bundling (a
-  // Rolldown build on Vite 8), also into a cache directory outside node_modules; vite preview; vitest run
+  // Vite's servers and Vitest ship nothing and write no lockfile (docs/bundlers.md): the dev server's dependency
+  // pre-bundling (a Rolldown build on Vite 8), also into a cache directory outside node_modules; vite preview; vitest run
   { name: 'Vite 8.3.3, vite dev: dependency pre-bundling writes no lockfile', fixture: 'vite8-npm', cmd: VITE_SERVERS('dev'), expect: null },
   { name: 'Vite 8.3.3, vite dev with cacheDir outside node_modules: no lockfile', fixture: 'vite8-npm', cmd: VITE_SERVERS('dev'), env: { VITE_CACHE_DIR: '.vite-cache' },
     expect: null },
@@ -1172,8 +1172,8 @@ const cases = [
   // output: 'standalone': .next/standalone has the traced server files, not the lockfiles (see README: export dir)
   { name: "Next.js 16.4.0 --webpack, output: 'standalone': .next/standalone gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
     outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1' }, expect: null },
-  // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see README);
-  // the export directory has them
+  // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see
+  // docs/bundlers.md); the export directory has them
   { name: "Next.js 16.4.0 --webpack, output: 'export': out/ gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
     outDir: 'out', env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, expect: null },
   { name: "Next.js 16.4.0 --webpack, output: 'export', export dir only", ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),

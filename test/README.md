@@ -1,6 +1,6 @@
 # Tests
 
-See the [README](../README.md#supported) for what is supported, and [internals.md](../docs/internals.md) for how it
+See [bundlers.md](../docs/bundlers.md#supported) for what is supported, and [internals.md](../docs/internals.md) for how it
 works.
 
 The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26):
@@ -245,7 +245,7 @@ the adapters bundle again — except SvelteKit 2's edge function (built by esbui
   exactly the lockfiles of the webpack builds
 - on 16: a static export (`output: 'export'`), a standalone output (`output: 'standalone'`, no lockfile), a warm build
   from `.next/cache`, a Turbopack build (no lockfile)
-- another `--require` preload next to bundle-lockfile's (Next 15 fails, see the [README](../README.md#nextjs); 16.4
+- another `--require` preload next to bundle-lockfile's (Next 15 fails, see [bundlers.md](../docs/bundlers.md#nextjs); 16.4
   builds)
 
 ## rspack on real projects
