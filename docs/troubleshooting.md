@@ -48,8 +48,13 @@ They do not fail the build:
   process: bundled code from a `node_modules` directory without a `package.json`, listed as the package around it; an
   adapter that failed while inspecting a module that is not a bundler; ESM hooks that could not be installed in a
   process whose main script's package depends on no ES-module bundler; a limit that was reached, so that some files
-  were not compared or checked (too many files below a directory, a file too large); a bundled file that another build
-  wrote and that changed since, listed with that build's packages ([nested bundles](format.md#nested-bundles)).
+  were not compared or checked (too many files below a directory, a file too large), or that the oldest records of
+  files copied out of packages (50,000) or of builds that write nothing themselves (10,000) are forgotten; a bundled
+  file that another build wrote and that changed since, listed with that build's packages ([nested
+  bundles](format.md#nested-bundles)); a node process or worker thread started with an environment whose
+  `NODE_OPTIONS` lacks bundle-lockfile's `--require` (a bundler in it is not hooked; with the [node
+  shim](configuration.md#the-node-shim) the `--require` is put back); the packages of a build that writes nothing
+  itself (`generate()`, `write: false`) whose output reached no output the process wrote, when the process ends.
 - `[bundle-lockfile] note:` — always, once per process: a vendored copy that is listed (`BUNDLE_LOCKFILE_FIRST_PARTY`
   names directories that are not).
 

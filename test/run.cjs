@@ -87,7 +87,8 @@ function runCase(c) {
   }
   // {fixture} in NODE_OPTIONS too: other tools' preloads and loaders installed in the fixture
   const caseOptions = (o) => (o ? o.split('{fixture}').join(dir) : '');
-  const nodeOptions = [caseOptions(c.nodeOptions), c.inject === false ? '' : `--require ${register}`, caseOptions(c.nodeOptionsAfter)].filter(Boolean).join(' ');
+  const nodeOptions = c.nodeOptionsWith ? c.nodeOptionsWith(register)
+    : [caseOptions(c.nodeOptions), c.inject === false ? '' : `--require ${register}`, caseOptions(c.nodeOptionsAfter)].filter(Boolean).join(' ');
   const env = { ...base, NODE_OPTIONS: nodeOptions };
   const notes = [];
   // heapMB: the build's own process records its heap limit (test/apps/webpack5/webpack.config.js), checked after it

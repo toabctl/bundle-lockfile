@@ -40,7 +40,11 @@ function abs(p) {
 function record(src, dest, dir) {
   const s = abs(src), d = abs(dest);
   if (!s || !d || !inPackage(s) || inPackage(d)) return;
-  lru.set(dir ? state.dirs : state.files, d, s, MAX);
+  if (lru.set(dir ? state.dirs : state.files, d, s, MAX) && !state.warned) {
+    // the oldest copies are forgotten: a bundled copy of one of them counts as first-party from now on
+    state.warned = true;
+    require('./config.cjs').warn(`more than ${MAX} ${dir ? 'directories' : 'files'} copied out of packages in this process: the oldest copies are forgotten, a bundled copy of them is no longer listed as its package`);
+  }
 }
 
 // Both are files with the same bytes.

@@ -179,8 +179,9 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
   `NODE_OPTIONS` for their build workers: `--require a.cjs --require b.cjs` reaches them as the single path `"a.cjs
   b.cjs"` and the build fails; with `--require=a.cjs --require=b.cjs` only the last one reaches them
   ([vercel/next.js#96582](https://github.com/vercel/next.js/issues/96582), fixed in 16.4.0 by
-  [#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15). Next 12–14 do not parse the flags. If
-  you need several preloads, require the others from one file.
+  [#96651](https://github.com/vercel/next.js/pull/96651), not backported to 15) - bundle-lockfile then puts its own
+  back into the workers' `NODE_OPTIONS`, but another preload before it stays lost. Next 12–14 do not parse the flags.
+  If you need several preloads, require the others from one file.
 
 ## SvelteKit
 
