@@ -410,7 +410,7 @@ const fixtures = {
     { type: 'module', scripts: { build: 'node rolldown.mjs build' } })])),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
   'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
-  'canary-parcel': canary('parcel', { parcel: '2.16.4', '@parcel/transformer-glsl': '2.16.4' }, { scripts: { build: 'parcel build parcel.html --dist-dir dist' } }),
+  'canary-parcel': canary('parcel', { parcel: '2.16.4', '@parcel/transformer-glsl': '2.16.4' }, { scripts: { build: 'parcel build parcel.html --dist-dir dist --no-optimize' } }), // (optimized SVGs lose their markers, comments)
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
   'edge-manifests-wp5': manifests('webpack', WEBPACK),
   'edge-manifests-vite8': manifests('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
