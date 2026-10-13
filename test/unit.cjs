@@ -3513,6 +3513,48 @@ test('esm-wrap: withoutComments gives what the character-by-character version ga
   for (const s of samples) assert.equal(withoutComments(s), reference(s), JSON.stringify(s.slice(0, 40)));
 });
 
+test('esm-wrap: regular expression literals and the code in template literals start no comment or string', () => {
+  const { withoutComments, exportedNames } = require('../src/esm-wrap.cjs');
+  const hasDefault = (src) => exportedNames(src).has('default');
+  // by the ECMAScript grammar (written by hand): the module has a default export, or none
+  const cases = [
+    ['const r = /\\/*/; export default 1;\n', true], // \/* in a regular expression: no comment
+    ['const r = /[/*]/; export default 1;\n', true], // /* in a character class
+    ['if (/\\/\\*/.test(a)) b(); export { c as default };\n', true],
+    ["const r = /'/;\n/* export default x */\nexport const a = 1;\nconst s = 'q';\n", false], // ' in a regular expression: no string
+    ['const r = /"/g; // export default x\nexport { a };\n', false],
+    ['function f(s) { return /\'/.test(s) } // export default f\nexport { f };\n', false],
+    ['const r = x => typeof /`/; /* export default */ export { r };\n', false],
+    ['const t = `${\'`\'}`; /* export default x */ export const a = 1;\n', false], // a ` in a string in a ${}
+    ['const t = `a${`b${c}`}`; // export default t\nexport { t };\n', false], // nested template literals
+    ['const t = `${{ a: 1 }.a} // kept`; export default t;\n', true], // braces in a ${}; // in a template is no comment
+    ['const t = `${f(() => { return 1 })}`; /* export default */ export { t };\n', false],
+    ['const x = a / b; /* export default q */ export { c };\n', false], // division after a name
+    ['const x = (a) / b / c; /* export default */ export { x };\n', false], // after )
+    ['const x = a[0] / 2 /* export default */; export { x };\n', false], // after ]
+    ['i++ / 2; /* export default */ export { i };\n', false], // after x++
+    ['const x = 10 / 2; // export default\nexport { x };\n', false], // after a number
+    ['const x = o.in / 2; /* export default */ export { x };\n', false], // a property named like a keyword
+    ["const s = 'a' / 2; /* export default */ export { s };\n", false], // after a string
+    // in literals: code a bundle generates, no export of its own
+    ['const s = "export default";\nexport { a };\n', false],
+    ["const s = 'export { x as default }'; export { a };\n", false],
+    ['const t = `export default ${x}`; export { a };\n', false],
+    ['const t = `${`export default`}`; export { a };\n', false],
+    ['const r = /export default/; export { a };\n', false],
+    ["const s = 'a'; export default s;\n", true],
+    ['const t = `${a}`; export { t as default };\n', true],
+  ];
+  for (const [src, want] of cases) assert.equal(hasDefault(src), want, src);
+  // the names of string literals do not count (a string-named export: `export *` brings it)
+  assert.deepEqual([...exportedNames('export { a as "module.exports", b };')], ['b']);
+  // comments in the code of a ${} go, as anywhere else in code
+  assert.equal(withoutComments('`a${ b /* c */ }d`'), '`a${ b   }d`');
+  assert.equal(withoutComments('x = /\\/\\/ no/; // yes'), 'x = /\\/\\/ no/;  ');
+  // a / that cannot be a regular expression (no end on its line) divides
+  assert.equal(withoutComments('a = (/ 2\n// c\n)'), 'a = (/ 2\n \n)');
+});
+
 // a compilation of rspack 2: chunks, assets with their bytes (assets: name -> { info, bytes }), file dependencies,
 // all modules, options
 function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, exportsUsed = () => false }) {
