@@ -2772,6 +2772,52 @@ test('vendored: packages of files - copies outside and inside node_modules, pack
   assert.deepEqual(packagesForFiles([J(root, 'vendor/x/dist/i.js')]), []);
 });
 
+// The package.json files inside real packages that other tools took for packages of their own, as their npm tarballs
+// have them (preact 10.29.8, @duetds/date-picker 1.4.0, @telekom/scale-components 3.0.0-beta.55, @ionic/core 8.8.19,
+// engine.io-client 6.6.7, socket.io-client 4.8.4, luxon 3.7.2, @hookform/resolvers 5.9.1, @babel/runtime 7.29.10):
+// none of them is a copy of an npm package, so a file below one is the package's
+test('vendored: package.json files inside real packages are the package (name without version, version without name, private helpers)', () => {
+  const v = (name, version, extra = {}) => ({ name, version, license: 'MIT', ...extra });
+  const nested = {
+    '@duetds/date-picker': ['1.4.0', 'dist/loader', { name: 'duet-loader', typings: './index.d.ts', module: './index.js', main: './index.cjs.js' }],
+    '@telekom/scale-components': ['3.0.0-beta.55', 'loader', { name: 'scale-components-loader', module: './index.js', main: './index.cjs.js' }],
+    '@ionic/core': ['8.8.19', 'components', { name: '@ionic/core/components', version: '0.0.0', main: './index.js', private: true, sideEffects: false }],
+    'engine.io-client': ['6.6.7', 'build/esm', { name: 'engine.io-client', type: 'module', browser: { ws: false } }],
+    'socket.io-client': ['4.8.4', 'build/esm', { name: 'socket.io-client', version: '4.8.4', type: 'module' }],
+    luxon: ['3.7.2', 'src', { type: 'module', version: '3.7.2' }],
+    '@hookform/resolvers': ['5.9.1', 'zod', { name: '@hookform/resolvers/zod', version: '1.0.0', private: true, main: 'dist/zod.js', license: 'MIT' }],
+    '@babel/runtime': ['7.29.10', 'helpers/esm', { type: 'module' }],
+    preact: ['10.29.8', 'hooks', { name: 'preact-hooks', version: '0.1.0', private: true, main: 'dist/hooks.js', license: 'MIT' }],
+  };
+  const files = { 'package.json': { name: 'app', version: '1.0.0' } };
+  for (const [name, [version, dir, j]] of Object.entries(nested)) {
+    files[`node_modules/${name}/package.json`] = v(name, version);
+    files[`node_modules/${name}/${dir}/package.json`] = j;
+    files[`node_modules/${name}/${dir}/i.js`] = '';
+  }
+  // the hydrate app's name has a slash and no version; the same name with a version and without private: still no
+  // name npm accepts, so no copy either
+  files['node_modules/@telekom/scale-components/hydrate/package.json'] = { name: '@telekom/scale-components/hydrate', main: 'index.js' };
+  files['node_modules/@telekom/scale-components/hydrate/i.js'] = '';
+  files['node_modules/@hookform/resolvers/yup/package.json'] = { name: '@hookform/resolvers/yup', version: '1.0.0', license: 'MIT' };
+  files['node_modules/@hookform/resolvers/yup/i.js'] = '';
+  const root = project(files);
+  for (const build of [{ context: root }, undefined]) {
+    const of = (f) => packagesForFiles([J(root, 'node_modules', f)], build).map(p => `${p.name}@${p.version} ${path.relative(root, p.path)}`);
+    let seen;
+    const warned = warnings(() => {
+      seen = Object.fromEntries(Object.entries(nested).map(([name, [, dir]]) => [name, of(`${name}/${dir}/i.js`)]));
+    });
+    for (const [name, [version]] of Object.entries(nested)) assert.deepEqual(seen[name], [`${name}@${version} node_modules/${name}`], name);
+    assert.deepEqual(of('@telekom/scale-components/hydrate/i.js'), ['@telekom/scale-components@3.0.0-beta.55 node_modules/@telekom/scale-components']);
+    assert.deepEqual(of('@hookform/resolvers/yup/i.js'), ['@hookform/resolvers@5.9.1 node_modules/@hookform/resolvers']);
+    assert.deepEqual(warned, []); // package roots with a usable package.json: nothing to warn about
+  }
+  // each is no copy by itself - except socket.io-client's, which has the package's own name and version, and so is it
+  const { isVendorable } = require('../src/core/vendored.cjs');
+  for (const [name, [, , j]] of Object.entries(nested)) assert.equal(isVendorable(j), name === 'socket.io-client', JSON.stringify(j));
+});
+
 test('vendored: a bundled file another build produced is its output, no vendored copy', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const root = project({ 'node_modules/inner/package.json': { name: 'inner', version: '1.0.0' }, 'island/package.json': { name: 'island', version: '1.0.0' } });
@@ -2864,6 +2910,26 @@ test('strict: a bundled package that cannot be listed fails every build; one lis
     assert.match(taken[0], /no package\.json with name and version in .*noversion - its bundled files are not listed/);
   }
 }));
+
+test('strict: a bundled package whose package.json cannot be parsed fails every build (BUNDLE_LOCKFILE_STRICT=0: a warning)', async () => {
+  const root = project({ 'node_modules/broken/package.json': '{"name": "broken", "version": "1.0.0",' });
+  const file = J(root, 'node_modules/broken/i.js');
+  await withConfig({ strict: true }, () => {
+    problems.take();
+    for (let i = 0; i < 2; i++) {
+      assert.deepEqual(packagesForFiles([file]), []);
+      const taken = problems.take();
+      assert.equal(taken.length, 1, `build ${i + 1}`);
+      assert.match(taken[0], /no package\.json with name and version in \S*broken - its bundled files are not listed/);
+    }
+  });
+  await withConfig({ strict: false }, () => {
+    problems.take();
+    const warned = warnings(() => assert.deepEqual(packagesForFiles([file]), []));
+    assert.equal(problems.take().length, 0);
+    assert.match(warned.join('\n'), /broken - its bundled files are not listed/);
+  });
+});
 
 test('strict: the webpack plugin fails the compilation when collecting or writing fails', async () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
