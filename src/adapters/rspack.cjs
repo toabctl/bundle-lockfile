@@ -8,8 +8,8 @@
 //   Rsbuild 2 import it: the ESM entry wrapper, esmWrap; require() of it, require(esm), goes through the CommonJS hook too).
 // - Compiler.prototype.compile is patched, as webpack's (webpack.cjs): it runs for run(), watch() and child compilers;
 //   every top-level compiler gets the plugin on its first compile(). The prototype is marked, so a copy of @rspack/core
-//   seen on several paths (in-thread ESM hooks and the CommonJS hook on Node.js 24.12+) is patched once; every copy loaded
-//   (OHIF loads rspack 1 and 2) gets its own patch.
+//   seen on several paths (the in-thread ESM hooks and the CommonJS hook) is patched once; every copy loaded (OHIF
+//   loads rspack 1 and 2) gets its own patch.
 // rspack 1.0 lacks what the plugin needs (the inner modules of concatenated modules): its builds fail (strict mode,
 // core/problems.cjs). rspack 0.x fails its builds too.
 const fs = require('fs');
@@ -73,7 +73,7 @@ module.exports = {
   cjsFiles: [/[\\/]@rspack[\\/]core[\\/]dist[\\/]index\.js$/],
   // rspack 2: only ES modules are wrapped (esm-wrap.cjs), so rspack 1's file at the same path is not
   esmEntries: [{ id: 'rspack', suffixes: ['/@rspack/core/dist/index.js'], wrap: ['Compiler'] }],
-  // processes that get the loader-thread ESM hooks on Node.js before 24.12 (see hooks.cjs esmMode): @rspack/cli 2 and
+  // processes that get the loader-thread ESM hooks on older Node.js (see hooks.cjs esmMode): @rspack/cli 2 and
   // Rsbuild 2 import rspack, as may a build script of a project using it
   esmPackages: ['@rspack/core', '@rspack/cli', '@rsbuild/core'],
   // the CommonJS file rspack 2's ES module loads (hooks.cjs esmCompanions): its binding, from dist/index.js - rspack 1's

@@ -175,13 +175,16 @@ function companion(module, filename) {
   failLoad(before);
 }
 
-// module.registerHooks (in-thread, synchronous) together with any loader-thread hook (Yarn PnP's .pnp.loader.mjs,
-// tsx, ...) crashes the process ("this[#customizations].loadSync is not a function") before Node 24.12 / 25.2
-// (nodejs/node#60380; not in 22.x). Removing our hooks again does not help (verified on 22.23). So it is used only
-// from those versions on.
+// module.registerHooks (in-thread, synchronous) next to a loader-thread hook (Yarn PnP's .pnp.loader.mjs, tsx,
+// OpenTelemetry's hook.mjs, ...): a loader-thread hook may provide no source for a CommonJS module (null: Node reads
+// the file), which in-thread hooks reject (ERR_INVALID_RETURN_PROPERTY_VALUE, the build fails) before
+// nodejs/node#59929: Node 22.22.3, 24.11.1, 25.1. From those versions on they are used in every process. (A
+// registerHooks call in Node's own loader thread - a --require preload that calls it, which Node 22-24.11 runs there
+// too - crashes the process, "this[#customizations].loadSync is not a function"; register.cjs does nothing there.)
 function syncHooksSafe(version) {
-  const [major, minor] = version.replace(/^v/, '').split('.').map(Number);
-  return major >= 26 || (major === 25 && minor >= 2) || (major === 24 && minor >= 12);
+  const [major, minor, patch] = version.replace(/^v/, '').split('.').map(Number);
+  return major >= 26 || (major === 25 && minor >= 1) || (major === 24 && (minor > 11 || (minor === 11 && patch >= 1)))
+    || (major === 22 && (minor > 22 || (minor === 22 && patch >= 3)));
 }
 
 // The process may build with a bundler of `packages` (or a tool built on one). Loader-thread hooks cost a thread per
@@ -303,9 +306,14 @@ function installEsm(entries, cjsFiles) {
     }
   } catch (e) {
     // Vite, Rollup, Rolldown builds in this process would write no lockfile: a problem in a bundler process (it fails
-    // at exit, core/problems.cjs); elsewhere (npm, any script) there is nothing it would miss
-    if (bundlerProcess(packages)) problems.problem('could not install the ESM hooks', e);
-    else config.warn('could not install the ESM hooks:', e);
+    // at exit, core/problems.cjs); elsewhere (npm, any script) there is nothing it would miss. module.register() starts
+    // Node's loader thread, which also runs the other loaders and the --require preloads: what breaks there (a loader
+    // file that fails, a preload that calls module.registerHooks, "loadSync is not a function") fails our call.
+    const msg = mode === 'async'
+      ? 'could not install the ESM hooks: Node.js\'s loader thread did not start (a --loader or --import that fails there, or a --require preload that calls module.registerHooks, breaks it)'
+      : 'could not install the ESM hooks';
+    if (bundlerProcess(packages)) problems.problem(msg, e);
+    else config.warn(`${msg}:`, e);
   }
 }
 

@@ -66,7 +66,7 @@ The CommonJS bundlers — webpack (also Next.js' copy), rspack 1, Rollup's Commo
 that preloads bundle-lockfile. The ES-module bundlers — Vite,
 which imports Rollup and Rolldown as ES modules, Rolldown, rspack 2, Rollup through `import` — need a Node.js ESM
 hook:
-- Node.js 24.12, 25.2 and later: hooked in every process.
+- Node.js 22.22.3, 24.11.1, 25.1 and later: hooked in every process.
 - Older versions: hooked only in processes (their main thread and worker threads)
   - whose main script belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`,
     `@rspack/core`, `@rspack/cli` or `@rsbuild/core` (the `vite` command, a build script of a project using Vite), or

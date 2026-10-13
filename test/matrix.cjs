@@ -507,9 +507,10 @@ const ESBUILD_CLI = './node_modules/.bin/esbuild src/main.js --bundle --outdir=d
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 const MEMFS = `node ${path.join(__dirname, 'lib/memfs-build.cjs')}`; // into memfs, then copied to the disk
 const ROLLUP_CLI_WATCH = `node ${path.join(__dirname, 'lib/rollup-cli-watch.cjs')}`; // rollup -c -w, rebuilt twice
-// this Node.js has the in-thread ESM hooks (docs/bundlers.md: 24.12, 25.2 and later), which every process gets
-const [NODE_MA, NODE_MI] = process.versions.node.split('.').map(Number);
-const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 2) || (NODE_MA === 24 && NODE_MI >= 12);
+// this Node.js has the in-thread ESM hooks (docs/bundlers.md: 22.22.3, 24.11.1, 25.1 and later), which every process gets
+const [NODE_MA, NODE_MI, NODE_PA] = process.versions.node.split('.').map(Number);
+const SYNC_HOOKS = NODE_MA >= 26 || (NODE_MA === 25 && NODE_MI >= 1) || (NODE_MA === 24 && (NODE_MI > 11 || (NODE_MI === 11 && NODE_PA >= 1)))
+  || (NODE_MA === 22 && (NODE_MI > 22 || (NODE_MI === 22 && NODE_PA >= 3)));
 // `vite build --watch` through Vite's API, run as the fixture's own build script (see the script)
 // (rebuilt without src/main.js's lazy import, whose chunk has ms@2.1.3, then with it again)
 const VITE_WATCH = `cp ${path.join(__dirname, 'lib/vite-watch.mjs')} .vite-watch.mjs && node .vite-watch.mjs "import('./lazy.js')"`;
@@ -1034,7 +1035,7 @@ const cases = [
     expectKeys: { 'node_modules/debug': 'debug@2.6.9', 'node_modules/debug/node_modules/ms': 'ms@2.0.0', 'node_modules/lodash-es': 'lodash-es@4.18.1',
       'node_modules/ms': 'ms@2.1.3' }, oracle: false },
   { name: 'Vite 8.3.3, npx vite build', fixture: 'vite8-npm', cmd: 'npx vite build', expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
-  // the loader-thread hooks, which Node < 24.12 uses (CI's Node 24 would use the in-thread ones)
+  // the loader-thread hooks, which older Node.js uses (CI's Node 24 would use the in-thread ones)
   { name: 'Vite 8.3.3, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' },
     expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // rolldown-vite: its process is a bundler process by the package name rolldown-vite (Node 22: loader-thread hooks)
@@ -1093,7 +1094,7 @@ const cases = [
   { name: 'Vite 8.3.3, programmatic build from a package without Vite, BUNDLE_LOCKFILE_ESM_HOOKS=async', fixture: 'vite8-npm', cmd: 'node tools/build.mjs',
     env: { BUNDLE_LOCKFILE_ESM_HOOKS: 'async' }, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   // the same build started from outside the project (/): no bundler process by what bundlerProcess sees, so Node.js
-  // before 24.12 installs no ESM hooks - the safety net (hooks.cjs companion) fails the build instead of a silent miss
+  // before 22.22.3 / 24.11.1 installs no ESM hooks - the safety net (hooks.cjs companion) fails the build instead of a silent miss
   ...[['8.3.3', 'vite8-npm', 'rolldown'], ['7.3.7', 'vite7-npm', 'rollup']].map(([v, fixture, inner]) => ({
     name: `Vite ${v}, programmatic build started outside the project (Node ${process.versions.node}: ${SYNC_HOOKS ? 'in-thread hooks' : 'no ESM hooks, fails'})`,
     fixture, cmd: 'D=$PWD && cd / && node "$D/tools/build.mjs"',
@@ -1154,7 +1155,7 @@ const cases = [
   { name: 'Rollup 4 command line, rollup.config.ts (--configPlugin typescript)', fixture: 'rollup-cli',
     cmd: './node_modules/.bin/rollup -c rollup.config.ts --configPlugin typescript', expect: ROLLUP_API },
   // installers (yarn Plug'n'Play: Yarn's own loader-thread hook next to bundle-lockfile's ESM hooks)
-  // a build in a worker thread: the worker installs its own ESM hooks (Node < 24.12: its own loader thread)
+  // a build in a worker thread: the worker installs its own ESM hooks (older Node.js: its own loader thread)
   { name: 'Vite 8.3.3, vite build in a worker thread', fixture: 'vite8-npm', cmd: VITE_WORKER, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 7.3.7, vite build in a worker thread', fixture: 'vite7-npm', cmd: VITE_WORKER, expect: VITE_EXPECT, oracleMissing: ['normalize.css@8.0.1'] },
   { name: 'Vite 8.3.3, vite build in a worker thread, loader-thread hooks (BUNDLE_LOCKFILE_ESM_HOOKS=async)', fixture: 'vite8-npm', cmd: VITE_WORKER,

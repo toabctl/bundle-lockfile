@@ -1,9 +1,9 @@
 // Watch-mode build through Vite's Node API (`vite build --watch`; Vite 7: Rollup's watch(), Vite 8: Rolldown's).
-// Copied into the fixture and run from there (cwd = fixture), as a project's own build script would be: on Node < 24.12
-// the loader-thread hooks are installed only in processes of a package that uses Vite. Builds, rebuilds with the lines
-// of src/main.js that contain <text> removed (an import whose packages must leave the lockfile), rebuilds with them
-// restored (they must come back), then exits: node .vite-watch.mjs <text>. The lockfile is deleted before every
-// build, so only the file shows that this build wrote it. Fails if a build does not write it; prints the package list
+// Copied into the fixture and run from there (cwd = fixture), as a project's own build script would be: on older
+// Node.js (hooks.cjs syncHooksSafe) the loader-thread hooks are installed only in processes of a package that uses
+// Vite. Builds, rebuilds with the lines of src/main.js that contain <text> removed (an import whose packages must
+// leave the lockfile), rebuilds with them restored (they must come back), then exits: node .vite-watch.mjs <text>.
+// The lockfile is deleted before every build, so only the file shows that this build wrote it. Fails if a build does not write it; prints the package list
 // of every build as JSON on the last line. src/main.js is restored also when this fails.
 import fs from 'node:fs';
 import path from 'node:path';

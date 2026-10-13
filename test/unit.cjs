@@ -1453,9 +1453,10 @@ test('esm-wrap: an entry module of a version the adapter does not know fails whe
   assert.match(off.stderr, /WARNING: file:\/\/\/p\/rollup\.js exports none of rollup, watch/);
 });
 
-test('hooks: in-thread ESM hooks only on Node >= 24.12 / 25.2; loader-thread hooks only in bundler processes', () => {
+test('hooks: in-thread ESM hooks only on Node >= 22.22.3 / 24.11.1 / 25.1 (nodejs/node#59929); loader-thread hooks only in bundler processes', () => {
   const hooks = require('../src/hooks.cjs');
-  for (const [v, safe] of [['22.23.3', false], ['24.11.1', false], ['24.12.0', true], ['25.1.0', false], ['25.2.0', true], ['26.0.0', true], ['v24.21.0', true]]) {
+  for (const [v, safe] of [['20.19.5', false], ['22.15.1', false], ['22.22.2', false], ['22.22.3', true], ['22.23.2', true], ['23.11.1', false],
+    ['24.10.0', false], ['24.11.0', false], ['24.11.1', true], ['24.12.0', true], ['25.0.0', false], ['25.1.0', true], ['26.0.0', true], ['v24.21.0', true], ['v22.22.3', true]]) {
     assert.equal(hooks.syncHooksSafe(v), safe, v);
   }
   const root = project({
@@ -1545,6 +1546,48 @@ test('hooks: a build in a worker thread gets the ESM hooks too; Node\'s own load
   }
 });
 
+test('esm-wrap: the real entry module sees its own file through import.meta (the marked URL), and a cycle back into the entry reads the wrapper', () => {
+  // The wrapper imports the real module as <url>?bundle-lockfile-real: import.meta.url has that query, which Node drops
+  // when it makes a path (fileURLToPath, import.meta.filename/dirname, createRequire, new URL(<relative>, ...)).
+  // A module of the entry's own graph that imports the entry back gets the wrapper, whose exports exist only once the
+  // real module has run: read during that (at its top level) they throw (TDZ) where a function declaration of the
+  // entry itself would not - documented (docs/internals.md); no wrapped entry has such a cycle (rollup 4.64.6, rolldown
+  // 1.2.13, @rspack/core 2.2.9). Read later, they are the wrapped functions.
+  const root = project({
+    'node_modules/rolldown/package.json': { name: 'rolldown', version: '1.2.13', type: 'module', exports: { '.': './dist/index.mjs' } },
+    'node_modules/rolldown/dist/helper.cjs': 'module.exports = 42;',
+    'node_modules/rolldown/dist/late.mjs': `import { rolldown } from 'rolldown';
+      let early; try { early = typeof rolldown; } catch (e) { early = e.constructor.name; }
+      export { early }; export const later = () => rolldown;`,
+    'node_modules/rolldown/dist/index.mjs': `import { createRequire } from 'node:module';
+      import { fileURLToPath } from 'node:url';
+      import { early, later } from './late.mjs';
+      export async function rolldown(o) { return [].concat(o.plugins || []).flat().map(p => p.name); }
+      export const meta = { url: import.meta.url, path: fileURLToPath(import.meta.url), filename: import.meta.filename, dirname: import.meta.dirname,
+        sibling: new URL('./helper.cjs', import.meta.url).href, required: createRequire(import.meta.url)('./helper.cjs') };
+      export const cycle = { early, later };
+      export const VERSION = '1.2.13';`,
+    'package.json': { name: 'app', version: '1.0.0', type: 'module', dependencies: { rolldown: '1.2.13' } },
+    'build.mjs': `import { meta, cycle } from 'rolldown';
+      console.log(JSON.stringify({ meta, early: cycle.early, later: await cycle.later()({ plugins: [{ name: 'x' }] }) }));`,
+  });
+  const file = J(fs.realpathSync(root), 'node_modules/rolldown/dist/index.mjs');
+  const run = (mode) => {
+    const r = spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'build.mjs')],
+      { cwd: root, env: { ...process.env, BUNDLE_LOCKFILE_ESM_HOOKS: mode }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split('\n').pop());
+  };
+  const href = pathToFileURLHref(file), sibling = pathToFileURLHref(J(path.dirname(file), 'helper.cjs'));
+  const off = run('off');
+  assert.deepEqual(off, { meta: { url: href, path: file, filename: file, dirname: path.dirname(file), sibling, required: 42 }, early: 'function', later: ['x'] });
+  const modes = ['async'];
+  if (typeof require('module').registerHooks === 'function') modes.push('sync');
+  for (const mode of modes) {
+    assert.deepEqual(run(mode), { meta: { ...off.meta, url: `${href}?bundle-lockfile-real` }, early: 'ReferenceError', later: ['x', 'bundle-lockfile'] }, mode);
+  }
+});
+
 test('hooks: a CommonJS bundler whose source another loader hook provides is patched, although Node loads it without Module._load', () => {
   // Yarn Plug'n'Play's loader returns the source of CommonJS files in its zip cache on Node versions whose fstat fails on
   // their file descriptors (22.22.3+, 24.15, 25.7+, 26.0): Node then evaluates them, and all they require, with a
@@ -1571,7 +1614,7 @@ test('hooks: a CommonJS bundler whose source another loader hook provides is pat
     assert.equal(r.status, 0, r.stderr);
     return JSON.parse(r.stdout.trim().split('\n').pop());
   };
-  const modes = ['auto', 'async']; // auto: the other loader makes it a process for the loader-thread hooks (Node < 24.12)
+  const modes = ['auto', 'async']; // auto: the other loader makes it a process for the loader-thread hooks (Node < 22.22.3 / 24.11.1)
   if (typeof require('module').registerHooks === 'function' && require(J(SRC, 'hooks.cjs')).syncHooksSafe(process.versions.node)) modes.push('sync');
   for (const mode of modes) assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: mode }), { viaModuleLoad: false, patched: true }, mode);
   assert.deepEqual(run({ BUNDLE_LOCKFILE_ESM_HOOKS: 'off' }), { viaModuleLoad: false, patched: false }); // the case the hooks are for
@@ -3432,6 +3475,15 @@ test('strict: ESM hooks that cannot be installed fail a bundler process, and onl
   const other = nodeWith(strictEnv(undefined), ['-e', script(J(root, 'other/x.cjs'))]);
   assert.equal(other.status, 0, other.stderr);
   assert.match(other.stderr, /\[bundle-lockfile\] WARNING: could not install the ESM hooks/);
+  // module.register throws what broke Node's loader thread (another tool's loader or preload): the message says so
+  const thread = (main) => `require('module').register = () => { throw new TypeError('this[#customizations].loadSync is not a function'); };
+    process.env.BUNDLE_LOCKFILE_ESM_HOOKS = 'async'; process.argv[1] = ${JSON.stringify(main)};
+    const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+    hooks.register({ name: 'v', esmEntries: [{ id: 'x', suffixes: ['/x.js'], wrap: ['f'] }], esmPackages: ['vite'] });
+    hooks.install();`;
+  const broken = nodeWith(strictEnv(undefined), ['-e', thread(J(root, 'build.cjs'))]);
+  assert.equal(broken.status, 1, broken.stderr);
+  assert.match(broken.stderr, /ERROR: could not install the ESM hooks: Node\.js's loader thread did not start \(a --loader or --import that fails there, or a --require preload that calls module\.registerHooks, breaks it\)[^\n]*\n?.*loadSync is not a function/s);
 });
 
 test('strict: the loader thread makes an entry it cannot wrap fail when it is imported', () => {
@@ -4651,7 +4703,7 @@ test('strict: a Node.js without ESM hooks (20.0 - 20.5) fails a bundler process:
 
 test('strict: an ES-module bundler in a thread without ESM hooks fails when it loads its CommonJS companion; its CommonJS build does not', () => {
   // a process that bundlerProcess does not take for one (its project has no bundler installed where it looks, and its
-  // main script names none): Node.js before 24.12 installs no ESM hooks there. Simulated on every version by taking
+  // main script names none): older Node.js (before 22.22.3 / 24.11.1) installs no ESM hooks there. Simulated on every version by taking
   // module.register / registerHooks away before the hooks install.
   const tools = {
     // Rollup: the ES build loads dist/native.js with no CommonJS module of Rollup's before it, the CommonJS one from
