@@ -53,7 +53,9 @@ const installers = {
   npm: (dir, { version }) => sh(`${version ? `node ${npmBin(version)}` : 'npm'} install -q --no-audit --no-fund`, dir),
   yarn1: (dir) => sh('yarn install -s --non-interactive --no-progress', dir),
   bun: (dir) => sh('bun install --silent', dir),
-  'yarn-berry': (dir, { version, linker, globalCache = false }) => {
+  // packageMap: yarn's nodeExperimentalPackageMap (4.17+: node_modules/.package-map.json, --experimental-package-map in
+  // NODE_OPTIONS of what yarn runs)
+  'yarn-berry': (dir, { version, linker, globalCache = false, packageMap = false }) => {
     const rel = `.yarn/releases/yarn-${version}.cjs`;
     fs.mkdirSync(path.join(dir, '.yarn/releases'), { recursive: true });
     fs.copyFileSync(path.join(tool(`@yarnpkg/cli-dist@${version}`, `yarn-${version}`), 'bin/yarn.js'), path.join(dir, rel));
@@ -62,7 +64,7 @@ const installers = {
     // (the pnpm linker hard-links the files of its store from the global folder's index: on the fixtures' file system)
     const cache = globalCache ? `enableGlobalCache: true\nglobalFolder: ${path.join(TOOLS, 'yarn-global')}`
       : `enableGlobalCache: false${linker === 'pnpm' ? `\nglobalFolder: ${path.join(TOOLS, 'yarn-global')}` : ''}`;
-    fs.writeFileSync(path.join(dir, '.yarnrc.yml'), `yarnPath: ${rel}\nnodeLinker: ${linker}\n${cache}\nenableTelemetry: false\n`);
+    fs.writeFileSync(path.join(dir, '.yarnrc.yml'), `yarnPath: ${rel}\nnodeLinker: ${linker}\n${cache}\nenableTelemetry: false\n${packageMap ? 'nodeExperimentalPackageMap: true\n' : ''}`);
     fs.writeFileSync(path.join(dir, 'yarn.lock'), '');
     sh(`node ${rel} install`, dir);
   },

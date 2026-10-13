@@ -7,6 +7,8 @@ const APP_DEPS = { 'lodash-es': '4.18.1', uuid: '9.0.1', yallist: '5.0.0', debug
 // yallist 5 uses class fields, which webpack 4's parser (acorn 6) cannot handle
 const { yallist, ...APP4_DEPS } = APP_DEPS;
 const HTML = { 'html-webpack-plugin': '5.6.6' }; // adds a child compiler, which must not produce a second lockfile
+// tracing agents that preload themselves as bundle-lockfile does (see the cases)
+const APM = { '@opentelemetry/instrumentation': '0.223.0', 'dd-trace': '6.20.1' };
 
 const wp5 = (webpack, cli, extra = {}) => ({ app: 'webpack5', deps: { webpack, 'webpack-cli': cli, ...APP_DEPS, ...extra } });
 const wp4 = (webpack, cli, extra = {}) => ({ app: 'webpack4', deps: { webpack, 'webpack-cli': cli, ...APP4_DEPS, ...extra } });
@@ -154,6 +156,8 @@ const fixtures = {
   'vite7-yarn4-pnp': vite('7.3.7', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'vite8-yarn4-node-modules': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules' }),
   'vite8-yarn4-pnpm': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm' }),
+  'vite8-apm': { ...vite('8.3.3'), deps: { ...vite('8.3.3').deps, ...APM } }, // see wp5-apm
+  'pkgmap-vite8-yarn4-node-modules': vite('8.3.3', { type: 'yarn-berry', version: '4.18.1', linker: 'node-modules', packageMap: true }),
   // Vitest, which transforms the tests with Vite and ships nothing (test/apps/vite-spa/test)
   'vite8-vitest': { ...vite('8.3.3'), devDeps: { vitest: '5.0.4' } },
   'vite8-bun': vite('8.3.3', { type: 'bun' }),
@@ -218,6 +222,16 @@ const fixtures = {
   'wp5-yarn4-pnpm': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm' } },
   // the build run by tsx from a TypeScript build script (test/apps/webpack5/build.ts)
   'wp5-tsx': { ...latest, installer: { type: 'npm' }, deps: { ...latest.deps, tsx: '4.23.15' } },
+  // webpack-cli loading a TypeScript config through a register hook (interpret/rechoir: the config has an enum, which
+  // Node.js' type stripping cannot load), compiled by it - Module._extensions['.ts'] hooks next to bundle-lockfile's
+  'wp5-ts-node': { ...latest, installer: { type: 'npm' }, deps: { ...latest.deps, 'ts-node': '10.9.2', typescript: '5.9.3' } },
+  'wp5-swc-register': { ...latest, installer: { type: 'npm' }, deps: { ...latest.deps, '@swc/register': '0.1.10', '@swc/core': '1.15.3' } },
+  'wp5-esbuild-register': { ...latest, installer: { type: 'npm' }, deps: { ...latest.deps, 'esbuild-register': '3.6.0', esbuild: '0.25.12' } },
+  // tracing agents preloaded with bundle-lockfile: OpenTelemetry's loader (import-in-the-middle, which wraps every ES
+  // module), dd-trace (--require, --import: in-thread hooks on Node.js 22.22.3+ / 24.11.1+, a loader thread before)
+  'wp5-apm': { ...latest, installer: { type: 'npm' }, deps: { ...latest.deps, ...APM } },
+  // yarn 4.17+'s package maps (nodeExperimentalPackageMap: --experimental-package-map in NODE_OPTIONS of what it runs)
+  'pkgmap-wp5-yarn4-pnpm': { ...latest, installer: { type: 'yarn-berry', version: '4.18.1', linker: 'pnpm', packageMap: true } },
   // a project directory with "#" in its name: webpack's resolver escapes it in module paths
   'wp5-c#': { ...latest, installer: { type: 'npm' } },
   'wp5-npm8': { ...latest, installer: { type: 'npm', version: '8.19.4' } },
@@ -312,6 +326,8 @@ const fixtures = {
   // (@rspack/dev-server: rspack serve)
   'rspack2.2-npm': rspack('2.2.8', { type: 'npm' }, { ...WEBPACK, memfs: '4.80.0', 'cross-env': '7.0.3', '@rspack/dev-server': '2.2.1' },
     { 'build-crossenv': 'cross-env NODE_OPTIONS=--max-old-space-size=3072 rspack build' }),
+  'rspack2.2-apm': rspack('2.2.8', { type: 'npm' }, APM), // see wp5-apm
+  'rspack2.2-ts-node': rspack('2.2.8', { type: 'npm' }, { 'ts-node': '10.9.2', typescript: '5.9.3' }), // see wp5-ts-node
   ...Object.fromEntries([['1.7', '1.7.12'], ['2.2', '2.2.8']].flatMap(([line, v]) => [
     [`rspack${line}-pnpm10`, rspack(v, { type: 'pnpm', version: '10.34.6' })],
     [`rspack${line}-yarn1`, rspack(v, { type: 'yarn1' })],
@@ -434,6 +450,12 @@ const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes col
 // node_modules/naked: bundled code in node_modules without a package.json (webpack5 app with EDGE_NAKED=1), removed afterwards
 const NAKED = "mkdir -p node_modules/naked && echo \"console.log('naked')\" > node_modules/naked/index.js && npm run -s build; s=$?; rm -rf node_modules/naked; exit $s";
 const PRELOAD = `--require ${path.join(__dirname, 'lib/preload.cjs')}`; // another preload, which does nothing
+const LIB = path.join(__dirname, 'lib');
+// the tracing agents of the *-apm fixtures, from the fixture (run.cjs: {fixture}); dd-trace without an agent to send to
+const OTEL = '--experimental-loader={fixture}/node_modules/@opentelemetry/instrumentation/hook.mjs';
+const DD = '{fixture}/node_modules/dd-trace';
+const DD_ENV = { DD_TRACE_AGENT_URL: 'http://127.0.0.1:9', DD_TRACE_TELEMETRY_ENABLED: 'false', DD_INSTRUMENTATION_TELEMETRY_ENABLED: 'false',
+  DD_TRACE_STARTUP_LOGS: 'false', DD_REMOTE_CONFIGURATION_ENABLED: 'false' };
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
@@ -529,7 +551,8 @@ function nextCase(fixture, version, react, flags = '') {
 // case fields:
 //   cmd        build command, run with sh in the fixture dir; $PNPM is the fixture's vendored pnpm
 //   inject     put --require <register.cjs> into NODE_OPTIONS (default true)
-//   nodeOptions extra NODE_OPTIONS (kept for the oracle build too)
+//   nodeOptions extra NODE_OPTIONS before the --require (kept for the oracle build too); {fixture}: the fixture's directory
+//   nodeOptionsAfter  extra NODE_OPTIONS after the --require (not for the oracle build)
 //   env        extra environment variables
 //   expect     expected name@version list of the single output, or null = no lockfile must be written
 //   expectIncludes / expectExcludes  packages that must / must not appear in any output (multi-compiler builds)
@@ -558,6 +581,8 @@ function nextCase(fixture, version, react, flags = '') {
 //              case's BUNDLE_LOCKFILE_* settings (exportDir included) moved there out of the environment; a string -
 //              that file content, the environment as it is
 //   maxNode    the newest Node.js major the build tool runs on: skipped (and reported) on newer ones (say why at the case)
+//   minNode    { <major>: <minor> }: the Node.js versions a feature the case uses came with (a listed major from that minor
+//              on, majors newer than every listed one): skipped (and reported) on others (say why at the case)
 //   oracleMissing  packages the oracle cannot see, added to every output's truth (say why at the case)
 //   oracleMissingIn  the same for single outputs: { "<output dir>": [name@version, ...] }
 //   expectSources  path fragments ("/"-separated, e.g. "node_modules/preact/hooks/"): each must be part of a source file
@@ -618,6 +643,30 @@ const cases = [
   // a TypeScript build script run by tsx, which compiles webpack's modules itself (Module.prototype._compile)
   { name: 'webpack API from a TypeScript build script, tsx build.ts', fixture: 'wp5-tsx', cmd: './node_modules/.bin/tsx build.ts', expect: W5 },
   { name: 'webpack API from a TypeScript build script, node --import tsx build.ts', fixture: 'wp5-tsx', cmd: 'node --import tsx build.ts', expect: W5 },
+  // a TypeScript config through a register hook (ts-node needs its tsconfig.json to say CommonJS, also without bundle-lockfile)
+  { name: 'webpack-cli, webpack.config.ts through ts-node/register', fixture: 'wp5-ts-node', expect: W5,
+    cmd: `printf '{"compilerOptions":{"module":"commonjs"}}' > tsconfig.json && cp ${LIB}/webpack.config.enum.ts webpack.config.ts && ./node_modules/.bin/webpack --config webpack.config.ts` },
+  ...[['@swc/register', 'wp5-swc-register'], ['esbuild-register', 'wp5-esbuild-register']].map(([what, fixture]) => (
+    { name: `webpack-cli, webpack.config.ts through ${what}`, fixture, expect: W5,
+      cmd: `cp ${LIB}/webpack.config.enum.ts webpack.config.ts && ./node_modules/.bin/webpack --config webpack.config.ts` })),
+  // Node.js' type stripping loads the config itself (22.18, 23.6 and later)
+  { name: 'webpack-cli, webpack.config.ts by Node.js\' type stripping', fixture: 'wp5-npm', expect: W5, minNode: { 22: 18, 23: 6 },
+    cmd: `cp ${LIB}/webpack.config.strip.ts webpack.config.ts && ./node_modules/.bin/webpack --config webpack.config.ts; s=$?; rm -f webpack.config.ts; exit $s` },
+  { name: 'rspack 2.2.8, rspack.config.ts through ts-node/register', fixture: 'rspack2.2-ts-node', expect: W5,
+    cmd: `printf '{"compilerOptions":{"module":"commonjs"}}' > tsconfig.json && cp ${LIB}/rspack.config.enum.ts rspack.config.ts && ./node_modules/.bin/rspack build -c rspack.config.ts` },
+  // tracing agents next to bundle-lockfile, before and after its --require (see wp5-apm): exactly the build's packages
+  ...[['webpack 5', 'wp5-apm', W5, {}], ['Vite 8.3.3', 'vite8-apm', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }],
+    ['rspack 2.2.8', 'rspack2.2-apm', W5, {}]].flatMap(([what, fixture, expect, extra]) => [
+    ['OpenTelemetry\'s loader before', { nodeOptions: OTEL }], ['OpenTelemetry\'s loader after', { nodeOptionsAfter: OTEL }],
+    ['dd-trace --import initialize.mjs', { nodeOptionsAfter: `--import ${DD}/initialize.mjs` }],
+    ['dd-trace --import register.js', { nodeOptionsAfter: `--import ${DD}/register.js` }],
+    ['dd-trace --require before', { nodeOptions: `--require ${DD}/init` }], ['dd-trace --require after', { nodeOptionsAfter: `--require ${DD}/init` }],
+  ].map(([how, opts]) => ({ name: `${what}, ${how} bundle-lockfile`, fixture, cmd: 'npm run -s build', env: DD_ENV, expect, ...extra, ...opts }))),
+  // yarn 4.17+'s package maps: yarn puts --experimental-package-map into NODE_OPTIONS (Node.js 24.20, 26.4 and later)
+  ...[['webpack 5, yarn 4.18.1 pnpm linker', 'pkgmap-wp5-yarn4-pnpm', W5, {}],
+    ['Vite 8.3.3, yarn 4.18.1 node-modules linker', 'pkgmap-vite8-yarn4-node-modules', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }]].map(([what, fixture, expect, extra]) => (
+    { name: `${what}, package maps (nodeExperimentalPackageMap)`, fixture, cmd: 'yarn build', expect, ...extra, minNode: { 24: 20, 26: 4 },
+      expectOutput: /Package maps is an experimental feature/ })),
   { name: 'webpack 5.111.1 in a directory with "#" in its name', fixture: 'wp5-c#', cmd: 'npm run -s build', expect: W5 },
   // older npm releases (installed and run with that npm); the default fixtures use the npm on PATH
   { name: 'npm 8.19.4', fixture: 'wp5-npm8', cmd: '$NPM run -s build', expect: W5 },
