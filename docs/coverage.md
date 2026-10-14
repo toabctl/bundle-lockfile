@@ -41,6 +41,14 @@ the source maps show none of its code.
     `text` and `binary` loaders), and in Vite builds from 6.1 on (an image that JavaScript inlines with
     `new URL(..., import.meta.url)`: from Vite 7 on);
   - other files: a shader's `#include`s (glslify-loader), JSON a loader or plugin merges into a module.
+- **transpilers whose helpers are inlined into a shipped module**: Babel's (`@babel/helpers`; CVE-2025-27789 is in its
+  `_wrapRegExp`), swc's (`@swc/core`) and TypeScript's (`typescript`) - code a transpiler writes into the module it
+  compiles for an old target (classes, async functions, object spread), the transpiler package's own code. A helper
+  counts if the module's code after its loaders or plugins has it and its file does not (a package's own compiled
+  helpers are that package's). The copy is the one the module's loader resolves (babel-loader's `@babel/core`'s
+  `@babel/helpers`, swc-loader's `@swc/core`, ts-loader's `typescript` or `compiler`), in Rollup, Rolldown and Vite
+  builds the one the build loaded. Helpers imported instead (`@babel/runtime`, `tslib`, `@swc/helpers`) are modules
+  of their packages, listed as such; @rollup/plugin-babel's bundled helpers module counts as Babel's.
 - **files other plugins write into the output after the build**, e.g. vite-plugin-pwa's `sw.js`,
   vite-plugin-static-copy's copies, a copy in webpack's `afterEmit` hook (filemanager-webpack-plugin's) (see
   [limits](internals.md#files-written-after-the-build)).
@@ -90,10 +98,10 @@ the source maps show none of its code.
   directory without one: as the package around it, with a warning), outside `node_modules` (a copied
   `jquery.min.js`) as first-party;
 - workspace packages and other linked first-party packages (their dependencies are listed);
-- helpers a transpiler or plugin generates into the code: Babel's inlined helpers (not those of `@babel/runtime`,
-  which is a package: listed), TypeScript's and swc's, @rollup/plugin-commonjs's - the code is in the output, the
-  package that wrote it is not listed (Babel's CVE-2025-27789 is in such helpers); Angular's chunk optimizer
-  (Rolldown), which re-bundles Angular's chunks.
+- helpers a transpiler writes into the code that is not Babel, swc or TypeScript (see above): esbuild's in Vite 5 – 7
+  (`vite:esbuild`), the transpilers inside a bundler's binary (rspack's `builtin:swc-loader`, Next.js' SWC: the bundler
+  is listed), @rollup/plugin-commonjs's, @vitejs/plugin-legacy's Babel (it compiles rendered chunks, not modules);
+  Angular's chunk optimizer (Rolldown), which re-bundles Angular's chunks.
 
 ## Listed although not shipped
 

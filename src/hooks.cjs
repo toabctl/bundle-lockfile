@@ -25,6 +25,7 @@ const { pathToFileURL } = require('url');
 const wt = require('worker_threads');
 const config = require('./core/config.cjs');
 const problems = require('./core/problems.cjs');
+const helpers = require('./core/helpers.cjs');
 const esmWrap = require('./esm-wrap.cjs');
 const { ancestors } = require('./core/paths.cjs');
 const { logical } = require('./core/layout.cjs');
@@ -54,6 +55,7 @@ const failedOn = new Set(); // adapters whose inspection failed: warned once per
 // The exports an adapter returned ({ exports }) to replace the module's, or undefined: none did.
 function onCjsLoad(exp, filename) {
   const request = logical(filename), resolve = () => filename;
+  helpers.seen(request); // the transpilers this process loaded (core/helpers.cjs)
   let replaced;
   for (const a of adapters) {
     if (!a.onCjsLoad) continue;

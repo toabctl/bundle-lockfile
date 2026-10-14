@@ -9,6 +9,7 @@ const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const via = require('../core/via.cjs');
+const helpers = require('../core/helpers.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
@@ -356,7 +357,8 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
               let pkgs;
               if (f.type === 'chunk') {
                 const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean), buildOf(bundle)).all;
-                pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values(), bundlers);
+                const inl = helpers.ofModuleIds(moduleIds(f), (id) => this.getModuleInfo(id), fileOf, cwd);
+                pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values(), bundlers, inl);
                 generated.addChunk(f.code, pkgs);
               } else {
                 // an asset emitted from a package file (a worker's font or wasm): the build that uses it emits its bytes
@@ -420,15 +422,18 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           const result = packages.packagesOfFiles(sources, buildOf(bundle));
           const { all, byFile } = result;
           const gen = [...generatedIn(bundle, ids).values()];
-          const pkgs = packages.unique(all, gen, bundlers);
+          // the transpilers whose helpers their plugins inlined into this output's modules (core/helpers.cjs)
+          const inl = helpers.ofModuleIds(ids, (id) => this.getModuleInfo(id), fileOf, cwd);
+          const pkgs = packages.unique(all, gen, bundlers, inl);
           const found = via.ofFiles(result, kinds);
           found.add('generated', gen);
           found.add('runtime', bundlers);
+          found.add('helpers', inl);
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, inlined, byFile);
           // the bundler's code is in every chunk: its JavaScript files bring it too (core/nested.cjs)
           for (const f of Object.values(bundle)) {
             const c = f.type === 'chunk' && contents[path.join(dir, f.fileName)];
-            if (c) for (const p of bundlers) if (!c.includes(p.path)) c.push(p.path);
+            if (c) for (const p of [...bundlers, ...inl]) if (!c.includes(p.path)) c.push(p.path);
           }
           const target = path.join(dir, config.file);
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
