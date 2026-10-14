@@ -457,7 +457,8 @@ src/adapters/rspack.cjs   rspack: hooks rspack's Compiler (every copy loaded)
 src/adapters/webpack-family.cjs  webpack and rspack: BundleLockfilePlugin, the lockfile at the right moments of a build
 src/adapters/webpack-collect.cjs which source files are in a compilation's emitted output (reads the compilation only)
 src/adapters/webpack-compat.cjs  what differs between webpack 4/5 and rspack 1/2, asked by name (hooks, assets, sources)
-src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
+src/adapters/rollup.cjs   Rollup, Rolldown, Vite: the plugin every build gets, and the hooks that add it
+src/adapters/rollup-collect.cjs  which source files and packages are in an output (from the bundle), generate-only output
 src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that reads the metafile's inputs per output
 src/adapters/rolldown-watch.cjs  Rolldown: the files its plugins inlined (addWatchFile of its plugin contexts), per build and module
 bin/bundle-lockfile-from-metafile  the lockfile from an esbuild metafile (the command line, the Go API)
