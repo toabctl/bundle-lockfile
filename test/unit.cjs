@@ -5194,3 +5194,62 @@ test('rollup adapter: Rollup\'s watch mode - the transform dependencies of the m
     assert.deepEqual(await build({ cache, transform: [app], modules: [app, a], watch: [app, a] }), ['a']);
   } finally { process.chdir(cwd); }
 });
+
+test('children: a node started with an environment that drops bundle-lockfile\'s --require warns once (the node shim: put back)', () => {
+  const root = project({
+    'parent.cjs': `const cp = require('child_process'), { Worker, SHARE_ENV } = require('worker_threads'), util = require('util');
+      const has = "process.stdout.write(String((process.env.NODE_OPTIONS || '').includes('register.cjs')))";
+      const out = (r) => String(r.stdout);
+      const results = [];
+      results.push(out(cp.spawnSync(process.execPath, ['-e', has], { env: { PATH: process.env.PATH } })));      // dropped
+      results.push(out(cp.spawnSync(process.execPath, ['-e', has], { env: { ...process.env } })));             // kept
+      results.push(out(cp.spawnSync(process.execPath, ['-e', has])));                                          // inherited
+      results.push(String(cp.execFileSync('sh', ['-c', 'printf %s "$NODE_OPTIONS" | grep -c register.cjs || true'], { env: { PATH: process.env.PATH } })).trim()); // no node
+      util.promisify(cp.execFile)(process.execPath, ['-e', has], { env: { ...process.env } }).then(async (r) => {
+        results.push(typeof r === 'object' && 'stdout' in r && 'stderr' in r ? 'promisified' : 'broken');
+        for (const env of [{}, SHARE_ENV]) {
+          await new Promise((resolve) => { const w = new Worker('1', { eval: true, env }); w.on('exit', resolve); });
+        }
+        results.push(Worker.name);
+        console.log(JSON.stringify(results));
+      });`,
+  });
+  const run = (env) => spawnSync(process.execPath, [J(root, 'parent.cjs')], { cwd: root, encoding: 'utf8',
+    env: { ...process.env, NODE_OPTIONS: `--require ${J(SRC, 'register.cjs')}`, ...env } });
+  const r = run({});
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout.trim().split('\n').pop()), ['false', 'true', 'true', '0', 'promisified', 'Worker']);
+  assert.equal((r.stderr.match(/WARNING: node \(spawnSync -e\) is started with an environment whose NODE_OPTIONS lacks bundle-lockfile's --require: a bundler in it is not hooked/g) || []).length, 1, r.stderr);
+  assert.equal((r.stderr.match(/WARNING:/g) || []).length, 1, r.stderr); // once per process: not again for the worker
+  // with the node shim: the --require is put back, no warning
+  const shim = run({ BUNDLE_LOCKFILE_NODE_SHIM: '/opt/bl/bin/node' });
+  assert.equal(shim.status, 0, shim.stderr);
+  assert.deepEqual(JSON.parse(shim.stdout.trim().split('\n').pop()).slice(0, 3), ['true', 'true', 'true']);
+  assert.doesNotMatch(shim.stderr, /WARNING/);
+  // the --require on the command line (not in NODE_OPTIONS) reaches no child anyway: nothing to say
+  const cmdline = spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'parent.cjs')], { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+  assert.equal(cmdline.status, 0, cmdline.stderr);
+  assert.doesNotMatch(cmdline.stderr, /WARNING/);
+});
+
+test('generated: more chunks than kept warns once; packages of generate-only chunks no written output had warn when the process ends', () => {
+  const lru = require('../src/core/lru.cjs');
+  const m = new Map();
+  assert.deepEqual([lru.set(m, 'a', 1, 2), lru.set(m, 'b', 1, 2), lru.set(m, 'c', 1, 2), [...m.keys()]], [false, false, true, ['b', 'c']]);
+  const gen = JSON.stringify(J(SRC, 'core/generated.cjs'));
+  const run = (code) => spawnSync(process.execPath, ['-e', `const g = require(${gen}); const p = (n) => ({ name: n, version: '1.0.0', path: '/p/node_modules/' + n });\n${code}`],
+    { encoding: 'utf8', env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_'))) });
+  // a chunk whose bytes reached no output, and no lockfile of the process lists its packages
+  let r = run("g.addChunk('chunk one', [p('a'), p('b')]); g.addChunk('chunk two', [p('b')]);");
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /WARNING: the output of a build that writes nothing itself \(generate\(\), write: false\) reached no output this process wrote, so no lockfile lists a@1\.0\.0, b@1\.0\.0 /);
+  // its bytes were found (in a written chunk or asset), or its entry was imported (?worker&inline): nothing to say
+  r = run("g.addChunk('chunk one', [p('a')]); g.byContent('chunk one');");
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  r = run("g.addChunk('chunk one', [p('a')]); g.addEntry('/p/w.js', [p('a')]); g.byEntry('/p/w.js');");
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  // more than 10000: the oldest are forgotten, once said
+  r = run("for (let i = 0; i < 10002; i++) { g.addChunk('c' + i, [p('a')]); g.byContent('c' + i); }");
+  assert.equal(r.status, 0);
+  assert.equal((r.stderr.match(/WARNING: more than 10000 chunks of builds that write nothing themselves/g) || []).length, 1, r.stderr);
+});

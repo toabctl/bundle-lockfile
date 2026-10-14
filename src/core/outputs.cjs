@@ -347,4 +347,11 @@ function filesOf(target) {
   return all;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, writeDisk, nowhere };
+// The package paths the lockfiles of this process list for its own builds (the landed build of every writer).
+function listedPaths() {
+  const out = new Set();
+  for (const writers of outputs.files.values()) for (const w of writers.values()) for (const p of (w.landed && w.landed.pkgs) || []) out.add(p.path);
+  return out;
+}
+
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, writeDisk, nowhere, listedPaths };

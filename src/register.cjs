@@ -100,5 +100,6 @@ if (!config.isDisabled('all')) {
     if (require('worker_threads').isMainThread) unsupported.check();
     hooks.install(); // nothing to do: leave Node's module loading alone
     require('./core/copies.cjs').install(); // fs copies out of packages, see there
+    require('./core/children.cjs').install(); // node processes and workers started without the preload, see there
   }
 }

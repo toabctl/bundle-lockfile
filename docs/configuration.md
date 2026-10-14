@@ -87,7 +87,9 @@ bundle-lockfile, also when a build script overwrites `NODE_OPTIONS`.
 - The real `node` is the first one in `PATH` that is neither the shim (nor a copy of it) nor a wrapper script it has
   already passed through. Yarn's temporary `node` wrapper and asdf's and nodenv's shims are such scripts.
 - Not covered: a `node` started by its absolute path, or through a `PATH` that a version manager put the real `node`'s
-  directory in front of (nodenv and asdf do, for what they start). Those keep the `NODE_OPTIONS` they get.
+  directory in front of (nodenv and asdf do, for what they start). Those keep the `NODE_OPTIONS` they get - except
+  where a preloaded process starts them itself (`child_process`, `worker_threads`) with an environment that drops the
+  `--require`: with the shim in use, bundle-lockfile puts it back (without the shim: a warning).
 - It preloads the `register.cjs` that `BUNDLE_LOCKFILE_REGISTER` names. By default it looks for `../src/register.cjs`
   (a checkout, as in `/opt/bundle-lockfile`) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
   next to its `register.cjs`), from its own directory with symlinks resolved.

@@ -227,6 +227,8 @@ A webpack or rspack compiler writing to the real disk looks at its output direct
 runs after the other plugins' (`core/late.cjs`, shared by both).
 - Only files modified since 2 s before the build started count (for coarse file-system timestamps).
 - At most 20,000 entries of the output directory are looked at (with more: a warning).
+- (In the whole process, at most 50,000 files copied out of packages and 10,000 chunks of builds that write nothing
+  themselves are remembered: with more, the oldest are forgotten, with a warning.)
 - Files over 20 MiB are compared only if this process copied them with fs (one whose path in the output names a
   package: a warning).
 - An output directory that contains the working directory is not looked at.
@@ -413,6 +415,7 @@ src/core/paths.cjs      package directory of a file by its path (real location, 
 src/core/layout.cjs     Yarn's pnpm linker (node_modules/.store/<slug>/package): package roots, paths as node_modules/<name>
 src/core/late.cjs       files other plugins write into an output after the build, and their packages
 src/core/copies.cjs     files copied with fs in this process: out of packages, and copies of lockfiles
+src/core/children.cjs   node processes and workers started with an environment that drops the --require
 src/core/generated.cjs  packages of builds that write nothing themselves, by content and entry file
 src/core/nested.cjs     packages of bundled files another build wrote (output hashes in its lockfile)
 src/core/hashes.cjs     SHA-256 of output files, cached by inode, size, mtime and ctime

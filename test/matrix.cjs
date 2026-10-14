@@ -590,6 +590,7 @@ function nextCase(fixture, version, react, flags = '') {
 //   nodeOptions extra NODE_OPTIONS before the --require (kept for the oracle build too); {fixture}: the fixture's directory
 //   nodeOptionsAfter  extra NODE_OPTIONS after the --require (not for the oracle build)
 //   env        extra environment variables
+//   nodeOptionsWith  (register) => NODE_OPTIONS of the build, instead of nodeOptions + bundle-lockfile's --require
 //   expect     expected name@version list of the single output, or null = no lockfile must be written
 //   expectIncludes / expectExcludes  packages that must / must not appear in any output (multi-compiler builds)
 //   expectIn   { "<output dir relative to outDir>": [name@version, ...] }: exactly these outputs with these packages
@@ -1347,6 +1348,10 @@ const cases = [
   // another preload the build fails, also without bundle-lockfile's; 16.4 passes both (#96651)
   { name: 'Next.js 15.5.27 with another --require preload (Next bug: the build fails)', fixture: 'next15', cmd: './node_modules/.bin/next build',
     nodeOptions: PRELOAD, env: NEXT_ENV, expectError: /Cannot find module '[^']*preload\.cjs [^']*register\.cjs'/ },
+  // with --require= both reach Next 15's main process, only the last its build workers: bundle-lockfile's first, the
+  // workers would build without it - it puts its --require back into their NODE_OPTIONS (core/children.cjs)
+  { name: 'Next.js 15.5.27, --require=bundle-lockfile then --require=another preload (Next passes only the last to its workers: put back)',
+    ...nextCase('next15', '15.5.27', '19.3.0'), nodeOptionsWith: (register) => `--require=${register} ${PRELOAD.replace('--require ', '--require=')}` },
   { name: 'Next.js 16.4.0 --webpack with another --require preload', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'), nodeOptions: PRELOAD },
   { name: 'Next.js 16.4.0 --webpack', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack') },
   // standalone deployments copy only .next/standalone and .next/static, which drops .next/bundle-lockfile
