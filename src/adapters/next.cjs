@@ -46,14 +46,7 @@ function write(target, pkgs, context, files, bundler) {
   const found = via.collector();
   found.add('traced', pkgs);
   outputs.record(target, WRITER, pkgs, context, files, { disk: true, bundler, via: found });
-  outputs.emitted(target, WRITER);
-  return new Promise((resolve) => {
-    outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
-      if (err) problems.problem(`Next.js: could not write ${target}`, err);
-      else config.debug('Next.js: wrote the runtime packages to', target);
-      resolve();
-    });
-  });
+  return outputs.land(target, WRITER, 'Next.js', { prune: false }); // (its only writer)
 }
 
 // The build has run: the packages of its traces, written where its server finds them
@@ -118,12 +111,17 @@ function copyLockfiles(distDir, inStandalone) {
 }
 
 function wrap(build, buildFile) {
-  return async function (dir, ...rest) {
+  const owner = {}; // the builds of this copy of Next.js (core/problems.cjs within)
+  return /** @this {unknown} */ function (dir, ...rest) {
+    return problems.within(owner, () => nextBuild.call(this, dir, ...rest));
+  };
+  /** @this {unknown} */
+  async function nextBuild(dir, ...rest) {
     const result = await build.call(this, dir, ...rest);
     try { await runtime(buildFile, dir); } catch (e) { problems.problem("Next.js: could not collect the server's runtime packages", e); }
     problems.failIfAny((err) => { throw err; });
     return result;
-  };
+  }
 }
 
 // Next.js 12: remembers the config each production build loads (loadConfig(phase, dir, customConfig))

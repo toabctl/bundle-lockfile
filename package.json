@@ -1,0 +1,19 @@
+{
+  "name": "bundle-lockfile-dev",
+  "private": true,
+  "description": "Development tools only (type check, lint): bundle-lockfile itself has no dependencies and needs no install",
+  "license": "Apache-2.0",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc -p . && tsc -p tsconfig.core.json",
+    "check": "npm run typecheck && npm run lint"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@stylistic/eslint-plugin": "5.10.0",
+    "@types/node": "26.6.5",
+    "eslint": "10.12.0",
+    "globals": "17.13.0",
+    "typescript": "7.0.2"
+  }
+}

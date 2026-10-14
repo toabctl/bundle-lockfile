@@ -102,7 +102,7 @@ class DiagnosticsPlugin {
           .map(f => path.resolve(compiler.context, f)).filter(f => fs.existsSync(f))];
         const { nested, unlicensed } = nearest([...all, ...children]);
         const lwpFiles = new Set(), wlpFiles = new Set();
-        for (const c of [compilation, ...(function kids(c) { return (c.children || []).flatMap(ch => [ch, ...kids(ch)]); })(compilation)]) {
+        for (const c of [compilation, ...(function kids(comp) { return (comp.children || []).flatMap(ch => [ch, ...kids(ch)]); })(compilation)]) {
           const r = readByLicensePlugins(c);
           r.lwpFiles.forEach(f => lwpFiles.add(f)); r.wlpFiles.forEach(f => wlpFiles.add(f));
         }

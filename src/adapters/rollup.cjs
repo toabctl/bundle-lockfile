@@ -2,23 +2,21 @@
 // Rollup, Rolldown and everything built on them: Vite 5-7 (rollup), Vite 8 (rolldown), Vite-based frameworks,
 // programmatic rollup()/rolldown()/build() calls. Their public entry modules (ESM) are wrapped (see hooks.cjs,
 // esm-wrap.cjs) so that every rollup()/rolldown()/watch()/build() call gets one more plugin, which writes
-// <output dir>/<BUNDLE_LOCKFILE_FILE> for every output the build writes. Rollup's CommonJS build (require('rollup'):
+// <output dir>/<BUNDLE_LOCKFILE_FILE> for every output the build writes (which packages are in an output is
+// rollup-collect.cjs's part). Rollup's CommonJS build (require('rollup'):
 // workbox-build, the rollup command line, tools in CommonJS) is patched when it loads (onCjsLoad).
 const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
-const via = require('../core/via.cjs');
-const helpers = require('../core/helpers.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
-const generated = require('../core/generated.cjs');
-const { sha256 } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const rolldownWatch = require('./rolldown-watch.cjs');
-const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
+const { moduleIds, fileOf, watchFilesOf, keepGenerated, collectOutput } = require('./rollup-collect.cjs');
 
 const NAME = 'bundle-lockfile';
 // A build Vite makes has Vite's own JavaScript plugins (vite:css, vite:build-html, ..., in every version, also in its
@@ -27,24 +25,11 @@ const NAME = 'bundle-lockfile';
 const VITE = /^vite:/;
 // Vite 8's dependency pre-bundling (vite dev): a build into its cache directory, never shipped
 const PRE_BUNDLE = 'vite:dep-pre-bundle';
-const JS = /\.[cm]?js$/i;
 const { STYLE } = packages;
 
-const flat = (plugins) => [].concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
-const moduleIds = (chunk) => chunk.moduleIds || Object.keys(chunk.modules || {});
+/** @type {(plugins: unknown) => any[]} */
+const flat = (plugins) => /** @type {any[]} */ ([]).concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
 const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { return process.cwd(); } };
-
-// Source file of a module id: virtual modules (\0vite/..., \0commonjsHelpers.js, virtual:...) have none; a
-// \0-prefixed absolute id (rollup's commonjs proxies) and ids with queries (?vue&type=style, ?inline, ?worker) are
-// the file before them. Directories and files can have a "#" in their name (~/c#/app): a "#" in the last part of the
-// path is a fragment only if the file with it is not there.
-function fileOf(id) {
-  if (typeof id !== 'string') return null;
-  let f = id.replace(/^\0/, '').split('?')[0];
-  const hash = f.lastIndexOf('#');
-  if (hash > Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) && !fs.existsSync(f)) f = f.slice(0, hash);
-  return path.isAbsolute(f) ? path.normalize(f) : null;
-}
 
 // The writer of one output (see core/outputs.cjs): the same input, format, position in the build's outputs, file names
 // and output file (separate builds of one input, e.g. the configs of `rollup -c`, can write their own output.file into
@@ -57,132 +42,12 @@ function outputWriter(kind, input, out, ordinal, cwd) {
   return JSON.stringify([kind, inputs, out.format || null, ordinal, typeof out.entryFileNames === 'string' ? out.entryFileNames : null, ...(file ? [file] : [])]);
 }
 
-// The build's watch files: its modules, and the files its plugins read and inlined into a module (this.addWatchFile:
-// Vite's CSS plugin adds the style sheets a style sheet @imports, and from Vite 6.1 on the images and fonts it inlines
-// as data: URLs). Rollup has them in the plugin context; Rolldown only on the RolldownBuild that rolldown() returned.
-async function watchFilesOf(ctx, build) {
-  try { if (typeof ctx.getWatchFiles === 'function') return ctx.getWatchFiles(); } catch { /* none */ }
-  try { if (build) { const w = await build.watchFiles; if (Array.isArray(w)) return w; } } catch { /* none */ }
-  return [];
-}
-
-// The files among the build's watch files that its plugins inlined (packages.inlinedFile), absolute: those that are no
-// module of the build (also not one that was tree-shaken: modules are bundled or not, never inlined).
-function inlinedFiles(watchFiles, ctx) {
-  let ids;
-  try { ids = new Set([...ctx.getModuleIds()].map(fileOf).filter(Boolean)); } catch { ids = new Set(); }
-  const out = [];
-  for (const f of watchFiles) {
-    if (typeof f !== 'string' || !path.isAbsolute(f) || !packages.inlinedFile(f)) continue;
-    const file = path.normalize(f);
-    if (!ids.has(file)) out.push(file);
-  }
-  return out;
-}
-
-// Packages of the output of generate-only builds that ends up in this bundle (see core/generated.cjs): chunks and
-// JavaScript assets with the content of a generate-only chunk (Vite's worker chunks, legacy polyfills), and modules
-// with a query on the entry file of a generate-only build (Vite's /src/w.js?worker&inline, which inlines the worker).
-function generatedIn(bundle, ids) {
-  const out = new Map();
-  const add = (pkgs) => { if (pkgs) for (const p of pkgs) out.set(p.path, p); };
-  for (const f of Object.values(bundle)) {
-    if (f.type === 'chunk') add(generated.byContent(f.code));
-    else { if (JS.test(f.fileName)) add(generated.byContent(f.source)); add(generated.byAsset(f.source)); }
-  }
-  for (const id of ids) if (typeof id === 'string' && id.includes('?')) add(generated.byEntry(fileOf(id)));
-  return out;
-}
-
-// The JavaScript and CSS files of a written bundle that another build may bundle (see core/nested.cjs): hashes
-// { absolute path: "sha256-<hex>" } and contents { absolute path: [package paths] }, the packages in each.
-// - a chunk: its modules' packages and those of generate-only builds in it - not those of style sheets Vite took out
-//   of it into CSS files (a style module without ?inline, ?raw or ?url, if the bundle has CSS files)
-// - a CSS file: the style modules of the chunks that import it (Vite's viteMetadata.importedCss; if no chunk does,
-//   all of the bundle's), the files the build's plugins inlined (inlined: watch files, not known per CSS file), the
-//   files it was emitted from
-// - a chunk also: the files the build's plugins inlined that are no style sheets (a shader's #includes: not known per
-//   chunk either)
-// - a JavaScript asset (Vite's worker chunks): the generate-only chunk it is, the files it was emitted from
-// ids: the bundle's module ids; originals: asset -> files it was emitted from; byFile: packagesOfFiles(sources).byFile.
-function outputContents(bundle, dir, ids, originals, inlined, byFile) {
-  const hashes = {}, contents = {};
-  const all = Object.values(bundle);
-  const css = all.filter(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
-  const isStyle = (id) => STYLE.test(fileOf(id) || '');
-  const extracted = (id) => css.length > 0 && isStyle(id) && !/[?&](inline|raw|url)\b/.test(id);
-  const add = (into, pkgs) => { if (pkgs) for (const p of pkgs) into.add(p.path); };
-  const ofFiles = (into, list) => { for (const f of list) add(into, byFile.get(f)); };
-  for (const f of all) {
-    const file = path.join(dir, f.fileName);
-    const into = new Set();
-    if (f.type === 'chunk') {
-      const own = moduleIds(f).filter(id => !extracted(id));
-      ofFiles(into, own.map(fileOf).filter(Boolean));
-      ofFiles(into, inlined.filter(i => !STYLE.test(i)));
-      for (const p of generatedIn({ [f.fileName]: f }, own).values()) into.add(p.path);
-      hashes[file] = sha256(f.code);
-    } else if (css.includes(f)) {
-      const importers = all.filter(c => c.type === 'chunk' && c.viteMetadata && c.viteMetadata.importedCss && c.viteMetadata.importedCss.has(f.fileName));
-      const from = importers.length ? importers.flatMap(moduleIds) : [...ids];
-      ofFiles(into, from.filter(extracted).map(fileOf));
-      ofFiles(into, inlined);
-      ofFiles(into, originals.get(f) || []);
-      hashes[file] = sha256(f.source);
-    } else if (JS.test(f.fileName)) {
-      add(into, generated.byContent(f.source));
-      ofFiles(into, originals.get(f) || []);
-      hashes[file] = sha256(f.source);
-    } else continue; // (another asset - a worker's font or wasm (core/generated.cjs) - is no file another build bundles)
-    contents[file] = [...into];
-  }
-  return { hashes, contents };
-}
-
-// The directories of the bundle's entry modules and the ones above them, nearest first.
-function entryDirs(bundle) {
-  const dirs = new Set();
-  for (const f of Object.values(bundle)) {
-    const entry = f.type === 'chunk' && f.isEntry && fileOf(f.facadeModuleId);
-    for (let d = entry && path.dirname(entry); d && !dirs.has(d); d = path.dirname(d) === d ? null : path.dirname(d)) dirs.add(d);
-  }
-  return [...dirs];
-}
-
-// The file has these bytes (a string as Rollup writes it, or a Buffer / Uint8Array).
-function hasBytes(file, data) {
-  if (data == null) return false;
-  try {
-    const buf = Buffer.from(data);
-    return fs.statSync(file).size === buf.length && fs.readFileSync(file).equals(buf);
-  } catch { return false; }
-}
-
-const once = (fn) => { let v; return () => (v === undefined ? (v = fn()) : v); };
-
 // { name, version } of the bundler that runs a build (core/lockfile.cjs), from the plugin context's meta: Vite's version
 // where Vite gives it, Rolldown's, Rollup's
 function bundlerOf(kind, meta) {
   const m = meta || {};
   const version = kind === 'vite' ? m.viteVersion : kind === 'rolldown' ? m.rolldownVersion : m.rollupVersion;
   return { name: kind, ...(typeof version === 'string' && version ? { version } : {}) };
-}
-
-// The file an asset was emitted from, given its originalFileName (or null). Rollup leaves the name's base to the plugin
-// that emits the asset: Vite's are relative to its root, which is not always the working directory (root: 'web',
-// `vite build web`) and which this plugin, added to the build by bundle-lockfile, does not see. The asset is the file
-// with its bytes: the name relative to the working directory, else to an entry module's directory or one above it
-// (Vite's root holds its entries); without one, the file relative to the working directory if it exists (an asset
-// transformed on the way, e.g. a style sheet). bases(): those directories.
-function originalFile(name, source, cwd, bases) {
-  if (typeof name !== 'string') return null;
-  const own = path.resolve(cwd, name);
-  if (hasBytes(own, source)) return own;
-  for (const base of bases()) {
-    const file = path.resolve(base, name);
-    if (file !== own && hasBytes(file, source)) return file;
-  }
-  return fs.existsSync(own) ? own : null;
 }
 
 // closeBundle's failure (strict mode): thrown, which fails the build - except in watch mode, where a throw there
@@ -207,10 +72,11 @@ function bundlersOf(kind, from, ctx, cwd) {
   const id = from.id || (rolldown ? 'rolldown' : 'rollup');
   const names = id === 'rolldown' ? ['rolldown'] : ROLLUP_NAMES;
   const version = id === 'rolldown' ? meta.rolldownVersion : rolldown ? undefined : meta.rollupVersion;
-  const resolved = (names, v, what) => {
+  const resolved = (pkgNames, v, what) => {
+    /** @type {string | null} */
     let found = null;
-    for (const n of names) { try { found = createRequire(path.join(cwd, 'x')).resolve(`${n}/package.json`); break; } catch { /* next */ } }
-    const p = found && bundlerPackage(kind, found, names, v);
+    for (const n of pkgNames) { try { found = createRequire(path.join(cwd, 'x')).resolve(`${n}/package.json`); break; } catch { /* next */ } }
+    const p = found ? bundlerPackage(kind, found, pkgNames, v) : null;
     if (p && (!v || p.version === v)) return p;
     problems.problem(`${kind}: the build runs ${what}${v ? `@${v}` : ''}, which was not loaded with the preload, and ${found ? `${found} is another copy` : `${cwd} resolves none`}: the lockfile would miss the bundler, whose code is in the output`);
     return null;
@@ -223,7 +89,7 @@ function bundlersOf(kind, from, ctx, cwd) {
       problems.problem(`vite: the build runs Vite ${meta.viteVersion}, its caller is in ${vite.path} (${vite.name}@${vite.version}): the lockfile would list another copy`);
     } else out.push(vite);
   }
-  return out.filter(Boolean);
+  return out.filter(p => p !== null);
 }
 
 // kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler
@@ -231,6 +97,7 @@ function bundlersOf(kind, from, ctx, cwd) {
 function createPlugin(kind, inputOptions, engine, from = {}) {
   const cwd = realCwd();
   const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
+  /** @type {string | null} */
   let unreadable = null; // what keeps the files Rolldown's plugins inlined from being recorded (see rolldown-watch.cjs)
   // Rollup: a build's watch files are only those of the modules it transforms (graph.watchFiles). A rebuild in watch mode
   // takes unchanged modules from the previous build's cache, with their transform dependencies but without adding them
@@ -239,7 +106,6 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   // modules this build did not transform (bundle-lockfile's transform hook did not see them).
   let cachedDependencies = new Map(); // module id -> its transform dependencies, in the cache the build started from
   let transformed = new Set();        // module ids this build transformed
-  const buildOf = (bundle) => ({ context: cwd, entries: Object.values(bundle).filter(f => f.type === 'chunk' && f.isEntry).map(f => fileOf(f.facadeModuleId)).filter(Boolean) });
   // per output of the build, by its output options object: Rollup and Rolldown pass the same one to every hook of an
   // output, and outputs written at the same time (Promise.all of write()s, as the rollup command line does) can share
   // their directory and format. Kept until the build is closed (closeBundle): Rolldown runs buildStart again for every
@@ -255,21 +121,11 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   let since = 0;
   // writes the lockfile of an output; in strict mode rejects with what went wrong (core/problems.cjs), which fails the
   // build: a hook's rejection is the build's error
-  const write = (w) => new Promise((resolve, reject) => {
-    const end = () => { if (!problems.failIfAny(reject)) resolve(); };
-    try {
-      outputs.emitted(w.target, w.writer);
-      const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
-      outputs.prune(w.target, w.writer, exists, () => {
-        outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
-          if (err) problems.problem(`${kind}: could not write ${w.target}`, err);
-          else if (config.inline || exportPath(w.target)) config.debug(`${kind}: wrote`, [config.inline && w.target, exportPath(w.target)].filter(Boolean).join(' and '));
-          end();
-        });
-      });
-    } catch (e) { problems.problem(`${kind}: could not write ${w.target}`, e); end(); }
-  });
-  return {
+  const write = async (w) => {
+    await outputs.land(w.target, w.writer, kind);
+    problems.failIfAny((err) => { throw err; });
+  };
+  return withinBuild({
     name: NAME,
     api: { setBuild(b) { build = b; } },
     // Vite bundles workers with the plugins of worker.plugins, not with the config's (the preload adds this plugin to
@@ -296,6 +152,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
         return null;
       },
     }),
+    /** @this {any} a plugin context */
     buildStart(options) {
       // a plugin configured by hand: the bundler that runs this hook (see bundlersOf)
       if (!from.file && !from.runner) from.runner = { rollup: packageOnStack(ROLLUP_NAMES), rolldown: packageOnStack(['rolldown']) };
@@ -354,54 +211,15 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           // the bundler's code is in every chunk
           const bundlers = Object.values(bundle).some(f => f.type === 'chunk') ? bundlersOf(kind, from, this, cwd) : [];
           if (isWrite === false || inToolCache(dir)) {
-            const all = [];
-            const bases = once(() => entryDirs(bundle));
-            for (const f of Object.values(bundle)) {
-              let pkgs;
-              if (f.type === 'chunk') {
-                const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean), buildOf(bundle)).all;
-                const inl = helpers.ofModuleIds(moduleIds(f), (id) => this.getModuleInfo(id), fileOf, cwd);
-                pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values(), bundlers, inl);
-                generated.addChunk(f.code, pkgs);
-              } else {
-                // an asset emitted from a package file (a worker's font or wasm): the build that uses it emits its bytes
-                // again, without naming the file
-                const from = (f.originalFileNames || (f.originalFileName ? [f.originalFileName] : [])).map(n => originalFile(n, f.source, cwd, bases)).filter(Boolean);
-                pkgs = from.length ? packages.packagesForFiles(from) : [];
-                generated.addAsset(f.source, pkgs);
-              }
-              all.push(pkgs);
-            }
-            const pkgs = packages.unique(...all);
-            for (const f of Object.values(bundle)) if (f.type === 'chunk' && f.isEntry) generated.addEntry(fileOf(f.facadeModuleId), pkgs);
+            const pkgs = keepGenerated(this, bundle, { cwd, bundlers });
             config.debug(`${kind}: generate-only output with`, pkgs.length, 'packages, kept for the build that uses it');
             problems.failIfAny((err) => this.error(err)); // (this build's problems, such as a package without a package.json)
             return;
           }
+          // the output's modules: those its chunks had when they were rendered (also of chunks a plugin removed since),
+          // and those they have now
           const ids = new Set(modulesOf.get(out) || []);
-          const sources = [], files = [], originals = new Map(); // asset -> its source files
-          const bases = once(() => entryDirs(bundle));
-          for (const f of Object.values(bundle)) {
-            files.push(path.join(dir, f.fileName));
-            if (f.type === 'chunk') {
-              for (const id of moduleIds(f)) ids.add(id);
-            } else {
-              // assets emitted from a file (see originalFile)
-              const own = [];
-              for (const n of f.originalFileNames || (f.originalFileName ? [f.originalFileName] : [])) {
-                const p = originalFile(n, f.source, cwd, bases);
-                if (p) own.push(p);
-              }
-              originals.set(f, own);
-              sources.push(...own);
-            }
-          }
-          // how each source file was found (core/via.cjs): a module (chunk), a file an asset was emitted from (asset), a
-          // file a plugin inlined (style, inlined)
-          const kinds = new Map();
-          const mark = (f, cls) => { if (!kinds.has(f)) kinds.set(f, new Set()); kinds.get(f).add(cls); };
-          for (const f of sources) mark(f, 'asset');
-          for (const id of ids) { const file = fileOf(id); if (file) { sources.push(file); mark(file, 'chunk'); } }
+          for (const f of Object.values(bundle)) if (f.type === 'chunk') for (const id of moduleIds(f)) ids.add(id);
           // Rolldown: the files plugins inlined into this output's modules, as recorded (rolldown-watch.cjs), and the
           // build's watch files if rolldown() returned the build. Neither, in a build with style (style modules, CSS
           // files): the style sheets @imported from packages would be missing - a problem
@@ -419,25 +237,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             try { all = [...this.getModuleIds()]; } catch { /* none */ }
             for (const id of all) if (!transformed.has(id) && cachedDependencies.has(id)) watched.push(...cachedDependencies.get(id));
           }
-          const inlined = inlinedFiles(watched, this);
-          sources.push(...inlined);
-          for (const f of inlined) mark(f, STYLE.test(f) ? 'style' : 'inlined');
-          const result = packages.packagesOfFiles(sources, buildOf(bundle));
-          const { all, byFile } = result;
-          const gen = [...generatedIn(bundle, ids).values()];
-          // the transpilers whose helpers their plugins inlined into this output's modules (core/helpers.cjs)
-          const inl = helpers.ofModuleIds(ids, (id) => this.getModuleInfo(id), fileOf, cwd);
-          const pkgs = packages.unique(all, gen, bundlers, inl);
-          const found = via.ofFiles(result, kinds);
-          found.add('generated', gen);
-          found.add('runtime', bundlers);
-          found.add('helpers', inl);
-          const { hashes, contents } = outputContents(bundle, dir, ids, originals, inlined, byFile);
-          // the bundler's code is in every chunk: its JavaScript files bring it too (core/nested.cjs)
-          for (const f of Object.values(bundle)) {
-            const c = f.type === 'chunk' && contents[path.join(dir, f.fileName)];
-            if (c) for (const p of [...bundlers, ...inl]) if (!c.includes(p.path)) c.push(p.path);
-          }
+          const { files, pkgs, found, hashes, contents } = collectOutput(this, bundle, { dir, cwd, ids, watched, bundlers });
           const target = path.join(dir, config.file);
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           const bundler = bundlerOf(kind, this && this.meta);
@@ -476,7 +276,8 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             w.pkgs = packages.unique(w.pkgs, add);
             w.via.add('late', add);
             for (const l of late) w.files.add(l.file);
-            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via });
+            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files],
+              { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via });
             await write(w);
           } catch (e) {
             if (problems.isFailure(e)) { failClose(this, e); return; } // from write()
@@ -486,7 +287,22 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
         problems.failIfAny((err) => failClose(this, err));
       },
     },
-  };
+  });
+}
+
+// The hooks of the plugin that record problems or take them run as part of its build (core/problems.cjs within): the
+// problems fail that build, never another build of the process. The plugin is the build's owner, across its watch
+// rebuilds. Not the hooks that run for every module or chunk (load, transform, renderChunk), which record none: an
+// AsyncLocalStorage context costs time there (on Node.js before 24, every promise of the process once it is used).
+const SCOPED = new Set(['config', 'options', 'buildStart', 'generateBundle', 'writeBundle', 'closeBundle']);
+function withinBuild(plugin) {
+  const scoped = (fn) => /** @this {unknown} */ function (...args) { return problems.within(plugin, () => fn.apply(this, args)); };
+  for (const [k, v] of Object.entries(plugin)) {
+    if (!SCOPED.has(k)) continue;
+    if (typeof v === 'function') plugin[k] = scoped(v);
+    else if (v && typeof v === 'object' && typeof v.handler === 'function') plugin[k] = { ...v, handler: scoped(v.handler) };
+  }
+  return plugin;
 }
 
 // One more plugin for the options of a rollup()/rolldown() call (also each config of watch()/build()), unless it
@@ -504,7 +320,8 @@ function attach(id, options, file) {
   config.debug(`${kind}: adding the plugin to a ${id}() call`);
   // a build Vite makes: Vite's package is around its caller, a file on the stack now (core/bundler.cjs)
   const from = { id, file, vite: kind === 'vite' ? viteOf(callerFiles()) : null };
-  return { ...options, plugins: [...[].concat(options.plugins == null ? [] : options.plugins), createPlugin(kind, options, id, from)] };
+  const own = /** @type {unknown[]} */ ([]).concat(options.plugins == null ? [] : options.plugins);
+  return { ...options, plugins: [...own, createPlugin(kind, options, id, from)] };
 }
 
 const each = (id, v, file) => (Array.isArray(v) ? v.map(o => attach(id, o, file)) : attach(id, v, file));
@@ -512,7 +329,7 @@ const each = (id, v, file) => (Array.isArray(v) ? v.map(o => attach(id, o, file)
 // rollup()/rolldown() with the plugin; the plugin gets the build the call returns (Rolldown's watch files, see
 // watchFilesOf) - also one that was in the options already (configured by hand): only the caller of rolldown() has it.
 function wrapBuild(id, fn, file) {
-  return function (options, ...rest) {
+  return /** @this {unknown} */ function (options, ...rest) {
     const o = attach(id, options, file);
     const result = fn.call(this, o, ...rest);
     const plugin = o && typeof o === 'object' && !Array.isArray(o) && flat(o.plugins).find(p => p.name === NAME && p.api && p.api.setBuild);
@@ -547,7 +364,7 @@ module.exports = {
   esmWrap(id, name, fn, url) {
     if (typeof fn !== 'function') return null;
     if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn, url);
-    if (name === 'watch' || name === 'build') return function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
+    if (name === 'watch' || name === 'build') return /** @this {unknown} */ function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
     return null;
   },
   onCjsLoad(exp, request, resolve) {

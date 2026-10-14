@@ -87,7 +87,7 @@ function versionOf(file) {
 
 // the hooks' API, as in a thread with bundle-lockfile (hooks.cjs installEsm): a function to wrap stays as it is
 const reported = new Map(); // url -> whether the wrapper found one of the functions to wrap
-globalThis[Symbol.for('bundle-lockfile.esm')] = { wrap: (id, name, fn) => fn, found: (id, url, names, ok) => reported.set(url, ok) };
+globalThis[Symbol.for('bundle-lockfile.esm')] = { wrap: (id, name, fn) => fn, found: (id, url, fnNames, ok) => reported.set(url, ok) };
 
 (async () => {
   const tmp = fs.mkdtempSync(path.join(process.cwd(), '.esm-entries-'));

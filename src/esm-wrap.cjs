@@ -117,12 +117,12 @@ function withoutComments(src, literals = false) {
 }
 
 // Names a module exports, from `export { a, b as c }` (also `... from '...'`) and `export function|class|const x`.
-function exportedNames(source) {
+function exportedNames(code) {
   const names = new Set();
-  const src = withoutComments(source, true);
+  const src = withoutComments(code, true);
   for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}/g)) {
     for (const part of m[1].split(',')) {
-      const n = part.trim().split(/\s+as\s+/).pop().trim();
+      const n = String(part.trim().split(/\s+as\s+/).pop()).trim();
       if (/^[\w$]+$/.test(n)) names.add(n);
     }
   }

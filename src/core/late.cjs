@@ -3,6 +3,7 @@
 // vite-plugin-pwa's sw.js and workbox-<hash>.js (workbox-build generates them with Rollup and writes them with fs in
 // closeBundle), vite-plugin-static-copy's copies, filemanager-webpack-plugin's copies in webpack's afterEmit: their
 // packages, or none. Used by the adapters once the build has landed (rollup.cjs closeBundle, webpack-family.cjs afterEmit).
+/** @import { LateFile, Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -16,13 +17,21 @@ const JS = /\.[cm]?js$/i;
 const MAX_SCAN = 20000;           // entries of an output directory looked at
 const MAX_LATE = 20 * 1024 * 1024; // larger files are not compared
 // what was not checked is said (a warning, once per directory or file): a package it would add may be missing
+/** @type {Set<string>} */
 const warned = new Set();
+/** @type {(key: string, msg: string) => void} */
 const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); config.warn(msg); } };
 
 // The package a file copied into the output comes from: one this process copied out of a package with fs (see
 // core/copies.cjs), or dist/vendor/node_modules/normalize.css/normalize.css (e.g. vite-plugin-static-copy with a
 // node_modules path) is node_modules/normalize.css/normalize.css with the same bytes, looked up like Node does from
 // the working directory upwards (the copy may have been made by another process).
+/**
+ * @param {string} file
+ * @param {string} rel
+ * @param {string} cwd
+ * @returns {Package[] | null}
+ */
 function copiedFrom(file, rel, cwd) {
   const copy = copies.sourceOf(file);
   if (copy) { const pkgs = packages.packagesForFiles([copy]); if (pkgs.length) return pkgs; }
@@ -47,10 +56,17 @@ function copiedFrom(file, rel, cwd) {
 // [{ file, pkgs }]. A JavaScript file with the content of a generate-only build's chunk (core/generated.cjs) brings its
 // packages; any file copied out of a package (copiedFrom) that package. Nothing if dir is the working directory or above
 // it (it would be the whole project), or one of `roots` (the build's context).
+/**
+ * @param {string} dir
+ * @param {{ since: number, known: Set<string>, skip: string, cwd: string, roots?: string[] }} opts
+ * @returns {LateFile[]}
+ */
 function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
+  /** @type {LateFile[]} */
   const found = [];
   for (const r of [cwd, ...roots]) if (r && (dir === r || r.startsWith(dir + path.sep))) return found;
   let seen = 0;
+  /** @param {string} d */
   const walk = (d) => {
     let list;
     try { list = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
@@ -62,6 +78,7 @@ function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
       let st;
       try { st = fs.statSync(file); } catch { continue; }
       if (st.mtimeMs < since) continue;
+      /** @type {Package[] | null} */
       let pkgs = null;
       if (JS.test(file) && st.size <= MAX_LATE) { try { pkgs = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
       if (!pkgs) pkgs = copiedFrom(file, path.relative(dir, file), cwd);

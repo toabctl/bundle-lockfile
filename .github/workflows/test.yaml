@@ -14,6 +14,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # the type check and the linter (package.json: development tools only, never needed to run bundle-lockfile)
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: cgr.dev/chainguard/wolfi-base:latest
+    name: check (types, lint)
+    steps:
+      - name: Install tools
+        run: apk add --no-cache nodejs-24 npm
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the development tools
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Type check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 10

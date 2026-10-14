@@ -43,7 +43,7 @@ const packageDirs = new Map(); // name@version -> [dir]
       : e.name === '.pnpm' ? fs.readdirSync(path.join(nm, e.name)).map(x => path.join(nm, e.name, x, 'node_modules')).filter(fs.existsSync).flatMap(x => { scan(x); return []; })
         : e.name.startsWith('.') ? [] : [path.join(nm, e.name)];
     for (const d of dirs) {
-      let j; try { j = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch (e) { if (e.code === 'ENOENT' || e instanceof SyntaxError) continue; throw e; }
+      let j; try { j = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')); } catch (err) { if (err.code === 'ENOENT' || err instanceof SyntaxError) continue; throw err; }
       if (j && j.name) { const id = `${j.name}@${j.version || ''}`; packageDirs.set(id, [...(packageDirs.get(id) || []), d]); }
       scan(path.join(d, 'node_modules'));
     }

@@ -13,11 +13,17 @@ const path = require('path');
 const SKIP = new Set(['cache', 'standalone', 'static', 'diagnostics', 'node_modules', 'trace']);
 
 // The trace files below distDir
+/**
+ * @param {string} distDir
+ * @returns {string[]}
+ */
 function traceFiles(distDir) {
+  /** @type {string[]} */
   const out = [];
+  /** @type {(d: string, top: boolean) => void} */
   const walk = (d, top) => {
     let entries;
-    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { if (e.code === 'ENOENT') return; throw e; }
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT') return; throw e; }
     for (const e of entries) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) { if (!(top && SKIP.has(e.name))) walk(p, false); } else if (e.isFile() && e.name.endsWith('.nft.json')) out.push(p);
@@ -28,13 +34,20 @@ function traceFiles(distDir) {
 }
 
 // The absolute paths of the files one trace lists; throws an Error saying what is wrong with it
+/**
+ * @param {string} traceFile
+ * @returns {string[]}
+ */
 function filesOf(traceFile) {
+  /** @type {any} */
   let j;
-  try { j = JSON.parse(fs.readFileSync(traceFile, 'utf8')); } catch (e) { throw new Error(`could not read ${traceFile}: ${e.message}`); }
+  try { j = JSON.parse(fs.readFileSync(traceFile, 'utf8')); } catch (e) {
+    throw new Error(`could not read ${traceFile}: ${/** @type {Error} */ (e).message}`, { cause: e });
+  }
   if (!j || typeof j !== 'object' || j.version !== 1) throw new Error(`${traceFile} is a trace of a version bundle-lockfile does not know (${j && j.version})`);
-  if (!Array.isArray(j.files) || j.files.some(f => typeof f !== 'string')) throw new Error(`${traceFile} has no list of files`);
+  if (!Array.isArray(j.files) || j.files.some(/** @param {unknown} f */ f => typeof f !== 'string')) throw new Error(`${traceFile} has no list of files`);
   const dir = path.dirname(traceFile);
-  return j.files.map(f => path.resolve(dir, f));
+  return j.files.map(/** @param {string} f */ f => path.resolve(dir, f));
 }
 
 module.exports = { traceFiles, filesOf };

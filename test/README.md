@@ -3,6 +3,14 @@
 See [bundlers.md](../docs/bundlers.md#supported) for what is supported, and [internals.md](../docs/internals.md) for
 how it works.
 
+The type check and the linter need the development tools (`package.json`; bundle-lockfile itself has no
+dependencies):
+
+```sh
+npm ci --ignore-scripts
+npm run check   # tsc over src/ (JSDoc types; src/core without implicit any), then ESLint
+```
+
 The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26):
 
 ```sh

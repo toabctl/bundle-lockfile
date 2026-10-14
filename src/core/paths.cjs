@@ -7,6 +7,7 @@ const config = require('./config.cjs');
 const { storeRoot, logical } = require('./layout.cjs');
 
 // A directory and every directory above it, up to the root.
+/** @param {string} dir @returns {Generator<string, void, unknown>} */
 function* ancestors(dir) {
   for (;;) {
     yield dir;
@@ -17,7 +18,7 @@ function* ancestors(dir) {
 }
 
 // A relative path with "/" separators, as the lockfile records paths (the same on every platform).
-const posix = (p) => p.split(path.sep).join('/');
+const posix = (/** @type {string} */ p) => p.split(path.sep).join('/');
 
 // The package a file belongs to is the directory directly below its LAST node_modules segment:
 // node_modules/<name> or node_modules/@scope/<name>. That is how npm, yarn (incl. PnP zip paths
@@ -25,6 +26,7 @@ const posix = (p) => p.split(path.sep).join('/');
 // ignores package.json files inside a package - e.g. dist/esm/package.json = {"type":"module"} or
 // preact/hooks/package.json = {"name": "preact-hooks", ...}, which are not packages. Yarn's pnpm linker:
 // node_modules/.store/<slug>/package (see core/layout.cjs).
+/** @param {string} file @returns {string | null} */
 function packageRoot(file) {
   const parts = file.split(path.sep);
   const s = storeRoot(parts);
@@ -40,6 +42,7 @@ function packageRoot(file) {
 // resolve.symlinks = false the files keep the symlinked path, e.g. node_modules/@acme/ui for a workspace
 // package (-> packages/ui) or node_modules/foo for pnpm (-> node_modules/.pnpm/foo@1/node_modules/foo).
 // Paths fs cannot resolve (e.g. Yarn PnP zip paths without the PnP fs patch) stay as they are.
+/** @param {string} root @returns {string} */
 function realRoot(root) {
   let real = root;
   try { real = fs.realpathSync(root); } catch { /* keep root */ }
@@ -52,6 +55,7 @@ function realRoot(root) {
 // folder (.yarn/__virtual__, in the project), never a directory of that name in a package: a package's own
 // __virtual__/x/2/node_modules/react would put its files onto the project's react. A depth beyond the root ends there.
 const VIRTUAL = /^(.*?[\\/](?:__virtual__|\$\$virtual))[\\/][^\\/]+[\\/](\d+)(?:[\\/](.*))?$/;
+/** @param {string} p @returns {string} */
 function unvirtual(p) {
   const m = p.match(VIRTUAL);
   if (!m) return p;
@@ -63,6 +67,12 @@ function unvirtual(p) {
 // An option value as a writer id records it (core/outputs.cjs: the same on every machine): an absolute path in a package
 // as from its last node_modules (node_modules/pkg/x.js - Yarn's global cache, pnpm's global store and a store layout
 // as node_modules/<name>, see core/layout.cjs), any other absolute path relative to base, other values as they are.
+/**
+ * @template T
+ * @param {string | null | undefined} base
+ * @param {T} v
+ * @returns {T | string}
+ */
 function portable(base, v) {
   if (typeof v !== 'string' || !path.isAbsolute(v)) return v;
   const parts = logical(unvirtual(v)).split(path.sep);
@@ -79,6 +89,7 @@ function portable(base, v) {
 // so that no target outside the base lands where one inside it does (/w/tmp/dist and /tmp/dist with the base /w). The
 // file name stays package-lock.json, which syft requires.
 const OUTSIDE_BASE = '_outside_base';
+/** @param {string} target @returns {string | null} */
 function exportPath(target) {
   if (!config.exportDir) return null;
   const abs = path.resolve(target);
@@ -87,17 +98,21 @@ function exportPath(target) {
   return rel ? path.join(config.exportDir, rel) : path.join(config.exportDir, OUTSIDE_BASE, mirrored(abs));
 }
 // an absolute path as a relative one: without its root, a drive letter as a directory
+/** @param {string} abs */
 function mirrored(abs) {
   const { root } = path.parse(abs);
   return path.join(root.replace(/[:\\/]+/g, '') || '.', abs.slice(root.length));
 }
 // p relative to dir if it is below it (also <dir>/..cache), else null
+/** @param {string} dir @param {string} p */
 function below(dir, p) {
   const rel = path.relative(dir, p);
   return rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel) ? rel : null;
 }
 // the real path of p, as far as it exists (a lockfile's directory may not be there yet)
+/** @param {string} p @returns {string} */
 function realish(p) {
+  /** @type {string[]} */
   const rest = [];
   for (let d = p; ; d = path.dirname(d)) {
     try { return path.join(fs.realpathSync(d), ...rest.reverse()); } catch { /* not there */ }
@@ -110,6 +125,7 @@ function realish(p) {
 // library's own build): no output of the project's - except below node_modules/.cache/, where tools build what ships
 // (`nuxi build` into node_modules/.cache/nuxt/.nuxt, which Nitro copies into .output/public). Every adapter decides by
 // this, so that a bundler choice does not decide whether a lockfile is written.
+/** @param {string} dir */
 function inToolCache(dir) {
   const parts = path.resolve(dir).split(path.sep);
   const i = parts.lastIndexOf('node_modules');

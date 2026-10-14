@@ -12,24 +12,40 @@ const { fileURLToPath } = require('url');
 const lru = require('./lru.cjs');
 const { inTree } = require('./tree.cjs');
 const { ancestors } = require('./paths.cjs');
+/** @typedef {(src: string, dest: string, isDirectory: boolean) => void} CopyListener */
+/**
+ * @typedef {{ files: Map<string, string>, dirs: Map<string, string>, installed: boolean, listeners: CopyListener[], warned?: boolean }} State
+ */
 
 const S = Symbol.for('bundle-lockfile.copies.v2'); // v2: listeners; a copy of v1 has its own wrappers
 const MAX = 50000; // entries; a long-running process must not grow them forever
 // files: destination file -> source file; dirs: destination dir -> source dir (fs.cp of a directory)
-const state = globalThis[S] || (globalThis[S] = { files: new Map(), dirs: new Map(), installed: false });
+/** @type {State} */
+const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { files: new Map(), dirs: new Map(), installed: false });
 if (!state.listeners) state.listeners = []; // fn(src, dest, isDirectory) after a copy that worked
 
 // fn(src, dest, isDirectory): called after every copy that worked (absolute paths), before the copy returns to its
 // caller (its callback, its promise); what fn throws is ignored.
+/** @param {CopyListener} fn */
 function onCopy(fn) { state.listeners.push(fn); }
+/**
+ * @param {unknown} src
+ * @param {unknown} dest
+ * @param {boolean} dir
+ */
 function copied(src, dest, dir) {
   const s = abs(src), d = abs(dest);
   if (!s || !d) return;
   for (const fn of state.listeners) { try { fn(s, d, dir); } catch { /* never in the way */ } }
 }
 
+/** @param {string} p */
 const inPackage = (p) => p.split(path.sep).includes('node_modules');
 
+/**
+ * @param {unknown} p
+ * @returns {string | null}
+ */
 function abs(p) {
   try {
     if (p instanceof URL) return path.resolve(fileURLToPath(p));
@@ -38,6 +54,11 @@ function abs(p) {
   } catch { return null; }
 }
 
+/**
+ * @param {unknown} src
+ * @param {unknown} dest
+ * @param {boolean} dir
+ */
 function record(src, dest, dir) {
   const s = abs(src), d = abs(dest);
   // (a lockfile's package.json tree, core/tree.cjs, is no package's: copied with its output, not out of a package)
@@ -50,6 +71,10 @@ function record(src, dest, dir) {
 }
 
 // Both are files with the same bytes.
+/**
+ * @param {string} a
+ * @param {string} b
+ */
 function sameBytes(a, b) {
   try {
     const sa = fs.statSync(a), sb = fs.statSync(b);
@@ -58,6 +83,10 @@ function sameBytes(a, b) {
 }
 
 // The package file `file` is a copy of, if it still has its bytes; else null.
+/**
+ * @param {string} file
+ * @returns {string | null}
+ */
 function sourceOf(file) {
   if (!state.files.size && !state.dirs.size) return null;
   const f = path.resolve(file);
@@ -76,9 +105,11 @@ function install() {
   if (state.installed) return;
   state.installed = true;
   // kind: 'sync' (returns when done), 'callback' (the last argument is called when done), 'promise'
+  /** @type {(obj: any, name: string, dirAware: boolean, kind: 'sync' | 'callback' | 'promise') => void} */
   const wrap = (obj, name, dirAware, kind) => {
     const orig = obj[name];
     if (typeof orig !== 'function') return;
+    /** @type {(this: unknown, src: any, dest: any, ...rest: any[]) => any} */
     const wrapped = function (src, dest, ...rest) {
       let dir = false;
       try {
@@ -88,11 +119,12 @@ function install() {
       const done = () => copied(src, dest, dir);
       if (kind === 'callback' && typeof rest[rest.length - 1] === 'function') {
         const cb = rest[rest.length - 1];
+        /** @type {(this: unknown, err: unknown, ...more: any[]) => any} */
         rest[rest.length - 1] = function (err, ...more) { if (!err) done(); return cb.call(this, err, ...more); };
         return orig.call(this, src, dest, ...rest);
       }
       const result = orig.call(this, src, dest, ...rest);
-      if (kind === 'promise' && result && typeof result.then === 'function') return result.then((v) => { done(); return v; });
+      if (kind === 'promise' && result && typeof result.then === 'function') return result.then((/** @type {unknown} */ v) => { done(); return v; });
       if (kind === 'sync') done();
       return result;
     };

@@ -11,19 +11,29 @@ const STORE = /([\\/])node_modules\1\.store\1[^\\/]+\1package(?=[\\/]|$)/g;
 
 // The index in `parts` (a path split at its separator) of the last directory of a package root in Yarn's store
 // (.store/<slug>/package below the last node_modules), or -1
+/**
+ * @param {string[]} parts
+ * @returns {number}
+ */
 function storeRoot(parts) {
   const i = parts.lastIndexOf('node_modules');
   return i >= 0 && parts[i + 1] === '.store' && parts[i + 2] && parts[i + 3] === 'package' ? i + 3 : -1;
 }
 
+/** @type {Map<string, string | null>} */
 const names = new Map(); // package directory in the store -> its name, or null
 // The file's path as if every package in Yarn's store were at node_modules/<name> (its package.json's name):
 // /p/node_modules/.store/rollup-npm-4.64.2-36b8bf9eab/package/dist/es/rollup.js -> /p/node_modules/rollup/dist/es/rollup.js.
 // What adapters recognize bundler files by (their paths in a package). Other paths as they are.
+/**
+ * @param {string} file
+ * @returns {string}
+ */
 function logical(file) {
   if (typeof file !== 'string' || !file.includes('.store')) return file;
   let out = file, m;
   STORE.lastIndex = 0;
+  /** @type {RegExpExecArray[]} */
   const found = [];
   while ((m = STORE.exec(file))) found.push(m);
   for (const hit of found.reverse()) { // from the end: the indices before it stay valid

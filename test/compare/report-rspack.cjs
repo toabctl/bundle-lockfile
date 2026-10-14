@@ -12,7 +12,7 @@ if (!truthDir) { console.error('usage: node report-rspack.cjs <truth dir> [<expo
 const LOCK = 'bundle-lockfile/package-lock.json';
 
 const byDir = new Map();
-for (const f of fs.readdirSync(truthDir).filter(f => f.endsWith('.json'))) {
+for (const f of fs.readdirSync(truthDir).filter(n => n.endsWith('.json'))) {
   const t = JSON.parse(fs.readFileSync(path.join(truthDir, f), 'utf8'));
   if (t.errors) continue;
   const e = byDir.get(t.outputPath) || { packages: new Set(), compilers: new Set() };

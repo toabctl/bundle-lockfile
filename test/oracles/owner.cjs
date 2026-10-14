@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const json = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch { return null; } };
+const json = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 const listable = (j) => !!j && typeof j.name === 'string' && !!j.name && typeof j.version === 'string' && !!j.version;
 const vendorable = (j) => listable(j) && j.name.length <= 214 && /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(j.name)
@@ -105,7 +105,7 @@ function packagesOf(files, { context = process.cwd() } = {}) {
         if (n) around.push({ n, ok: vendorable(n) });
       }
       around.push({ n: j, ok: false });
-      const pick = around.findIndex((a, i) => a.ok && around.slice(i + 1).every(o => o.n.name !== a.n.name));
+      const pick = around.findIndex((a, idx) => a.ok && around.slice(idx + 1).every(o => o.n.name !== a.n.name));
       pkgs.add(pick >= 0 ? `${around[pick].n.name}@${around[pick].n.version}` : `${j.name}@${j.version}`);
       continue;
     }
@@ -121,7 +121,7 @@ function packagesOf(files, { context = process.cwd() } = {}) {
     }
     const priv = around.findIndex(a => a.n.private === true);
     if (priv >= 0 && !around.slice(priv + 1).some(a => a.ok)) around.length = priv + 1;
-    const pick = around.findIndex((a, i) => a.ok && around.slice(i + 1).every(o => o.n.name !== a.n.name));
+    const pick = around.findIndex((a, idx) => a.ok && around.slice(idx + 1).every(o => o.n.name !== a.n.name));
     if (pick >= 0) pkgs.add(`${around[pick].n.name}@${around[pick].n.version}`);
   }
   return [...pkgs].sort();

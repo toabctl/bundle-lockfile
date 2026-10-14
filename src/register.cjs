@@ -10,10 +10,8 @@ const config = require('./core/config.cjs'); // (also applies the settings file 
 // Node's own loader thread, which runs --require preloads too: nothing to hook or check there - the main thread (and each
 // worker thread) reports the settings and installs the hooks. Node.js 22.14 and later mark it (isInternalThread); before,
 // it is the thread that is neither the main thread nor a user's worker, which always has a parentPort.
-{
-  const wt = require('worker_threads');
-  if (wt.isInternalThread || (!wt.isMainThread && !wt.parentPort)) return;
-}
+const wt = require('worker_threads');
+const internalThread = wt.isInternalThread || (!wt.isMainThread && !wt.parentPort);
 
 const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters/rspack.cjs', './adapters/esbuild.cjs', './adapters/parcel.cjs', './adapters/angular.cjs', './adapters/next.cjs'];
 // yarn's own entry point (process.argv[1]): yarn 1's bin/yarn.js (npm's and distributions' package, corepack's copy
@@ -21,9 +19,6 @@ const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters
 // corepack's yarn (dist/yarn.js) and its copies of releases (<COREPACK_HOME>/v1/yarn/4.x/yarn.js) - not other scripts
 // named after yarn (yarn-deduplicate.js, scripts/yarn-audit-fix.js, tools/yarn.js)
 const YARN = /[\\/]bin[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-\d[^\\/]*\.c?js$|[\\/]corepack[\\/]dist[\\/]yarn(pkg)?\.js$|[\\/]yarn[\\/]\d[^\\/]*[\\/]yarn\.js$/;
-
-// the scripts the node shim passed through to start this process (see bin/node): processes this one starts look anew
-delete process.env.BUNDLE_LOCKFILE_NODE_SEEN;
 
 // The register.cjs files of other copies of bundle-lockfile that this process preloads (--require / -r in NODE_OPTIONS
 // or on the command line): every release's register.cjs names bundle-lockfile in its first lines (as bin/node checks).
@@ -41,7 +36,9 @@ function real(f) { try { return fs.realpathSync(f); } catch { return path.resolv
 // spaces, backslash escapes inside it) and in process.execArgv
 function preloads() {
   const words = [], opts = process.env.NODE_OPTIONS || '';
-  let w = null, quoted = false;
+  /** @type {string | null} */
+  let w = null;
+  let quoted = false;
   for (let i = 0; i < opts.length; i++) {
     const c = opts[i];
     if (quoted && c === '\\' && i + 1 < opts.length) { w = (w || '') + opts[++i]; continue; }
@@ -61,7 +58,10 @@ function preloads() {
   return out;
 }
 
-if (!config.isDisabled('all')) {
+// the scripts the node shim passed through to start this process (see bin/node): processes this one starts look anew
+if (!internalThread) delete process.env.BUNDLE_LOCKFILE_NODE_SEEN;
+
+if (!internalThread && !config.isDisabled('all')) {
   // a settings file that is there but cannot be used: its settings (an export directory) would be missing - a problem
   // (the first build fails with it, or the process, see core/problems.cjs)
   // Reported by the main thread of each process, once: worker threads run the preload too

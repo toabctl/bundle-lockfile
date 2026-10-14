@@ -9,12 +9,18 @@ const lru = require('./lru.cjs');
 
 const S = Symbol.for('bundle-lockfile.hashes.v1');
 const MAX = 10000;
-const state = globalThis[S] || (globalThis[S] = { files: new Map() }); // file -> { key, hash }
+/** @type {{ files: Map<string, { key: string, hash: string }> }} */
+const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { files: new Map() }); // file -> { key, hash }
 
 // "sha256-<hex>" of a string or Buffer
+/** @type {(data: string | Buffer) => string} */
 const sha256 = (data) => `sha256-${crypto.createHash('sha256').update(data).digest('hex')}`;
 
 // The file's hash, or null if it cannot be read.
+/**
+ * @param {string} file
+ * @returns {string | null}
+ */
 function hashOf(file) {
   let st;
   try { st = fs.statSync(file); } catch { return null; }

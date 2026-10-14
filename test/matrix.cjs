@@ -129,8 +129,8 @@ const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', inst
 const nestedWorkspace = { app: 'nested-island', bundler: 'nested', installer: { type: 'npm' },
   deps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', ...ISLAND, '@acme/island': '1.0.0' },
   packageJson: { workspaces: ['island'], scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } };
-const nestedVite = (island, vite, deps = {}) => ({ app: 'nested-island', bundler: 'nested-vite', installer: { type: 'npm' },
-  deps: { ...ISLAND, vite, ...deps }, packageJson: { type: 'module', scripts: { build: `${island} && vite build` } } });
+const nestedVite = (island, viteVersion, deps = {}) => ({ app: 'nested-island', bundler: 'nested-vite', installer: { type: 'npm' },
+  deps: { ...ISLAND, vite: viteVersion, ...deps }, packageJson: { type: 'module', scripts: { build: `${island} && vite build` } } });
 // rspack: the webpack5 app (test/apps/rspack) built by `rspack build` (@rspack/cli of the same version)
 const RSPACK_SCRIPTS = { build: 'rspack build', 'build-reset': 'NODE_OPTIONS=--max-old-space-size=3072 rspack build' };
 const rspack = (version, installer = { type: 'npm' }, extra = {}, scripts = {}) => ({ app: 'rspack', bundler: 'rspack', installer,
@@ -647,11 +647,11 @@ const RSTEST = "./node_modules/.bin/rstest run && test -z \"$(find . -path ./nod
 // @edge-runtime/cookies and server-only: Next's vendored copies in next/dist/compiled/)
 // runtime: the server's runtime packages, the oracle's (Next's optional dependencies, sharp and its platform packages,
 // are not pinned)
-const NEXT_PAGES = (next, swc) => ({ '': [`@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
-  server: [], 'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', `next@${next}`], runtime: 'oracle' });
-const NEXT_APP = (next, swc) => ({ '': [`@swc/helpers@${swc}`, 'ms@2.1.3', `next@${next}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
-  server: ['@edge-runtime/cookies@6.0.0', 'is-number@7.0.0', 'nanoid@3.3.20', `next@${next}`],
-  'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${next}`, 'server-only@0.0.1'], runtime: 'oracle' });
+const NEXT_PAGES = (nextVersion, swc) => ({ '': [`@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${nextVersion}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
+  server: [], 'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', `next@${nextVersion}`], runtime: 'oracle' });
+const NEXT_APP = (nextVersion, swc) => ({ '': [`@swc/helpers@${swc}`, 'ms@2.1.3', `next@${nextVersion}`, 'react-dom@19.3.0', 'react@19.3.0', 'scheduler@0.28.0'],
+  server: ['@edge-runtime/cookies@6.0.0', 'is-number@7.0.0', 'nanoid@3.3.20', `next@${nextVersion}`],
+  'server/chunks': ['@edge-runtime/cookies@6.0.0', `@swc/helpers@${swc}`, 'lodash-es@4.18.1', 'ms@2.1.3', `next@${nextVersion}`, 'server-only@0.0.1'], runtime: 'oracle' });
 const NEXT_RSPACK_ENV = { ...NEXT_ENV, NEXT_RSPACK_APP: '1' };
 
 // Next.js: one lockfile per compiler (client, server, edge-server); the exact per-compiler lists come from the oracle

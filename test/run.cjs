@@ -280,7 +280,7 @@ function runCase(c) {
   const inFixture = fs.existsSync(path.join(dir, 'node_modules')) && !c.outside ? bundlers.installed(dir) : null;
   // (JavaScript: a file its writers wrote - an output directory can hold other compilers' outputs, Next.js' .next/server)
   const writesJs = (k) => {
-    let m = null;
+    let m;
     try { m = JSON.parse(fs.readFileSync(path.join(lockDir, k, c.lockfile || LOCKFILE), 'utf8'))['bundle-lockfile']; } catch { return false; }
     return !!m && (m.writers || []).some(w => (w.files || []).some(f => /\.[cm]?js$/.test(f)));
   };
@@ -414,8 +414,8 @@ function runCase(c) {
     if (c.expectSources) {
       if (!Array.isArray(printed.sources)) throw new Error(`expectSources: oracle ${path.basename(oracle)} lists no sources`);
       const sources = printed.sources.map(f => f.split(path.sep).join('/'));
-      const absent = c.expectSources.filter(p => !sources.some(f => f.includes(p)));
-      if (absent.length) throw new Error(`the oracle's build has no source file from ${absent.join(' ')}: the case does not test what it is for`);
+      const missingSources = c.expectSources.filter(p => !sources.some(f => f.includes(p)));
+      if (missingSources.length) throw new Error(`the oracle's build has no source file from ${missingSources.join(' ')}: the case does not test what it is for`);
       notes.push(`${c.expectSources.length} source path(s) bundled, by the oracle`);
     }
     // packages the oracle cannot see (e.g. Vite: CSS-only packages have no source map), each also expected

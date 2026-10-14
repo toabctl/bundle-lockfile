@@ -14,7 +14,7 @@ const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { hashOf } = require('../core/hashes.cjs');
-const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
@@ -33,11 +33,13 @@ let version = null;
 // of this process (one per Parcel) is remembered when it runs a request; the reporter reads, for every bundled asset's
 // file, the asset requests that file invalidates and the other files those requests depend on.
 const trackers = new Set();
-let trackerApi = null; // { edge, projectPath, isAsset(node) } of the RequestTracker module, see patchTracker
+/** @type {{ edge: number, projectPath: any, isAsset: (node: any) => boolean } | null} */
+let trackerApi = null; // of the RequestTracker module, see patchTracker
 function patchTracker(exp, resolve) {
   if (!exp || typeof exp !== 'object' || exp[PATCHED]) return;
   const RT = exp.default;
   const edge = exp.requestGraphEdgeTypes && exp.requestGraphEdgeTypes.invalidated_by_update;
+  /** @type {any} */
   let projectPath = null;
   try { projectPath = require(path.join(path.dirname(resolve()), 'projectPath.js')); } catch { /* checked below */ }
   if (typeof RT !== 'function' || !RT.prototype || typeof RT.prototype.runRequest !== 'function' || typeof edge !== 'number'
@@ -134,20 +136,11 @@ function collect(graph, projectRoot) {
   return [...byDir.values()];
 }
 
-function write(w, pkgs, context, opts) {
-  return new Promise((resolve) => {
-    try {
-      outputs.record(w.target, w.writer, pkgs, context, [...w.files], { disk: true, ...opts });
-      outputs.emitted(w.target, w.writer);
-      outputs.prune(w.target, w.writer, (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT')), () => {
-        outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
-          if (err) problems.problem(`parcel: could not write ${w.target}`, err);
-          else config.debug('parcel: wrote', [config.inline && w.target, exportPath(w.target)].filter(Boolean).join(' and '));
-          resolve();
-        });
-      });
-    } catch (e) { problems.problem(`parcel: could not write ${w.target}`, e); resolve(); }
-  });
+async function write(w, pkgs, context, opts) {
+  try {
+    outputs.record(w.target, w.writer, pkgs, context, [...w.files], { disk: true, ...opts });
+  } catch (e) { problems.problem(`parcel: could not write ${w.target}`, e); return; }
+  await outputs.land(w.target, w.writer, 'parcel');
 }
 
 // The package whose code Parcel writes into JavaScript bundles, around their assets' code (the prelude, parcelRequire,
@@ -168,8 +161,11 @@ function packagerOf(projectRoot) {
 }
 let parcelFile = null; // @parcel/core's lib/Parcel.js, as patched
 
-// The reporter (parcel-reporter/index.cjs). Throws the problems (strict mode): Parcel fails the build.
-async function report({ event, options }) {
+// The reporter (parcel-reporter/index.cjs). Throws the problems (strict mode): Parcel fails the build. Each report is
+// the build's own (core/problems.cjs within): problems of another Parcel of the process do not fail it.
+/** @param {{ event: any, options: any }} opts */
+const report = (opts) => problems.within({}, () => reportBuild(opts));
+async function reportBuild({ event, options }) {
   if (!event || event.type !== 'buildSuccess') return;
   const projectRoot = (options && options.projectRoot) || process.cwd();
   let context = projectRoot;
@@ -180,17 +176,18 @@ async function report({ event, options }) {
     try {
       // the files transformers inlined into the bundled assets (Sass partials, Less @imports): with style sheets among
       // the assets, a build whose request graph cannot be read would miss them
-      let inlined = null;
-      try { inlined = inlinedOf(projectRoot, w.sources); } catch (e) { problems.problem(`parcel: could not read the request graph of ${projectRoot}`, e); }
-      if (!inlined) {
-        if ([...w.sources].some(f => packages.STYLE.test(f))) problems.problem(`parcel: no request graph of ${projectRoot}: the style sheets Parcel's transformers inlined into ${w.dir} (Sass partials, Less @imports) would be missing`);
-        inlined = new Map();
+      /** @type {Map<string, string> | null} */
+      let graphInlined = null;
+      try { graphInlined = inlinedOf(projectRoot, w.sources); } catch (e) { problems.problem(`parcel: could not read the request graph of ${projectRoot}`, e); }
+      const inlined = graphInlined || new Map();
+      if (!graphInlined && [...w.sources].some(f => packages.STYLE.test(f))) {
+        problems.problem(`parcel: no request graph of ${projectRoot}: the style sheets Parcel's transformers inlined into ${w.dir} (Sass partials, Less @imports) would be missing`);
       }
       for (const [f] of inlined) { w.sources.add(f); w.kinds.set(f, packages.STYLE.test(f) ? 'style' : 'inlined'); }
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
       const { byFile } = result;
       const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath));
-      const runtime = js ? [packagerOf(projectRoot)].filter(Boolean) : [];
+      const runtime = js ? [packagerOf(projectRoot)].filter(p => p !== null) : [];
       const all = packages.unique(result.all, runtime);
       const found = via.ofFiles(result, w.kinds);
       found.add('runtime', runtime);
@@ -205,9 +202,9 @@ async function report({ event, options }) {
         b.traverseAssets((a) => {
           if (typeof a.filePath !== 'string' || skipped(event.bundleGraph, b, a)) return;
           into.add(a.filePath);
-          if (byFile.has(a.filePath)) own.push(...byFile.get(a.filePath));
+          own.push(...(byFile.get(a.filePath) || []));
         });
-        for (const [f, src] of inlined) if (into.has(src) && byFile.has(f)) own.push(...byFile.get(f));
+        for (const [f, src] of inlined) if (into.has(src)) own.push(...(byFile.get(f) || []));
         contents[b.filePath] = packages.unique(own, /\.[cm]?js$/i.test(b.filePath) ? runtime : []).map(p => p.path);
       }
       await write(w, all, context, { outputs: hashes, contents, via: found,
@@ -218,7 +215,7 @@ async function report({ event, options }) {
 }
 
 // for the reporter (parcel-reporter/index.cjs)
-globalThis[Symbol.for('bundle-lockfile.parcel')] = { report: (...a) => report(...a) };
+globalThis[Symbol.for('bundle-lockfile.parcel')] = { report };
 
 module.exports = {
   name: 'parcel',

@@ -15,7 +15,7 @@ const J = (...p) => path.join(...p);
 const has = (cmd, arg) => spawnSync(cmd, [arg], { stdio: 'ignore' }).status === 0;
 const hasSyft = has('syft', 'version'), hasTrivy = has('trivy', '--version');
 // BLTEST_REQUIRE_SBOM=1 (CI): a tool that is missing fails its test instead of skipping it
-const missing = (has, tool) => !has && process.env.BLTEST_REQUIRE_SBOM !== '1' && `${tool} not on PATH`;
+const missing = (found, tool) => !found && process.env.BLTEST_REQUIRE_SBOM !== '1' && `${tool} not on PATH`;
 
 function run(cmd, args) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 << 20 });
@@ -106,9 +106,9 @@ test('image scans read no lockfile: syft only with +javascript-lock-cataloger, t
 
 // A shipped node_modules (a server's runtime dependencies): its package.json files, read by image scans only
 const srv = J(tmp, 'srv');
-for (const [dir, name, license] of [['a', 'a', 'MIT'], ['@scope/b', '@scope/b', 'ISC']]) {
-  fs.mkdirSync(J(srv, 'node_modules', dir), { recursive: true });
-  fs.writeFileSync(J(srv, 'node_modules', dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', license }));
+for (const [pkgDir, name, license] of [['a', 'a', 'MIT'], ['@scope/b', '@scope/b', 'ISC']]) {
+  fs.mkdirSync(J(srv, 'node_modules', pkgDir), { recursive: true });
+  fs.writeFileSync(J(srv, 'node_modules', pkgDir, 'package.json'), JSON.stringify({ name, version: '1.0.0', license }));
 }
 const INSTALLED = ['@scope/b@1.0.0', 'a@1.0.0'];
 
