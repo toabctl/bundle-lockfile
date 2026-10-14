@@ -4624,6 +4624,35 @@ test('angular adapter: server-side rendering - a lockfile per side, from per-sid
   }
 }));
 
+test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, from per-side or combined metafiles; locales without subPath fail', () => withConfig({ strict: true }, async () => {
+  const angular = require('../src/adapters/angular.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/s/package.json': { name: 's', version: '1.0.0' }, 'src/main.ts': '' });
+  const i18nOptions = { shouldInline: true, inlineLocales: new Set(['de', 'en-US']), locales: { de: { subPath: 'de' }, 'en-US': { subPath: 'en-US' } } };
+  const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' }, i18nOptions };
+  // the result after Angular inlined the translations: each locale's copy of the outputs in <subPath>/; the metafile is
+  // the one before (main.js, main.server.mjs)
+  const build = (stats) => async (o) => {
+    const outputFiles = ['de', 'en-US'].flatMap(l => [{ path: `${l}/main.js`, type: 0, text: 'x' }, { path: `${l}/main.server.mjs`, type: 2, text: 'x' }]);
+    const browser = { outputs: { 'main.js': { entryPoint: 'src/main.ts', inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 } } } } };
+    const server = { outputs: { 'main.server.mjs': { inputs: { 'node_modules/s/i.js': { bytesInOutput: 1 } } } } };
+    if (o.stats && stats === 'split') outputFiles.push({ path: 'browser-stats.json', type: 4, text: JSON.stringify(browser) }, { path: 'server-stats.json', type: 4, text: JSON.stringify(server) });
+    else if (o.stats) outputFiles.push({ path: 'stats.json', type: 4, text: JSON.stringify({ outputs: { ...browser.outputs, ...server.outputs } }) });
+    return { outputFiles, assetFiles: [], errors: [], addOutputFile(p, text, type) { outputFiles.push({ path: p, type, text }); }, addError(e) { this.errors.push(e); } };
+  };
+  for (const stats of ['split', 'combined']) {
+    const r = await angular.wrap(build(stats))(options);
+    assert.deepEqual(r.errors, [], stats);
+    const locks = Object.fromEntries(r.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => [`${f.type} ${f.path}`, lockedNames(f.text)]));
+    assert.deepEqual(locks, { [`0 de/${LOCK}`]: ['a'], [`0 en-US/${LOCK}`]: ['a'], [`4 server/de/${LOCK}`]: ['s'], [`4 server/en-US/${LOCK}`]: ['s'] }, stats);
+  }
+  // flatOutput (one locale, the dev server's): one copy, no locale directory
+  const flat = await angular.wrap(build('split'))({ ...options, i18nOptions: { ...i18nOptions, flatOutput: true } });
+  assert.deepEqual(flat.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => f.path).sort(), [LOCK, `server/${LOCK}`]);
+  // locales of a shape bundle-lockfile does not know: an error of the build
+  const bad = await angular.wrap(build('split'))({ ...options, i18nOptions: { ...i18nOptions, locales: { de: {}, 'en-US': {} } } });
+  assert.match(bad.errors.join('\n'), /an i18n build whose locales have no subPath/);
+}));
+
 test('angular adapter: a build of the dev server (ng serve) gets no lockfile and no stats; with NG_BUILD_PARTIAL_SSR set, a build gets its lockfile', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'src/main.ts': '' });

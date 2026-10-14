@@ -78,6 +78,19 @@ function complete(options, result, forced) {
     problems.problem('angular: a build without outputOptions and workspaceRoot bundle-lockfile knows: its lockfile would be missing');
     return;
   }
+  // i18n (localize): Angular inlines the translations into a copy of each side's output per locale, in <subPath>/ of
+  // its directory (unless flatOutput): every copy gets the lockfile. The metafile is the one before inlining - the same
+  // packages for every locale.
+  const i18n = options.i18nOptions;
+  let locales = [''];
+  if (i18n && i18n.shouldInline && i18n.flatOutput !== true) {
+    locales = [...(i18n.inlineLocales || [])].map(l => i18n.locales && i18n.locales[l] && i18n.locales[l].subPath);
+    if (!locales.length || locales.some(s => typeof s !== 'string')) {
+      problems.problem('angular: an i18n build whose locales have no subPath bundle-lockfile knows: its lockfiles would be missing');
+      return;
+    }
+  }
+  const unlocalized = (p) => { for (const l of locales) if (l && p.startsWith(`${l}/`)) return p.slice(l.length + 1); return p; };
   // the combined metafile of Angular 17 - 21: both sides' outputs, keyed by their paths in their own directory
   // (main.server.mjs, not server/main.server.mjs): each output is the side whose output files have its path - an
   // output of both (the same name) counts for both. One no output file has (none Angular writes) counts for the browser
@@ -88,8 +101,9 @@ function complete(options, result, forced) {
       if (!f || typeof f.path !== 'string') continue;
       const side = f.type === TYPE.Browser ? 'browser' : f.type === TYPE.ServerApplication || f.type === TYPE.ServerRoot ? 'server' : null;
       if (!side) continue;
-      if (!sideOf.has(f.path)) sideOf.set(f.path, new Set());
-      sideOf.get(f.path).add(side);
+      const key = unlocalized(f.path); // (with i18n: <subPath>/main.js is main.js of the metafile)
+      if (!sideOf.has(key)) sideOf.set(key, new Set());
+      sideOf.get(key).add(side);
     }
     const ssr = [...sideOf.values()].some(s => s.has('server'));
     const split = { browser: {}, server: {} };
@@ -116,21 +130,25 @@ function complete(options, result, forced) {
     if (side === 'browser') for (const a of assets) { sources.push(a); kinds.set(a, 'asset'); }
     const entries = Object.values(metafile.outputs || {}).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
     const collected = packages.packagesOfFiles(sources, { context, entries });
-    const dir = path.join(out.base, out[side] || side);
-    const target = path.join(dir, config.file);
-    const own = files.filter(f => f && f.type === (side === 'browser' ? TYPE.Browser : TYPE.ServerApplication)).map(f => path.join(dir, f.path));
     const found = via.ofFiles(collected, kinds);
-    const runtime = own.some(f => /\.[cm]?js$/.test(f))
-      ? [esbuildOf(wd)].filter(Boolean) : [];
+    // the bundler's own code (esbuild's runtime helpers) in every side that has JavaScript (see core/bundler.cjs)
+    const sideFiles = files.filter(f => f && f.type === (side === 'browser' ? TYPE.Browser : TYPE.ServerApplication) && typeof f.path === 'string');
+    const runtime = sideFiles.some(f => /\.[cm]?js$/.test(f.path)) ? [esbuildOf(wd)].filter(Boolean) : [];
     found.add('runtime', runtime);
     const all = packages.unique(collected.all, runtime);
-    const content = render(side, target, JSON.stringify(['angular', side, portable(context, out.base)]), all, context, own, found);
-    // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server file
-    // of the same name are one (the one added last): the server's lockfile is a file of the output path's root, at
-    // <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
-    if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
-      if (side === 'browser') result.addOutputFile(config.file, content, TYPE.Browser);
-      else result.addOutputFile(path.posix.join(out.server || 'server', config.file.split(path.sep).join('/')), content, TYPE.Root);
+    const file = config.file.split(path.sep).join('/');
+    for (const locale of locales) {
+      const dir = path.join(out.base, out[side] || side, locale);
+      const target = path.join(dir, config.file);
+      const own = sideFiles.filter(f => !locale || f.path.startsWith(`${locale}/`)).map(f => path.join(out.base, out[side] || side, f.path));
+      const content = render(locale ? `${side} (${locale})` : side, target, JSON.stringify(locale ? ['angular', side, locale, portable(context, out.base)] : ['angular', side, portable(context, out.base)]), all, context, own, found);
+      // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server
+      // file of the same name are one (the one added last): the server's lockfile is a file of the output path's root,
+      // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
+      if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
+        if (side === 'browser') result.addOutputFile(path.posix.join(locale, file), content, TYPE.Browser);
+        else result.addOutputFile(path.posix.join(out.server || 'server', locale, file), content, TYPE.Root);
+      }
     }
   }
 }
