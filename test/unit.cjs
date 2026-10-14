@@ -1822,6 +1822,27 @@ async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite =
   await plugin.closeBundle.handler.call(ctx);
 }
 
+test('outputs.hasFile: as filesOf().has(), also after the build\'s file list grew', () => {
+  const outputs = require('../src/core/outputs.cjs');
+  const target = J(os.tmpdir(), `bl-hasfile-${process.pid}`, 'bundle-lockfile/package-lock.json');
+  const files = ['/o/a.js', '/o/b.js'];
+  outputs.record(target, 'hasFile', [], os.tmpdir(), files, { id: 'hasFile' });
+  assert.deepEqual(['/o/a.js', '/o/b.js', '/o/c.js'].map(f => outputs.hasFile(target, f)), [true, true, false]);
+  files.push('/o/c.js'); // (an adapter adds files written after its build)
+  assert.equal(outputs.hasFile(target, '/o/c.js'), true);
+  assert.equal(outputs.hasFile(J(os.tmpdir(), 'no-such-target'), '/o/a.js'), false);
+});
+
+test('inToolCache: outputs below node_modules are a tool\'s cache, except below node_modules/.cache/', () => {
+  const { inToolCache } = require('../src/core/paths.cjs');
+  for (const [dir, want] of [
+    ['/p/dist', false], ['/p/node_modules/.vite/deps', true], ['/p/node_modules/@vitejs/plugin-legacy/dist', true],
+    ['/p/node_modules/.cache', false], ['/p/node_modules/.cache/nuxt/.nuxt/dist/client', false],
+    ['/p/node_modules/.cache/x/node_modules/y/dist', true], // a package's directory inside the cache: the last node_modules counts
+    ['/p/.cache/deps', false], ['/p/node_modules_old/dist', false],
+  ]) assert.equal(inToolCache(dir), want, dir);
+});
+
 test('rollup adapter: a written output gets its lockfile; generate-only builds and outputs below node_modules none', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
@@ -2078,6 +2099,45 @@ test('nested: a bundled file another build produced brings its packages, also wh
     fs.writeFileSync(J(root, 'island/dist/other.js'), 'x');
     assert.deepEqual(ids([J(root, 'island/dist/other.js')]), []);
   } finally { process.chdir(cwd); }
+});
+
+test('nested: the inner build\'s record is found whether it ran with BUNDLE_LOCKFILE_TREE=only (record.json) or not', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
+  } finally { process.chdir(cwd); }
+  const dir = J(root, 'island/dist/bundle-lockfile');
+  // the packages a process with the given BUNDLE_LOCKFILE_TREE finds in the island's main.js (and its problems)
+  const outer = (tree) => {
+    const env = { ...strictEnv(undefined) };
+    if (tree) env.BUNDLE_LOCKFILE_TREE = tree; else delete env.BUNDLE_LOCKFILE_TREE;
+    const r = spawnSync(process.execPath, ['-e', `const p = require(${JSON.stringify(J(SRC, 'core/packages.cjs'))}); const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+      const got = p.packagesOfFiles([${JSON.stringify(J(root, 'island/dist/main.js'))}]).all.map(x => x.name).sort(); console.log(JSON.stringify([got, problems.take()]));`], { cwd: root, encoding: 'utf8', env });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const want = [['inner', 'rollup', 'vite'], []];
+  // the inner build wrote package-lock.json (BUNDLE_LOCKFILE_TREE off or on); the outer one runs with only
+  assert.deepEqual(outer('only'), want);
+  // the inner build ran with only: record.json; the outer one without
+  fs.renameSync(J(dir, 'package-lock.json'), J(dir, 'record.json'));
+  assert.deepEqual(outer(undefined), want);
+  assert.deepEqual(outer('only'), want);
+  // both, from a build that switched its setting: the newer one counts. The older one here records the same output
+  // without its packages: read instead, main.js would bring none
+  const stale = JSON.parse(fs.readFileSync(J(dir, 'record.json'), 'utf8'));
+  for (const w of stale['bundle-lockfile'].writers) { w.packages = []; w.contents = {}; delete w.via; }
+  fs.writeFileSync(J(dir, 'package-lock.json'), JSON.stringify(stale));
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(J(dir, 'package-lock.json'), old, old);
+  assert.deepEqual(outer(undefined), want);
+  assert.deepEqual(outer('only'), want);
+  fs.utimesSync(J(dir, 'record.json'), new Date(old - 60000), new Date(old - 60000)); // now record.json is the older one
+  assert.deepEqual(outer(undefined), [[], []]);
 });
 
 test('strict: a nested build\'s lockfile that cannot be read fails the build that bundles its output (BUNDLE_LOCKFILE_STRICT=0: a warning)', () => {
@@ -4252,11 +4312,14 @@ test('esbuild adapter: replaces the getter-only exports with a copy whose build/
   await copy.build({ outdir: 'dist', plugins: [{ name: 'bundle-lockfile' }] }); // configured already
   assert.deepEqual(names(seen), ['bundle-lockfile']);
   // Vite 5 - 7's own builds, and outputs below node_modules, are left alone
-  for (const o of [{ outdir: 'node_modules/.vite/deps', plugins: [{ name: 'vite:dep-pre-bundle' }] }, { outdir: '.cache/deps', plugins: [{ name: 'vite:dep-pre-bundle' }] }, { write: false, plugins: [{ name: 'vite:dep-scan' }] }, { outdir: 'node_modules/.cache/x' },
+  for (const o of [{ outdir: 'node_modules/.vite/deps', plugins: [{ name: 'vite:dep-pre-bundle' }] }, { outdir: '.cache/deps', plugins: [{ name: 'vite:dep-pre-bundle' }] }, { write: false, plugins: [{ name: 'vite:dep-scan' }] }, { outdir: 'node_modules/some-lib/dist' },
     { write: false, plugins: [{ name: 'externalize-deps' }, { name: 'inject-file-scope-variables' }] }]) { // (the last: Vite bundling its config)
     await copy.build(o);
     assert.equal(seen, o);
   }
+  // except below node_modules/.cache/, where tools build what ships (as for Rollup and Vite, core/paths.cjs inToolCache)
+  await copy.build({ outdir: 'node_modules/.cache/x' });
+  assert.deepEqual(names(seen), ['bundle-lockfile']);
   // other modules, and a lib/main.js of another package
   assert.equal(a.onCjsLoad(fakeEsbuild('0.28.2'), '/p/node_modules/other/lib/main.js', () => ''), undefined);
 });
@@ -4522,6 +4585,13 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   assert.deepEqual(w0.via.runtime.map(i => w0.packages[i]), ['node_modules/@parcel/packager-js']);
   assert.deepEqual([...JSON.parse(dist)['bundle-lockfile'].writers[0].files].sort(), ['../main.css', '../main.js']);
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'lib/out', LOCK), 'utf8')), ['lib']);
+  // a target below node_modules is a tool's cache - except below node_modules/.cache/ (core/paths.cjs inToolCache)
+  for (const f of ['node_modules/.cache/x/main.js', 'node_modules/lib/dist/main.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: fakeBundleGraph([
+    { filePath: J(root, 'node_modules/.cache/x/main.js'), target: target('node_modules/.cache/x'), assets: [J(root, 'node_modules/a/i.js')] },
+    { filePath: J(root, 'node_modules/lib/dist/main.js'), target: target('node_modules/lib/dist'), assets: [J(root, 'node_modules/a/i.js')] }]) }, options: { projectRoot: root } });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'node_modules/.cache/x', LOCK), 'utf8')), ['a']);
+  assert.equal(fs.existsSync(J(root, 'node_modules/lib/dist', LOCK)), false);
   // other events: nothing; a problem: thrown (Parcel fails the build with it)
   await parcel.report({ event: { type: 'buildStart' } });
   const bad = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'node_modules/nopj/i.js')] }]);

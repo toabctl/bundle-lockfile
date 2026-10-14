@@ -259,7 +259,7 @@ function outputCopy(src, dest, isDirectory) {
   const dirs = [...outputs.files.keys()].map(t => [t, outputDirOf(t)]);
   for (const [target, odir] of dirs) {
     if (!within(odir, src) || within(src, target)) continue; // (a directory with the lockfile in it: copied with it)
-    if (!isDirectory && !filesOf(target).has(src)) continue;
+    if (!isDirectory && !hasFile(target, src)) continue;
     const up = path.relative(odir, src).split(path.sep).filter(Boolean).length;
     const root = path.join(dest, ...Array(up).fill('..'));
     // a place that is (in) an output, or has one in it (a file copied up into the project): no copy there
@@ -378,6 +378,23 @@ function filesOf(target) {
   return all;
 }
 
+// Whether a writer of target emits file: as filesOf(target).has(file), without a new Set per call - every file an fs
+// copy writes is looked up (outputCopy). Each build's file list as a Set, made again when the list grew (an adapter
+// adds the files written after its build to it).
+const fileSets = new WeakMap(); // files array -> { n: its length then, set }
+function hasFile(target, file) {
+  for (const w of (outputs.files.get(target) || new Map()).values()) {
+    for (const b of [w.building, w.landed]) {
+      if (!b) continue;
+      if (!Array.isArray(b.files)) { for (const f of b.files) if (f === file) return true; continue; }
+      let c = fileSets.get(b.files);
+      if (!c || c.n !== b.files.length) fileSets.set(b.files, (c = { n: b.files.length, set: new Set(b.files) }));
+      if (c.set.has(file)) return true;
+    }
+  }
+  return false;
+}
+
 // The package paths the lockfiles of this process list for its own builds (the landed build of every writer).
 function listedPaths() {
   const out = new Set();
@@ -385,4 +402,4 @@ function listedPaths() {
   return out;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, writeDisk, nowhere, listedPaths };
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, hasFile, writeDisk, nowhere, listedPaths };

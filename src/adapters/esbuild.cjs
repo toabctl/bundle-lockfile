@@ -17,7 +17,7 @@ const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { hashOf } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
-const { portable, exportPath } = require('../core/paths.cjs');
+const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -134,13 +134,13 @@ function entriesOf(options, wd) {
 
 // Where a build writes, from its options: { dir, wd } (dir: the output directory, null if it writes no files itself:
 // write: false, or neither outdir nor outfile), or null for a build that is not bundle-lockfile's to cover (below
-// node_modules: a tool's cache).
+// node_modules, other than node_modules/.cache: a tool's cache, see core/paths.cjs inToolCache).
 function placeOf(options) {
   const wd = typeof options.absWorkingDir === 'string' ? options.absWorkingDir : process.cwd();
   const dir = options.write === false ? null
     : typeof options.outdir === 'string' ? path.resolve(wd, options.outdir)
       : typeof options.outfile === 'string' ? path.dirname(path.resolve(wd, options.outfile)) : null;
-  if (dir && dir.split(path.sep).includes('node_modules')) return null;
+  if (dir && inToolCache(dir)) return null;
   return { dir, wd };
 }
 

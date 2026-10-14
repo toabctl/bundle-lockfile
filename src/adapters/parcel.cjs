@@ -14,7 +14,7 @@ const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { hashOf } = require('../core/hashes.cjs');
-const { portable, exportPath } = require('../core/paths.cjs');
+const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
@@ -58,7 +58,7 @@ function collect(graph, projectRoot) {
   for (const bundle of graph.getBundles({ includeInline: true })) {
     const dir = bundle.target && bundle.target.distDir;
     if (typeof dir !== 'string') continue;
-    if (dir.split(path.sep).includes('node_modules')) continue; // a tool's cache
+    if (inToolCache(dir)) continue; // a tool's cache (core/paths.cjs)
     let w = byDir.get(dir);
     if (!w) {
       w = { dir, target: path.join(dir, config.file), writer: JSON.stringify(['parcel', bundle.target.name || null, portable(projectRoot, dir)]), files: new Set(), sources: new Set(), entries: new Set(), bundles: [], kinds: new Map() };
