@@ -15,6 +15,8 @@ const outputs = require('../core/outputs.cjs');
 const packages = require('../core/packages.cjs');
 const problems = require('../core/problems.cjs');
 const traces = require('../core/traces.cjs');
+const via = require('../core/via.cjs');
+const { readPackage } = require('../core/manifest.cjs');
 
 const BUILD = /[\\/]next[\\/]dist[\\/]build[\\/]index\.js$/;
 const CONFIG = /[\\/]next[\\/]dist[\\/]server[\\/]config\.js$/;
@@ -38,9 +40,12 @@ function placeOf(buildFile, dir) {
   return { distDir, dir: projectDir, root, standalone: conf.output === 'standalone' };
 }
 
-// write one lockfile: target, its packages, the record's context and files; resolves when it has landed
-function write(target, pkgs, context, files) {
-  outputs.record(target, WRITER, pkgs, context, files, { disk: true });
+// write one lockfile: target, its packages, the record's context and files, the copy of Next that built (bundler);
+// resolves when it has landed
+function write(target, pkgs, context, files, bundler) {
+  const found = via.collector();
+  found.add('traced', pkgs);
+  outputs.record(target, WRITER, pkgs, context, files, { disk: true, bundler, via: found });
   outputs.emitted(target, WRITER);
   return new Promise((resolve) => {
     outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
@@ -62,8 +67,11 @@ async function runtime(buildFile, dir) {
   }
   const projectDir = real(place.dir);
   const pkgs = packages.packagesForFiles([...traced], { context: projectDir });
+  // the copy of Next whose build ran: the package root of its next/dist/build/index.js
+  const own = readPackage(path.join(path.dirname(buildFile), '..', '..'));
+  const bundler = { name: 'next', ...(own && own.name === 'next' ? { version: own.version } : {}) };
   config.debug(`Next.js: ${traced.size} traced files in ${files.length} traces, ${pkgs.length} runtime packages`);
-  await write(path.join(distDir, 'runtime', config.file), pkgs, projectDir, files);
+  await write(path.join(distDir, 'runtime', config.file), pkgs, projectDir, files, bundler);
   // standalone: Next copied the traced files below .next/standalone, at their path relative to the tracing root. Its
   // lockfile is keyed relative to the tracing root (node_modules/<name> is .next/standalone/node_modules/<name>), with
   // the packages where they are installed: Next copies only traced files, often without a package's package.json
@@ -75,7 +83,7 @@ async function runtime(buildFile, dir) {
       return rel.startsWith('..') || path.isAbsolute(rel) ? null : path.join(standalone, rel);
     };
     const server = path.join(inStandalone(projectDir) || standalone, 'server.js');
-    await write(path.join(standalone, config.file), pkgs, root, fs.existsSync(server) ? [server] : []);
+    await write(path.join(standalone, config.file), pkgs, root, fs.existsSync(server) ? [server] : [], bundler);
     copyLockfiles(distDir, inStandalone);
   }
 }

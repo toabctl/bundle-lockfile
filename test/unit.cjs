@@ -5742,6 +5742,9 @@ test('next adapter: after next build, the packages of its traces in .next/runtim
   const lock = runtimeLock(root);
   assert.deepEqual(Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} ${p.name}@${p.version}`),
     ['node_modules/legacy legacy@2.0.0', 'node_modules/next next@16.4.0', 'node_modules/rt rt@1.0.0']);
+  const [w] = lock['bundle-lockfile'].writers;
+  assert.deepEqual(w.bundler, { name: 'next', version: '16.4.0' });
+  assert.deepEqual(w.via, { traced: [0, 1, 2] });
   assert.equal(fs.existsSync(J(root, '.next/standalone')), false);
   assert.equal(problems.count(), 0);
 }));

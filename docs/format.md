@@ -213,7 +213,8 @@ configuration.
     more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`),
     for [nested bundles](#nested-bundles);
   - `bundler`: the bundler that ran, `{ "name", "version" }` as it reports itself (`webpack`, `rspack`, `rollup`,
-    `rolldown`, `vite`, `esbuild`; Vite's version where Vite gives it to plugins). It is the bundler that wrote the
+    `rolldown`, `vite`, `esbuild`, `parcel`, `angular`; Vite's version where Vite gives it to plugins), or `next` for
+    the runtime packages of Next.js' server (the version of that copy of Next). It is the bundler that wrote the
     output, not a package of it;
   - `via`: how it found each package, `{ "<class>": [indices into its packages] }`. A package found in several ways is
     listed under each class:
@@ -233,6 +234,7 @@ configuration.
     | `fs-copy` | files copied out of the package with fs, in the build's process |
     | `nested` | files another build wrote, whose lockfile lists the package ([nested bundles](#nested-bundles)) |
     | `vendored` | a [vendored copy](#which-package-a-file-belongs-to) |
+    | `traced` | files Next.js traced for its server, which loads them from `node_modules` at runtime |
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time.
 - `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or
