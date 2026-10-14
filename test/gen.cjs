@@ -17,12 +17,24 @@ const TOOLS = path.join(OUT, '.tools');
 // Fixtures are created from scratch, so lockfiles must be writable even when CI=true
 // (yarn >= 2 and pnpm switch to immutable / frozen lockfiles in CI).
 const ENV = { ...process.env, YARN_ENABLE_IMMUTABLE_INSTALLS: 'false' };
+// A download that the network broke (CI runners see ECONNRESET from the registry now and then) is tried again, up to
+// 3 times; any other failure fails at once. Installs are repeatable: a second run completes the first.
+const NETWORK = /\b(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|EPIPE|socket hang up)\b/;
 const sh = (cmd, cwd) => {
-  try {
-    execSync(cmd, { cwd, env: ENV, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 });
-  } catch (e) {
-    process.stderr.write(`${cmd} failed in ${cwd}:\n${String(e.stdout || '').split('\n').slice(-30).join('\n')}${e.stderr || ''}\n`);
-    throw e;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      execSync(cmd, { cwd, env: ENV, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 });
+      return;
+    } catch (e) {
+      const output = `${String(e.stdout || '')}${e.stderr || ''}`;
+      if (attempt < 3 && NETWORK.test(output)) {
+        process.stderr.write(`${cmd} in ${cwd}: network error (${output.match(NETWORK)[1]}), attempt ${attempt + 1} of 3\n`);
+        execSync(`sleep ${5 * attempt}`);
+        continue;
+      }
+      process.stderr.write(`${cmd} failed in ${cwd}:\n${String(e.stdout || '').split('\n').slice(-30).join('\n')}${e.stderr || ''}\n`);
+      throw e;
+    }
   }
 };
 
