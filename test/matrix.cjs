@@ -49,6 +49,11 @@ const COPIED = { 'normalize.css': '8.0.1', 'left-pad': '1.3.0', 'lodash-es': '4.
 const COPIED_EXPECT = ['left-pad@1.3.0', 'lodash-es@4.18.1', 'normalize.css@8.0.1'];
 const WORKER = { 'worker-loader': '3.0.8', 'lodash-es': '4.18.1', ms: '2.1.3', debug: '2.6.9', 'is-number': '7.0.0' };
 const BABEL7 = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/plugin-transform-runtime': '7.29.7', '@babel/runtime': '7.29.10', 'core-js': '3.50.0' };
+// edge-helpers: the transpilers whose helpers are inlined into modules (src/core/helpers.cjs), each pinned, also the
+// @babel/helpers that @babel/core 7.29.7 takes (^7.29.7: the newest, hoisted)
+const HELPERS = { 'babel-loader': '10.1.1', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/helpers': '7.29.10',
+  '@babel/plugin-transform-runtime': '7.29.7', '@babel/runtime': '7.29.10', 'ts-loader': '9.6.2', typescript: '5.9.3', tslib: '2.8.1',
+  'swc-loader': '0.2.7', '@swc/core': '1.16.18', '@swc/helpers': '0.5.23' };
 
 // installer: npm | yarn1 | bun (the tools in the test image) or a pinned, vendored yarn berry / pnpm release
 // Vite apps: package.json type module, `vite build`
@@ -301,6 +306,10 @@ const fixtures = {
   'wp5-devdeps-pnpm11': devdeps({ type: 'pnpm', version: '11.28.5' }),
   'edge-alias': edge('edge-alias', { ms: '2.1.3', 'ms-old': 'npm:ms@2.0.0', debug: '2.6.9', 'debug-old': 'npm:debug@2.6.8' }),
   'edge-babel': edge('edge-babel', BABEL7),
+  'edge-helpers': edge('edge-helpers', HELPERS),
+  'edge-helpers-rollup': { app: 'edge-helpers', bundler: 'rollup', installer: { type: 'npm' },
+    deps: { rollup: '4.64.6', '@rollup/plugin-babel': '7.1.0', '@babel/core': '7.29.7', '@babel/preset-env': '7.29.7', '@babel/helpers': '7.29.10' },
+    packageJson: { type: 'module', scripts: { build: 'rollup -c' } } },
   // (bootstrap-icons: an image src/icons.css inlines as a data: URL, EDGE_CSS=inline)
   'edge-css': edge('edge-css', { 'css-loader': '7.1.5', 'mini-css-extract-plugin': '2.10.2', 'normalize.css': '8.0.1', 'lodash-es': '4.18.1', 'bootstrap-icons': '1.13.1' }),
   // a Vue 3 single-file component whose <style lang="scss"> @imports Bootstrap's Sass (test/apps/edge-vue)
@@ -831,6 +840,17 @@ const cases = [
   // @babel/runtime's ES-module helpers are below helpers/esm/, whose package.json is only {"type": "module"}
   { name: 'edge: Babel-injected core-js / @babel/runtime', fixture: 'edge-babel', cmd: 'npm run -s build', expectIncludes: ['core-js@3.50.0', '@babel/runtime@7.29.10'],
     expectSources: ['node_modules/@babel/runtime/helpers/esm/'] },
+  // transpiler helpers inlined into modules (src/core/helpers.cjs): the transpiler the loader resolves, as the fixture
+  // pins it - helpers imported instead (@babel/runtime, tslib, @swc/helpers) are modules, listed as such; the oracle
+  // finds the inlined ones in webpack's stats and Rollup's maps (test/lib/helpers.cjs)
+  ...[['babel', ['@babel/helpers@7.29.10']],
+    // (transform-runtime still inlines the helpers it wraps: _objectSpread around @babel/runtime's defineProperty)
+    ['babel-runtime', ['@babel/helpers@7.29.10', '@babel/runtime@7.29.10']],
+    ['ts', ['typescript@5.9.3']], ['ts-tslib', ['tslib@2.8.1']], ['swc', ['@swc/core@1.16.18']], ['swc-external', ['@swc/helpers@0.5.23']]]
+    .map(([mode, expect]) => ({ name: `edge: transpiler helpers, ${mode}`, fixture: 'edge-helpers', cmd: 'npm run -s build', env: { EDGE_HELPERS: mode },
+      expect, expectVia: { helpers: expect.filter(id => /^(@babel\/helpers|typescript|@swc\/core)@/.test(id)) } })),
+  { name: 'edge: transpiler helpers, Rollup with @rollup/plugin-babel (bundled helpers module)', fixture: 'edge-helpers-rollup', cmd: 'npm run -s build',
+    expect: ['@babel/helpers@7.29.10'], expectVia: { helpers: ['@babel/helpers@7.29.10'] } },
   { name: 'edge: CSS from packages (mini-css-extract)', fixture: 'edge-css', cmd: 'npm run -s build', expectIncludes: ['normalize.css@8.0.1', 'lodash-es@4.18.1'] },
   // a package's image inlined as a data: URL into the extracted CSS: mini-css-extract-plugin built the asset module at
   // build time (importModule), in no chunk - not in the stats' modules of a chunk (oracleMissing)

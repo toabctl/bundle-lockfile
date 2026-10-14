@@ -462,6 +462,7 @@ src/core/packages.cjs   source files -> packages (package.json), also those insi
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/via.cjs        how each package was found (the record's "via")
 src/core/bundler.cjs    the bundler package whose code is in an output: the copy that ran (patched file, caller frame)
+src/core/helpers.cjs    transpilers whose helpers are inlined into shipped modules (Babel, swc, TypeScript) and their copies
 src/core/tree.cjs       BUNDLE_LOCKFILE_TREE: a package.json per lockfile entry, for image scans
 src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
 src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path, writer-id paths

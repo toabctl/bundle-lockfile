@@ -18,8 +18,9 @@
 // - vendored: a vendored copy, inside a package or outside node_modules
 // - traced: a file Next.js traced for its server, which loads it from node_modules at runtime (adapters/next.cjs)
 // - runtime: the bundler itself, whose code (runtime, chunk wrappers, helpers) is in the JavaScript it writes
+// - helpers: a transpiler whose helpers it inlined into a shipped module (Babel's, swc's, TypeScript's: core/helpers.cjs)
 const CLASSES = ['chunk', 'child', 'asset', 'copy-source', 'copy-bytes', 'style', 'inlined', 'inlined-exports', 'generated',
-  'late', 'fs-copy', 'nested', 'vendored', 'traced', 'runtime'];
+  'late', 'fs-copy', 'nested', 'vendored', 'traced', 'runtime', 'helpers'];
 const KNOWN = new Set(CLASSES);
 
 // A collector: add(cls, packages) records that the packages were found that way; byPath: package path -> Set(cls).

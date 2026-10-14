@@ -6341,3 +6341,97 @@ test('next adapter: a next/dist/build of a shape it does not know fails (strict)
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), 'true');
 }));
+
+// Transpiler helpers inlined into modules (core/helpers.cjs): the names in the code after the loaders or plugins, not in
+// the file; the transpiler copy the loader resolves (webpack) or this process loaded (Rollup, Vite, Rolldown)
+test('helpers: Babel, swc and TypeScript helpers by their names; only those the file does not have count', () => {
+  const helpers = require('../src/core/helpers.cjs');
+  // as the transpilers write them (babel-loader, swc-loader, ts-loader output on the workstation, 2026-10-14)
+  const babel = 'function _classCallCheck(a, n) { if (!(a instanceof n)) throw new TypeError(); }\nfunction _typeof(o) {}\nvar A = function A() { _classCallCheck(this, A); };';
+  const swc = 'function _class_call_check(instance, Constructor) {}\nfunction _inherits(a, b) {}\n';
+  const ts = 'var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {};\nvar __extends = (this && this.__extends) || (function () {})();';
+  const n = helpers.names(babel + swc + ts);
+  assert.deepEqual([...n.babel], ['classCallCheck']);
+  assert.deepEqual([...n.swc], ['class_call_check']);
+  assert.deepEqual([...n.either].sort(), ['inherits', 'typeof']);
+  assert.deepEqual([...n.typescript], ['__awaiter', '__extends']);
+  const root = project({ 'src/a.js': 'export class A {}', 'src/own.js': 'function _classCallCheck() {}\nexport const x = 1;', 'src/plain.js': 'export const y = 2;' });
+  assert.deepEqual([...helpers.inlined(babel, J(root, 'src/a.js'))].sort(), ['babel', 'either']);
+  assert.deepEqual([...helpers.inlined(swc, J(root, 'src/a.js'))].sort(), ['either', 'swc']);
+  assert.deepEqual([...helpers.inlined(ts, J(root, 'src/a.js'))], ['typescript']);
+  // a package's own compiled helpers (in its file): no transpiler of this build wrote them
+  assert.deepEqual([...helpers.inlined('function _classCallCheck() {}\nexport const x = 1;', J(root, 'src/own.js'))], []);
+  // no helpers, a user function without the underscore shape, an unreadable file (virtual module): all its names count
+  assert.deepEqual([...helpers.inlined('export const y = 2;', J(root, 'src/plain.js'))], []);
+  assert.deepEqual([...helpers.inlined('function helper() {}', J(root, 'src/plain.js'))], []);
+  assert.deepEqual([...helpers.inlined(babel, null)].sort(), ['babel', 'either']);
+});
+
+test('helpers: webpack modules list the transpiler copy their loader resolves; no loader of one, no look', () => {
+  const helpers = require('../src/core/helpers.cjs');
+  const root = project({
+    'node_modules/babel-loader/package.json': { name: 'babel-loader', version: '10.1.1' },
+    'node_modules/babel-loader/lib/index.js': '',
+    'node_modules/@babel/core/package.json': { name: '@babel/core', version: '7.29.7', main: 'lib/index.js' },
+    'node_modules/@babel/core/lib/index.js': '',
+    // @babel/core's own @babel/helpers, not the hoisted one: the copy that ran
+    'node_modules/@babel/core/node_modules/@babel/helpers/package.json': { name: '@babel/helpers', version: '7.29.9', license: 'MIT' },
+    'node_modules/@babel/helpers/package.json': { name: '@babel/helpers', version: '7.20.0', license: 'MIT' },
+    'node_modules/ts-loader/package.json': { name: 'ts-loader', version: '9.6.2' },
+    'node_modules/ts-loader/index.js': '',
+    'node_modules/typescript/package.json': { name: 'typescript', version: '5.9.3', license: 'Apache-2.0' },
+    'node_modules/my-tsc/package.json': { name: 'my-tsc', version: '1.0.0', license: 'MIT' },
+    'src/a.js': 'export class A {}', 'src/t.ts': 'export class T {}', 'src/b.js': 'export const b = 1;',
+  });
+  const mod = (resource, loader, code, options) => ({ resource, loaders: loader ? [{ loader, options }] : [], originalSource: () => (code === null ? null : { source: () => code }), identifier: () => resource });
+  const BL = J(root, 'node_modules/babel-loader/lib/index.js'), TL = J(root, 'node_modules/ts-loader/index.js');
+  const ids = (list) => list.map(p => `${p.name}@${p.version} ${path.relative(root, p.path)}`).sort();
+  const of = (mods) => ids(helpers.ofWebpackModules(mods, m => m.resource));
+  assert.deepEqual(of([mod(J(root, 'src/a.js'), BL, 'function _classCallCheck(a, b) {}\nexport class A {}')]),
+    ['@babel/helpers@7.29.9 node_modules/@babel/core/node_modules/@babel/helpers']);
+  assert.deepEqual(of([mod(J(root, 'src/t.ts'), TL, 'var __awaiter = (this && this.__awaiter) || function () {};')]), ['typescript@5.9.3 node_modules/typescript']);
+  assert.deepEqual(of([mod(J(root, 'src/t.ts'), TL, 'var __awaiter = (this && this.__awaiter) || function () {};', { compiler: 'my-tsc' })]), ['my-tsc@1.0.0 node_modules/my-tsc']);
+  // babel-loader without inlined helpers (@babel/runtime imports: modules, listed as such), no transpiler loader
+  assert.deepEqual(of([mod(J(root, 'src/b.js'), BL, 'import _c from "@babel/runtime/helpers/classCallCheck";')]), []);
+  assert.deepEqual(of([mod(J(root, 'src/a.js'), null, 'function _classCallCheck(a, b) {}')]), []);
+  // the code after the loaders is not there (rspack): the transpiler that ran counts
+  assert.deepEqual(of([mod(J(root, 'src/a.js'), BL, null)]), ['@babel/helpers@7.29.9 node_modules/@babel/core/node_modules/@babel/helpers']);
+  // Babel helpers in a module ts-loader compiled: no Babel ran on it
+  assert.deepEqual(of([mod(J(root, 'src/a.js'), TL, 'function _classCallCheck(a, b) {}')]), []);
+});
+
+test('helpers: Rollup, Vite, Rolldown modules list the transpiler copies this process loaded, else the directory\'s', () => {
+  const root = project({
+    'node_modules/@babel/helpers/package.json': { name: '@babel/helpers', version: '7.29.9', license: 'MIT' },
+    'node_modules/@babel/helpers/lib/index.js': 'module.exports = {};',
+    'node_modules/@swc/core/package.json': { name: '@swc/core', version: '1.16.18', license: 'Apache-2.0' },
+    'node_modules/typescript/package.json': { name: 'typescript', version: '5.9.3', license: 'Apache-2.0' },
+    'src/a.js': 'export class A {}',
+  });
+  // a fresh process: the registry of loaded copies is per process
+  const script = `
+    const helpers = require(${JSON.stringify(J(SRC, 'core/helpers.cjs'))});
+    const path = require('path'); const root = ${JSON.stringify(root)};
+    const infos = { [path.join(root, 'src/a.js')]: { code: 'function _classCallCheck() {}\\nfunction _extends() {}\\nexport class A {}' },
+      '\\0rollupPluginBabelHelpers.js': { code: 'function _defineProperty(e, r, t) {}' },
+      [path.join(root, 'src/t.js')]: { code: 'var __awaiter = (this && this.__awaiter) || function () {};' } };
+    const fileOf = (id) => (id.startsWith('\\0') ? null : id);
+    const ids = (l) => l.map(p => p.name + '@' + p.version).sort();
+    const run = (list) => ids(helpers.ofModuleIds(list, (id) => infos[id], fileOf, root));
+    const out = {};
+    out.notLoaded = run([path.join(root, 'src/a.js')]);       // Babel's from the directory; _extends (Babel or swc) alone would not add swc
+    out.virtual = run(['\\0rollupPluginBabelHelpers.js']);      // @rollup/plugin-babel's bundled helpers module
+    out.ts = run([path.join(root, 'src/t.js')]);
+    helpers.seen(path.join(root, 'node_modules/@babel/helpers/lib/index.js'));
+    out.loaded = run([path.join(root, 'src/a.js')]);
+    console.log(JSON.stringify(out));`;
+  const r = nodeWith(process.env, ['-e', script]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { notLoaded: ['@babel/helpers@7.29.9'], virtual: ['@babel/helpers@7.29.9'], ts: ['typescript@5.9.3'], loaded: ['@babel/helpers@7.29.9'] });
+  // only one-word names (_extends), nothing loaded: no transpiler of the directory is listed for them
+  const only = `const h = require(${JSON.stringify(J(SRC, 'core/helpers.cjs'))}); const f = ${JSON.stringify(J(root, 'src/a.js'))};
+    console.log(JSON.stringify(h.ofModuleIds([f], () => ({ code: 'function _extends() {}' }), (id) => id, ${JSON.stringify(root)}).map(p => p.name)));`;
+  const r2 = nodeWith(process.env, ['-e', only]);
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.deepEqual(JSON.parse(r2.stdout), []);
+});

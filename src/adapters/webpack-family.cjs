@@ -14,6 +14,7 @@ const via = require('../core/via.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const { posix, packageRoot, portable, exportPath } = require('../core/paths.cjs');
 const { bundlerPackage, packageOnStack } = require('../core/bundler.cjs');
+const helpers = require('../core/helpers.cjs');
 
 const NAME = 'bundle-lockfile';
 const APPLIED = Symbol.for('bundle-lockfile.webpack.applied'); // compiler: has a BundleLockfilePlugin
@@ -22,6 +23,7 @@ const CLOSED = Symbol.for('bundle-lockfile.webpack.closed');   // compiler: its 
 const SOURCE = Symbol('bundle-lockfile.webpack.source');       // compilation: { src: lockfile content, early: asset names then, disk, asset }
 const BUNDLED = Symbol('bundle-lockfile.webpack.bundled');     // compilation: its bundledFiles()
 const KINDS = Symbol('bundle-lockfile.webpack.kinds');         // compilation: how bundledFiles() found each file (see core/via.cjs)
+const HELPERS = Symbol('bundle-lockfile.webpack.helpers');     // compilation: transpilers whose helpers are in its shipped modules
 const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: files its latest build copied in the emit hook
 const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: copiedUnnamed() before the assets were optimized
 const STARTED = Symbol('bundle-lockfile.webpack.started');     // compilation: when it started (ms; see filesWrittenAfter)
@@ -185,17 +187,21 @@ function inlinedModules(compilation, shipped) {
 //   Copies that do not name their source: see copiedUnnamed.
 // - rspack: the style sheets of styleFallback before 1.3.14, the modules whose exports were inlined (inlinedModules), and
 //   the files CopyRspackPlugin copied (copiedRspack: its sourceFilename is relative to the copy pattern, not the context).
-// Also sets compilation[KINDS]: Map(file -> Set of the classes it was found by, see core/via.cjs).
+// Also sets compilation[KINDS]: Map(file -> Set of the classes it was found by, see core/via.cjs), and
+// compilation[HELPERS]: the transpiler packages whose helpers are inlined into the shipped modules (core/helpers.cjs).
 function bundledFiles(compilation) {
   const files = new Set();
   const kinds = new Map();
   const mark = (f, cls) => { if (!kinds.has(f)) kinds.set(f, new Set()); kinds.get(f).add(cls); };
   compilation[KINDS] = kinds;
   const rspack = isRspack(compilation.compiler);
+  const shippedModules = new Map(); // module -> its compilation's issuerOf
   const ship = (c, chunks) => {
     const own = new Set(), seen = { modules: new Set(), unrecorded: false, mark };
     const cls = c === compilation ? 'chunk' : 'child';
     for (const chunk of chunks) sourcesOf(c, chunkModules(c, chunk), own, seen, cls);
+    const issuerOf = issuers(c);
+    for (const m of seen.modules) if (!shippedModules.has(m)) shippedModules.set(m, issuerOf);
     if (seen.unrecorded) for (const f of styleFallback(c)) { own.add(f); mark(f, 'style'); }
     if (rspack) for (const f of inlinedModules(c, seen.modules)) { own.add(f); mark(f, 'inlined-exports'); }
     for (const f of own) files.add(f);
@@ -213,6 +219,9 @@ function bundledFiles(compilation) {
     }
   };
   children(compilation, ship(compilation, compilation.chunks));
+  try {
+    compilation[HELPERS] = helpers.ofWebpackModules(shippedModules.keys(), (m) => sourceFile(m, shippedModules.get(m)));
+  } catch (e) { problems.problem(`${kindOf(compilation.compiler)}: could not look for transpiler helpers in the modules of ${outputDir(compilation)}`, e); compilation[HELPERS] = []; }
 
   for (const { info } of compilation.getAssets ? compilation.getAssets() : []) {
     if (!info || typeof info.sourceFilename !== 'string' || (rspack && info.copied)) continue;
@@ -544,7 +553,10 @@ class BundleLockfilePlugin {
     // the bundler, whose runtime and chunk wrappers are in the JavaScript it writes (see bundlerOf)
     const own = writesJs(compilation) ? [bundlerOf(compiler, this.applier)].filter(Boolean) : [];
     found.add('runtime', own);
-    const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || [], own);
+    // the transpilers whose helpers they inlined into shipped modules (core/helpers.cjs)
+    const inl = compilation[HELPERS] || [];
+    found.add('helpers', inl);
+    const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || [], own, inl);
     return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
   }
@@ -579,7 +591,7 @@ class BundleLockfilePlugin {
       compilation[STARTED] = Date.now() - 2000; // (file systems with coarse timestamps)
       // a plugin that makes webpack seal the compilation again (needAdditionalSeal): new chunks and assets
       const unseal = hook(compilation.hooks, 'unseal');
-      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, KINDS, UNNAMED, SOURCE, GENERATED]) delete compilation[k]; });
+      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, KINDS, HELPERS, UNNAMED, SOURCE, GENERATED]) delete compilation[k]; });
       // webpack 5 and rspack: copied files, before the optimize stages change their bytes (copiedUnnamed, copiedRspack)
       const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');

@@ -12,6 +12,7 @@ const path = require('path');
 const owner = require('./owner.cjs');
 const { spawnSync } = require('child_process');
 const { hasJs, resolved } = require('../lib/bundlers.cjs');
+const helpers = require('../lib/helpers.cjs');
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : dflt; };
 const outFile = arg('--out-file', null);
@@ -46,7 +47,8 @@ walk(out);
 // output, also the Rollup that wrote it (test/lib/bundlers.cjs)
 const packagesOf = (list) => owner.packagesOf(list);
 const bundler = [resolved(process.env.BLTEST_ORACLE_BUNDLER || 'rollup', '.')].filter(Boolean); // (run.cjs: the case's bundler)
-const result = { '': [...new Set([...packagesOf(files), ...(hasJs(out) ? bundler : [])])].sort() };
+// and the transpiler whose helpers a plugin added as a module of their own (test/lib/helpers.cjs)
+const result = { '': [...new Set([...packagesOf(files), ...(hasJs(out) ? bundler : []), ...helpers.ofRollupOutput(out, [...files])])].sort() };
 const extra = {
   ...(process.argv.includes('--by-file') && { byFile: Object.fromEntries([...filesOf].map(([f, list]) => [f, [...packagesOf(list), ...(/\.[cm]?js$/.test(f) ? bundler : [])].sort()])) }),
   ...(process.argv.includes('--sources') && { sources: [...files].sort() }),
