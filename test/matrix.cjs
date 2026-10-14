@@ -1203,7 +1203,7 @@ const cases = [
   // package; the oracle's source maps see neither (the partial is inlined, the copy is none of esbuild's outputs)
   { name: 'esbuild 0.28.2: a Sass partial esbuild-sass-plugin inlines, a package file another plugin copies in onEnd', fixture: 'esbuild-features',
     cmd: 'node build.mjs features', oracleArgs: 'features', expect: ['bulma@1.0.4', 'lodash-es@4.18.1', 'sanitize.css@13.0.0'],
-    oracleMissing: ['bulma@1.0.4', 'sanitize.css@13.0.0'] },
+    oracleMissing: ['bulma@1.0.4', 'sanitize.css@13.0.0'], expectVia: { chunk: ['lodash-es@4.18.1'], style: ['bulma@1.0.4'], late: ['sanitize.css@13.0.0'] } },
   { name: 'esbuild 0.28.2: export directory only (an output Go embeds)', fixture: 'esbuild', cmd: 'node build.mjs build', exportOnly: true, expect: ESBUILD,
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'esbuild: BUNDLE_LOCKFILE_DISABLE=esbuild', fixture: 'esbuild', cmd: 'node build.mjs build', env: { BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, expect: null },
