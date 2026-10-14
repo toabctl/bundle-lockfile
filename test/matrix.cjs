@@ -156,7 +156,7 @@ const nextRspack = (fx, version) => ({ ...fx, deps: { ...fx.deps, 'next-rspack':
 // canaries (test/apps/canary): packages whose shipped code carries BLCANARY:<name>@<version>, which run.cjs finds in the
 // output's bytes - not through the bundler's own reporting, which the oracles read. Moved into node_modules after the
 // install (npm links a file: directory): bl-canary-dup 2.0.0 at the top, 1.0.0 inside bl-canary-used
-const CANARY_INSTALL = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused bl-canary-css bl-canary-import bl-canary-icon bl-canary-url bl-canary-glsl ../node_modules/'
+const CANARY_INSTALL = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused bl-canary-css bl-canary-import bl-canary-icon bl-canary-url bl-canary-glsl bl-canary-scss bl-canary-less ../node_modules/'
   + ' && mv bl-canary-dup-2 ../node_modules/bl-canary-dup && mkdir ../node_modules/bl-canary-used/node_modules'
   + ' && mv bl-canary-dup-1 ../node_modules/bl-canary-used/node_modules/bl-canary-dup && cd .. && rmdir pkgs';
 // edge-manifests: engine.io-client pinned too (socket.io-client takes ~6.6.1), as the package whose build/esm/package.json
@@ -449,7 +449,7 @@ const fixtures = {
     { type: 'module', scripts: { build: 'node rolldown.mjs build' } })])),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
   'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
-  'canary-parcel': canary('parcel', { parcel: '2.16.4', '@parcel/transformer-glsl': '2.16.4' }, { scripts: { build: 'parcel build parcel.html --dist-dir dist --no-optimize' } }), // (optimized SVGs lose their markers, comments)
+  'canary-parcel': canary('parcel', { parcel: '2.16.4', '@parcel/transformer-glsl': '2.16.4', '@parcel/transformer-sass': '2.16.4', '@parcel/transformer-less': '2.16.4' }, { scripts: { build: 'parcel build parcel.html --dist-dir dist --no-optimize' } }), // (optimized SVGs lose their markers, comments)
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
   'edge-manifests-wp5': manifests('webpack', WEBPACK),
   'edge-manifests-vite8': manifests('vite', { vite: '8.3.3' }, { type: 'module', scripts: { build: 'vite build' } }),
@@ -481,6 +481,8 @@ const CANARY_INLINED = { js: ['bl-canary-glsl@1.0.0'], all: ['bl-canary-css@1.0.
 // the image JavaScript inlines with new URL(): a module of webpack's and rspack's builds, inlined by Vite's (Rollup leaves
 // the URL as it is: not in the output)
 const CANARY_URL = 'bl-canary-url@1.0.0';
+// the Sass partial and the Less file Parcel's canary build inlines into its own style sheets
+const CANARY_PARCEL_STYLE = ['bl-canary-less@1.0.0', 'bl-canary-scss@1.0.0'];
 const CANARY_VITE = [...CANARY_JS, ...CANARY_INLINED.all, CANARY_URL].sort();
 const CANARY_ROLLDOWN = [...CANARY_JS, ...CANARY_INLINED.js].sort();
 // what a Rolldown build without its plugin contexts' records and without a build object (watch()) does not list: every
@@ -1828,10 +1830,16 @@ const cases = [
   // Parcel (parcel.html: its own style sheet, see src/parcel.js): the @imported style sheet, the images (a style sheet's
   // url(), new URL()) are assets of their own; @parcel/transformer-glsl leaves the shader's #include line as it is, so
   // nothing of bl-canary-glsl is shipped (no marker, not listed); the oracle's source maps have no source for the
-  // images. Parcel's runtime resolves new URL()'s asset at run time: @parcel/runtime-js
+  // images. Parcel's runtime resolves new URL()'s asset at run time: @parcel/runtime-js. The Sass partial and the Less
+  // file its style sheets inline are no assets: their asset requests' invalidations in Parcel's request graph name them
   { name: 'canaries: Parcel 2.16.4', fixture: 'canary-parcel', cmd: 'npm run -s build', oracleArgs: 'parcel.html',
-    expect: [...CANARY_JS, ...CANARY_INLINED.all.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_URL, '@parcel/runtime-js@2.16.4'].sort(),
-    oracleMissing: ['bl-canary-icon@1.0.0', CANARY_URL], expectVia: { asset: ['bl-canary-icon@1.0.0', CANARY_URL] } },
+    expect: [...CANARY_JS, ...CANARY_INLINED.all.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_URL, '@parcel/runtime-js@2.16.4', ...CANARY_PARCEL_STYLE].sort(),
+    oracleMissing: ['bl-canary-icon@1.0.0', CANARY_URL], expectVia: { asset: ['bl-canary-icon@1.0.0', CANARY_URL], style: CANARY_PARCEL_STYLE } },
+  // a cached build transforms no style sheet again: the partials come from the request graph Parcel read from its cache
+  { name: 'canaries: Parcel 2.16.4, a build with a cache from a build without bundle-lockfile', fixture: 'canary-parcel',
+    cmd: 'NODE_OPTIONS= npm run -s build && rm -rf dist && npm run -s build', oracleArgs: 'parcel.html',
+    expect: [...CANARY_JS, ...CANARY_INLINED.all.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_URL, '@parcel/runtime-js@2.16.4', ...CANARY_PARCEL_STYLE].sort(),
+    oracleMissing: ['bl-canary-icon@1.0.0', CANARY_URL], expectVia: { style: CANARY_PARCEL_STYLE } },
   // Vite records the images a style sheet inlines as data: URLs from 6.1 on (vitejs/vite#18979), those JavaScript
   // inlines with new URL() from 7 on: before, nothing the build records names their files - their markers are in the
   // output, their packages not listed
