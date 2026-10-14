@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
+const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
@@ -25,11 +26,15 @@ const TYPE = { Browser: 0, ServerApplication: 2, Root: 4 };
 // its metafiles with the stats option: one per side (22 and later), or both sides in one (stats.json: 17 - 21)
 const STATS = { browser: 'browser-stats.json', server: 'server-stats.json', both: 'stats.json' };
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+// the version of the builder whose executeBuild() was wrapped (@angular/build, or @angular-devkit/build-angular 17), as
+// its package.json says: the record's bundler
+let version = null;
 
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
 // that path), and its export copy written; returns the content Angular writes, or null.
-function render(side, target, writer, pkgs, context, files) {
-  const content = outputs.record(target, writer, pkgs, context, files, { disk: true });
+function render(side, target, writer, pkgs, context, files, found) {
+  const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found,
+    bundler: { name: 'angular', ...(version ? { version } : {}) } });
   outputs.emitted(target, writer);
   if (exportPath(target)) {
     outputs.rewrite(target, null, (err) => {
@@ -72,14 +77,18 @@ function complete(options, result, forced) {
   for (const side of ['browser', 'server']) {
     const metafile = stats[side];
     if (!metafile) continue;
-    const sources = [...new Set([...filesOfOutputs(metafile, wd).values()].flat())];
-    if (side === 'browser') sources.push(...assets);
+    // (via, see core/via.cjs: the outputs' inputs are chunks, files they inline style or inlined, Angular's asset copies
+    // assets)
+    const kinds = new Map();
+    const sources = [...new Set([...filesOfOutputs(metafile, wd, undefined, kinds).values()].flat())];
+    if (side === 'browser') for (const a of assets) { sources.push(a); kinds.set(a, 'asset'); }
     const entries = Object.values(metafile.outputs || {}).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
-    const { all } = packages.packagesOfFiles(sources, { context, entries });
+    const collected = packages.packagesOfFiles(sources, { context, entries });
+    const { all } = collected;
     const dir = path.join(out.base, out[side] || side);
     const target = path.join(dir, config.file);
     const own = files.filter(f => f && f.type === (side === 'browser' ? TYPE.Browser : TYPE.ServerApplication)).map(f => path.join(dir, f.path));
-    const content = render(side, target, JSON.stringify(['angular', side, portable(context, out.base)]), all, context, own);
+    const content = render(side, target, JSON.stringify(['angular', side, portable(context, out.base)]), all, context, own, via.ofFiles(collected, kinds));
     if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
       result.addOutputFile(config.file, content, side === 'browser' ? TYPE.Browser : TYPE.ServerApplication);
     }
@@ -112,7 +121,8 @@ module.exports = {
     try {
       exp.executeBuild = wrap(exp.executeBuild);
       exp[PATCHED] = true;
-      config.debug('angular: wrapped executeBuild() of', resolve());
+      try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../../../package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+      config.debug('angular: wrapped executeBuild() of', resolve(), version || '');
     } catch (e) { problems.problem(`angular: could not wrap ${resolve()}`, e); }
   },
   wrap,

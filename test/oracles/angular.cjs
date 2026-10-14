@@ -3,8 +3,9 @@
 // configuration: no packages' own source maps, vendor: false), into dist-oracle, and derives the packages from the
 // maps' sources (Angular writes them relative to the workspace root; else relative to the map's directory). Shares no code with the adapter, which reads Angular's stats metafile. Source maps leave out what has no
 // mappings (an asset Angular copies): a case names those.
-// usage (cwd = fixture): node oracles/angular.cjs
-// prints {"browser": [name@version, ...]} (the browser output, relative to the output path dist/)
+// usage (cwd = fixture): node oracles/angular.cjs [--browser-as-root]
+// prints {"browser": [name@version, ...]} (the browser output, relative to the output path dist/), or with
+// --browser-as-root {"": [...]} (a case whose output directory is dist/browser)
 const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
@@ -34,4 +35,4 @@ const walk = (d) => {
   }
 };
 walk(path.join(out, 'browser'));
-console.log(JSON.stringify({ browser: owner.packagesOf(files) }));
+console.log(JSON.stringify({ [process.argv.includes('--browser-as-root') ? '' : 'browser']: owner.packagesOf(files) }));

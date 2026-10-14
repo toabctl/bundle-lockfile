@@ -4202,6 +4202,10 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
     const lock = r.outputFiles.find(f => f.path === LOCK);
     assert.equal(lock.type, 0); // Angular's Browser: <outputPath>/browser/
     assert.deepEqual(lockedNames(lock.text), ['a', 'font'], stats);
+    const w = JSON.parse(lock.text)['bundle-lockfile'].writers[0];
+    assert.equal(w.bundler.name, 'angular');
+    const pk = w.packages;
+    assert.deepEqual(Object.fromEntries(Object.entries(w.via).map(([c, ix]) => [c, ix.map(i => pk[i])])), { chunk: ['node_modules/a'], asset: ['node_modules/font'] }, stats);
     const asked = await run({ ...options, stats: true });
     assert.ok(asked.outputFiles.some(f => /stats\.json$/.test(f.path)), stats);
   }

@@ -1263,7 +1263,10 @@ const cases = [
   // its chunk optimizer, which three lazy chunks turn on) and its asset files (bootstrap-icons' font, copied from
   // node_modules: in no source map, the oracle's); not uuid (unused)
   ...[['22.2.2', 'angular22'], ['21.2.26', 'angular21'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
-    { name: `Angular ${v}: ng build`, fixture, cmd: 'npm run -s build', expectIn: { browser: ANGULAR(fixture) }, oracleMissing: ['bootstrap-icons@1.13.2'] })),
+    // via: the asset glob's font copied from node_modules, the rest modules of the chunks (the browser output as outDir:
+    // expectVia reads its lockfile)
+    { name: `Angular ${v}: ng build`, fixture, cmd: 'npm run -s build', outDir: 'dist/browser', expect: ANGULAR(fixture), oracleArgs: '--browser-as-root',
+      oracleMissing: ['bootstrap-icons@1.13.2'], expectVia: { asset: ['bootstrap-icons@1.13.2'], chunk: ANGULAR(fixture).filter(p => p !== 'bootstrap-icons@1.13.2') } })),
   { name: 'Angular 22.2.2: ng build without the chunk optimizer (NG_BUILD_OPTIMIZE_CHUNKS=0)', fixture: 'angular22', cmd: 'npm run -s build',
     env: { NG_BUILD_OPTIMIZE_CHUNKS: '0' }, expectIn: { browser: ANGULAR('angular22') }, oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Angular 22.2.2: export directory only', fixture: 'angular22', cmd: 'npm run -s build', exportOnly: true, expectIn: { browser: ANGULAR('angular22') },
