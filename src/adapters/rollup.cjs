@@ -16,7 +16,7 @@ const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const rolldownWatch = require('./rolldown-watch.cjs');
-const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
 
@@ -258,20 +258,10 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   let since = 0;
   // writes the lockfile of an output; in strict mode rejects with what went wrong (core/problems.cjs), which fails the
   // build: a hook's rejection is the build's error
-  const write = (w) => new Promise(/** @param {(value?: undefined) => void} resolve */ (resolve, reject) => {
-    const end = () => { if (!problems.failIfAny(reject)) resolve(); };
-    try {
-      outputs.emitted(w.target, w.writer);
-      const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
-      outputs.prune(w.target, w.writer, exists, () => {
-        outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
-          if (err) problems.problem(`${kind}: could not write ${w.target}`, err);
-          else if (config.inline || exportPath(w.target)) config.debug(`${kind}: wrote`, [config.inline && w.target, exportPath(w.target)].filter(Boolean).join(' and '));
-          end();
-        });
-      });
-    } catch (e) { problems.problem(`${kind}: could not write ${w.target}`, e); end(); }
-  });
+  const write = async (w) => {
+    await outputs.land(w.target, w.writer, kind);
+    problems.failIfAny((err) => { throw err; });
+  };
   return {
     name: NAME,
     api: { setBuild(b) { build = b; } },

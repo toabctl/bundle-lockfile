@@ -42,13 +42,12 @@ let esbuildFile = null;
 function render(side, target, writer, pkgs, context, files, found) {
   const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found,
     bundler: { name: 'angular', ...(version ? { version } : {}) } });
-  outputs.emitted(target, writer);
-  if (exportPath(target)) {
-    outputs.rewrite(target, null, (err) => {
-      if (err) problems.problem(`angular: could not write the export copy of ${target}`, err);
-      else config.debug('angular: wrote', exportPath(target));
-    });
-  } else if (!config.inline) outputs.nowhere();
+  // Angular writes the lockfile in the output; bundle-lockfile its export copy
+  if (exportPath(target)) outputs.land(target, writer, 'angular', { writeFile: null, prune: false });
+  else {
+    outputs.emitted(target, writer);
+    if (!config.inline) outputs.nowhere();
+  }
   config.debug(`angular: the ${side} lockfile`, target, 'with', pkgs.length, 'packages');
   return content;
 }

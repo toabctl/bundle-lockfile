@@ -73,6 +73,12 @@ function warnings(fn) {
   try { fn(); } finally { config.warn = orig; }
   return seen;
 }
+async function warningsOf(fn) {
+  const orig = config.warn, seen = [];
+  config.warn = (...a) => seen.push(a.join(' '));
+  try { await fn(); } finally { config.warn = orig; }
+  return seen;
+}
 const entries = (json) => Object.entries(JSON.parse(json).packages).filter(([k, p]) => k && notUnit(p));
 const allEntries = (json) => Object.entries(JSON.parse(json).packages).filter(([k]) => k); // with the bundler
 
@@ -867,8 +873,8 @@ test('outputs: prune drops other writers whose files are all gone, once their bu
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), ...pj('e'), 'dist/b.js': '', 'dist/c2.js': '' });
   const target = J(root, 'dist/bundle-lockfile/package-lock.json');
   const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
-  const exists = (f, cb) => setImmediate(cb, fs.existsSync(f));
-  const prune = (writer) => new Promise(resolve => outputs.prune(target, writer, exists, resolve));
+  const exists = (f) => new Promise(resolve => setImmediate(resolve, fs.existsSync(f)));
+  const prune = (writer) => outputs.prune(target, writer, exists);
   const listed = () => lockedNames(outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')]));
   outputs.record(target, 'a', [a], root, [J(root, 'dist/a.js')]);              // the one pruning: never dropped by itself
   outputs.record(target, 'b', [b], root, [J(root, 'dist/b.js')]);              // its file is there
@@ -885,10 +891,10 @@ test('outputs: prune drops other writers whose files are all gone, once their bu
   await prune('a');
   assert.deepEqual(listed(), ['a', 'b', 'c']);
   assert.equal(outputs.isShared(target), true);
-  // nothing to check: done at once
-  let done = false;
-  outputs.prune(J(root, 'other/package-lock.json'), 'a', exists, () => (done = true));
-  assert.equal(done, true);
+  // nothing to check: no file is looked at
+  let looked = false;
+  await outputs.prune(J(root, 'other/package-lock.json'), 'a', (f) => { looked = true; return exists(f); });
+  assert.equal(looked, false);
 });
 
 test('outputs: a build that is never written (it failed) does not replace the packages of the output in the directory', async () => {
@@ -896,7 +902,7 @@ test('outputs: a build that is never written (it failed) does not replace the pa
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
   const target = J(root, 'dist/bundle-lockfile/package-lock.json');
   const [a, b, c] = ['a', 'b', 'c'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
-  const rewrite = () => new Promise(resolve => outputs.rewrite(target, (json, cb) => { resolve(lockedNames(json)); cb(); }, () => {}));
+  const rewrite = () => new Promise(resolve => outputs.rewrite(target, (json) => { resolve(lockedNames(json)); }));
   outputs.record(target, 'app', [a], root); outputs.emitted(target, 'app');
   outputs.record(target, 'sw', [b], root); outputs.emitted(target, 'sw');
   // app's next build fails: recorded, never written (webpack's emitOnErrors: false). The lockfile it would
@@ -954,7 +960,7 @@ test('outputs: two lockfiles of a process at one export path are an error; the s
     assert.equal(exportPath(inside), exportPath(outside));
     const write = (target, p) => new Promise((resolve) => {
       outputs.record(target, 'w', [p], root, [], { disk: true }); outputs.emitted(target, 'w');
-      outputs.rewrite(target, outputs.writeDisk(target), resolve);
+      outputs.rewrite(target, outputs.writeDisk(target)).then(resolve);
     });
     assert.equal(await write(outside, a), undefined);
     const err = await write(inside, b);
@@ -990,8 +996,8 @@ test('outputs: a lockfile on disk keeps the packages other processes put there, 
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'dist/b.js': 'b' });
   const target = J(root, 'dist', LOCK);
   const [a, b, c] = ['a', 'b', 'c'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
-  const writeFile = (json, cb) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); cb(); };
-  const rewrite = () => new Promise(resolve => outputs.rewrite(target, writeFile, resolve)).then(() => fs.readFileSync(target, 'utf8'));
+  const writeFile = (json) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); };
+  const rewrite = () => outputs.rewrite(target, writeFile).then(() => fs.readFileSync(target, 'utf8'));
   // another process wrote b (with its file dist/b.js) and an older build of this process's writer w1, with c
   const id = crypto.createHash('sha256').update('w1').digest('hex').slice(0, 16);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -1015,13 +1021,13 @@ test('outputs: another process\'s file that is a symbolic link to nothing is the
   const root = project({ ...pj('a'), ...pj('b') });
   const target = J(root, 'dist', LOCK);
   const [a, b] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
-  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  const writeFile = (json) => { fs.writeFileSync(target, json); };
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.symlinkSync(J(root, 'nowhere'), J(root, 'dist/b-link')); // a symbolic link asset (webpack >= 5.111)
   fs.writeFileSync(target, toPackageLock([b], root, { dir: path.dirname(target), writers: [{ id: 'other', files: [J(root, 'dist/b-link')], paths: [b.path] }] }));
   outputs.record(target, 'w-link', [a], root, [J(root, 'dist/a.js')], { disk: true });
   outputs.emitted(target, 'w-link');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a', 'b']);
 });
 
@@ -1029,7 +1035,7 @@ test('outputs: nothing recorded for a lockfile: nothing written, no error (one t
   const root = project({ 'dist/bundle-lockfile/package-lock.json': 'left alone' });
   const target = J(root, 'dist', LOCK);
   let written = false;
-  const err = await new Promise(resolve => outputs.rewrite(target, (json, cb) => { written = true; cb(); }, resolve));
+  const err = await outputs.rewrite(target, () => { written = true; });
   assert.equal(err, undefined);
   assert.equal(written, false);
   assert.equal(fs.readFileSync(target, 'utf8'), 'left alone');
@@ -1040,7 +1046,7 @@ test('outputs: a lockfile its own output.clean deleted keeps the other processes
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'dist/b.js': 'b', 'dist/c.js': 'c' });
   const target = J(root, 'dist', LOCK);
   const [a, b, c] = ['a', 'b', 'c'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
-  const writeFile = (json, cb) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); cb(); };
+  const writeFile = (json) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); };
   // other processes wrote b (dist/b.js) and c (dist/c.js)
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, toPackageLock([b, c], root, { dir: path.dirname(target), writers: [
@@ -1050,7 +1056,7 @@ test('outputs: a lockfile its own output.clean deleted keeps the other processes
   fs.rmSync(J(root, 'dist/c.js'));
   fs.rmSync(target);
   outputs.emitted(target, 'w-clean');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a', 'b']);
 });
 
@@ -1066,7 +1072,7 @@ test('outputs: processes writing one lockfile at the same time each add their pa
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(file, 'x');
     outputs.record(target, 'p' + i, packagesForFiles([path.join(root, 'node_modules', 'p' + i, 'i.js')]), root, [file], { disk: true });
     setTimeout(() => { outputs.emitted(target, 'p' + i);
-      outputs.rewrite(target, process.env.BUNDLE_LOCKFILE_INLINE === '0' ? null : outputs.writeDisk(target), (err) => { if (err) throw err; }); },
+      outputs.rewrite(target, process.env.BUNDLE_LOCKFILE_INLINE === '0' ? null : outputs.writeDisk(target)).then((err) => { if (err) throw err; }); },
       Math.floor(Math.random() * 40));`;
   for (const inline of [true, false]) {
     const root = project(pkgs);
@@ -1149,12 +1155,12 @@ test('outputs: writes of a shared lockfile run in order, each with the latest co
   assert.equal(outputs.isShared(target), true);
   const written = [];
   // the first write is slow and fails: the second still runs after it, and the build continues
-  const slow = (json, cb) => setTimeout(() => { written.push(json); cb(new Error('disk full')); }, 20);
-  const fast = (json, cb) => { written.push(json); cb(); };
+  const slow = (json) => new Promise((resolve, reject) => setTimeout(() => { written.push(json); reject(new Error('disk full')); }, 20));
+  const fast = (json) => { written.push(json); };
   const errors = await Promise.all([
-    new Promise(resolve => outputs.rewrite(target, slow, resolve)),
-    new Promise(resolve => { outputs.record(target, 'w2', [a, b], J(root, 'sub')); outputs.emitted(target, 'w2'); outputs.rewrite(target, fast, resolve); }),
-    new Promise(resolve => outputs.rewrite(target, () => { throw new Error('sync'); }, resolve)),
+    outputs.rewrite(target, slow),
+    (() => { outputs.record(target, 'w2', [a, b], J(root, 'sub')); outputs.emitted(target, 'w2'); return outputs.rewrite(target, fast); })(),
+    outputs.rewrite(target, () => { throw new Error('sync'); }),
   ]);
   assert.deepEqual(errors.map(e => e && e.message), ['disk full', undefined, 'sync']);
   assert.equal(written.length, 2);
@@ -1201,7 +1207,7 @@ function sharedCompiler(root, outputPath, name, onEmitAsset = () => {}) {
   };
 }
 
-test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sources), injection skips a configured plugin', () => {
+test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sources), injection skips a configured plugin', async () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   for (const withWebpack of [true, false]) {
     const { compiler, taps } = fakeCompiler5({ outputPath: J(root, `out-${withWebpack}`), withWebpack });
@@ -1225,9 +1231,8 @@ test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sou
     taps.emit(comp);
     assert.equal(emitted[LOCK], json, `withWebpack=${withWebpack}`);
     taps.emit(comp); // still there: left alone
-    let done = false;
-    taps.afterEmit(comp, () => (done = true)); // not shared: no extra write, continues at once
-    assert.equal(done, true);
+    await new Promise(resolve => taps.afterEmit(comp, resolve)); // not shared: no extra write
+    assert.equal(fs.existsSync(J(root, `out-${withWebpack}`, LOCK)), false, `withWebpack=${withWebpack}`);
     assert.equal(compiler[Symbol.for('bundle-lockfile.webpack.applied')], true);
   }
 });
@@ -2648,7 +2653,7 @@ test('outputs: BUNDLE_LOCKFILE_INLINE=0 without BUNDLE_LOCKFILE_EXPORT_DIR write
     const t = require('path').join(process.argv[1], 'dist/bundle-lockfile/package-lock.json');
     outputs.record(t, 'w', [], process.argv[1]); outputs.emitted(t, 'w');
     const writeFile = require(${JSON.stringify(J(SRC, 'core/config.cjs'))}).inline ? outputs.writeDisk(t) : null; // as the adapters do
-    outputs.rewrite(t, writeFile, () => outputs.rewrite(t, writeFile, () => {}));`;
+    outputs.rewrite(t, writeFile).then(() => outputs.rewrite(t, writeFile));`;
   const root = project({});
   const env = { BUNDLE_LOCKFILE_INLINE: '0', BUNDLE_LOCKFILE_EXPORT_DIR: '' };
   const r = node(['-e', script, root], env);
@@ -2707,17 +2712,17 @@ test('lockfile: a package outside the project another process listed is listed o
   assert.deepEqual(listed.map(p => p.outside || p.path).sort(), [J(proj, 'node_modules/foo'), 'node_modules/foo@1.0.0', 'node_modules/foo@1.0.0-2'].sort());
   assert.equal(listed.find(p => !p.outside).license, 'MIT');
   // this process has one of the two copies: still two keys, not three; the package in the project stays as it is
-  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  const writeFile = (json) => { fs.writeFileSync(target, json); };
   outputs.record(target, 'mine', [outsideOne], proj, [J(proj, 'dist/mine.js')], { disk: true });
   fs.writeFileSync(J(proj, 'dist/mine.js'), '');
   outputs.emitted(target, 'mine');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   const keys = (json) => entries(json).map(([k, p]) => `${k} = ${p.name}@${p.version}`);
   const want = ['node_modules/foo@1.0.0 = foo@1.0.0', 'node_modules/foo@1.0.0-2 = foo@1.0.0', 'node_modules/foo = foo@2.0.0']; // name, version order
   assert.deepEqual(keys(fs.readFileSync(target, 'utf8')), want);
   // written again and again (watch mode, more processes): the same bytes
   const again = fs.readFileSync(target, 'utf8');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   assert.equal(fs.readFileSync(target, 'utf8'), again);
   // one copy outside, listed by the other process, and the same copy here: one entry
   const single = toPackageLock([outsideOne, { ...outsideOne, path: '\0outside:node_modules/foo', outside: 'node_modules/foo' }], proj, meta([]));
@@ -2754,26 +2759,26 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
   const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
   assert.deepEqual(lockedNames(outputs.record(target, 'w', [a], root, [], { disk: true })), ['a']);
   outputs.emitted(target, 'w');
-  await new Promise((resolve, reject) => outputs.rewrite(target, outputs.writeDisk(target), (err) => (err ? reject(err) : resolve())));
+  await outputs.rewrite(target, outputs.writeDisk(target)).then((err) => { if (err) throw err; });
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a']);
   // a lockfile an older bundle-lockfile wrote there (a record of version 1): replaced too, without its writers
   fs.writeFileSync(target, field({ v: 1, context: '.', writers: [{ id: 'x', files: ['../main.js'], packages: ['node_modules/b'] }] },
     { 'node_modules/b': { name: 'b', version: '1.0.0' } }));
   fs.writeFileSync(J(root, 'dist/main.js'), '');
-  await new Promise((resolve, reject) => outputs.rewrite(target, outputs.writeDisk(target), (err) => (err ? reject(err) : resolve())));
+  await outputs.rewrite(target, outputs.writeDisk(target)).then((err) => { if (err) throw err; });
   const now = JSON.parse(fs.readFileSync(target, 'utf8'));
   assert.deepEqual(lockedNames(JSON.stringify(now)), ['a']);
   assert.equal(now['bundle-lockfile'].v, 2);
 });
 
-test('lock: a lock another process holds is waited for, then skipped with a warning; a stale one is taken over at once', () => {
+test('lock: a lock another process holds is waited for, then skipped with a warning; a stale one is taken over at once', async () => {
   const { lock } = require('../src/core/lock.cjs');
   const root = project({});
   const file = J(root, 'dist/l.json'), l = `${file}.lock`;
   fs.mkdirSync(J(root, 'dist'));
   fs.writeFileSync(l, 'held'); // fresh: another process holds it
   let release, took = Date.now();
-  const warned = warnings(() => { release = lock(file, { wait: 300 }); });
+  const warned = await warningsOf(async () => { release = await lock(file, { wait: 300 }); });
   took = Date.now() - took;
   assert.ok(took >= 300 && took < 5000, `waited ${took} ms`);
   assert.equal(warned.length, 1);
@@ -2784,11 +2789,37 @@ test('lock: a lock another process holds is waited for, then skipped with a warn
   const old = new Date(Date.now() - 120000);
   fs.utimesSync(l, old, old);
   took = Date.now();
-  assert.deepEqual(warnings(() => { release = lock(file); }), []);
+  assert.deepEqual(await warningsOf(async () => { release = await lock(file); }), []);
   assert.ok(Date.now() - took < 5000);
   assert.notEqual(fs.readFileSync(l, 'utf8'), 'held');
   release();
   assert.deepEqual(fs.readdirSync(J(root, 'dist')), [], 'released: nothing left behind');
+});
+
+test('lock: while another process holds it, the event loop runs on (a dev server, other compilers)', async () => {
+  const { lock } = require('../src/core/lock.cjs');
+  const root = project({ 'dist/l.json.lock': 'held' });
+  let ticks = 0;
+  const timer = setInterval(() => ticks++, 10);
+  try {
+    const warned = await warningsOf(async () => { (await lock(J(root, 'dist/l.json'), { wait: 300 }))(); });
+    assert.equal(warned.length, 1); // skipped after the wait
+  } finally { clearInterval(timer); }
+  assert.ok(ticks >= 10, `the timer ran ${ticks} times in 300 ms`);
+});
+
+test('outputs: land() drops the writers whose files are gone, writes the lockfile, and makes a failed write a problem', async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/b/package.json': { name: 'b', version: '1.0.0' } });
+  const target = J(root, 'dist', LOCK);
+  const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]), [b] = packagesForFiles([J(root, 'node_modules/b/i.js')]);
+  outputs.record(target, 'gone', [b], root, [J(root, 'dist/gone.js')]); outputs.emitted(target, 'gone');
+  outputs.record(target, 'land', [a], root, [J(root, 'dist/a.js')]);
+  let written = null;
+  await outputs.land(target, 'land', 'test', { writeFile: (json) => { written = json; } });
+  assert.deepEqual(lockedNames(written), ['a']); // gone.js is not there: its writer is dropped
+  const taken = await warningsOf(() => outputs.land(target, 'land', 'test', { writeFile: () => { throw new Error('EROFS'); } }));
+  assert.equal(taken.length, 1);
+  assert.match(taken[0], /^test: could not write .*package-lock\.json: Error: EROFS$/);
 });
 
 test('lock: two processes never hold it at the same time', async () => {
@@ -2796,9 +2827,10 @@ test('lock: two processes never hold it at the same time', async () => {
   const file = J(root, 'l.json');
   // each process takes the lock, notes when it holds it, keeps it 300 ms, notes the release, releases it
   const holder = `const fs = require('fs');
-    const release = require(${JSON.stringify(J(SRC, 'core/lock.cjs'))}).lock(${JSON.stringify(file)});
     const log = (what) => fs.appendFileSync(${JSON.stringify(J(root, 'log'))}, process.argv[2] + ' ' + what + '\\n');
-    log('in'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); log('out'); release();`;
+    require(${JSON.stringify(J(SRC, 'core/lock.cjs'))}).lock(${JSON.stringify(file)}).then((release) => {
+      log('in'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); log('out'); release();
+    });`;
   fs.writeFileSync(J(root, 'holder.cjs'), holder);
   const run = (name) => new Promise((resolve) => require('child_process').spawn(process.execPath, [J(root, 'holder.cjs'), name], { stdio: 'inherit' }).on('exit', resolve));
   assert.deepEqual(await Promise.all(['a', 'b', 'c'].map(run)), [0, 0, 0]);
@@ -2990,12 +3022,12 @@ test('copies of lockfiles: "self" tells the lockfile from a copy at another dept
 test('copies of lockfiles: writing into a directory with a copy - one entry per package, the context is the project', async () => {
   const { root, kit, build } = svelteProject();
   const target = J(build, LOCK);
-  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  const writeFile = (json) => { fs.writeFileSync(target, json); };
   // a later build writes build/ too (another writer: the copy's files are there, so its packages stay)
   outputs.record(target, 'later', [kit], root, [J(build, 'later.js')], { disk: true });
   fs.writeFileSync(J(build, 'later.js'), '');
   outputs.emitted(target, 'later');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   const json = fs.readFileSync(target, 'utf8');
   // kit from the copy is this build's kit; esm, only in the copy, keeps its name and version, location unknown
   assert.deepEqual(nameVersions(json), ['node_modules/esm = esm@1.0.0', 'node_modules/kit = kit@2.0.0']);
@@ -3005,7 +3037,7 @@ test('copies of lockfiles: writing into a directory with a copy - one entry per 
   assert.deepEqual(m.unknown, ['node_modules/esm']);
   assert.equal(m.locations, undefined);
   // written again (watch mode, the other writer): the same bytes
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   assert.equal(fs.readFileSync(target, 'utf8'), json);
 });
 
@@ -3030,7 +3062,7 @@ test('copies of lockfiles: a bundled file of a copied output brings its packages
       const { all } = packages.packagesOfFiles([J(root, d, 'main.js'), J(root, 'node_modules/outer/i.js')]);
       outputs.record(target, 'app', all, root, [], { disk: true });
       outputs.emitted(target, 'app');
-      await new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+      await outputs.rewrite(target, outputs.writeDisk(target));
       const json = fs.readFileSync(target, 'utf8');
       assert.deepEqual(nameVersions(json), ['node_modules/inner = inner@1.0.0', 'node_modules/outer = outer@1.0.0'], d);
       assert.deepEqual(recordOf(json).unknown, ['node_modules/inner'], d);
@@ -3042,7 +3074,7 @@ test('copies of lockfiles: a bundled file of a copied output brings its packages
 test('copies of lockfiles: a package upgraded in place between two builds of one directory - both versions listed', async () => {
   const root = project({ 'node_modules/x/package.json': { name: 'x', version: '1.0.0' } });
   const target = J(root, 'dist', LOCK);
-  const writeFile = (json, cb) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); cb(); };
+  const writeFile = (json) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, json); };
   const [x1] = packagesForFiles([J(root, 'node_modules/x/i.js')]);
   outputs.record(target, 'app', [x1], root, [J(root, 'dist/app.js')], { disk: true });
   outputs.emitted(target, 'app');
@@ -3051,7 +3083,7 @@ test('copies of lockfiles: a package upgraded in place between two builds of one
   const [x2] = packagesForFiles([J(root, 'node_modules/x/i.js')]);
   outputs.record(target, 'sw', [x2], root, [J(root, 'dist/sw.js')], { disk: true });
   outputs.emitted(target, 'sw');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   assert.deepEqual(nameVersions(fs.readFileSync(target, 'utf8')), ['node_modules/x@1.0.0 = x@1.0.0', 'node_modules/x = x@2.0.0']);
   // another process with x@2 reads that lockfile: still both, the same bytes
   const { readMeta } = require('../src/core/lockfile.cjs');
@@ -3065,7 +3097,7 @@ test('copies of lockfiles: a package no longer where another process recorded it
   const root = project({ 'node_modules/.pnpm/a@1.0.0_peer@1/node_modules/a/package.json': { name: 'a', version: '1.0.0' },
     'node_modules/.pnpm/gone@1.0.0/node_modules/gone/package.json': { name: 'gone', version: '1.0.0' }, 'dist/other.js': '' });
   const target = J(root, 'dist', LOCK);
-  const writeFile = (json, cb) => { fs.writeFileSync(target, json); cb(); };
+  const writeFile = (json) => { fs.writeFileSync(target, json); };
   const [a, gone] = packagesForFiles([J(root, 'node_modules/.pnpm/a@1.0.0_peer@1/node_modules/a/i.js'), J(root, 'node_modules/.pnpm/gone@1.0.0/node_modules/gone/i.js')]);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, toPackageLock([a, gone], root, { dir: path.dirname(target), writers: [{ id: 'other', files: [J(root, 'dist/other.js')], paths: [a.path, gone.path] }] }));
@@ -3076,7 +3108,7 @@ test('copies of lockfiles: a package no longer where another process recorded it
   outputs.record(target, 'mine', [a2], root, [J(root, 'dist/mine.js')], { disk: true });
   fs.writeFileSync(J(root, 'dist/mine.js'), '');
   outputs.emitted(target, 'mine');
-  await new Promise(resolve => outputs.rewrite(target, writeFile, resolve));
+  await outputs.rewrite(target, writeFile);
   const json = fs.readFileSync(target, 'utf8');
   assert.deepEqual(nameVersions(json), ['node_modules/.pnpm/a@1.0.0_peer@2/node_modules/a = a@1.0.0', 'node_modules/gone = gone@1.0.0']);
   assert.deepEqual(recordOf(json).unknown, ['node_modules/gone']);
@@ -3118,7 +3150,7 @@ test('outputs: another record in the output keeps no writer without files, and d
   outputs.record(target, 'mine', [a], root, [J(dist, 'main.js')], { disk: true });
   fs.writeFileSync(J(dist, 'main.js'), '');
   outputs.emitted(target, 'mine');
-  await new Promise(resolve => outputs.rewrite(target, (j, cb) => { fs.writeFileSync(target, j); cb(); }, resolve));
+  await outputs.rewrite(target, (j) => { fs.writeFileSync(target, j); });
   const out = fs.readFileSync(target, 'utf8');
   assert.deepEqual(nameVersions(out), ['node_modules/a = a@1.0.0']);
   assert.equal(JSON.parse(out).packages['node_modules/a'].license, 'MIT'); // the package.json this process read
@@ -3132,7 +3164,7 @@ test('copies of lockfiles: a record without "self" none of whose packages is the
   outputs.record(target, 'later', [kit], root, [J(build, 'later.js')], { disk: true });
   fs.writeFileSync(J(build, 'later.js'), '');
   outputs.emitted(target, 'later');
-  await new Promise(resolve => outputs.rewrite(target, (j, cb) => { fs.writeFileSync(target, j); cb(); }, resolve));
+  await outputs.rewrite(target, (j) => { fs.writeFileSync(target, j); });
   const out = fs.readFileSync(target, 'utf8');
   assert.equal(recordOf(out).context, '../..');
   assert.deepEqual(nameVersions(out), ['node_modules/esm = esm@1.0.0', 'node_modules/kit = kit@2.0.0']);
@@ -3146,7 +3178,7 @@ test('copies of lockfiles: copied with fs in this process - re-anchored where th
   const root = project({ ...pj('a'), ...pj('b'), 'other/package-lock.json': '{"lockfileVersion":3,"packages":{}}' });
   const [a, b] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
   const target = J(root, '.svelte-kit/output/client', LOCK);
-  const write = () => new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+  const write = () => outputs.rewrite(target, outputs.writeDisk(target));
   outputs.record(target, 'client', [a], root, [J(root, '.svelte-kit/output/client/x.js')], { disk: true });
   outputs.emitted(target, 'client');
   await write();
@@ -3204,7 +3236,7 @@ test('copies of outputs: an output\'s files copied with fs elsewhere without the
   const [a, b] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
   const client = J(root, '.nuxt/dist/client'), target = J(client, LOCK);
   const files = [J(client, '_nuxt/e.js'), J(client, '_nuxt/f.css')];
-  const write = () => new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+  const write = () => outputs.rewrite(target, outputs.writeDisk(target));
   outputs.record(target, 'nuxt-client', [a], root, files, { disk: true });
   outputs.emitted(target, 'nuxt-client');
   // another output: nothing is copied into it, and nothing next to it
@@ -3216,7 +3248,7 @@ test('copies of outputs: an output\'s files copied with fs elsewhere without the
   fs.copyFileSync(files[0], J(root, 'early/_nuxt/e.js'));
   assert.equal(fs.existsSync(J(root, 'early', LOCK)), false);
   await write();
-  await new Promise(resolve => outputs.rewrite(other, outputs.writeDisk(other), resolve));
+  await outputs.rewrite(other, outputs.writeDisk(other));
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'early', LOCK), 'utf8')), ['a']);
   const valid = (file) => {
     const meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(file));
@@ -3265,7 +3297,7 @@ test('copies of lockfiles: an export copy copied with fs is re-anchored like its
     const target = J(root, 'ui/dist', LOCK);
     outputs.record(target, 'ui', [a], root, [J(root, 'ui/dist/x.js')], { disk: true });
     outputs.emitted(target, 'ui');
-    await new Promise(resolve => outputs.rewrite(target, null, resolve)); // export copy only
+    await outputs.rewrite(target, null); // export copy only
     const exp = exportPath(target);
     assert.equal(fs.existsSync(target), false);
     fs.mkdirSync(J(root, 'pkg/usr/share/app/bundle-lockfile'), { recursive: true });
@@ -3502,14 +3534,14 @@ test('strict: problems no build took make the process exit with 1 (also after pr
   assert.match(off.stderr, /\[bundle-lockfile\] WARNING: could not write x/);
 });
 
-test('strict: nowhere to write (INLINE off, no export dir) and a lock that cannot be taken are problems of every build', () => withConfig({ strict: true }, () => {
+test('strict: nowhere to write (INLINE off, no export dir) and a lock that cannot be taken are problems of every build', () => withConfig({ strict: true }, async () => {
   problems.take();
   outputs.nowhere(); outputs.nowhere();
   assert.deepEqual(problems.take(), ['BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written',
     'BUNDLE_LOCKFILE_INLINE is off and BUNDLE_LOCKFILE_EXPORT_DIR is not set: no lockfile is written']);
   const { lock } = require('../src/core/lock.cjs');
   const root = project({ 'dist/l.json.lock': 'held' });
-  const release = lock(J(root, 'dist/l.json'), { wait: 100 });
+  const release = await lock(J(root, 'dist/l.json'), { wait: 100 });
   release();
   const [p, ...rest] = problems.take();
   assert.deepEqual(rest, []);
@@ -4964,7 +4996,7 @@ test('lock: a stale lock that cannot be removed, a lock that is a link to nothin
     const script = `const fs = require('fs'); const { lock } = require(${JSON.stringify(J(SRC, 'core/lock.cjs'))});
       const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
       ${setup}
-      const t = Date.now(); lock(file, { wait: 300 })(); console.log(JSON.stringify({ took: Date.now() - t, problems: problems.take() }));`;
+      const t = Date.now(); lock(file, { wait: 300 }).then((release) => { release(); console.log(JSON.stringify({ took: Date.now() - t, problems: problems.take() })); });`;
     const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: strictEnv(undefined), timeout: 15000 });
     assert.equal(r.status, 0, `lock() did not return: ${r.signal || r.stderr}`);
     return JSON.parse(r.stdout);
@@ -5001,7 +5033,7 @@ test('lock: a live lock is not taken over by a process whose clock is ahead (a n
   const script = `const real = Date.now; Date.now = () => real() + 120000; // this machine's clock: two minutes ahead
     const { lock } = require(${JSON.stringify(J(SRC, 'core/lock.cjs'))});
     const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
-    lock(${JSON.stringify(J(root, 'd/l.json'))}, { wait: 300 })(); console.log(JSON.stringify(problems.take()));`;
+    lock(${JSON.stringify(J(root, 'd/l.json'))}, { wait: 300 }).then((release) => { release(); console.log(JSON.stringify(problems.take())); });`;
   const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: strictEnv(undefined), timeout: 15000 });
   assert.equal(r.status, 0, r.stderr);
   assert.match(JSON.parse(r.stdout).join(), /could not lock/);
@@ -5015,7 +5047,7 @@ test('lock: a lock dated in the future is stale (it would hold every write off);
     const script = `const real = Date.now; Date.now = () => real() + (${clock});
       const { lock } = require(${JSON.stringify(J(SRC, 'core/lock.cjs'))});
       const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
-      lock(${JSON.stringify(J(root, 'd/l.json'))}, { wait: 300 })(); console.log(JSON.stringify(problems.take()));`;
+      lock(${JSON.stringify(J(root, 'd/l.json'))}, { wait: 300 }).then((release) => { release(); console.log(JSON.stringify(problems.take())); });`;
     const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: strictEnv(undefined), timeout: 15000 });
     assert.equal(r.status, 0, r.stderr);
     return JSON.parse(r.stdout);
@@ -5079,7 +5111,7 @@ test('copies of lockfiles: a copy that cannot be re-anchored is a problem (its r
   const target = J(root, 'out/client', LOCK);
   outputs.record(target, 'client', [a], root, [J(root, 'out/client/x.js')], { disk: true });
   outputs.emitted(target, 'client');
-  await new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+  await outputs.rewrite(target, outputs.writeDisk(target));
   const to = J(root, 'build', LOCK);
   fs.mkdirSync(path.dirname(to), { recursive: true });
   const rename = fs.renameSync;
@@ -5102,7 +5134,7 @@ test('outputs: a writer whose first build in this process failed keeps the recor
   outputs.record(target, 'sw', [], root, [J(root, 'dist/sw.js')], { disk: true, id: 'sw-id' });
   outputs.record(target, 'app', [a], root, [J(root, 'dist/app.js')], { disk: true, id: 'app-id' });
   outputs.emitted(target, 'app');
-  await new Promise((resolve, reject) => outputs.rewrite(target, outputs.writeDisk(target), (e) => (e ? reject(e) : resolve())));
+  await outputs.rewrite(target, outputs.writeDisk(target)).then((e) => { if (e) throw e; });
   assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['a', 'c']);
 });
 
@@ -5114,7 +5146,7 @@ test('outputs: a package-lock.json bundle-lockfile did not write (the project\'s
   const target = J(root, 'package-lock.json');
   outputs.record(target, 'w', [a], root, [J(root, 'bundle.js')], { disk: true });
   outputs.emitted(target, 'w');
-  const write = () => new Promise(resolve => outputs.rewrite(target, outputs.writeDisk(target), resolve));
+  const write = () => outputs.rewrite(target, outputs.writeDisk(target));
   const err = await write();
   assert.match(err && err.message, /package-lock\.json is there and was not written by bundle-lockfile \(e\.g\. npm's own lockfile\): it is not replaced/);
   assert.equal(fs.readFileSync(target, 'utf8'), npm);

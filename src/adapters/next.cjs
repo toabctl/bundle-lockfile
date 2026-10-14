@@ -46,14 +46,7 @@ function write(target, pkgs, context, files, bundler) {
   const found = via.collector();
   found.add('traced', pkgs);
   outputs.record(target, WRITER, pkgs, context, files, { disk: true, bundler, via: found });
-  outputs.emitted(target, WRITER);
-  return new Promise(/** @param {(value?: undefined) => void} resolve */ (resolve) => {
-    outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
-      if (err) problems.problem(`Next.js: could not write ${target}`, err);
-      else config.debug('Next.js: wrote the runtime packages to', target);
-      resolve();
-    });
-  });
+  return outputs.land(target, WRITER, 'Next.js', { prune: false }); // (its only writer)
 }
 
 // The build has run: the packages of its traces, written where its server finds them

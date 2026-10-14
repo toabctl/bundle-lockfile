@@ -14,7 +14,7 @@ const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { hashOf } = require('../core/hashes.cjs');
-const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
@@ -136,20 +136,11 @@ function collect(graph, projectRoot) {
   return [...byDir.values()];
 }
 
-function write(w, pkgs, context, opts) {
-  return new Promise(/** @param {(value?: undefined) => void} resolve */ (resolve) => {
-    try {
-      outputs.record(w.target, w.writer, pkgs, context, [...w.files], { disk: true, ...opts });
-      outputs.emitted(w.target, w.writer);
-      outputs.prune(w.target, w.writer, (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT')), () => {
-        outputs.rewrite(w.target, config.inline ? outputs.writeDisk(w.target) : null, (err) => {
-          if (err) problems.problem(`parcel: could not write ${w.target}`, err);
-          else config.debug('parcel: wrote', [config.inline && w.target, exportPath(w.target)].filter(Boolean).join(' and '));
-          resolve();
-        });
-      });
-    } catch (e) { problems.problem(`parcel: could not write ${w.target}`, e); resolve(); }
-  });
+async function write(w, pkgs, context, opts) {
+  try {
+    outputs.record(w.target, w.writer, pkgs, context, [...w.files], { disk: true, ...opts });
+  } catch (e) { problems.problem(`parcel: could not write ${w.target}`, e); return; }
+  await outputs.land(w.target, w.writer, 'parcel');
 }
 
 // The package whose code Parcel writes into JavaScript bundles, around their assets' code (the prelude, parcelRequire,

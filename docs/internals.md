@@ -147,6 +147,9 @@ flowchart LR
 Within a process, the writers of an output directory live in a registry shared by every copy of bundle-lockfile that
 is loaded (on `globalThis`); each has the packages of its last written build and of the build in progress. Every write
 of the lockfile renders their last written builds, plus the writers other processes recorded in the lockfile on disk.
+Every adapter ends a written build the same way, `outputs.land()`: the other writers whose files are gone are dropped,
+then the lockfile is written under the lock - writes of one lockfile in this process one after another, across
+processes one at a time; a process waiting for the lock goes on running its event loop (a dev server, other compilers).
 
 ## Beyond the chunks' modules
 
@@ -317,8 +320,8 @@ the `--require`) that provides the source without calling the next hook hides it
 ## rspack
 
 rspack implements webpack's plugin API, so its compilers get webpack's `BundleLockfilePlugin`
-(`src/adapters/webpack-family.cjs`), which tells their compilations apart (`compiler.webpack.rspackVersion`) where
-rspack differs. `src/adapters/rspack.cjs` only hooks rspack:
+(`src/adapters/webpack-family.cjs`); where rspack differs, `src/adapters/webpack-compat.cjs` tells their compilations
+apart (`compiler.webpack.rspackVersion`) and answers for each. `src/adapters/rspack.cjs` only hooks rspack:
 
 - `@rspack/core` is one bundled file, `dist/index.js`: no per-file module to recognize (as webpack's
   `lib/Compiler.js`). Its export is the `rspack()` function with `rspackVersion` and `Compiler` (its `version` is
@@ -451,7 +454,9 @@ src/esm-loader.mjs        loader thread) that replace entry modules by the wrapp
 src/esm-wrap.cjs          the cjsFiles modules a loader hook provides
 src/adapters/webpack.cjs  webpack 4/5 and Next.js: hooks webpack's Compiler
 src/adapters/rspack.cjs   rspack: hooks rspack's Compiler (every copy loaded)
-src/adapters/webpack-family.cjs  webpack and rspack: which source files are in a compiler's emitted output (the plugin)
+src/adapters/webpack-family.cjs  webpack and rspack: BundleLockfilePlugin, the lockfile at the right moments of a build
+src/adapters/webpack-collect.cjs which source files are in a compilation's emitted output (reads the compilation only)
+src/adapters/webpack-compat.cjs  what differs between webpack 4/5 and rspack 1/2, asked by name (hooks, assets, sources)
 src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a build's written outputs
 src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that reads the metafile's inputs per output
 src/adapters/rolldown-watch.cjs  Rolldown: the files its plugins inlined (addWatchFile of its plugin contexts), per build and module
@@ -475,7 +480,7 @@ src/core/nested.cjs     packages of bundled files another build wrote (output ha
 src/core/hashes.cjs     SHA-256 of output files, cached by inode, size, mtime and ctime
 src/core/lru.cjs        bounded maps for the caches above
 src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
-src/core/lock.cjs       lock across processes, atomic writes
+src/core/lock.cjs       lock across processes (waiting for it lets the event loop run), atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record
 src/core/problems.cjs   what makes a lockfile missing or incomplete: fails the build (strict mode) or is a warning
 src/core/unsupported.cjs builds it recognizes but does not hook (Turbopack, the rolldown command line, ncc)

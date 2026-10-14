@@ -7,18 +7,19 @@ const crypto = require('crypto');
 const problems = require('./problems.cjs');
 /** @typedef {import('fs').Stats} Stats */
 
-// Takes an exclusive lock on `file` across processes (a <file>.lock next to it); returns the function that releases
-// it. A lock older than a minute (staleAfter) is from a process that died; one that cannot be taken in 30 s (wait) is
-// skipped (the write goes ahead: a stalled build would be worse) - a problem (core/problems.cjs): the lockfile may miss
-// the packages of another process writing it at the same time. So is a lock that cannot be created at all (the
-// directory cannot be created, the file system refuses the file). A stale lock that cannot be removed (a directory
-// another user owns, a read-only file system) is waited for like any other.
+// Takes an exclusive lock on `file` across processes (a <file>.lock next to it); resolves with the function that
+// releases it. While another process holds it, the event loop runs on (a dev server or another compiler of this process
+// keeps working): it is tried again every 20 ms. A lock older than a minute (staleAfter) is from a process that died;
+// one that cannot be taken in 30 s (wait) is skipped (the write goes ahead: a stalled build would be worse) - a problem
+// (core/problems.cjs): the lockfile may miss the packages of another process writing it at the same time. So is a lock
+// that cannot be created at all (the directory cannot be created, the file system refuses the file). A stale lock that
+// cannot be removed (a directory another user owns, a read-only file system) is waited for like any other.
 /**
  * @param {string} file
  * @param {{ wait?: number, staleAfter?: number }} [opts]
- * @returns {() => void}
+ * @returns {Promise<() => void>}
  */
-function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
+async function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
   const l = `${file}.lock`;
   const deadline = Date.now() + wait;
   /** @type {(why: string, cause?: unknown) => () => void} */
@@ -46,9 +47,11 @@ function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
     try { st = fs.lstatSync(l); } catch (e) { if (e.code === 'ENOENT') continue; return without('', e); } // released meanwhile
     if (isStale(l, st, staleAfter) && takeStale(l, st)) continue;
     if (Date.now() > deadline) return without('');
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    await sleep(20);
   }
 }
+/** @type {(ms: number) => Promise<void>} */
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 /** @type {(a: Stats, b: Stats) => boolean} */
 const sameFile = (a, b) => a.ino === b.ino && a.dev === b.dev && a.mtimeMs === b.mtimeMs;

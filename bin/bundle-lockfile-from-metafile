@@ -17,7 +17,7 @@ const packages = require(path.join(SRC, 'core/packages.cjs'));
 const via = require(path.join(SRC, 'core/via.cjs'));
 const outputs = require(path.join(SRC, 'core/outputs.cjs'));
 const { hashOf } = require(path.join(SRC, 'core/hashes.cjs'));
-const { portable, exportPath } = require(path.join(SRC, 'core/paths.cjs'));
+const { portable } = require(path.join(SRC, 'core/paths.cjs'));
 const { filesOfOutputs, fileOfInput } = require(path.join(SRC, 'adapters/esbuild.cjs'));
 const { bundlerPackage } = require(path.join(SRC, 'core/bundler.cjs'));
 const { createRequire } = require('module');
@@ -93,13 +93,6 @@ else {
     const target = path.join(dir, config.file);
     const writer = JSON.stringify(['metafile', portable(wd, metaFile)]);
     outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents, via: found });
-    outputs.emitted(target, writer);
-    outputs.prune(target, writer, (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT')), () => {
-      outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
-        if (err) problems.problem(`could not write ${target}`, err);
-        else config.debug('wrote', [config.inline && target, exportPath(target)].filter(Boolean).join(' and '));
-        done();
-      });
-    });
+    outputs.land(target, writer, '').then(done);
   }
 }

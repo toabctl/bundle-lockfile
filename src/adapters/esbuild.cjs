@@ -18,7 +18,7 @@ const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { hashOf } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
-const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache } = require('../core/paths.cjs');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -179,19 +179,19 @@ const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs
   .map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
 
 // A build that has run (no errors): writes its lockfile, or keeps the packages of what it generated in memory.
-// Calls done() once the lockfile has landed. state (the plugin's, optional): { inlined (see watched), since: when the
+// Resolves once the lockfile has landed; never rejects. state (the plugin's, optional): { inlined (see watched), since: when the
 // build started (ms), late: the files written into the output after the last build, version: esbuild's, as it reports
 // itself, file: the esbuild module whose build() ran (its package is listed for the JavaScript it writes: esbuild's
 // runtime helpers, __commonJS, __toESM and the like, are in it; see core/bundler.cjs) }.
-function finish(options, result, done, state = {}) {
+async function finish(options, result, state = {}) {
   const place = placeOf(options);
-  if (!place) { config.debug('esbuild: output below node_modules, left alone'); return done(null); }
+  if (!place) { config.debug('esbuild: output below node_modules, left alone'); return; }
   const { dir, wd } = place;
   const metafile = result && result.metafile;
   try {
     if (!metafile || typeof metafile !== 'object' || !metafile.outputs) {
       problems.problem(`esbuild: a build into ${dir || 'memory'} has no metafile: its packages are unknown`);
-      return done(null);
+      return;
     }
     const entries = entryFiles(metafile, wd);
     const { byOutput, all: own, byFile, found } = collect(metafile, wd, entries, state.inlined);
@@ -211,7 +211,7 @@ function finish(options, result, done, state = {}) {
       }
       for (const e of entries) generated.addEntry(e, all);
       config.debug('esbuild: a build that writes nothing itself, with', all.length, 'packages, kept for the build that uses its output');
-      return done(null);
+      return;
     }
     const files = [...byOutput.keys()];
     const hashes = {}, contents = {};
@@ -244,18 +244,9 @@ function finish(options, result, done, state = {}) {
     }
     outputs.record(target, writer, pkgs, realOr(wd), files, { disk: true, outputs: hashes, contents,
       bundler: { name: 'esbuild', ...(typeof state.version === 'string' ? { version: state.version } : {}) }, via: found });
-    outputs.emitted(target, writer);
-    const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
-    outputs.prune(target, writer, exists, () => {
-      outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
-        if (err) problems.problem(`esbuild: could not write ${target}`, err);
-        else if (config.inline || exportPath(target)) config.debug('esbuild: wrote', [config.inline && target, exportPath(target)].filter(Boolean).join(' and '));
-        done(null);
-      });
-    });
+    await outputs.land(target, writer, 'esbuild'); // (never rejects)
   } catch (e) {
     problems.problem(`esbuild: could not collect the bundled packages of ${dir || 'a build that writes nothing itself'}`, e);
-    done(null);
   }
 }
 
@@ -282,7 +273,7 @@ function createPlugin(inlined, file) {
         };
         if (!result || (result.errors && result.errors.length)) return end(); // a failed build wrote nothing
         state.version = build.esbuild && build.esbuild.version;
-        finish(options, result, end, state);
+        finish(options, result, state).then(end);
       }));
     },
   };
@@ -312,7 +303,7 @@ function wrapSync(fn, version, file) {
     if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
     const result = fn.call(this, { ...options, metafile: true }, ...rest);
-    finish(options, result, () => {}, { version, file });
+    finish(options, result, { version, file });
     if (!asked) delete result.metafile;
     problems.failIfAny((err) => { throw err; });
     return result;

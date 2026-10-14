@@ -25,7 +25,7 @@ const lru = require('./lru.cjs');
  *   outputCount?: number, contents: Record<string, string[]>, bundler: BundlerId | null | undefined, via: Via | null,
  *   anchored?: boolean | null }} RenderBuild
  */
-/** @typedef {(content: string, cb: (err?: unknown) => void) => void} WriteFile */
+/** @typedef {(content: string) => void | Promise<void>} WriteFile */
 
 const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
@@ -255,33 +255,23 @@ function isShared(target) {
 // clean.keep; on watch rebuilds it removes only its own stale files). Only builds that have landed are
 // checked: one still building has not written its files yet. If some of a writer's files are left, all its
 // packages stay - listing a package too many is safer than missing one.
-// exists(file, callback(boolean)); done() is called when every check has finished.
+// exists(file) resolves whether the file is there; resolves when every check has finished.
 /**
  * @param {string} target
  * @param {string} writer
- * @param {(file: string, cb: (found: boolean) => void) => void} exists
- * @param {() => void} done
+ * @param {(file: string) => Promise<boolean>} exists
+ * @returns {Promise<void>}
  */
-function prune(target, writer, exists, done) {
+async function prune(target, writer, exists) {
   const writers = outputs.files.get(target) || new Map();
   /** @type {[string, Writer, Build][]} */
   const others = [];
   for (const [id, w] of writers) if (id !== writer && w.landed && w.landed.files.length) others.push([id, w, w.landed]);
-  let pending = others.length;
-  if (!pending) return done();
-  for (const [id, w, landed] of others) {
-    /** @param {number} i */
-    const next = (i) => {
-      if (i === landed.files.length) {
-        if (w.landed === landed) w.landed = null; // unless a newer build landed meanwhile
-        if (!w.landed && !w.building && writers.get(id) === w) writers.delete(id);
-        return finish();
-      }
-      exists(landed.files[i], (found) => (found ? finish() : next(i + 1)));
-    };
-    next(0);
-  }
-  function finish() { if (--pending === 0) done(); }
+  await Promise.all(others.map(async ([id, w, landed]) => {
+    for (const f of landed.files) if (await exists(f)) return;
+    if (w.landed === landed) w.landed = null; // unless a newer build landed meanwhile
+    if (!w.landed && !w.building && writers.get(id) === w) writers.delete(id);
+  }));
 }
 
 // A lockfile copied with fs in this process (e.g. by SvelteKit's adapters, from .svelte-kit/output/ to build/): its
@@ -405,7 +395,7 @@ function follow(target, content) {
  * @returns {WriteFile}
  */
 function writeDisk(file) {
-  return (content, cb) => { try { ours(file); writeLock(file, content); } catch (e) { return cb(e); } cb(); };
+  return (content) => { ours(file); writeLock(file, content); };
 }
 
 // Throws if `file` is there and is not a lockfile bundle-lockfile wrote (it has no "bundle-lockfile" record): the
@@ -432,41 +422,65 @@ function nowhere() {
 // may land last. Each writer calls this after its own write has landed: writes of the same file run one after
 // another, each with the content at the time it runs, so the last one has every writer's packages. Across
 // processes, the lock makes each read-merge-write see the previous one.
-// writeFile(content, callback(err)) writes target (null: only the export copy, see exportPath); done(err) is
-// called when this write has landed.
+// writeFile(content) writes target (null: only the export copy, see exportPath), and may return a promise. Resolves
+// when this write has landed, with what went wrong (undefined: nothing); never rejects - a failed write must neither
+// stall the build nor the writes queued after it. The export copy is written also if the inline write failed.
 /**
  * @param {string} target
  * @param {WriteFile | null} writeFile
- * @param {(err: unknown) => void} done
+ * @returns {Promise<unknown>}
  */
-function rewrite(target, writeFile, done) {
+function rewrite(target, writeFile) {
   const prev = outputs.queues.get(target) || Promise.resolve();
-  // never rejects: a failed write must neither stall the build nor the writes queued after it
-  const next = prev.then(() => new Promise((resolve) => {
+  const next = prev.then(async () => {
     let release = () => {};
-    /** @param {unknown} [err] */
-    const finish = (err) => { release(); resolve(err); };
     try {
       // the lock next to the file other processes read: without an inline write (BUNDLE_LOCKFILE_INLINE=0, or an output
       // directory removed after the build) the export copy - a lock in the output directory would recreate it
       const shared = outputs.disk.get(target) && (writeFile ? stateFile(target) : exportPath(target));
-      if (shared) release = lock(shared);
+      if (shared) release = await lock(shared);
       const content = render(target);
-      if (content === null) { config.debug('nothing recorded for', target, '- not written'); return finish(); }
+      if (content === null) { config.debug('nothing recorded for', target, '- not written'); return undefined; }
       if (!writeFile && !exportPath(target)) nowhere();
-      /** @param {unknown} [err] */
-      const exported = (err) => {
-        let file;
-        try { file = exportOf(target); } catch (e) { return finish(err || e); }
-        if (file) try { writeLock(file, content); } catch (e) { return finish(err || e); }
-        if (!err) follow(target, content);
-        finish(err);
-      };
-      if (writeFile) writeFile(content, exported); else exported();
-    } catch (e) { finish(e); }
-  }));
+      let err;
+      if (writeFile) try { await writeFile(content); } catch (e) { err = e; }
+      try {
+        const file = exportOf(target);
+        if (file) writeLock(file, content);
+      } catch (e) { return err || e; }
+      if (!err) follow(target, content);
+      return err;
+    } catch (e) { return e; } finally { release(); }
+  });
   outputs.queues.set(target, next);
-  next.then((err) => setImmediate(done, err)); // outside the promise: done() continues the build
+  return next;
+}
+
+// A file of a writer on the real disk is there (see there; asynchronous, for prune)
+/** @type {(file: string) => Promise<boolean>} */
+const onDisk = (file) => fs.promises.lstat(file).then(() => true, (e) => e.code !== 'ENOENT');
+
+// The writer's build has landed - its output is written: the other writers whose files are gone are dropped (prune),
+// then the lockfile is written (rewrite): inline with writeFile (default: on the real disk, unless BUNDLE_LOCKFILE_INLINE
+// is off), and its export copy. What goes wrong is a problem (core/problems.cjs), named after `kind` (the bundler).
+// opts.exists: how prune looks for a file (default: on the real disk); opts.prune: false for a writer that is alone.
+// Resolves once written; never rejects.
+/**
+ * @param {string} target
+ * @param {string} writer
+ * @param {string} kind
+ * @param {{ writeFile?: WriteFile | null, exists?: (file: string) => Promise<boolean>, prune?: boolean }} [opts]
+ * @returns {Promise<void>}
+ */
+async function land(target, writer, kind, { writeFile = config.inline ? writeDisk(target) : null, exists = onDisk, prune: others = true } = {}) {
+  const prefix = kind ? `${kind}: ` : '';
+  try {
+    emitted(target, writer);
+    if (others) await prune(target, writer, exists);
+    const err = await rewrite(target, writeFile);
+    if (err) problems.problem(`${prefix}could not write ${target}`, err);
+    else if (writeFile || exportPath(target)) config.debug(`${prefix}wrote`, [writeFile && target, exportPath(target)].filter(Boolean).join(' and '));
+  } catch (e) { problems.problem(`${prefix}could not write ${target}`, e); }
 }
 
 // The export copy of `target` (exportPath), or null. Two lockfiles of this process at one export path would replace each
@@ -529,4 +543,4 @@ function listedPaths() {
   return out;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, filesOf, hasFile, writeDisk, nowhere, listedPaths };
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, land, onDisk, filesOf, hasFile, writeDisk, nowhere, listedPaths };
