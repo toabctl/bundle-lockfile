@@ -13,6 +13,7 @@
 // A first-party package linked into node_modules (a workspace package that another build wrote, e.g. a library built
 // by Vite) is looked at where it really is, also when the bundler reached it through the link (webpack's
 // resolve.symlinks: false, Vite's resolve.preserveSymlinks).
+/** @import { LockRecord } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -38,6 +39,7 @@ function recordFiles(dir) {
 // BUNDLE_LOCKFILE_TREE setting leaves the other name's file behind.
 function metaOf(dir) {
   if (state.metas.has(dir)) return state.metas.get(dir);
+  /** @type {LockRecord | null} */
   let meta = null, newest = -Infinity;
   const missing = (why) => `the packages of the build that wrote ${dir} would be missing (${why})`;
   for (const target of recordFiles(dir)) {

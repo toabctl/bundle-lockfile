@@ -65,11 +65,14 @@ const pending = () => state.pending.length > 0;
 // The error a build fails with: every problem taken, and how to only warn. Its stack is only its first line: the
 // problems say where. With the newline: the rollup command line strips exactly "<name>: <message>\n" off a stack it
 // prints (without it, the message would be printed twice), Vite 5-7 print the stack only (an empty one shows nothing).
+/**
+ * @param {string[]} list
+ * @returns {Error & { problems: string[] }}
+ */
 function failure(list) {
   const msg = `bundle-lockfile: the lockfile would be missing or incomplete (${HINT}):\n${list.map(t => `  ${t}`).join('\n')}`;
-  const err = new Error(msg);
+  const err = Object.assign(new Error(msg), { problems: list }); // problems: marks it as bundle-lockfile's (isFailure)
   err.stack = `Error: ${msg}\n`;
-  err.problems = list; // marks it as bundle-lockfile's (isFailure)
   return err;
 }
 const isFailure = (e) => !!(e && Array.isArray(e.problems));

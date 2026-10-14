@@ -66,7 +66,8 @@ function withEnv(args, i, what) {
 function like(wrapper, orig) {
   for (const k of Reflect.ownKeys(orig)) {
     if (k === 'length' || k === 'name' || k === 'prototype') continue;
-    try { Object.defineProperty(wrapper, k, Object.getOwnPropertyDescriptor(orig, k)); } catch { /* not configurable */ }
+    const d = Object.getOwnPropertyDescriptor(orig, k);
+    try { if (d) Object.defineProperty(wrapper, k, d); } catch { /* not configurable */ }
   }
   Object.defineProperty(wrapper, 'name', { value: orig.name });
   return wrapper;
@@ -82,19 +83,19 @@ function install() {
   for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync']) {
     const orig = cp[name];
     if (typeof orig !== 'function') continue;
-    cp[name] = like(function (cmd, ...rest) {
+    cp[name] = like(/** @this {unknown} */ function (cmd, ...rest) {
       const args = [cmd, ...rest];
       return orig.apply(this, isNode(cmd) ? withEnv(args, optionsAt(args), `node (${name} ${[].concat(rest[0] || []).slice(0, 1).join(' ') || cmd})`) : args);
     }, orig);
   }
   if (typeof cp.fork === 'function') {
     const fork = cp.fork;
-    cp.fork = like(function (...args) { return fork.apply(this, withEnv(args, optionsAt(args), `node (fork ${args[0]})`)); }, fork);
+    cp.fork = like(/** @this {unknown} */ function (...args) { return fork.apply(this, withEnv(args, optionsAt(args), `node (fork ${args[0]})`)); }, fork);
   }
   for (const name of ['exec', 'execSync']) {
     const orig = cp[name];
     if (typeof orig !== 'function') continue;
-    cp[name] = like(function (command, ...rest) {
+    cp[name] = like(/** @this {unknown} */ function (command, ...rest) {
       const first = typeof command === 'string' ? command.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '') : '';
       return orig.apply(this, isNode(first) ? withEnv([command, ...rest], 1, `node (${name} ${command.slice(0, 80)})`) : [command, ...rest]);
     }, orig);

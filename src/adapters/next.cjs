@@ -47,7 +47,7 @@ function write(target, pkgs, context, files, bundler) {
   found.add('traced', pkgs);
   outputs.record(target, WRITER, pkgs, context, files, { disk: true, bundler, via: found });
   outputs.emitted(target, WRITER);
-  return new Promise((resolve) => {
+  return new Promise(/** @param {(value?: undefined) => void} resolve */ (resolve) => {
     outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
       if (err) problems.problem(`Next.js: could not write ${target}`, err);
       else config.debug('Next.js: wrote the runtime packages to', target);
@@ -118,7 +118,7 @@ function copyLockfiles(distDir, inStandalone) {
 }
 
 function wrap(build, buildFile) {
-  return async function (dir, ...rest) {
+  return /** @this {unknown} */ async function (dir, ...rest) {
     const result = await build.call(this, dir, ...rest);
     try { await runtime(buildFile, dir); } catch (e) { problems.problem("Next.js: could not collect the server's runtime packages", e); }
     problems.failIfAny((err) => { throw err; });

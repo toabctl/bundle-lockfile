@@ -24,7 +24,14 @@ const { createRequire } = require('module');
 
 const usage = 'usage: bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>] [--bundler <package dir>|none]';
 const args = process.argv.slice(2);
-const opt = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); if (!v) { console.error(usage); process.exit(2); } return v; };
+const opt = (name) => {
+  const i = args.indexOf(name);
+  if (i < 0) return null;
+  const v = args[i + 1];
+  args.splice(i, 2);
+  if (!v) { console.error(usage); process.exit(2); }
+  return v;
+};
 const wdArg = opt('--working-dir'), outArg = opt('--out'), bundlerArg = opt('--bundler');
 if (args.length !== 1 || args[0].startsWith('-')) { console.error(usage); process.exit(2); }
 for (const msg of config.invalid) problems.problem(msg);

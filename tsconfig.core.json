@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noImplicitAny": true },
+  "include": ["src/core/*.cjs", "src/**/*.d.ts"]
+}

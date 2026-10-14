@@ -3,6 +3,7 @@
 // vite-plugin-pwa's sw.js and workbox-<hash>.js (workbox-build generates them with Rollup and writes them with fs in
 // closeBundle), vite-plugin-static-copy's copies, filemanager-webpack-plugin's copies in webpack's afterEmit: their
 // packages, or none. Used by the adapters once the build has landed (rollup.cjs closeBundle, webpack-family.cjs afterEmit).
+/** @import { LateFile, Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -47,6 +48,11 @@ function copiedFrom(file, rel, cwd) {
 // [{ file, pkgs }]. A JavaScript file with the content of a generate-only build's chunk (core/generated.cjs) brings its
 // packages; any file copied out of a package (copiedFrom) that package. Nothing if dir is the working directory or above
 // it (it would be the whole project), or one of `roots` (the build's context).
+/**
+ * @param {string} dir
+ * @param {{ since: number, known: Set<string>, skip: string, cwd: string, roots?: string[] }} opts
+ * @returns {LateFile[]}
+ */
 function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
   const found = [];
   for (const r of [cwd, ...roots]) if (r && (dir === r || r.startsWith(dir + path.sep))) return found;
@@ -62,6 +68,7 @@ function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
       let st;
       try { st = fs.statSync(file); } catch { continue; }
       if (st.mtimeMs < since) continue;
+      /** @type {Package[] | null} */
       let pkgs = null;
       if (JS.test(file) && st.size <= MAX_LATE) { try { pkgs = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
       if (!pkgs) pkgs = copiedFrom(file, path.relative(dir, file), cwd);

@@ -67,13 +67,20 @@ function fileOfInput(key, wd) {
 // sheet's imports (kind url-token), not among the output's inputs. (With the file loader it is an output of its own.)
 // pluginInlined(key, file): the files a plugin inlined into that input (see watched), also counted. kinds (optional):
 // Map(file -> class, see core/via.cjs), told the files inlined (style sheets: style, other files: inlined).
+/**
+ * @param {any} metafile
+ * @param {string} wd
+ * @param {(key: string, file: string | null) => Iterable<string>} [pluginInlined]
+ * @param {Map<string, string> | null} [kinds]
+ * @returns {Map<string, string[]>}
+ */
 function filesOfOutputs(metafile, wd, pluginInlined = () => [], kinds = null) {
   const tag = (f) => { if (kinds && !kinds.has(f)) kinds.set(f, packages.STYLE.test(f) ? 'style' : 'inlined'); };
   const out = new Map();
-  const outputs = Object.entries((metafile && metafile.outputs) || {});
+  const outs = Object.entries((metafile && metafile.outputs) || {});
   const inputs = (metafile && metafile.inputs) || {};
-  const inOutput = new Set(outputs.flatMap(([, info]) => Object.keys((info && info.inputs) || {})));
-  for (const [o, info] of outputs) {
+  const inOutput = new Set(outs.flatMap(([, info]) => Object.keys((info && info.inputs) || {})));
+  for (const [o, info] of outs) {
     const files = [];
     for (const key of Object.keys((info && info.inputs) || {})) {
       const f = fileOfInput(key, wd);
@@ -94,9 +101,10 @@ function filesOfOutputs(metafile, wd, pluginInlined = () => [], kinds = null) {
 // The files plugins' onLoad callbacks report as watchFiles, per module they loaded: what they read to make it, e.g.
 // esbuild-sass-plugin's Sass partials, which it inlines into the CSS it returns - no modules, so not in the metafile
 // (esbuild #1268). Of those, the files a plugin inlines (core/packages.cjs inlinedFile: no code, no build tool's
-// settings) count for a module that reaches an output, as Rollup's watch files do (adapters/rollup.cjs). Every plugin of a build gets a build object whose onLoad records them; everything else is the
-// build's own. Keyed as the metafile names the module: its path relative to the working directory in the file
-// namespace (absolute here, see fileOfInput), "<namespace>:<path>" in another.
+// settings) count for a module that reaches an output, as Rollup's watch files do (adapters/rollup.cjs). Every plugin
+// of a build gets a build object whose onLoad records them; everything else is the build's own. Keyed as the metafile
+// names the module: its path relative to the working directory in the file namespace (absolute here, see fileOfInput),
+// "<namespace>:<path>" in another.
 function watched() {
   const byModule = new Map();
   const keyOf = (args) => (args.namespace && args.namespace !== 'file' ? `${args.namespace}:${args.path}` : args.path);
@@ -160,7 +168,9 @@ function collect(metafile, wd, entries, inlined) {
   const sources = [...new Set([...byOutput.values()].flat())];
   const result = packages.packagesOfFiles(sources, { context: realOr(wd), entries });
   // (a file that is an input of an output is a module of it: chunk, also if a plugin inlined it elsewhere)
-  for (const info of Object.values((metafile && metafile.outputs) || {})) for (const key of Object.keys((info && info.inputs) || {})) kinds.delete(fileOfInput(key, wd));
+  for (const info of Object.values((metafile && metafile.outputs) || {})) {
+    for (const key of Object.keys((info && info.inputs) || {})) kinds.delete(fileOfInput(key, wd));
+  }
   return { byOutput, all: result.all, byFile: result.byFile, found: via.ofFiles(result, kinds) };
 }
 
@@ -207,13 +217,13 @@ function finish(options, result, done, state = {}) {
     let pkgs = all;
     for (const [file, inputs] of byOutput) {
       if (!JS.test(file) && !CSS.test(file)) continue;
-      const own = packages.unique(pkgsOf(inputs), JS.test(file) ? runtime : []);
+      const inFile = packages.unique(pkgsOf(inputs), JS.test(file) ? runtime : []);
       // a JavaScript file with the bytes of a generate-only build's chunk (core/generated.cjs)
       let gen = null;
       if (JS.test(file) && generated.any()) { try { gen = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
       if (gen) { pkgs = packages.unique(pkgs, gen); found.add('generated', gen); }
       const h = hashOf(file);
-      if (h) { hashes[file] = h; contents[file] = packages.unique(own, gen || []).map(p => p.path); }
+      if (h) { hashes[file] = h; contents[file] = packages.unique(inFile, gen || []).map(p => p.path); }
     }
     const target = path.join(dir, config.file);
     const writer = writerOf(options, wd);
@@ -249,6 +259,7 @@ function finish(options, result, done, state = {}) {
 
 // The plugin of one build() / context() call; inlined: see watched.
 function createPlugin(inlined, file) {
+  /** @type {{ inlined: any, since: number | undefined, late: Set<string>, file: string, version?: string }} */
   const state = { inlined, since: undefined, late: new Set(), file };
   return {
     name: NAME,
@@ -262,6 +273,7 @@ function createPlugin(inlined, file) {
       build.onEnd((result) => new Promise((resolve) => {
         const end = () => {
           if (!asked && result) delete result.metafile;
+          /** @type {{ text: string, pluginName: string }[] | null} */
           let errors = null;
           problems.failIfAny((err) => { errors = [{ text: err.message.replace(/\n$/, ''), pluginName: NAME }]; });
           resolve(errors ? { errors } : undefined);
@@ -294,7 +306,7 @@ function attach(options, file) {
 // synchronously up to the write, which is queued: a process that exits right away still writes it - see
 // core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
 function wrapSync(fn, version, file) {
-  return function (options, ...rest) {
+  return /** @this {unknown} */ function (options, ...rest) {
     if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
     const result = fn.call(this, { ...options, metafile: true }, ...rest);
@@ -309,7 +321,7 @@ function wrapSync(fn, version, file) {
 // bundle-lockfile would cover fails (strict mode) instead of writing no lockfile; others (Vite 3 / 4's own builds,
 // write: false) go on.
 function wrapOld(fn, version, sync) {
-  return function (options, ...rest) {
+  return /** @this {unknown} */ function (options, ...rest) {
     const place = options && typeof options === 'object' ? placeOf(options) : null;
     if (place && place.dir && !vitesOwn(flat(options.plugins))) {
       problems.problem(`esbuild ${version}: bundle-lockfile needs esbuild 0.17 or later; this build of ${place.dir} would write no lockfile`);

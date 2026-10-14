@@ -32,8 +32,11 @@ const { logical } = require('./core/layout.cjs');
 
 const INSTALLED = Symbol.for('bundle-lockfile.hooks-installed');
 const ESM = Symbol.for('bundle-lockfile.esm');
+/** @import { Adapter, EsmCompanion, EsmEntry } from './types' */
+/** @type {Adapter[]} */
 const adapters = [];
 
+/** @param {Adapter} adapter */
 function register(adapter) { adapters.push(adapter); }
 
 function install() {
@@ -106,7 +109,7 @@ function installCjs() {
     Module.prototype._compile = function (content, filename) {
       const file = typeof filename === 'string' ? filename : this.filename;
       entered.add(file);
-      const r = compile.apply(this, arguments);
+      const r = Reflect.apply(compile, this, arguments);
       report(this, file);
       return r;
     };
@@ -118,7 +121,7 @@ function installCjs() {
     Module._extensions[ext] = function (module, filename) {
       entered.add(filename);
       companion(module, filename);
-      const r = handler.apply(this, arguments);
+      const r = Reflect.apply(handler, this, arguments);
       report(module, filename);
       return r;
     };
@@ -129,7 +132,7 @@ function installCjs() {
     if (typeof handler !== 'function') continue;
     Module._extensions[ext] = function (module, filename) {
       companion(module, filename);
-      return handler.apply(this, arguments);
+      return Reflect.apply(handler, this, arguments);
     };
   }
   // a cjsFiles module Node evaluated without the CommonJS hook reports itself here once it has run (esm-wrap.cjs cjsSource)
@@ -162,6 +165,7 @@ const cjsPackages = () => [...new Set(adapters.flatMap(a => [...(a.cjsPackages |
 // binding) from a module that did not come through the CommonJS hook - its CommonJS build loads the same file from one
 // that did. Loading it then is a problem: in strict mode it fails, and the bundler's import with it.
 const entered = new Set(); // files of CommonJS modules the CommonJS hook loaded or compiled (before they ran)
+/** @type {EsmCompanion[] | null} */
 let companions = null; // the esmCompanions to check, in a thread without ESM hooks
 const tripped = new Set();
 function companion(module, filename) {

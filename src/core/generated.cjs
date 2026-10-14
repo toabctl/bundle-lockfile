@@ -51,6 +51,7 @@ const SOURCE_MAP = /\n?\/\/# sourceMappingURL=[^\n]*\n?$/;
 // The hash of a chunk's or an asset's content: of its text without a trailing source map comment, the same for a string
 // and its UTF-8 bytes; of the bytes themselves for a binary asset (a font, wasm), which is no UTF-8 text.
 function hash(code) {
+  /** @type {string | Buffer | null} */
   let data = null;
   if (typeof code === 'string') data = code.replace(SOURCE_MAP, '');
   else if (Buffer.isBuffer(code) || code instanceof Uint8Array) {

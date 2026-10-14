@@ -18,6 +18,8 @@ const { writeTree } = require('./tree.cjs');
 const copies = require('./copies.cjs');
 const lru = require('./lru.cjs');
 
+/** @import { Build, BundlerId, Package, RecordedWriter, ViaCollector, Via, Writer } from '../types' */
+
 const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
 // building: { pkgs, context, files } of its build in progress, recorded before that build is written;
@@ -29,8 +31,15 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies
 // read: lockfile path -> the record (readMeta) of the lockfile last read from disk, for when it is gone (see foreign).
 // copies: copy of a lockfile, made in this process -> { target: the lockfile it is a copy of, content: what was
 // written to the copy last } (see copied).
-const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map() });
-// exports: export copy -> the lockfile this process writes there (see exportOf)
+/**
+ * @type {{ files: Map<string, Map<string, Writer>>, queues: Map<string, Promise<unknown>>, disk: Map<string, boolean>,
+ *   read: Map<string, import('../types').LockRecord | null>, copies: Map<string, { target: string | null, content: string | null }>,
+ *   exports: Map<string, string>, listening?: boolean }}
+ */
+const outputs = globalThis[KEY]
+  || (globalThis[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map(), exports: new Map() });
+// exports: export copy -> the lockfile this process writes there (see exportOf); a copy of this module of a release
+// before it made none
 if (!outputs.exports) outputs.exports = new Map();
 const MAX_COPIES = 1000;
 
@@ -66,6 +75,12 @@ function there(file) {
 // [{ id, pkgs, files, count, context, anchored }] (anchored: see readMeta). A lockfile that is gone since this process last read it was deleted with
 // the output directory - by this build's own output.clean, which deletes it with the other writers' files except
 // those clean.keep keeps: its record is still what the other processes put there, for their files that are left.
+/**
+ * @param {string} target
+ * @param {Set<string>} own
+ * @param {boolean} [all]
+ * @returns {(Omit<RecordedWriter, 'contents'> & { contents: Record<string, string[]>, context: string | null, anchored: boolean | null })[]}
+ */
 function foreign(target, own, all = false) {
   const file = outputs.disk.get(target) && stateFile(target);
   if (!file) return [];
@@ -81,8 +96,9 @@ function foreign(target, own, all = false) {
   }
   if (!meta) return [];
   return meta.writers.filter(w => !own.has(w.id) && (all || w.files.some(there)))
-    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, outputCount: w.outputCount, context: meta.context, anchored: meta.anchored,
-      bundler: w.bundler, via: w.via, contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
+    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, outputCount: w.outputCount,
+      context: meta.context, anchored: meta.anchored, bundler: w.bundler, via: w.via,
+      contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
 }
 
 // A build with its packages checked (seen: package directory -> its package, read once per render): a package's path
@@ -96,8 +112,8 @@ const stillThere = (seen) => (b) => {
   const at = (dir) => { if (!seen.has(dir)) seen.set(dir, readManifest(dir)); return seen.get(dir); };
   const ids = new Map(); // path -> path after the check, of this build's packages
   const pkgs = b.pkgs.map((p) => {
-    const there = !p.outside && !p.unknown && at(p.path);
-    const same = !!there && typeof there.name === 'string' && there.name === p.name && (there.version === p.version || there.version === undefined);
+    const now = !p.outside && !p.unknown && at(p.path);
+    const same = !!now && typeof now.name === 'string' && now.name === p.name && (now.version === p.version || now.version === undefined);
     const q = p.outside || p.unknown || same ? p : unknownPackage(p);
     ids.set(p.path, q.path);
     return q;
@@ -114,6 +130,11 @@ const stillThere = (seen) => (b) => {
 
 // The packages in the output directory: every writer's landed build; for `own`, the build it is about to write;
 // writers in other processes whose files are there. null if there are none (nothing recorded, e.g. after a failure).
+/**
+ * @param {string} target
+ * @param {string} [own]
+ * @returns {string | null}
+ */
 function render(target, own) {
   const builds = [];
   const ids = new Set();
@@ -147,16 +168,29 @@ function render(target, own) {
 // opts.outputs: { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, opts.contents: { absolute
 // path: [package paths] } the packages in each of them (see core/nested.cjs); opts.bundler: { name, version } of the
 // bundler that ran; opts.via: how it found its packages (a core/via.cjs collector, or Map(package path -> classes)).
+/**
+ * @param {string} target
+ * @param {string} writer
+ * @param {Package[]} pkgs
+ * @param {string} context
+ * @param {string[]} [files]
+ * @param {{ id?: string, disk?: boolean, outputs?: Record<string, string>, contents?: Record<string, string[]>,
+ *   bundler?: BundlerId | null, via?: ViaCollector | Via | null }} [opts]
+ * @returns {string}
+ */
 function record(target, writer, pkgs, context, files = [], opts = {}) {
   let writers = outputs.files.get(target);
   if (!writers) outputs.files.set(target, (writers = new Map()));
-  const w = writers.get(writer) || { building: null, landed: null };
-  w.id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
-  const via = opts.via ? (opts.via.byPath || opts.via) : null;
+  const id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
+  /** @type {Writer} */
+  const w = writers.get(writer) || { id, building: null, landed: null };
+  w.id = id;
+  const via = !opts.via ? null : 'byPath' in opts.via ? opts.via.byPath : opts.via;
   w.building = { pkgs, context, files, outputs: opts.outputs || {}, contents: opts.contents || {}, bundler: opts.bundler || null, via };
   writers.set(writer, w);
   if (opts.disk) outputs.disk.set(target, true);
-  return render(target, writer);
+  // (never null: this writer's build in progress is there)
+  return /** @type {string} */ (render(target, writer));
 }
 
 // The files the writer's build in progress writes, once they are known for certain: webpack's emit hook can still
@@ -186,13 +220,20 @@ function isShared(target) {
 // checked: one still building has not written its files yet. If some of a writer's files are left, all its
 // packages stay - listing a package too many is safer than missing one.
 // exists(file, callback(boolean)); done() is called when every check has finished.
+/**
+ * @param {string} target
+ * @param {string} writer
+ * @param {(file: string, cb: (found: boolean) => void) => void} exists
+ * @param {() => void} done
+ */
 function prune(target, writer, exists, done) {
-  const writers = outputs.files.get(target);
-  const others = writers ? [...writers].filter(([id, w]) => id !== writer && w.landed && w.landed.files.length) : [];
+  const writers = outputs.files.get(target) || new Map();
+  /** @type {[string, Writer, Build][]} */
+  const others = [];
+  for (const [id, w] of writers) if (id !== writer && w.landed && w.landed.files.length) others.push([id, w, w.landed]);
   let pending = others.length;
   if (!pending) return done();
-  for (const [id, w] of others) {
-    const landed = w.landed;
+  for (const [id, w, landed] of others) {
     const next = (i) => {
       if (i === landed.files.length) {
         if (w.landed === landed) w.landed = null; // unless a newer build landed meanwhile
@@ -266,8 +307,10 @@ function outputCopy(src, dest, isDirectory) {
     if (dirs.some(([, d]) => within(d, root) || within(root, d)) || root.split(path.sep).includes('node_modules')) return;
     const copy = path.join(root, config.file);
     if (outputs.copies.has(copy) || there(copy)) return;
+    /** @type {string | null} */
     let content = null;
     try { content = fs.readFileSync(stateFile(target), 'utf8'); } catch { /* not written yet: when it is (follow) */ }
+    /** @type {string | null} */
     let json = null;
     if (content !== null) {
       json = reanchor(content, path.dirname(target), path.dirname(copy), contextsOf(target));
@@ -287,6 +330,7 @@ if (!outputs.listening) { outputs.listening = true; copies.onCopy(copied); } // 
 function follow(target, content) {
   for (const [copy, c] of outputs.copies) {
     if (c.target !== target) continue;
+    /** @type {string | null} */
     let now = null;
     try { now = fs.readFileSync(copy, 'utf8'); } catch { /* removed */ }
     if (now !== c.content) { outputs.copies.delete(copy); continue; }

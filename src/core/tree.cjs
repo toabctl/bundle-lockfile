@@ -55,6 +55,7 @@ function writeTree(dir, json) {
       fs.writeFileSync(f, content, { flag: 'wx' });
     }
     fs.mkdirSync(tmp, { recursive: true }); // (no packages: an empty tree)
+    /** @type {string | null} */
     let old = null;
     if (fs.existsSync(target)) { old = path.join(dir, `.${DIR}.${unique()}.old`); fs.renameSync(target, old); }
     fs.renameSync(tmp, target);

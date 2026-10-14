@@ -79,7 +79,7 @@ function install() {
   const wrap = (obj, name, dirAware, kind) => {
     const orig = obj[name];
     if (typeof orig !== 'function') return;
-    const wrapped = function (src, dest, ...rest) {
+    const wrapped = /** @this {unknown} */ function (src, dest, ...rest) {
       let dir = false;
       try {
         if (dirAware) { try { dir = fs.statSync(src).isDirectory(); } catch { /* the copy reports it */ } }

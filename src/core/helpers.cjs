@@ -113,7 +113,8 @@ function ofWebpackModules(modules, sourceOf) {
     const loaders = Array.isArray(m.loaders) ? m.loaders.filter(l => l && typeof l.loader === 'string') : [];
     const used = Object.keys(LOADERS).filter(fam => loaders.some(l => LOADERS[fam].test(l.loader)));
     if (!used.length) continue;
-    let code = null;
+    /** @type {unknown} */
+    let code;
     try { const s = typeof m.originalSource === 'function' ? m.originalSource() : null; code = s && s.source ? s.source() : null; } catch { code = null; }
     if (code && typeof code !== 'string') code = Buffer.isBuffer(code) ? code.toString('utf8') : null;
     const file = sourceOf(m);
@@ -140,7 +141,7 @@ function ofWebpackModules(modules, sourceOf) {
 function ofModuleIds(ids, infoOf, fileOf, cwd) {
   const fams = new Map(); // family -> whether only one-word names (Babel's or swc's) brought it
   for (const id of ids) {
-    let info = null;
+    let info;
     try { info = infoOf(id); } catch { info = null; }
     const code = info && typeof info.code === 'string' ? info.code : null;
     if (!code) continue;

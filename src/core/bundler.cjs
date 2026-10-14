@@ -24,6 +24,8 @@ const licenseOf = (j) => (typeof j.license === 'string' ? j.license : j.license 
 // is that package.json's; only a copy without one gets `version` (the bundler's own, e.g. compiler.webpack.version) -
 // strings in a bundler's code can be stale. Neither: a problem (the lockfile would miss the bundler; in strict mode on
 // every build), and null. { name, version, license, path } as core/packages.cjs's, cached per file.
+/** @import { Manifest, Package } from '../types' */
+/** @type {Map<string, Package>} */
 const cache = new Map();
 const paths = new Set(); // of the bundler packages found (isBundlerPath)
 // The package at that path is a bundler, as found here (core/generated.cjs: a generate-only chunk of nothing but the
@@ -33,6 +35,7 @@ function bundlerPackage(kind, file, names, version) {
   const f = fileOf(file);
   const key = `${f}\0${names.join(',')}\0${version || ''}`;
   if (cache.has(key)) return cache.get(key);
+  /** @type {{ dir: string, j: Manifest } | null} */
   let found = null;
   if (typeof f === 'string' && path.isAbsolute(f)) {
     for (const d of ancestors(path.dirname(real(f)))) {
@@ -40,6 +43,7 @@ function bundlerPackage(kind, file, names, version) {
       if (j && typeof j.name === 'string' && names.includes(j.name)) { found = { dir: d, j }; break; }
     }
   }
+  /** @type {Package | null} */
   let p = null;
   if (!found) {
     problems.problem(`${kind}: no package.json of ${names.join(' or ')} around ${f || '(unknown file)'}: the lockfile would miss the bundler, whose code is in the output`, null, { once: key });
@@ -49,9 +53,10 @@ function bundlerPackage(kind, file, names, version) {
     if (!v) problems.problem(`${kind}: ${found.dir} (${found.j.name}) has no version, nor does the bundler say it: the lockfile would miss the bundler, whose code is in the output`, null, { once: key });
     else {
       if (own && version && own !== version) config.debug(`${kind}: ${found.dir} is ${found.j.name}@${own}, its code says ${version}`);
-      p = { name: found.j.name, version: v, path: found.dir, license: licenseOf(found.j) };
-      paths.add(p.path);
-      config.debug(`${kind}: bundler package ${p.name}@${p.version} (from ${f})`);
+      const pkg = { name: found.j.name, version: v, path: found.dir, license: licenseOf(found.j) };
+      paths.add(pkg.path);
+      config.debug(`${kind}: bundler package ${pkg.name}@${pkg.version} (from ${f})`);
+      p = pkg;
     }
   }
   if (p) cache.set(key, p);

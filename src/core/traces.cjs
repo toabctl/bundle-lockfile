@@ -30,7 +30,7 @@ function traceFiles(distDir) {
 // The absolute paths of the files one trace lists; throws an Error saying what is wrong with it
 function filesOf(traceFile) {
   let j;
-  try { j = JSON.parse(fs.readFileSync(traceFile, 'utf8')); } catch (e) { throw new Error(`could not read ${traceFile}: ${e.message}`); }
+  try { j = JSON.parse(fs.readFileSync(traceFile, 'utf8')); } catch (e) { throw new Error(`could not read ${traceFile}: ${e.message}`, { cause: e }); }
   if (!j || typeof j !== 'object' || j.version !== 1) throw new Error(`${traceFile} is a trace of a version bundle-lockfile does not know (${j && j.version})`);
   if (!Array.isArray(j.files) || j.files.some(f => typeof f !== 'string')) throw new Error(`${traceFile} has no list of files`);
   const dir = path.dirname(traceFile);

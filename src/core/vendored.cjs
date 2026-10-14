@@ -82,6 +82,7 @@ function membersOf(d) {
   try { add(pnpmPackages(fs.readFileSync(path.join(d, 'pnpm-workspace.yaml'), 'utf8'))); } catch { /* none */ }
   const lerna = readJson(path.join(d, 'lerna.json'));
   if (lerna) add(Array.isArray(lerna.packages) && lerna.packages.length ? lerna.packages : ['packages/*']); // Nx's reading of a lerna.json without them
+  /** @type {any} */
   let rush = null;
   try { rush = parseJsonc(fs.readFileSync(path.join(d, 'rush.json'), 'utf8')); } catch { /* none */ }
   const folders = new Set(rush && Array.isArray(rush.projects) ? rush.projects.map(p => p && typeof p.projectFolder === 'string' && posix(path.normalize(p.projectFolder))).filter(Boolean) : []);
@@ -138,7 +139,7 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
     const own = [...ancestors(path.dirname(real(e)))].find(d => manifest(d)); // (iterator helpers: Node.js 22)
     if (own) for (const d of ancestors(own)) boundary.add(d);
   }
-  const monorepos = [...boundary].map(membersOf).filter(Boolean);
+  const monorepos = [...boundary].map(membersOf).filter(m => m !== null);
   // BUNDLE_LOCKFILE_FIRST_PARTY: absolute globs, tested on real paths - so also with the glob's literal prefix as its
   // real path (a checkout through a symbolic link, macOS's /tmp)
   const firstParty = config.firstParty.flatMap((g) => {

@@ -16,6 +16,20 @@ const { posix, packageRoot, portable, exportPath } = require('../core/paths.cjs'
 const { bundlerPackage, packageOnStack } = require('../core/bundler.cjs');
 const helpers = require('../core/helpers.cjs');
 
+/** @import { LateFile, Package } from '../types' */
+/**
+ * Asset name -> the package files it is a copy of; bytes: the names matched by their bytes alone (see core/via.cjs)
+ * @typedef {Map<string, string[]> & { bytes: Set<string> }} CopiedAssets
+ */
+/**
+ * Asset name -> the file it was copied from, in the emit hook (copiedInEmit); bytes: as for CopiedAssets
+ * @typedef {Map<string, string> & { bytes?: Set<string> }} CopiedInEmit
+ */
+/**
+ * How sourcesOf found the files: modules walked, whether a style module recorded no file dependencies, mark(file, class)
+ * @typedef {{ modules: Set<any>, unrecorded: boolean, mark?: (file: string, cls: string) => void }} Walked
+ */
+
 const NAME = 'bundle-lockfile';
 const APPLIED = Symbol.for('bundle-lockfile.webpack.applied'); // compiler: has a BundleLockfilePlugin
 const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
@@ -32,12 +46,13 @@ const BUNDLER_FILE = Symbol.for('bundle-lockfile.webpack.bundler-file'); // Comp
 const JS = /\.[cm]?js$/i;
 
 // Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (the path
-// module.rules match it against; also used for splitChunks tests, rules' issuer condition and webpack 5's stats). For a NormalModule it is the resource without query - or the match
-// resource of a "<name>!=!<loaders>!<resource>" request: loaders that generate a module from a placeholder
-// file name it that way (vanilla-extract's CSS reads @vanilla-extract/webpack-plugin/extracted.js), so the
-// placeholder's package does not count. Modules such as mini-css-extract's CssModule implement it without
-// having a resource (CssModule: the resource of the CSS module it came from, never its match resource); externals and webpack's runtime modules return null (webpack 4's base Module has
-// nameForCondition = null).
+// module.rules match it against; also used for splitChunks tests, rules' issuer condition and webpack 5's stats). For
+// a NormalModule it is the resource without query - or the match resource of a "<name>!=!<loaders>!<resource>"
+// request: loaders that generate a module from a placeholder file name it that way (vanilla-extract's CSS reads
+// @vanilla-extract/webpack-plugin/extracted.js), so the placeholder's package does not count. Modules such as
+// mini-css-extract's CssModule implement it without having a resource (CssModule: the resource of the CSS module it
+// came from, never its match resource); externals and webpack's runtime modules return null (webpack 4's base Module
+// has nameForCondition = null).
 // A module without a resource that names its issuer's resource was generated from the issuer - mini-css-extract's
 // CssModule for the CSS a module produced - and is the file webpack names the issuer by. That carries a match
 // resource over to the CSS (vanilla-extract), while CSS a file @imports keeps its own file.
@@ -118,9 +133,17 @@ const isStyle = (m, f) => packages.STYLE.test(f.split('?')[0]) || (typeof m.reso
 // seen (optional): { modules: Set of the modules walked, unrecorded: whether a style module recorded no file
 // dependencies at all, mark (optional): mark(file, class) is told how each file was found (see core/via.cjs): cls for
 // the modules' files (chunk, child), style or inlined for the files their loaders inlined }
+/**
+ * @param {any} compilation
+ * @param {Iterable<any>} modules
+ * @param {Set<string>} [into]
+ * @param {Walked | null} [seen]
+ * @param {string} [cls]
+ * @returns {Set<string>}
+ */
 function sourcesOf(compilation, modules, into = new Set(), seen = null, cls = 'chunk') {
   const issuerOf = issuers(compilation);
-  const mark = (seen && seen.mark) || (() => {});
+  const mark = (seen && seen.mark) || /** @type {(file: string, cls: string) => void} */ (() => {});
   const walk = (list) => {
     for (const m of list) {
       if (seen) seen.modules.add(m);
@@ -278,8 +301,8 @@ function packageFilesBySize(compilation) {
 // Returns Map(asset name -> [package file]). The modules (a webpack 4 module's emitFile assets are its own) are looked at
 // only if there are such assets: compilation.modules is costly in rspack.
 function copiedUnnamed(compilation) {
-  const files = new Map();
-  files.bytes = new Set(); // (all of them: matched by their bytes)
+  /** @type {CopiedAssets} */
+  const files = Object.assign(new Map(), { bytes: new Set() }); // (bytes: all of them, matched by their bytes)
   let unnamed = [];
   for (const name of assetNames(compilation)) {
     const a = assetOf(compilation, name);
@@ -291,7 +314,9 @@ function copiedUnnamed(compilation) {
   if (!unnamed.length) return files;
   const own = new Set();
   for (const chunk of compilation.chunks || []) for (const f of [...(chunk.files || []), ...(chunk.auxiliaryFiles || [])]) own.add(f);
-  for (const m of compilation.modules || []) if (m && m.buildInfo && m.buildInfo.assets) for (const n of Object.keys(m.buildInfo.assets)) own.add(n); // webpack 4: emitFile
+  for (const m of compilation.modules || []) { // webpack 4: emitFile
+    if (m && m.buildInfo && m.buildInfo.assets) for (const n of Object.keys(m.buildInfo.assets)) own.add(n);
+  }
   unnamed = unnamed.filter(({ a }) => !own.has(a.name));
   if (!unnamed.length) return files;
   const bySize = packageFilesBySize(compilation);
@@ -318,8 +343,8 @@ function copiedUnnamed(compilation) {
 // cost is that of one pass over the dependencies (OHIF copies hundreds of files, and depends on thousands).
 // Returns Map(asset name -> [package files]), with .bytes: the names of the copies matched by their bytes alone.
 function copiedRspack(compilation) {
-  const files = new Map();
-  files.bytes = new Set();
+  /** @type {CopiedAssets} */
+  const files = Object.assign(new Map(), { bytes: new Set() });
   const copied = [];
   for (const name of assetNames(compilation)) {
     const a = assetOf(compilation, name);
@@ -336,6 +361,7 @@ function copiedRspack(compilation) {
   }
   const realOf = (f) => { try { return fs.realpathSync(f); } catch { return f; } };
   const bytesOf = (a) => { try { const s = a.source.source(); return Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { return null; } };
+  /** @type {Map<number, string[]> | null} */
   let bySize = null; // packageFilesBySize, if needed
   for (const a of copied) {
     const rel = posix(a.info.sourceFilename.split('?')[0]), tail = `/${rel}`;
@@ -384,8 +410,10 @@ function compilerWriter(compiler) {
   const o = compiler.options || {}, out = o.output || {};
   const plain = (v) => (typeof v === 'function' ? '(function)' : v === undefined ? null : v);
   let base;
-  try { base = JSON.stringify([compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)], (k, v) => portable(compiler.context, v)); }
-  catch { base = JSON.stringify([compiler.name || null, '(not comparable)']); } // e.g. a BigInt in an entry option
+  try {
+    const parts = [compiler.name || null, plain(o.entry), plain(o.target), plain(out.filename), plain(out.chunkFilename)];
+    base = JSON.stringify(parts, (k, v) => portable(compiler.context, v));
+  } catch { base = JSON.stringify([compiler.name || null, '(not comparable)']); } // e.g. a BigInt in an entry option
   let id = base;
   for (let n = 2; ; n++) {
     const claim = `${compiler.outputPath}\0${id}`;
@@ -451,9 +479,17 @@ const failCompilation = (compilation) => problems.failIfAny((err) => compilation
 // an earlier build, as long as the plugin still copies them (they are still file dependencies).
 // early: asset names when the lockfile was emitted; previous: what this returned for the compiler's previous
 // build; readAsset(name, callback(Buffer | null)); done(files) gets Map(asset name -> absolute path of the file).
+/**
+ * @param {any} compilation
+ * @param {Set<string>} early
+ * @param {CopiedInEmit} previous
+ * @param {(name: string, cb: (buf: Buffer | null) => void) => void} readAsset
+ * @param {(files: CopiedInEmit) => void} done
+ */
 function copiedInEmit(compilation, early, previous, readAsset, done) {
-  const files = new Map(), unnamed = [];
-  files.bytes = new Set(); // the names matched by their bytes (see core/via.cjs)
+  /** @type {CopiedInEmit & { bytes: Set<string> }} */
+  const files = Object.assign(new Map(), { bytes: new Set() }); // bytes: the names matched by their bytes (see core/via.cjs)
+  const unnamed = [];
   for (const name of assetNames(compilation).filter(n => !early.has(n))) {
     const a = assetOf(compilation, name), info = (a && a.info) || {};
     if (typeof info.sourceFilename === 'string') files.set(name, path.resolve(compilation.compiler.context, info.sourceFilename));
@@ -471,7 +507,7 @@ function copiedInEmit(compilation, early, previous, readAsset, done) {
   let pending = unnamed.length;
   for (const name of unnamed) {
     readAsset(name, (buf) => {
-      const copy = ((buf && bySize.get(buf.length)) || []).find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
+      const copy = ((buf && bySize.get(buf.length)) || []).find((f) => { try { return !!buf && buf.equals(fs.readFileSync(f)); } catch { return false; } });
       if (copy) { files.set(name, copy); files.bytes.add(name); }
       if (--pending === 0) done(files);
     });
@@ -520,6 +556,7 @@ function bundlerOf(compiler, applier) {
   const version = compiler.webpack ? (rspack ? compiler.webpack.rspackVersion : compiler.webpack.version) : undefined;
   const file = compiler[BUNDLER_FILE] || applier;
   if (file) return bundlerPackage(kind, file, [name], version);
+  /** @type {string | null} */
   let found = null;
   try { found = createRequire(path.join(compiler.context, 'x')).resolve(`${name}/package.json`); } catch { /* none */ }
   const p = found && bundlerPackage(kind, found, [name], version);
@@ -540,6 +577,12 @@ class BundleLockfilePlugin {
   // the same lockfile (see core/outputs.cjs). copied: files copied into the output in the emit hook (see copiedInEmit);
   // late: { generated, late } packages of generate-only output emitted late and of files written into the output after
   // the build
+  /**
+   * @param {any} compilation
+   * @param {CopiedInEmit} [copied]
+   * @param {{ generated?: Package[], late?: Package[] }} [late]
+   * @returns {string}
+   */
   lockfile(compilation, copied = new Map(), late = {}) {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
@@ -558,7 +601,8 @@ class BundleLockfilePlugin {
     found.add('helpers', inl);
     const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || [], own, inl);
     return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
-      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
+      compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)),
+      { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
   }
 
   // { name, version } of the bundler of a compiler (core/lockfile.cjs): rspack's version, webpack 5's, or webpack 4's
@@ -690,7 +734,7 @@ class BundleLockfilePlugin {
           try { fsys[stat](f, (err) => cb(!err || err.code !== 'ENOENT')); } catch { cb(true); }
         };
         outputs.prune(file, writer, exists, () => {
-          const writeFile = !inline ? null : disk ? outputs.writeDisk(file) : (json, done) => fsys.writeFile(file, json, done);
+          const writeFile = !inline ? null : disk ? outputs.writeDisk(file) : (json, cb) => fsys.writeFile(file, json, cb);
           outputs.rewrite(file, writeFile, (err) => {
             if (err) problems.problem(`${kindOf(compiler)}: could not write ${file}`, err);
             else if (inline || exportPath(file)) config.debug(`${kindOf(compiler)}: wrote`, [inline && file, exportPath(file)].filter(Boolean).join(' and '));

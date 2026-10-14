@@ -1,5 +1,6 @@
 'use strict';
 // Maps bundled source files to the npm packages they belong to.
+/** @import { Package, VendorScope, ViaCollector } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -76,9 +77,14 @@ const realFile = (file) => { try { return unvirtual(fs.realpathSync(file)); } ca
 // - a file this process copied out of a package that still has its bytes (core/copies.cjs): as that file
 // - any other file, and a workspace package reached through a node_modules symlink: first-party (none), unless the
 //   build's scope (where, see core/vendored.cjs scope()) finds it in a vendored copy outside node_modules
-// Packages are looked up once per package directory. via (optional): a core/via.cjs collector, told the packages the
+// Packages are looked up once per package directory. collector (optional): a core/via.cjs collector, told the packages the
 // resolver found as a copy made with fs (fs-copy) or as a vendored copy (vendored).
-function resolver(where = null, via = null) {
+/**
+ * @param {VendorScope | null} [where]
+ * @param {ViaCollector | null} [collector]
+ * @returns {(file: string) => Package[]}
+ */
+function resolver(where = null, collector = null) {
   const byLinked = new Map(); // package directory as reached -> { root: its real location, told: debug message written }
   const byReal = new Map();   // real package directory -> package | null
   const inside = new Map();   // real directory inside a package -> the vendored copy there | null
@@ -88,6 +94,7 @@ function resolver(where = null, via = null) {
     if (byReal.has(root)) return byReal.get(root);
     let p = readPackage(root);
     if (!p) {
+      /** @type {Package | null} */
       let container = null;
       for (let c = vendored.containerOf(root); c && !container; c = vendored.containerOf(c)) container = readPackage(realRoot(c));
       unlisted(root, container);
@@ -96,7 +103,7 @@ function resolver(where = null, via = null) {
     byReal.set(root, p);
     return p;
   };
-  const tell = (cls, pkgs) => { if (via) via.add(cls, pkgs); return pkgs; };
+  const tell = (cls, pkgs) => { if (collector) collector.add(cls, pkgs); return pkgs; };
   return (f) => {
     const file = f.split('?')[0];
     if (!path.isAbsolute(file)) return [];

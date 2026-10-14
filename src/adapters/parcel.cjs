@@ -33,11 +33,13 @@ let version = null;
 // of this process (one per Parcel) is remembered when it runs a request; the reporter reads, for every bundled asset's
 // file, the asset requests that file invalidates and the other files those requests depend on.
 const trackers = new Set();
-let trackerApi = null; // { edge, projectPath, isAsset(node) } of the RequestTracker module, see patchTracker
+/** @type {{ edge: number, projectPath: any, isAsset: (node: any) => boolean } | null} */
+let trackerApi = null; // of the RequestTracker module, see patchTracker
 function patchTracker(exp, resolve) {
   if (!exp || typeof exp !== 'object' || exp[PATCHED]) return;
   const RT = exp.default;
   const edge = exp.requestGraphEdgeTypes && exp.requestGraphEdgeTypes.invalidated_by_update;
+  /** @type {any} */
   let projectPath = null;
   try { projectPath = require(path.join(path.dirname(resolve()), 'projectPath.js')); } catch { /* checked below */ }
   if (typeof RT !== 'function' || !RT.prototype || typeof RT.prototype.runRequest !== 'function' || typeof edge !== 'number'
@@ -135,7 +137,7 @@ function collect(graph, projectRoot) {
 }
 
 function write(w, pkgs, context, opts) {
-  return new Promise((resolve) => {
+  return new Promise(/** @param {(value?: undefined) => void} resolve */ (resolve) => {
     try {
       outputs.record(w.target, w.writer, pkgs, context, [...w.files], { disk: true, ...opts });
       outputs.emitted(w.target, w.writer);
@@ -180,11 +182,12 @@ async function report({ event, options }) {
     try {
       // the files transformers inlined into the bundled assets (Sass partials, Less @imports): with style sheets among
       // the assets, a build whose request graph cannot be read would miss them
-      let inlined = null;
-      try { inlined = inlinedOf(projectRoot, w.sources); } catch (e) { problems.problem(`parcel: could not read the request graph of ${projectRoot}`, e); }
-      if (!inlined) {
-        if ([...w.sources].some(f => packages.STYLE.test(f))) problems.problem(`parcel: no request graph of ${projectRoot}: the style sheets Parcel's transformers inlined into ${w.dir} (Sass partials, Less @imports) would be missing`);
-        inlined = new Map();
+      /** @type {Map<string, string> | null} */
+      let graphInlined = null;
+      try { graphInlined = inlinedOf(projectRoot, w.sources); } catch (e) { problems.problem(`parcel: could not read the request graph of ${projectRoot}`, e); }
+      const inlined = graphInlined || new Map();
+      if (!graphInlined && [...w.sources].some(f => packages.STYLE.test(f))) {
+        problems.problem(`parcel: no request graph of ${projectRoot}: the style sheets Parcel's transformers inlined into ${w.dir} (Sass partials, Less @imports) would be missing`);
       }
       for (const [f] of inlined) { w.sources.add(f); w.kinds.set(f, packages.STYLE.test(f) ? 'style' : 'inlined'); }
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });

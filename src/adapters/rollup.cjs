@@ -30,7 +30,8 @@ const PRE_BUNDLE = 'vite:dep-pre-bundle';
 const JS = /\.[cm]?js$/i;
 const { STYLE } = packages;
 
-const flat = (plugins) => [].concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
+/** @type {(plugins: unknown) => any[]} */
+const flat = (plugins) => /** @type {any[]} */ ([]).concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
 const moduleIds = (chunk) => chunk.moduleIds || Object.keys(chunk.modules || {});
 const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { return process.cwd(); } };
 
@@ -207,10 +208,11 @@ function bundlersOf(kind, from, ctx, cwd) {
   const id = from.id || (rolldown ? 'rolldown' : 'rollup');
   const names = id === 'rolldown' ? ['rolldown'] : ROLLUP_NAMES;
   const version = id === 'rolldown' ? meta.rolldownVersion : rolldown ? undefined : meta.rollupVersion;
-  const resolved = (names, v, what) => {
+  const resolved = (pkgNames, v, what) => {
+    /** @type {string | null} */
     let found = null;
-    for (const n of names) { try { found = createRequire(path.join(cwd, 'x')).resolve(`${n}/package.json`); break; } catch { /* next */ } }
-    const p = found && bundlerPackage(kind, found, names, v);
+    for (const n of pkgNames) { try { found = createRequire(path.join(cwd, 'x')).resolve(`${n}/package.json`); break; } catch { /* next */ } }
+    const p = found && bundlerPackage(kind, found, pkgNames, v);
     if (p && (!v || p.version === v)) return p;
     problems.problem(`${kind}: the build runs ${what}${v ? `@${v}` : ''}, which was not loaded with the preload, and ${found ? `${found} is another copy` : `${cwd} resolves none`}: the lockfile would miss the bundler, whose code is in the output`);
     return null;
@@ -231,6 +233,7 @@ function bundlersOf(kind, from, ctx, cwd) {
 function createPlugin(kind, inputOptions, engine, from = {}) {
   const cwd = realCwd();
   const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
+  /** @type {string | null} */
   let unreadable = null; // what keeps the files Rolldown's plugins inlined from being recorded (see rolldown-watch.cjs)
   // Rollup: a build's watch files are only those of the modules it transforms (graph.watchFiles). A rebuild in watch mode
   // takes unchanged modules from the previous build's cache, with their transform dependencies but without adding them
@@ -255,7 +258,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   let since = 0;
   // writes the lockfile of an output; in strict mode rejects with what went wrong (core/problems.cjs), which fails the
   // build: a hook's rejection is the build's error
-  const write = (w) => new Promise((resolve, reject) => {
+  const write = (w) => new Promise(/** @param {(value?: undefined) => void} resolve */ (resolve, reject) => {
     const end = () => { if (!problems.failIfAny(reject)) resolve(); };
     try {
       outputs.emitted(w.target, w.writer);
@@ -296,6 +299,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
         return null;
       },
     }),
+    /** @this {any} a plugin context */
     buildStart(options) {
       // a plugin configured by hand: the bundler that runs this hook (see bundlersOf)
       if (!from.file && !from.runner) from.runner = { rollup: packageOnStack(ROLLUP_NAMES), rolldown: packageOnStack(['rolldown']) };
@@ -366,8 +370,9 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
               } else {
                 // an asset emitted from a package file (a worker's font or wasm): the build that uses it emits its bytes
                 // again, without naming the file
-                const from = (f.originalFileNames || (f.originalFileName ? [f.originalFileName] : [])).map(n => originalFile(n, f.source, cwd, bases)).filter(Boolean);
-                pkgs = from.length ? packages.packagesForFiles(from) : [];
+                const names = f.originalFileNames || (f.originalFileName ? [f.originalFileName] : []);
+                const sources = names.map(n => originalFile(n, f.source, cwd, bases)).filter(Boolean);
+                pkgs = sources.length ? packages.packagesForFiles(sources) : [];
                 generated.addAsset(f.source, pkgs);
               }
               all.push(pkgs);
@@ -476,7 +481,8 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             w.pkgs = packages.unique(w.pkgs, add);
             w.via.add('late', add);
             for (const l of late) w.files.add(l.file);
-            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via });
+            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files],
+              { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via });
             await write(w);
           } catch (e) {
             if (problems.isFailure(e)) { failClose(this, e); return; } // from write()
@@ -504,7 +510,8 @@ function attach(id, options, file) {
   config.debug(`${kind}: adding the plugin to a ${id}() call`);
   // a build Vite makes: Vite's package is around its caller, a file on the stack now (core/bundler.cjs)
   const from = { id, file, vite: kind === 'vite' ? viteOf(callerFiles()) : null };
-  return { ...options, plugins: [...[].concat(options.plugins == null ? [] : options.plugins), createPlugin(kind, options, id, from)] };
+  const own = /** @type {unknown[]} */ ([]).concat(options.plugins == null ? [] : options.plugins);
+  return { ...options, plugins: [...own, createPlugin(kind, options, id, from)] };
 }
 
 const each = (id, v, file) => (Array.isArray(v) ? v.map(o => attach(id, o, file)) : attach(id, v, file));
@@ -512,7 +519,7 @@ const each = (id, v, file) => (Array.isArray(v) ? v.map(o => attach(id, o, file)
 // rollup()/rolldown() with the plugin; the plugin gets the build the call returns (Rolldown's watch files, see
 // watchFilesOf) - also one that was in the options already (configured by hand): only the caller of rolldown() has it.
 function wrapBuild(id, fn, file) {
-  return function (options, ...rest) {
+  return /** @this {unknown} */ function (options, ...rest) {
     const o = attach(id, options, file);
     const result = fn.call(this, o, ...rest);
     const plugin = o && typeof o === 'object' && !Array.isArray(o) && flat(o.plugins).find(p => p.name === NAME && p.api && p.api.setBuild);
@@ -547,7 +554,7 @@ module.exports = {
   esmWrap(id, name, fn, url) {
     if (typeof fn !== 'function') return null;
     if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn, url);
-    if (name === 'watch' || name === 'build') return function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
+    if (name === 'watch' || name === 'build') return /** @this {unknown} */ function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
     return null;
   },
   onCjsLoad(exp, request, resolve) {

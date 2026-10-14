@@ -93,8 +93,8 @@ function outputsOf(w, keyOf, rel) {
 // of its packages in "packages".
 function provenanceOf(w, keyOf, packages) {
   const out = {};
-  const b = w.bundler;
-  if (b && typeof b.name === 'string' && b.name) out.bundler = { name: b.name, ...(typeof b.version === 'string' && b.version ? { version: b.version } : {}) };
+  const bid = w.bundler;
+  if (bid && typeof bid.name === 'string' && bid.name) out.bundler = { name: bid.name, ...(typeof bid.version === 'string' && bid.version ? { version: bid.version } : {}) };
   if (!w.via) return out;
   const index = new Map(packages.map((k, i) => [k, i]));
   const by = new Map();

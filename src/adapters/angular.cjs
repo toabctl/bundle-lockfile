@@ -30,9 +30,11 @@ const STATS = { browser: 'browser-stats.json', server: 'server-stats.json', both
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 // the version of the builder whose executeBuild() was wrapped (@angular/build, or @angular-devkit/build-angular 17), as
 // its package.json says: the record's bundler
+/** @type {string | null} */
 let version = null;
 // the esbuild the builder bundles with (the one its package resolves): its runtime helpers are in the JavaScript files
 // (see core/bundler.cjs); Angular's chunk optimizer (Rolldown) is not listed
+/** @type {string | null} */
 let esbuildFile = null;
 
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
@@ -185,7 +187,7 @@ function complete(options, result, forced) {
 const devServer = (options) => !!options && options.partialSSRBuild === true && !process.env.NG_BUILD_PARTIAL_SSR;
 
 function wrap(executeBuild) {
-  return async function bundleLockfileExecuteBuild(options, ...rest) {
+  return /** @this {unknown} */ async function bundleLockfileExecuteBuild(options, ...rest) {
     if (devServer(options)) {
       config.debug('angular: a build of the dev server (ng serve), which writes nothing: no lockfile');
       return executeBuild.call(this, options, ...rest);

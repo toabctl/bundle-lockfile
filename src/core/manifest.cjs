@@ -1,6 +1,7 @@
 'use strict';
 // A package directory's package.json: its name, version and license. Shared by the modules that map files to packages
 // (packages.cjs, vendored.cjs) and the ones that check a recorded package is still where it was (outputs.cjs).
+/** @import { Manifest, Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
 
@@ -15,16 +16,26 @@ function licenseOf(j) {
 
 // The content of dir/package.json, or null. A leading byte order mark is valid UTF-8 that JSON.parse rejects; npm
 // strips it too.
+/**
+ * @param {string} dir
+ * @returns {Manifest | null}
+ */
 function readManifest(dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^﻿/, '')); } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return null; }
 }
 
 // { name, version, path: dir, license } of package.json content j, or null without name and version
+/**
+ * @param {Manifest | null} j
+ * @param {string} dir
+ * @returns {Package | null}
+ */
 function packageOf(j, dir) {
   if (!j || typeof j.name !== 'string' || !j.name || typeof j.version !== 'string' || !j.version) return null;
   return { name: j.name, version: j.version, path: dir, license: licenseOf(j) };
 }
 
+/** @type {(dir: string) => Package | null} */
 const readPackage = (dir) => packageOf(readManifest(dir), dir);
 
 module.exports = { readPackage, readManifest, packageOf };
