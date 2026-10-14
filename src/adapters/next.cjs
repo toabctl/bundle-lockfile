@@ -142,6 +142,7 @@ function patchConfig(exp) {
 module.exports = {
   name: 'next',
   cjsFiles: [BUILD, CONFIG],
+  cjsPackages: ['next'], // processes that build with it (see hooks.cjs installCjs)
   onCjsLoad(exp, request, resolve) {
     if (request.endsWith('config.js') && CONFIG.test(request) && exp && typeof exp === 'object') { patchConfig(exp); return undefined; }
     if (!request.endsWith('index.js') || !BUILD.test(request) || !exp || typeof exp !== 'object' || exp[WRAPPED]) return undefined;

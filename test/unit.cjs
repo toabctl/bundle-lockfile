@@ -5943,7 +5943,7 @@ test('strict: a Node.js without the CommonJS hook points fails a process that bu
     const compile = Module.prototype._compile; Module.prototype._compile = undefined;
     hooks.install();
     Module.prototype._compile = compile;`;
-  const msg = /Node\.js \S+ has no Module\.prototype\._compile: CommonJS bundlers \(webpack, rspack 1, Rollup's CommonJS build, esbuild\) are not hooked/;
+  const msg = /Node\.js \S+ has no Module\.prototype\._compile: CommonJS bundlers \(webpack, rspack 1, Rollup's CommonJS build, esbuild, Parcel, Angular's builder, Next\.js' build\) are not hooked/;
   const strict = spawnSync(process.execPath, ['-e', script(J(root, 'build.cjs'))], { encoding: 'utf8', env: cjsEnv(undefined), cwd: root });
   assert.equal(strict.status, 1, strict.stderr);
   assert.match(strict.stderr, new RegExp(`ERROR: ${msg.source}`));
@@ -5952,6 +5952,25 @@ test('strict: a Node.js without the CommonJS hook points fails a process that bu
   assert.match(off.stderr, new RegExp(`WARNING: ${msg.source}`));
   const other = spawnSync(process.execPath, ['-e', script(J(elsewhere, 'x.cjs'))], { encoding: 'utf8', env: cjsEnv(undefined), cwd: elsewhere });
   assert.deepEqual([other.status, other.stderr], [0, '']);
+});
+
+test('strict: a Node.js without the CommonJS hook points fails a process that builds with any CommonJS adapter\'s bundler, by its own package', () => {
+  // every adapter that hooks CommonJS modules says which packages make a process one that builds with it: a process
+  // that builds only with that bundler (no webpack, no Vite installed) must not go unhooked without a word
+  const adapters = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular', 'next'].map(n => [n, require(J(SRC, 'adapters', `${n}.cjs`))]);
+  for (const [n, a] of adapters) if (a.onCjsLoad) assert.ok([...(a.cjsPackages || []), ...(a.esmPackages || [])].length, `${n} adapter: no cjsPackages`);
+  for (const [name, dep] of [['parcel', 'parcel'], ['parcel', '@parcel/core'], ['angular', '@angular/cli'], ['angular', '@angular/build'], ['angular', '@angular-devkit/build-angular'], ['next', 'next'], ['esbuild', 'esbuild']]) {
+    const root = project({ 'package.json': { name: 'app', devDependencies: { [dep]: '1.0.0' } }, 'build.cjs': '' });
+    const script = `const Module = require('module'); process.argv[1] = ${JSON.stringify(J(root, 'build.cjs'))};
+      const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+      hooks.register(require(${JSON.stringify(J(SRC, 'adapters', `${name}.cjs`))}));
+      const compile = Module.prototype._compile; Module.prototype._compile = undefined;
+      hooks.install();
+      Module.prototype._compile = compile;`;
+    const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: cjsEnv(undefined), cwd: root });
+    assert.equal(r.status, 1, `${name} with ${dep}: ${r.stderr}`);
+    assert.match(r.stderr, /ERROR: Node\.js \S+ has no Module\.prototype\._compile: CommonJS bundlers .* are not hooked/, `${name} with ${dep}`);
+  }
 });
 
 test('hooks: modules that ran before the hooks were installed are reported when they are', () => {
