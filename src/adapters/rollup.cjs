@@ -21,7 +21,10 @@ const { createRequire } = require('module');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
-const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
+// A build Vite makes has Vite's own JavaScript plugins (vite:css, vite:build-html, ..., in every version, also in its
+// worker, SSR and @vitejs/plugin-legacy builds). Not the plugins Rolldown ships for Vite (builtin:vite-*): Rolldown's
+// experimental ones carry those names in builds without Vite (tsdown's importGlobPlugin is builtin:vite-import-glob).
+const VITE = /^vite:/;
 // Vite 8's dependency pre-bundling (vite dev): a build into its cache directory, never shipped
 const PRE_BUNDLE = 'vite:dep-pre-bundle';
 const JS = /\.[cm]?js$/i;

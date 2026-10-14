@@ -5633,6 +5633,17 @@ test('rollup adapter: Vite 8\'s dependency pre-bundling (vite dev) gets no plugi
   assert.equal(build.plugins.at(-1).name, 'bundle-lockfile');
 });
 
+test('rollup adapter: a Rolldown build with Rolldown\'s builtin:vite-* plugins (tsdown) is no Vite build', () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  // tsdown 0.22 adds rolldown/experimental's importGlobPlugin, named builtin:vite-import-glob; Vite's builds have Vite's
+  // own JavaScript plugins. Only a Vite build's plugin has the config hook (worker.plugins, Vite's package from its caller).
+  const kindOf = (plugins) => (rollupAdapter.attach('rolldown', { input: 'src/index.ts', plugins }).plugins.at(-1).config ? 'vite' : 'rolldown');
+  assert.equal(kindOf([{ name: 'builtin:vite-import-glob' }, { name: 'tsdown:external' }]), 'rolldown');
+  assert.equal(kindOf([{ name: 'builtin:vite-json' }, { name: 'builtin:vite-resolve' }]), 'rolldown');
+  assert.equal(kindOf([{ name: 'builtin:vite-import-glob' }, { name: 'vite:css' }]), 'vite');
+  assert.equal(kindOf([[{ name: 'vite:build-html' }]]), 'vite'); // nested plugin arrays
+});
+
 test('generated: a package file a worker build emits (a font, wasm) is listed in the build that ships the worker', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const root = project({ 'node_modules/font/package.json': { name: 'font', version: '1.0.0' }, 'src/w.js': '', 'src/main.js': '' });
@@ -6118,7 +6129,7 @@ test('strict: a Node.js without the CommonJS hook points fails a process that bu
   // (hooks.cjs is loaded first: loading a module needs _compile)
   const script = (main) => `const Module = require('module'); process.argv[1] = ${JSON.stringify(main)};
     const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
-    hooks.register({ name: 'w', onCjsLoad() {}, cjsFiles: [/x/], cjsPackages: ['webpack'] });
+    hooks.register({ name: 'w', onCjsLoad() {}, cjsFiles: [/[\\\\/]x\\.cjs$/], cjsPackages: ['webpack'] });
     const compile = Module.prototype._compile; Module.prototype._compile = undefined;
     hooks.install();
     Module.prototype._compile = compile;`;
