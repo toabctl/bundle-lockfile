@@ -284,11 +284,13 @@ resolve into it: no output file is below it.
 
 The tree is written with the lockfile, under its lock, built aside and renamed into place: a rewrite with fewer packages
 leaves none of the others' stubs, and one with the same packages leaves the tree as it is. bundle-lockfile's own checks
-of the output (files written after the build, copies made with fs) leave the tree out. A tool that reads both a shipped
-tree and the lockfile lists each package twice: syft with both its lock and package catalogers (a melange SBOM generator
-that adds `javascript-lock-cataloger` to the image catalogers), so leave the setting off where the lockfile is read
-already. With `BUNDLE_LOCKFILE_TREE=only` there is no `package-lock.json`: the lockfile, record and all, is
-`record.json` next to the tree, for outputs that are scanned only as images. syft reports a stub as found by its
+of the output (files written after the build, copies made with fs) leave the tree out. A package whose `package.json`
+names it with something that is no path below `node_modules` (`..`, a further `/`) gets no stub: the tree is not
+written, which fails the build (`BUNDLE_LOCKFILE_STRICT=0`: a warning) - its stub would land outside the tree. A tool
+that reads both a shipped tree and the lockfile lists each package twice: syft with both its lock and package catalogers
+(a melange SBOM generator that adds `javascript-lock-cataloger` to the image catalogers), so leave the setting off where
+the lockfile is read already. With `BUNDLE_LOCKFILE_TREE=only` there is no `package-lock.json`: the lockfile, record and
+all, is `record.json` next to the tree, for outputs that are scanned only as images. syft reports a stub as found by its
 `javascript-package-cataloger` ("installed node module manifest file"): bundled packages look installed.
 
 ## Several writers, one lockfile
