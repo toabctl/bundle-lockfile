@@ -1223,7 +1223,9 @@ const cases = [
   { name: 'esbuild: BUNDLE_LOCKFILE_DISABLE=esbuild', fixture: 'esbuild', cmd: 'node build.mjs build', env: { BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, expect: null },
   // Parcel 2: every Parcel gets the reporter (the command line, the JavaScript API, watch mode); not uuid (unused); the
   // font has no source map (the oracle's)
-  { name: 'Parcel 2.16.4: parcel build', fixture: 'parcel', cmd: 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // via: the font (a style sheet's url()) is an asset of its own, everything else the modules of the bundles
+  { name: 'Parcel 2.16.4: parcel build', fixture: 'parcel', cmd: 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'],
+    expectVia: { chunk: PARCEL('2.16.4').filter(p => p !== 'bootstrap-icons@1.13.2'), asset: ['bootstrap-icons@1.13.2'] } },
   { name: 'Parcel 2.16.4: JavaScript API, run()', fixture: 'parcel', cmd: 'node build.mjs api', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Parcel 2.16.4: JavaScript API, watch(): every rebuild writes the lockfile, with the packages of that build', fixture: 'parcel', cmd: 'node build.mjs watch',
     expect: PARCEL('2.16.4'), watchBuilds: [PARCEL('2.16.4'), PARCEL('2.16.4').filter(p => p !== 'is-number@7.0.0'), PARCEL('2.16.4')],
@@ -1679,7 +1681,7 @@ const cases = [
   // images. Parcel's runtime resolves new URL()'s asset at run time: @parcel/runtime-js
   { name: 'canaries: Parcel 2.16.4', fixture: 'canary-parcel', cmd: 'npm run -s build', oracleArgs: 'parcel.html',
     expect: [...CANARY_JS, ...CANARY_INLINED.all.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_URL, '@parcel/runtime-js@2.16.4'].sort(),
-    oracleMissing: ['bl-canary-icon@1.0.0', CANARY_URL] },
+    oracleMissing: ['bl-canary-icon@1.0.0', CANARY_URL], expectVia: { asset: ['bl-canary-icon@1.0.0', CANARY_URL] } },
   // Vite records the images a style sheet inlines as data: URLs from 6.1 on (vitejs/vite#18979), those JavaScript
   // inlines with new URL() from 7 on: before, nothing the build records names their files - their markers are in the
   // output, their packages not listed

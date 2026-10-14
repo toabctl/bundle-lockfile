@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
+const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { hashOf } = require('../core/hashes.cjs');
@@ -19,6 +20,9 @@ const PATCHED = Symbol.for('bundle-lockfile.parcel.patched');
 const PARCEL = /[\\/]@parcel[\\/]core[\\/]lib[\\/]Parcel\.js$/;
 const REPORTER = path.join(__dirname, 'parcel-reporter');
 const JS_CSS = /\.([cm]?js|css)$/i;
+const CODE_TYPES = new Set(['js', 'jsx', 'ts', 'tsx', 'css', 'html', 'json']); // Parcel's asset types that are code
+// @parcel/core's version, as the patched copy's package.json says (the record's bundler)
+let version = null;
 
 // The options of a new Parcel(), with the reporter (Parcel's own command line passes its reporters this way; one
 // there already - configured by hand - is not added again). Resolved by its absolute path from the project (its root,
@@ -55,14 +59,18 @@ function collect(graph, projectRoot) {
     if (dir.split(path.sep).includes('node_modules')) continue; // a tool's cache
     let w = byDir.get(dir);
     if (!w) {
-      w = { dir, target: path.join(dir, config.file), writer: JSON.stringify(['parcel', bundle.target.name || null, portable(projectRoot, dir)]), files: new Set(), sources: new Set(), entries: new Set(), bundles: [] };
+      w = { dir, target: path.join(dir, config.file), writer: JSON.stringify(['parcel', bundle.target.name || null, portable(projectRoot, dir)]), files: new Set(), sources: new Set(), entries: new Set(), bundles: [], kinds: new Map() };
       byDir.set(dir, w);
     }
     if (bundle.bundleBehavior !== 'inline' && typeof bundle.filePath === 'string') { w.files.add(bundle.filePath); w.bundles.push(bundle); }
     const main = typeof bundle.getMainEntry === 'function' && bundle.getMainEntry();
     if (main && typeof main.filePath === 'string') w.entries.add(main.filePath);
     bundle.traverseAssets((asset) => {
-      if (typeof asset.filePath === 'string' && path.isAbsolute(asset.filePath) && !skipped(graph, bundle, asset)) w.sources.add(asset.filePath);
+      if (typeof asset.filePath === 'string' && path.isAbsolute(asset.filePath) && !skipped(graph, bundle, asset)) {
+        w.sources.add(asset.filePath);
+        // (via, see core/via.cjs: an image or font is an asset of its own; code is a module of a bundle)
+        if (typeof asset.type === 'string' && !CODE_TYPES.has(asset.type)) w.kinds.set(asset.filePath, 'asset');
+      }
     });
   }
   return [...byDir.values()];
@@ -94,7 +102,8 @@ async function report({ event, options }) {
   try { writes = collect(event.bundleGraph, projectRoot); } catch (e) { problems.problem('parcel: could not collect the bundled packages of the build', e); }
   for (const w of writes) {
     try {
-      const { all, byFile } = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
+      const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
+      const { all, byFile } = result;
       const hashes = {}, contents = {};
       for (const b of w.bundles) {
         if (!JS_CSS.test(b.filePath)) continue;
@@ -105,7 +114,8 @@ async function report({ event, options }) {
         b.traverseAssets((a) => { if (typeof a.filePath === 'string' && byFile.has(a.filePath) && !skipped(event.bundleGraph, b, a)) own.push(...byFile.get(a.filePath)); });
         contents[b.filePath] = packages.unique(own).map(p => p.path);
       }
-      await write(w, all, context, { outputs: hashes, contents });
+      await write(w, all, context, { outputs: hashes, contents, via: via.ofFiles(result, w.kinds),
+        bundler: { name: 'parcel', ...(version ? { version } : {}) } });
     } catch (e) { problems.problem(`parcel: could not collect the bundled packages of ${w.dir}`, e); }
   }
   problems.failIfAny((err) => { throw err; });
@@ -130,7 +140,8 @@ module.exports = {
       exp.default = BundleLockfileParcel;
       if (exp.Parcel === Parcel) exp.Parcel = BundleLockfileParcel;
       exp[PATCHED] = true;
-      config.debug('parcel: patched', resolve());
+      try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+      config.debug('parcel: patched', resolve(), version || '');
     } catch (e) { problems.problem(`parcel: could not patch ${resolve()}`, e); }
   },
   report,

@@ -4109,6 +4109,9 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options: { projectRoot: root } });
   const dist = fs.readFileSync(J(root, 'dist', LOCK), 'utf8');
   assert.deepEqual(lockedNames(dist), ['a', 'inl', 'ref']); // not skip: no side effects, no used symbol, not referenced
+  const w0 = JSON.parse(dist)['bundle-lockfile'].writers[0];
+  assert.equal(w0.bundler.name, 'parcel');
+  assert.deepEqual(Object.keys(w0.via), ['chunk']);
   assert.deepEqual([...JSON.parse(dist)['bundle-lockfile'].writers[0].files].sort(), ['../main.css', '../main.js']);
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'lib/out', LOCK), 'utf8')), ['lib']);
   // other events: nothing; a problem: thrown (Parcel fails the build with it)
