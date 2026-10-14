@@ -14,8 +14,8 @@
 //   in this process (the CommonJS hook reports them, see seen), else the one the build's directory resolves. None: a
 //   debug message - code shaped like a helper that no transpiler of the build wrote.
 // Not covered: transpilers inside a bundler's binary (rspack's builtin:swc-loader, Next.js' SWC: their packages are
-// listed as the bundler, core/bundler.cjs), esbuild's helpers (esbuild is listed as the bundler that ran it), and a
-// transpiler in another process (thread-loader workers: the loader chain still names it).
+// listed as the bundler, core/bundler.cjs), and esbuild's helpers (esbuild is listed as the bundler that ran it). A
+// webpack loader in another process (thread-loader) is found all the same: the module's loader chain names it.
 const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
