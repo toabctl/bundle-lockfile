@@ -4148,6 +4148,24 @@ test('tree: a package.json per lockfile key, rewritten in place only when the pa
   assert.ok(mtime > 0);
 });
 
+test('tree: a package name that is no path of a package (.., an extra /, \\) writes no stub, anywhere: the tree fails', () => {
+  const { stubsOf, writeTree } = require('../src/core/tree.cjs');
+  const lock = (name) => JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, 'node_modules/x': { name, version: '1.0.0' } } });
+  const root = project({});
+  const dir = J(root, 'a/b/c/dist/bundle-lockfile');
+  fs.mkdirSync(dir, { recursive: true });
+  // a bundled package's package.json can say any name: it must not lead the stub out of the tree
+  for (const name of ['../../../../../../escaped', '@s/../../../../../../../escaped', 'a/b', '@s/b/c', '..', '.', '@s/..', 'a\\b', '@/a', '']) {
+    assert.throws(() => stubsOf(lock(name)), /no package name/, name);
+    assert.throws(() => writeTree(dir, lock(name)), /no package name/, name);
+  }
+  assert.ok(!fs.existsSync(J(root, 'escaped')) && !fs.existsSync(J(root, 'a/escaped')));
+  assert.deepEqual(fs.readdirSync(dir), []); // (nothing left aside either)
+  // valid names, also with dots and a scope
+  assert.equal(stubsOf(lock('@s/.b.c')).length, 1);
+  assert.equal(stubsOf(lock('a..b')).length, 1);
+});
+
 test('tree: a copy of a stub made with fs is no copy of a package file', () => {
   const copies = require('../src/core/copies.cjs');
   const root = project({ 'dist/bundle-lockfile/packages/0123456789abcdef/node_modules/a/package.json': { name: 'a', version: '1.0.0' },

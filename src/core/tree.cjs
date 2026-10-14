@@ -14,15 +14,28 @@ const DIR = 'packages';
 const IN_TREE = /[\\/]packages[\\/][0-9a-f]{16}[\\/]node_modules[\\/]/;
 const unique = () => `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
 
+// The directories of a package's name below node_modules: <name>, or @<scope> and <name>. The name is a bundled
+// package's package.json says, which can be any string: one that is no such path (.., another /, a \, an empty part)
+// would put its stub somewhere else - up out of the tree. Throws then (the tree is not written: a problem, see
+// core/outputs.cjs).
+function nameDirs(name) {
+  const parts = name.split('/');
+  const ok = (s) => s !== '' && s !== '.' && s !== '..' && !/[\\\0]/.test(s);
+  if ((parts.length === 1 && ok(parts[0]) && !parts[0].startsWith('@'))
+    || (parts.length === 2 && parts[0].startsWith('@') && ok(parts[0].slice(1)) && ok(parts[1]))) return parts;
+  throw new Error(`${JSON.stringify(name)} is no package name a package.json can be at below node_modules: no tree with it`);
+}
+
 // The stubs of a lockfile's content: [[path relative to the lockfile's directory, content]], sorted.
 function stubsOf(json) {
   const doc = JSON.parse(json);
   const out = [];
   for (const [key, p] of Object.entries((doc && doc.packages) || {})) {
     if (!key || !p || typeof p.name !== 'string' || typeof p.version !== 'string') continue;
+    const dirs = nameDirs(p.name);
     const id = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
     const stub = { name: p.name, version: p.version, ...(typeof p.license === 'string' ? { license: p.license } : {}) };
-    out.push([[DIR, id, 'node_modules', ...p.name.split('/'), 'package.json'].join('/'), JSON.stringify(stub, null, 2) + '\n']);
+    out.push([[DIR, id, 'node_modules', ...dirs, 'package.json'].join('/'), JSON.stringify(stub, null, 2) + '\n']);
   }
   return out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 }
