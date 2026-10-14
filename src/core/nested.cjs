@@ -25,26 +25,39 @@ const S = Symbol.for('bundle-lockfile.nested.v1');
 const state = globalThis[S] || (globalThis[S] = { metas: new Map(), changed: new Set() }); // dir -> meta | null; files warned about
 if (!state.changed) state.changed = new Set();
 
-// The lockfile meta (readMeta) of the build whose output dir is `dir`, or null.
+// The record's file below an output dir, under both names it can have: package-lock.json, and record.json next to it
+// (BUNDLE_LOCKFILE_TREE=only) - the inner build may have run with another setting than this one.
+function recordFiles(dir) {
+  const target = path.join(dir, config.file);
+  const base = path.basename(target) === 'record.json' ? 'package-lock.json' : 'record.json';
+  return [target, path.join(path.dirname(target), base)];
+}
+
+// The lockfile meta (readMeta) of the build whose output dir is `dir`, or null. Of the records there (each name, and
+// the export copy of each), the most recently written one that records outputs: a build that switched its
+// BUNDLE_LOCKFILE_TREE setting leaves the other name's file behind.
 function metaOf(dir) {
   if (state.metas.has(dir)) return state.metas.get(dir);
-  let meta = null;
-  const target = path.join(dir, config.file);
-  const exp = exportPath(target);
+  let meta = null, newest = -Infinity;
   const missing = (why) => `the packages of the build that wrote ${dir} would be missing (${why})`;
-  for (const f of exp ? [target, exp] : [target]) {
-    let text;
-    try { text = fs.readFileSync(f, 'utf8'); } catch (e) {
-      if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) problems.problem(`could not read ${f}: ${missing('a bundled file there may be its output')}`, e, { once: f });
-      continue;
+  for (const target of recordFiles(dir)) {
+    const exp = exportPath(target);
+    for (const f of exp ? [target, exp] : [target]) {
+      let text, mtime;
+      try { text = fs.readFileSync(f, 'utf8'); mtime = fs.statSync(f).mtimeMs; } catch (e) {
+        if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) problems.problem(`could not read ${f}: ${missing('a bundled file there may be its output')}`, e, { once: f });
+        continue;
+      }
+      const m = readMeta(text, path.dirname(target), [process.cwd()]); // (a record without its paths: anchored if it is this project's)
+      if (!m) {
+        const why = unreadableRecord(text);
+        if (why) problems.problem(`${f} ${why}: ${missing('a bundled file there may be its output')}`, null, { once: f });
+        continue;
+      }
+      if (!m.writers.some(w => Object.keys(w.outputs).length)) continue; // (then the export copy)
+      if (mtime > newest) { meta = m; newest = mtime; }
+      break; // the inline file over its export copy
     }
-    meta = readMeta(text, path.dirname(target), [process.cwd()]); // (a record without its paths: anchored if it is this project's)
-    if (!meta) {
-      const why = unreadableRecord(text);
-      if (why) problems.problem(`${f} ${why}: ${missing('a bundled file there may be its output')}`, null, { once: f });
-    }
-    if (meta && meta.writers.some(w => Object.keys(w.outputs).length)) break;
-    meta = null;
   }
   state.metas.set(dir, meta);
   return meta;

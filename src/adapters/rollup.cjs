@@ -15,7 +15,7 @@ const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const rolldownWatch = require('./rolldown-watch.cjs');
-const { portable, exportPath } = require('../core/paths.cjs');
+const { portable, exportPath, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
 
@@ -349,7 +349,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           const dir = path.resolve(cwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
           // the bundler's code is in every chunk
           const bundlers = Object.values(bundle).some(f => f.type === 'chunk') ? bundlersOf(kind, from, this, cwd) : [];
-          if (isWrite === false || (dir.split(path.sep).includes('node_modules') && !CACHE.test(dir + path.sep))) {
+          if (isWrite === false || inToolCache(dir)) {
             const all = [];
             const bases = once(() => entryDirs(bundle));
             for (const f of Object.values(bundle)) {
@@ -514,7 +514,6 @@ function wrapBuild(id, fn, file) {
 }
 
 const PATCHED = Symbol.for('bundle-lockfile.rollup.cjs');
-const CACHE = /[\\/]node_modules[\\/]\.cache[\\/]/; // tools' build directories below node_modules (see generateBundle)
 // Rollup's CommonJS build: dist/shared/rollup.js has rollup() and rollupInternal(), which the rollup command line
 // (rollup.rollup), watch() (rollup.rollupInternal) and dist/rollup.js (require('rollup'), which copies rollup when it
 // loads, after this patch) call.

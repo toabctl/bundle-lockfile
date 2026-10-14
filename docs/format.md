@@ -356,7 +356,9 @@ number of all of them. A JavaScript or CSS file in that output which is none of 
 brings all of the writer's packages (one package too many rather than the packages inlined into it missing).
 
 For every bundled file outside `node_modules`, bundle-lockfile looks for `<dir>/bundle-lockfile/package-lock.json`
-(`BUNDLE_LOCKFILE_FILE`, or its copy in the export directory) in the file's directory and each directory above it. In
+(`BUNDLE_LOCKFILE_FILE`, or its copy in the export directory), and for `record.json` next to it (the island built with
+`BUNDLE_LOCKFILE_TREE=only`), in the file's directory and each directory above it - whatever this build's own setting;
+of both, the more recently written one. In
 the first lockfile that records the file, a matching hash adds the packages in that file to this build's (all of the
 writer's packages if the lockfile records none per file). This works in webpack, rspack, Vite, Rollup and
 Rolldown builds.

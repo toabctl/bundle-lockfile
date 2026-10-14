@@ -156,7 +156,7 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   output after the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files
   itself: its lockfile comes from its own adapter ([Angular](#angular)).
 - Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
-  below `node_modules` are left alone.
+  below `node_modules` are left alone - except below `node_modules/.cache/`, as for Vite (tools build what ships there).
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
   `buildSync()` throws it, `watch()` prints it and goes on watching. esbuild 0.16 and older (no `context()`) fail a
   build that writes an output.

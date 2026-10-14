@@ -106,4 +106,14 @@ function realish(p) {
   }
 }
 
-module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, portable, exportPath, OUTSIDE_BASE };
+// An output directory below node_modules is a tool's cache (Vite's dependency pre-bundling in node_modules/.vite, a
+// library's own build): no output of the project's - except below node_modules/.cache/, where tools build what ships
+// (`nuxi build` into node_modules/.cache/nuxt/.nuxt, which Nitro copies into .output/public). Every adapter decides by
+// this, so that a bundler choice does not decide whether a lockfile is written.
+function inToolCache(dir) {
+  const parts = path.resolve(dir).split(path.sep);
+  const i = parts.lastIndexOf('node_modules');
+  return i >= 0 && parts[i + 1] !== '.cache';
+}
+
+module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, portable, exportPath, inToolCache, OUTSIDE_BASE };
