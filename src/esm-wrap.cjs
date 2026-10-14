@@ -168,9 +168,9 @@ function unwrappable(url, e) {
 // whose fstat fails on their file descriptors) do not go through Module._extensions' handlers: Node evaluates them with a require()
 // of its own, also every module they require - the CommonJS hook (hooks.cjs) never sees them. For the files the adapters
 // patch when they load (cjsFiles), a line appended to that source reports the module to the hook once it has run, as
-// the CommonJS hook (hooks.cjs) would. Only when a hook provided the source. On Node.js 24.12+ the in-thread hook also gets the source of
-// a CommonJS file an ES module imports (Rsbuild 1 importing rspack 1), which Node then also loads through Module._extensions:
-// such a module is reported twice, and the adapters patch it once.
+// the CommonJS hook (hooks.cjs) would. Only when a hook provided the source. The in-thread hook also gets the source
+// of a CommonJS file an ES module imports (Rsbuild 1 importing rspack 1), which Node then also loads through
+// Module._extensions: such a module is reported twice, and the adapters patch it once.
 const CJS_LOADED = "\n;{ const f = globalThis[Symbol.for('bundle-lockfile.cjs-loaded')]; if (typeof f === 'function') f(module, __filename); }\n";
 function cjsSource(url, result, files) {
   if (!result || result.format !== 'commonjs' || result.source == null || typeof url !== 'string' || !url.startsWith('file:')) return null;

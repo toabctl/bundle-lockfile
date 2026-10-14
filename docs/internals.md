@@ -24,7 +24,7 @@ flowchart LR
   end
   nodeopts --> register["register.cjs"]
   register --> cjs["CommonJS hook: Module.prototype._compile,<br/>Module._extensions (hooks.cjs)"]
-  register --> esm["ESM load hook (hooks.cjs)<br/>registerHooks, in-thread: Node ≥ 24.12 / 25.2<br/>(safe next to other loaders from there)<br/>module.register, loader thread (esm-loader.mjs):<br/>older, in bundler processes"]
+  register --> esm["ESM load hook (hooks.cjs)<br/>registerHooks, in-thread: Node ≥ 22.22.3 / 24.11.1 / 25.1<br/>(safe next to other loaders from there)<br/>module.register, loader thread (esm-loader.mjs):<br/>older, in bundler processes"]
   register --> copies["fs copy functions wrapped<br/>(core/copies.cjs)"]
 
   cjs -- "webpack/lib/Compiler.js<br/>(webpack-cli, webpack 4/5)" --> wpatch["Compiler.prototype.compile patched"]
@@ -250,16 +250,25 @@ directory (`node_modules/.vite`, or the config's `cacheDir`, also outside `node_
 
 The wrapper of an entry module wraps every function the adapter names, whether the module's source shows it (the
 namespace also has what an `export *` brings) or not, and reports whether the module had any of them: an entry with
-none is a version the adapter does not know, which fails its import in strict mode (`hooks.cjs` `found`). Paths are
+none is a version the adapter does not know, which fails its import in strict mode (`hooks.cjs` `found`). The real
+module is imported as `<url>?bundle-lockfile-real`: its `import.meta.url` has that query, which Node drops when it
+makes a path (`fileURLToPath`, `import.meta.filename`, `createRequire`, `new URL('./x', import.meta.url)`). A module
+of the bundler's own graph that imported the entry back would get the wrapper, whose exports exist only once the real
+module has run (read before, they throw); none of the wrapped entries has such a cycle (rollup 4.64, rolldown 1.2,
+@rspack/core 2.2). Paths are
 recognized as if every package were at `node_modules/<name>` (`core/layout.cjs`: Yarn's pnpm linker puts packages in
 `node_modules/.store/<slug>/package/`).
 
 ### Which ESM hook
 
 The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrides it):
-- Node.js 24.12, 25.2 and later: `module.registerHooks`, in the same thread, in every process. Before those versions,
-  in-thread hooks next to any loader-thread hook (Yarn Plug'n'Play's, tsx's) crash the process (fixed by
-  [nodejs/node#60380](https://github.com/nodejs/node/pull/60380)).
+- Node.js 22.22.3, 24.11.1, 25.1 and later: `module.registerHooks`, in the same thread, in every process. Before
+  those versions, in-thread hooks fail next to a loader-thread hook (Yarn Plug'n'Play's, tsx's, OpenTelemetry's
+  `hook.mjs`) that provides no source for a CommonJS module, which Node then reads itself: they reject it
+  (`ERR_INVALID_RETURN_PROPERTY_VALUE`; fixed by [nodejs/node#59929](https://github.com/nodejs/node/pull/59929)).
+  `module.registerHooks` called in Node's own loader thread - by a `--require` preload, which Node 22 – 24.11 runs
+  there too - crashes the process ("this[#customizations].loadSync is not a function"): `register.cjs` does nothing
+  there.
 - Older versions with `module.register` (18.19, 20.6 and later): a loader thread, only in processes whose main script
   belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`, `@rspack/core`,
   `@rspack/cli` or `@rsbuild/core` (the adapters' `esmPackages`) — the `vite`, `rspack` or `rsbuild` command, a build
@@ -321,8 +330,8 @@ rspack differs. `src/adapters/rspack.cjs` only hooks rspack:
 - Its `Compiler.prototype.compile` is patched as webpack's; rspack's Compiler has no `newCompilation`, so the
   webpack adapter does not take it (and refuses compilers that name an rspack version: Next.js with next-rspack
   assigns rspack's exports to its vendored webpack). A process can load several copies (OHIF: rspack 1 for the config's
-  plugins, rspack 2 for the compiler) and see one copy on several paths (on Node.js 24.12+, the in-thread ESM hook
-  and the CommonJS hook): each class is patched once, marked on its prototype.
+  plugins, rspack 2 for the compiler) and see one copy on several paths (with the in-thread ESM hook, the ESM hook and
+  the CommonJS hook): each class is patched once, marked on its prototype.
 - rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module
   graph: the plugin, also one in the config, fails each of their compilations (`core/problems.cjs`) instead of
   collecting. rspack 0.x is left alone, with a debug message only: no lockfile, no failure.

@@ -78,8 +78,8 @@ syft scan dir:dist -q            # or: trivy fs --format cyclonedx --output sbom
 ```
 
 Every supported bundler in that process, or in a process it starts (which inherits `NODE_OPTIONS`), is hooked. On
-Node.js before 24.12 (25.2 on 25), Vite, Rollup, Rolldown and rspack 2 are hooked only in some processes ([which
-ones](docs/bundlers.md#which-processes-are-hooked)).
+Node.js 20, 22 before 22.22.3 and 24 before 24.11.1, Vite, Rollup, Rolldown and rspack 2 are hooked only in some
+processes ([which ones](docs/bundlers.md#which-processes-are-hooked)).
 
 The test app `test/apps/webpack5` uses `lodash-es`, `debug` 2.6.9 (with its own `ms` 2.0.0), `ms` 2.1.3, `yallist`
 and, in a lazily loaded chunk, `nanoid`; it imports `uuid` without using it. Built with webpack 5, syft reports:
@@ -283,9 +283,9 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
   Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), and a bundler in a
   process that `NODE_OPTIONS` (or the node shim) does not reach. Check in CI that every lockfile the package should
   ship exists.
-- **Older Node.js:** before 24.12 (25.2 on 25), ES-module bundlers (Vite, Rolldown, rspack 2, Rollup through
-  `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on one Rsbuild
-  build; [which processes](docs/bundlers.md#which-processes-are-hooked)).
+- **Older Node.js:** on 20, 22 before 22.22.3 and 24 before 24.11.1, ES-module bundlers (Vite, Rolldown, rspack 2,
+  Rollup through `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on
+  one Rsbuild build; [which processes](docs/bundlers.md#which-processes-are-hooked)).
 - **Not in the lockfile:** packages a server loads from `node_modules` at runtime, files put into the output without
   the bundler (a shell `cp`, another process), vendored code without a `package.json`, and in webpack 5.108+ a
   package of which only inlined constants are used ([what is listed](docs/coverage.md)).

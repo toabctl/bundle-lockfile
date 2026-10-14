@@ -79,8 +79,10 @@ jobs:
       - name: Run matrix
         run: node test/run.cjs "$RUNNER_TEMP/fixtures" --shard=${{ matrix.shard }}/8
 
-  # Node < 24.12 uses the loader-thread ESM hooks (src/hooks.cjs): the Vite, Rollup, Rolldown, nested, SvelteKit, rspack 2 and Rsbuild 2 cases on Wolfi's Node 22
-  # (e.g. GitLab and Coder build with it); wp5-apm: tracing agents next to the hooks
+  # The Vite, Rollup, Rolldown, nested, SvelteKit, rspack 2 and Rsbuild 2 cases on Wolfi's Node 22 (e.g. GitLab and Coder
+  # build with it): its latest, with the in-thread ESM hooks (22.22.3 and later, src/hooks.cjs syncHooksSafe), and 22.22.2,
+  # the last with the loader-thread hooks, which older Node.js (20, 22 before 22.22.3, 24 before 24.11.1) uses;
+  # wp5-apm: tracing agents next to the hooks
   node22:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -88,8 +90,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        node: ['22', '22~22.22.2']
         shard: [1, 2, 3]
-    name: matrix (Node 22, Vite, ${{ matrix.shard }}/3)
+    name: matrix (Node ${{ matrix.node }}, Vite, ${{ matrix.shard }}/3)
     env:
       # the fixtures of the ESM-hooked bundlers (also rspack 2 and Rsbuild 2) and of webpack and rspack 1 under Yarn
       # Plug'n'Play (whose CommonJS modules Node 22 loads without Module._load, see src/hooks.cjs), and their cases
@@ -99,7 +102,7 @@ jobs:
       BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-22 npm yarn bun syft trivy
+        run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy && node -v
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
