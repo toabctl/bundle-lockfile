@@ -48,6 +48,7 @@ Package managers tested ([details](../test/README.md#environments)):
 | esbuild | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 | Nuxt | pnpm 10 |
 | Parcel | npm, pnpm 10, yarn 4 (Plug'n'Play) |
+| Angular | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 | Angular | npm |
 
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
@@ -207,7 +208,9 @@ one its `stats` option writes, turned on for the build and taken out of its outp
   'static'` only prerenders: Angular writes no server, so there is no server lockfile.
 - With i18n (`localize`) Angular writes a copy of each side's output per locale, translations inlined, in
   `<subPath>/` (the locale by default): each copy gets the lockfile, `<outputPath>/browser/<locale>/bundle-lockfile/`
-  (and the server's in `<outputPath>/server/<locale>/`), with the same packages.
+  (and the server's in `<outputPath>/server/<locale>/`), with the same packages. With SSR, the server's entry
+  (`server.mjs`) and its chunks are written once, in `<outputPath>/server/`: their packages are in a lockfile there,
+  those of the locales' copies in each locale's.
 - `ng build --watch` writes the lockfile again with every rebuild that changes it. `ng serve` writes none: the dev
   server serves its builds from memory (bundle-lockfile tells them by the `partialSSRBuild` option the dev server
   sets; with `NG_BUILD_PARTIAL_SSR` set, `ng build` sets it too, and every build counts as one that writes).
@@ -216,7 +219,9 @@ one its `stats` option writes, turned on for the build and taken out of its outp
 - A problem is an error of the build. `BUNDLE_LOCKFILE_DISABLE=angular` leaves Angular alone (its esbuild builds then
   write nothing: no lockfile).
 - Tested: Angular 20, 21, 22 with npm: browser builds, SSR (`outputMode` server and static); on 20 and 22 also i18n
-  (two locales), `ng build --watch`, `ng serve`. Not tested: SSR together with i18n, other package managers.
+  (two locales), SSR with i18n, `ng build --watch`, `ng serve`; Angular 22 also with pnpm 10 and yarn 4 Plug'n'Play
+  (where an asset glob from `node_modules/`, as in angular.json's `assets`, copies nothing: there is no
+  `node_modules`).
 
 ## Next.js
 

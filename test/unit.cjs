@@ -4806,6 +4806,26 @@ test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, f
     const locks = Object.fromEntries(r.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => [`${f.type} ${f.path}`, lockedNames(f.text)]));
     assert.deepEqual(locks, { [`0 de/${LOCK}`]: ['a', 'esbuild'], [`0 en-US/${LOCK}`]: ['a', 'esbuild'], [`4 server/de/${LOCK}`]: ['esbuild', 's'], [`4 server/en-US/${LOCK}`]: ['esbuild', 's'] }, stats);
   }
+  // with server-side rendering: the SSR entry bundle (server.mjs, ServerRoot) is written once, in the server's own
+  // directory - its lockfile there lists its packages (r), the locales' theirs (s); an output no file has (gone.mjs)
+  // counts for both
+  for (const stats of ['split', 'combined']) {
+    const ssr = async (o) => {
+      const r = await build(stats)(o);
+      r.outputFiles.push({ path: 'server.mjs', type: 3, text: 'x' });
+      const meta = r.outputFiles.find(f => f.path === (stats === 'split' ? 'server-stats.json' : 'stats.json'));
+      const j = JSON.parse(meta.text);
+      j.outputs['server.mjs'] = { inputs: { 'node_modules/r/i.js': { bytesInOutput: 1 } } };
+      j.outputs['gone.mjs'] = { inputs: { 'node_modules/u/i.js': { bytesInOutput: 1 } } };
+      meta.text = JSON.stringify(j);
+      return r;
+    };
+    for (const n of ['r', 'u']) { fs.mkdirSync(J(root, 'node_modules', n), { recursive: true }); fs.writeFileSync(J(root, 'node_modules', n, 'package.json'), JSON.stringify({ name: n, version: '1.0.0' })); }
+    const r = await angular.wrap(ssr)(options);
+    assert.deepEqual(r.errors, [], stats);
+    const locks = Object.fromEntries(r.outputFiles.filter(f => /bundle-lockfile/.test(f.path) && f.path.startsWith('server/')).map(f => [f.path, lockedNames(f.text)]));
+    assert.deepEqual(locks, { [`server/${LOCK}`]: ['esbuild', 'r', 'u'], [`server/de/${LOCK}`]: ['esbuild', 's', 'u'], [`server/en-US/${LOCK}`]: ['esbuild', 's', 'u'] }, stats);
+  }
   // flatOutput (one locale, the dev server's): one copy, no locale directory
   const flat = await angular.wrap(build('split'))({ ...options, i18nOptions: { ...i18nOptions, flatOutput: true } });
   assert.deepEqual(flat.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => f.path).sort(), [LOCK, `server/${LOCK}`]);

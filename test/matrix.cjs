@@ -97,7 +97,7 @@ const ANGULAR_CANARIES = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-ca
   + ' && mv bl-canary-dup-1 ../node_modules/bl-canary-used/node_modules/bl-canary-dup && cd .. && rmdir pkgs';
 const angularSsrApp = (tools, fw, ts) => { const a = angularApp(tools, fw, ts);
   return { ...a, app: 'angular-ssr', deps: { ...a.deps, '@angular/ssr': tools, '@angular/platform-server': fw, '@angular/router': fw,
-    'left-pad': '1.3.0', '@types/node': '24.19.2' }, postInstall: ANGULAR_CANARIES }; };
+    '@angular/localize': fw, 'left-pad': '1.3.0', '@types/node': '24.19.2' }, postInstall: ANGULAR_CANARIES }; }; // (localize: its i18n configuration)
 // test/apps/angular-i18n: the same app localized (en-US, de: a copy of the output per locale, translations inlined)
 const angularI18nApp = (tools, fw, ts) => { const a = angularApp(tools, fw, ts);
   return { ...a, app: 'angular-i18n', deps: { ...a.deps, '@angular/localize': fw } }; };
@@ -229,6 +229,8 @@ const fixtures = {
   'angular22': angularApp('22.2.2', '22.2.2', '6.0.3'),
   'angular21': angularApp('21.2.26', '21.2.25', '5.9.3'),
   'angular20': angularApp('20.3.39', '20.3.33', '5.8.3'),
+  'angular22-pnpm10': angularApp('22.2.2', '22.2.2', '6.0.3', { type: 'pnpm', version: '10.34.6' }),
+  'angular22-yarn4-pnp': angularApp('22.2.2', '22.2.2', '6.0.3', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'angular22-i18n': angularI18nApp('22.2.2', '22.2.2', '6.0.3'),
   'angular20-i18n': angularI18nApp('20.3.39', '20.3.33', '5.8.3'),
   'angular22-ssr': angularSsrApp('22.2.2', '22.2.2', '6.0.3'),
@@ -1329,6 +1331,13 @@ const cases = [
     // expectVia reads its lockfile)
     { name: `Angular ${v}: ng build`, fixture, cmd: 'npm run -s build', outDir: 'dist/browser', expect: ANGULAR(fixture), oracleArgs: '--browser-as-root',
       oracleMissing: ['bootstrap-icons@1.13.2'], expectVia: { asset: ['bootstrap-icons@1.13.2'], chunk: ANGULAR(fixture).filter(p => p !== 'bootstrap-icons@1.13.2') } })),
+  // other package managers: pnpm's isolated layout, Yarn Plug'n'Play's zip cache (Angular's builder, its esbuild and the
+  // framework's packages from there). With Plug'n'Play there is no node_modules: the app's asset glob
+  // (node_modules/bootstrap-icons/font/fonts) copies nothing, no font is shipped, bootstrap-icons is not listed
+  { name: 'Angular 22.2.2, pnpm 10: ng build', fixture: 'angular22-pnpm10', cmd: 'npm run -s build', outDir: 'dist/browser', expect: ANGULAR('angular22-pnpm10'),
+    oracleArgs: '--browser-as-root', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'Angular 22.2.2, yarn 4 Plug\'n\'Play: ng build', fixture: 'angular22-yarn4-pnp', cmd: 'yarn build', outDir: 'dist/browser',
+    expect: ANGULAR('angular22-yarn4-pnp').filter(p => p !== 'bootstrap-icons@1.13.2'), oracleArgs: '--browser-as-root' },
   { name: 'Angular 22.2.2: ng build without the chunk optimizer (NG_BUILD_OPTIMIZE_CHUNKS=0)', fixture: 'angular22', cmd: 'npm run -s build',
     env: { NG_BUILD_OPTIMIZE_CHUNKS: '0' }, expectIn: { browser: ANGULAR('angular22') }, oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Angular 22.2.2: export directory only', fixture: 'angular22', cmd: 'npm run -s build', exportOnly: true, expectIn: { browser: ANGULAR('angular22') },
@@ -1360,6 +1369,14 @@ const cases = [
       oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] }, allowWarnings: [MODULE_REGISTER],
       expectIncludes: ['left-pad@1.3.0', `@angular/ssr@${v}`, `@angular/platform-server@${fixtures[fixture].deps['@angular/platform-server']}`, 'bl-canary-used@1.0.0', 'bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0'],
       expectExcludes: ['bl-canary-unused@1.0.0', 'uuid@9.0.1'] },
+    // server-side rendering and i18n: a copy of each side's output per locale, dist/browser/<locale>/ and
+    // dist/server/<locale>/, each with its lockfile; the server's entry (server.mjs, with left-pad and bl-canary-used)
+    // and its chunks Angular writes once, in dist/server/: their own lockfile there
+    ...(v === '21.2.26' ? [] : [{ name: `Angular ${v}: ng build with server-side rendering and i18n, a lockfile per side and locale`, fixture,
+      cmd: 'npm run -s build -- --configuration production,i18n', oracleArgs: '--configuration i18n --locales de,en-US',
+      oracleMissingIn: { 'browser/de': ['bootstrap-icons@1.13.2'], 'browser/en-US': ['bootstrap-icons@1.13.2'] }, allowWarnings: [MODULE_REGISTER],
+      expectIncludes: ['left-pad@1.3.0', `@angular/ssr@${v}`, 'bl-canary-used@1.0.0', 'bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0'],
+      expectExcludes: ['bl-canary-unused@1.0.0', 'uuid@9.0.1'] }]),
     { name: `Angular ${v}: ng build, server-side rendering with outputMode static (no server written, no server lockfile)`, fixture,
       cmd: 'npm run -s build -- --configuration production,static', oracleArgs: '--configuration static', oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] },
       allowWarnings: [MODULE_REGISTER],
