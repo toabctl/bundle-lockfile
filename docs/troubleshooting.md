@@ -76,9 +76,10 @@ They do not fail the build:
   some processes: a programmatic build may need `BUNDLE_LOCKFILE_ESM_HOOKS=async` ([which
   processes](bundlers.md#which-processes-are-hooked)).
 - `bun run` without Node.js installed runs the build in Bun's own runtime, which nothing hooks.
-- Vite, Rollup and Rolldown outputs below `node_modules`, builds that write nothing themselves, `vite dev`, `vite
-  preview`, Vitest, and a webpack build that failed and emitted nothing get no lockfile. (webpack and rspack outputs
-  below `node_modules` get one, which syft and Trivy do not read.)
+- Vite, Rollup and Rolldown outputs below `node_modules` (except `node_modules/.cache/`, where tools such as `nuxi
+  build` build what ships), builds that write nothing themselves, `vite dev`, `vite preview`, Vitest, and a webpack
+  build that failed and emitted nothing get no lockfile. (webpack and rspack outputs below `node_modules` get one, which
+  syft and Trivy do not read.)
 - Another plugin removed a webpack or rspack output directory after the build: only the export copy is written.
 - `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing (and fails the build unless
   `BUNDLE_LOCKFILE_STRICT=0`).

@@ -88,14 +88,15 @@ A case that expects a lockfile checks every lockfile the build writes:
   workers without source maps), or says why it has none;
 - where a case is about particular files (a `package.json` nested in a package, Babel's ES-module helpers), the oracle's
   build has source files below them (`expectSources`): a case whose files are not bundled at all would test nothing;
-- every canary in the output's bytes (gzip and brotli copies unpacked, `data:` URLs decoded) is listed, and every
-  listed canary is there: the packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 5.4 – 8,
-  rolldown-vite, Rollup, Rolldown's API, esbuild and Parcel, also in watch mode) carry a `BLCANARY:<name>@<version>` string in their
-  code, CSS and images, which shows what is shipped without the bundler's own reporting, which the oracles read (a
-  package at two versions, one inside another; an unused import; CSS, which Vite's oracle does not see; files inlined
-  into a module, which no bundler reports: a style sheet `@import`ed, images inlined as `data:` URLs from CSS and from
-  JavaScript, a shader's `#include`). A case may name the canaries a bundler version cannot list (`canaryUnlisted`,
-  e.g. Vite before 6.1 records no inlined images): exactly those must be unlisted, so the limit is pinned;
+- every canary in the output's bytes (gzip and brotli copies unpacked, `data:` URLs decoded) is listed, and every listed
+  canary is there: the packages of the canary app (`apps/canary`, built by webpack 5, rspack 2, Vite 5.4 – 8,
+  rolldown-vite, Rollup, Rolldown's API, esbuild and Parcel, also in watch mode) carry a `BLCANARY:<name>@<version>`
+  string in their code, CSS and images, which shows what is shipped without the bundler's own reporting, which the
+  oracles read (a package at two versions, one inside another; an unused import; CSS, which Vite's oracle does not see;
+  files inlined into a module, which no bundler reports: a style sheet `@import`ed, images inlined as `data:` URLs from
+  CSS and from JavaScript, a shader's `#include`). A case may name the canaries a bundler version cannot list
+  (`canaryUnlisted`, e.g. Vite before 6.1 records no inlined images): exactly those must be unlisted, so the limit is
+  pinned;
 - if `syft` and `trivy` are on `PATH` (as in CI, which sets `BLTEST_REQUIRE_SBOM=1`: without them the run fails): each
   reads exactly those packages, each with a license and a `pkg:npm` purl (syft: from its `javascript-lock-cataloger`);
 - the build printed no Node.js warning (`(node:<pid>) ...Warning: ...`) that the matrix does not expect: each expected
@@ -103,10 +104,10 @@ A case that expects a lockfile checks every lockfile the build writes:
   `BUNDLE_LOCKFILE_ESM_HOOKS=async` on Node.js 26 and later, `module.register()`'s deprecation (DEP0205) is required,
   elsewhere it fails the case. `BLTEST_WARNINGS=collect` records every warning in `<fixtures>/.warnings.jsonl`
   instead of checking them, to take a census;
-- the ES-module entries the adapters wrap (Rollup's, Rolldown's, rspack 2's), every copy installed in the fixture,
-  agree with their wrappers when Node.js loads both without bundle-lockfile ([`oracles/esm-entries.cjs`](oracles/esm-entries.cjs),
-  once per fixture): the wrapper links (a `default` the module does not have, or one it misses, would be a
-  SyntaxError), and has every export of the module, with the same value.
+- the ES-module entries the adapters wrap (Rollup's, Rolldown's, rspack 2's), every copy installed in the fixture, agree
+  with their wrappers when Node.js loads both without bundle-lockfile
+  ([`oracles/esm-entries.cjs`](oracles/esm-entries.cjs), once per fixture): the wrapper links (a `default` the module
+  does not have, or one it misses, would be a SyntaxError), and has every export of the module, with the same value.
 
 Cases can also require exact keys, the notes and warnings in the build output, and the packages after each watch
 rebuild.
@@ -308,7 +309,7 @@ the adapters bundle again — except SvelteKit 2's edge function (built by esbui
 - with next-rspack (15.5: rspack 1.4; 16.4: rspack 2.0): the Pages Router app on both, the App Router app on 16, with
   exactly the lockfiles of the webpack builds
 - on 16: a static export (`output: 'export'`), a standalone output (`output: 'standalone'`: the runtime packages and
-  copies of the bundles' lockfiles), a warm build from `.next/cache`, a Turbopack build (no lockfile)
+  copies of the bundles' lockfiles), a warm build from `.next/cache`, a Turbopack build (fails in strict mode)
 - on 15 and 16, `apps/next-runtime`: canaries the server requires at request time (one only through a deep `.cjs`
   require, of which Next copies no `package.json` into `.next/standalone`), one it bundles; in the standalone output
   also with Turbopack (`BUNDLE_LOCKFILE_STRICT=0`: the runtime packages only). The standalone server is started with
