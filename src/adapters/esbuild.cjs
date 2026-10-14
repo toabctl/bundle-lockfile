@@ -300,11 +300,9 @@ function attach(options, file) {
 // synchronously up to the write, which is queued: a process that exits right away still writes it - see
 // core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
 function wrapSync(fn, version, file) {
+  // (not within a build of its own, core/problems.cjs: its lockfile is written after it returned - a problem then is taken
+  // by the next build, or fails the process)
   return /** @this {unknown} */ function (options, ...rest) {
-    return problems.within({}, () => buildSync.call(this, options, ...rest)); // (this call's problems)
-  };
-  /** @this {unknown} */
-  function buildSync(options, ...rest) {
     if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
     const result = fn.call(this, { ...options, metafile: true }, ...rest);
@@ -312,7 +310,7 @@ function wrapSync(fn, version, file) {
     if (!asked) delete result.metafile;
     problems.failIfAny((err) => { throw err; });
     return result;
-  }
+  };
 }
 
 // esbuild before 0.17 (build() with incremental / watch, no context()): not supported. A call that writes an output

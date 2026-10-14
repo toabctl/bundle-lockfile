@@ -1231,8 +1231,10 @@ test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sou
     taps.emit(comp);
     assert.equal(emitted[LOCK], json, `withWebpack=${withWebpack}`);
     taps.emit(comp); // still there: left alone
-    await new Promise(resolve => taps.afterEmit(comp, resolve)); // not shared: no extra write
+    // not shared: no extra write; webpack goes on outside this compiler's builds (it may start another compiler)
+    const owner = await new Promise(resolve => taps.afterEmit(comp, () => resolve(problems.current())));
     assert.equal(fs.existsSync(J(root, `out-${withWebpack}`, LOCK)), false, `withWebpack=${withWebpack}`);
+    assert.equal(owner, undefined, `withWebpack=${withWebpack}`);
     assert.equal(compiler[Symbol.for('bundle-lockfile.webpack.applied')], true);
   }
 });
@@ -3551,6 +3553,17 @@ test('strict: a build fails with its own problems and those of no build, never w
   let all = null;
   problems.failIfAny((err) => { all = err.problems; });
   assert.deepEqual(all, ['a: two']);
+  assert.equal(problems.pending(), false);
+}));
+
+test('strict: a module whose patching fails throws its own problems, not those a build recorded meanwhile', () => withConfig({ strict: true }, () => {
+  problems.take();
+  const { loading } = require('../src/hooks.cjs');
+  const b = {};
+  problems.within(b, () => problems.problem('b: one'));
+  assert.throws(() => loading(() => problems.problem('load: one')), (e) => problems.isFailure(e) && e.problems.join() === 'load: one');
+  assert.equal(loading(() => 7), 7); // nothing recorded: what fn returns
+  assert.deepEqual(problems.takeOwn(b), ['b: one']);
   assert.equal(problems.pending(), false);
 }));
 

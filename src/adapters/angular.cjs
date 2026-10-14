@@ -38,12 +38,12 @@ let version = null;
 let esbuildFile = null;
 
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
-// that path), and its export copy written; returns the content Angular writes, or null.
-function render(side, target, writer, pkgs, context, files, found) {
+// that path), and its export copy written (its write added to `writes`); returns the content Angular writes, or null.
+function render(side, target, writer, pkgs, context, files, found, writes) {
   const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found,
     bundler: { name: 'angular', ...(version ? { version } : {}) } });
   // Angular writes the lockfile in the output; bundle-lockfile its export copy
-  if (exportPath(target)) outputs.land(target, writer, 'angular', { writeFile: null, prune: false });
+  if (exportPath(target)) writes.push(outputs.land(target, writer, 'angular', { writeFile: null, prune: false }));
   else {
     outputs.emitted(target, writer);
     if (!config.inline) outputs.nowhere();
@@ -62,8 +62,10 @@ function esbuildOf(wd) {
   return null;
 }
 
-// The result of executeBuild: the lockfiles added to its output files; problems as its errors
-function complete(options, result, forced) {
+// The result of executeBuild: the lockfiles added to its output files; problems as its errors. writes: the writes of
+// the export copies are added to it.
+/** @param {Promise<void>[]} writes */
+function complete(options, result, forced, writes) {
   const files = Array.isArray(result.outputFiles) ? result.outputFiles : [];
   const stats = {};
   for (const [side, name] of Object.entries(STATS)) {
@@ -146,7 +148,7 @@ function complete(options, result, forced) {
     };
     const file = config.file.split(path.sep).join('/');
     const write = (label, dir, writer, own, { all, found }, locale) => {
-      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found);
+      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found, writes);
       // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server
       // file of the same name are one (the one added last): the server's lockfile is a file of the output path's root,
       // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
@@ -199,7 +201,10 @@ function wrap(executeBuild) {
     const forced = !!options && typeof options === 'object' && !options.stats;
     const result = await executeBuild.call(this, forced ? { ...options, stats: true } : options, ...rest);
     if (!result || typeof result !== 'object') return result;
-    try { complete(options, result, forced); } catch (e) { problems.problem('angular: could not collect the bundled packages', e); }
+    /** @type {Promise<void>[]} */
+    const writes = [];
+    try { complete(options, result, forced, writes); } catch (e) { problems.problem('angular: could not collect the bundled packages', e); }
+    await Promise.all(writes); // (never reject) the export copies written: what went wrong there fails the build too
     problems.failIfAny((err) => {
       if (typeof result.addError === 'function') result.addError(err.message.replace(/\n$/, ''));
       else throw err;

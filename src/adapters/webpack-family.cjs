@@ -249,10 +249,11 @@ class BundleLockfilePlugin {
     // output.clean, which ran before its emit).
     own(compiler.hooks.afterEmit).tapAsync({ name: NAME, stage: 1000 }, (compilation, callback) => {
       // the end of this hook: what went wrong fails the build (a compilation error, see failCompilation) - outside the
-      // promise: callback() continues the build
+      // promise and outside this compiler's builds (core/problems.cjs outside): callback() continues webpack's work, which
+      // may start another compiler (a config array's dependencies)
       this.afterEmit(compilation)
         .catch((e) => { problems.problem(`${kindOf(compiler)}: could not write the lockfile of ${outputDir(compilation)}`, e); })
-        .then(() => setImmediate(() => { failCompilation(compilation); callback(); }));
+        .then(() => setImmediate(() => { failCompilation(compilation); problems.outside(callback); }));
     });
   }
 
@@ -270,7 +271,9 @@ class BundleLockfilePlugin {
     if (compilation[SOURCE]) {
       const early = compilation[SOURCE].early;
       const bytes = (/** @type {string} */ name) => readAsset(compilation, dir, name);
-      late = await lateGenerated(compilation, early, bytes);
+      try { late = await lateGenerated(compilation, early, bytes); } catch (e) {
+        problems.problem(`${kind}: could not look for the output of generate-only builds among the assets of ${dir}`, e);
+      }
       try { copied = await copiedInEmit(compilation, early, compiler[COPIED] || new Map(), bytes); } catch (e) {
         problems.problem(`${kind}: could not check the files copied into ${dir} in the emit hook`, e);
       }
@@ -295,6 +298,7 @@ class BundleLockfilePlugin {
     // the files webpack wrote: assets the emit hook deleted or added (compression-webpack-plugin <= 6 with
     // deleteOriginalAssets on webpack 4 replaces main.js by main.js.gz) were not known when the lockfile was rendered
     if (!write) outputs.setFiles(file, writer, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)));
+    // landed now, before isShared() looks (land() below finds it landed already)
     outputs.emitted(file, writer);
     // the inline file on the real disk after every build; in memory again if late copies added packages or
     // other compilers write it too; the export copy (BUNDLE_LOCKFILE_EXPORT_DIR) after every build

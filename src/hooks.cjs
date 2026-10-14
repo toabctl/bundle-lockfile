@@ -49,9 +49,19 @@ function install() {
   if (entries.length || cjsFiles.length) installEsm(entries, cjsFiles);
 }
 
-// In strict mode, the problems recorded since `before` (problems.count()) fail what is being loaded: thrown.
-function failLoad(before) {
-  if (config.strict && problems.count() > before) throw problems.failure(problems.take(before));
+// Runs fn() as the loading of a module (its own owner, core/problems.cjs within): in strict mode, the problems recorded
+// meanwhile fail what is being loaded - thrown, once fn has returned. Returns what fn returns.
+/**
+ * @template T
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function loading(fn) {
+  const owner = {};
+  const r = problems.within(owner, fn);
+  const mine = config.strict ? problems.takeOwn(owner) : [];
+  if (mine.length) throw problems.failure(mine);
+  return r;
 }
 
 const failedOn = new Set(); // adapters whose inspection failed: warned once per process
@@ -61,18 +71,19 @@ function onCjsLoad(exp, filename) {
   helpers.seen(request); // the transpilers this process loaded (core/helpers.cjs)
   let replaced;
   for (const a of adapters) {
-    if (!a.onCjsLoad) continue;
-    const before = problems.count();
-    try {
-      const r = a.onCjsLoad(exp, request, resolve);
-      if (r && typeof r === 'object' && 'exports' in r) exp = replaced = r.exports;
-    } catch (e) {
-      // recognizing a module only reads it: a failure there is no bundler the adapter could not patch - unless the module
-      // is one the adapter patches (its cjsFiles), whose builds would then write no lockfile
-      if ((a.cjsFiles || []).some(re => re.test(request))) problems.problem(`${a.name} adapter failed on ${filename}: its builds would write no lockfile`, e);
-      else if (!failedOn.has(a.name)) { failedOn.add(a.name); config.warn(`${a.name} adapter failed while inspecting ${filename}:`, e); }
-    }
-    failLoad(before);
+    const onLoad = a.onCjsLoad;
+    if (!onLoad) continue;
+    loading(() => {
+      try {
+        const r = onLoad.call(a, exp, request, resolve);
+        if (r && typeof r === 'object' && 'exports' in r) exp = replaced = r.exports;
+      } catch (e) {
+        // recognizing a module only reads it: a failure there is no bundler the adapter could not patch - unless the module
+        // is one the adapter patches (its cjsFiles), whose builds would then write no lockfile
+        if ((a.cjsFiles || []).some(re => re.test(request))) problems.problem(`${a.name} adapter failed on ${filename}: its builds would write no lockfile`, e);
+        else if (!failedOn.has(a.name)) { failedOn.add(a.name); config.warn(`${a.name} adapter failed while inspecting ${filename}:`, e); }
+      }
+    });
   }
   return replaced;
 }
@@ -99,9 +110,9 @@ function installCjs() {
     // (only exports an adapter replaced: some modules' exports are a getter, e.g. of an ES module require() loaded)
     const exp = onCjsLoad(module.exports, filename);
     if (exp === undefined) return;
-    const before = problems.count();
-    try { module.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
-    failLoad(before);
+    loading(() => {
+      try { module.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
+    });
   };
   const missing = [];
   const compile = Module.prototype._compile;
@@ -176,9 +187,7 @@ function companion(module, filename) {
   const parent = module && module.parent;
   if (parent && typeof parent.filename === 'string' && entered.has(parent.filename)) return;
   tripped.add(c.id);
-  const before = problems.count();
-  problems.problem(`${c.id} is loaded as an ES module in a process without bundle-lockfile's ESM hooks (${filename}): its builds would write no lockfile (set BUNDLE_LOCKFILE_ESM_HOOKS=async)`);
-  failLoad(before);
+  loading(() => problems.problem(`${c.id} is loaded as an ES module in a process without bundle-lockfile's ESM hooks (${filename}): its builds would write no lockfile (set BUNDLE_LOCKFILE_ESM_HOOKS=async)`));
 }
 
 // module.registerHooks (in-thread, synchronous) next to a loader-thread hook (Yarn PnP's .pnp.loader.mjs, tsx,
@@ -261,12 +270,12 @@ function installEsm(entries, cjsFiles) {
   globalThis[ESM] = {
     wrap(id, name, fn, url) {
       for (const a of adapters) {
-        if (!a.esmWrap) continue;
+        const esmWrapOf = a.esmWrap;
+        if (!esmWrapOf) continue;
         // the entry module is the bundler's: without the wrapped function its builds write no lockfile
-        const before = problems.count();
-        let w = null;
-        try { w = a.esmWrap(id, name, fn, url); } catch (e) { problems.problem(`${a.name} adapter failed to wrap ${id} ${name}`, e); }
-        failLoad(before);
+        const w = loading(() => {
+          try { return esmWrapOf.call(a, id, name, fn, url); } catch (e) { problems.problem(`${a.name} adapter failed to wrap ${id} ${name}`, e); return null; }
+        });
         if (w) return w;
       }
       return fn;
@@ -275,9 +284,7 @@ function installEsm(entries, cjsFiles) {
     // bundler whose entry has none of them, which its adapter does not know
     found(id, url, names, ok) {
       if (ok) return;
-      const before = problems.count();
-      problems.problem(`${url} exports none of ${names.join(', ')}: a version of ${id} bundle-lockfile does not know, whose builds would write no lockfile`);
-      failLoad(before);
+      loading(() => problems.problem(`${url} exports none of ${names.join(', ')}: a version of ${id} bundle-lockfile does not know, whose builds would write no lockfile`));
     },
   };
   const packages = [...new Set(adapters.flatMap(a => a.esmPackages || []))];
@@ -323,4 +330,4 @@ function installEsm(entries, cjsFiles) {
   }
 }
 
-module.exports = { register, install, syncHooksSafe, bundlerProcess, otherLoader, esmMode };
+module.exports = { register, install, loading, syncHooksSafe, bundlerProcess, otherLoader, esmMode };

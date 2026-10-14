@@ -290,12 +290,15 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   });
 }
 
-// Every hook of the plugin runs as part of its build (core/problems.cjs within): the problems it records fail that
-// build, never another build of the process. The plugin is the build's owner, across its watch rebuilds.
+// The hooks of the plugin that record problems or take them run as part of its build (core/problems.cjs within): the
+// problems fail that build, never another build of the process. The plugin is the build's owner, across its watch
+// rebuilds. Not the hooks that run for every module or chunk (load, transform, renderChunk), which record none: an
+// AsyncLocalStorage context costs time there (on Node.js before 24, every promise of the process once it is used).
+const SCOPED = new Set(['config', 'options', 'buildStart', 'generateBundle', 'writeBundle', 'closeBundle']);
 function withinBuild(plugin) {
   const scoped = (fn) => /** @this {unknown} */ function (...args) { return problems.within(plugin, () => fn.apply(this, args)); };
   for (const [k, v] of Object.entries(plugin)) {
-    if (k === 'name' || k === 'api') continue;
+    if (!SCOPED.has(k)) continue;
     if (typeof v === 'function') plugin[k] = scoped(v);
     else if (v && typeof v === 'object' && typeof v.handler === 'function') plugin[k] = { ...v, handler: scoped(v.handler) };
   }

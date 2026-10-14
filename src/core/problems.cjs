@@ -102,7 +102,10 @@ const pending = () => state.pending.length > 0;
  */
 function takeFor(owner) {
   if (owner === undefined) return take();
-  const mine = [], others = [];
+  /** @type {State['pending']} */
+  const mine = [];
+  /** @type {State['pending']} */
+  const others = [];
   for (const p of state.pending) (p.owner === undefined || p.owner === owner ? mine : others).push(p);
   state.pending = others;
   return mine.map(p => p.text);
@@ -124,6 +127,26 @@ function failure(list) {
 /** @type {(e: any) => boolean} */
 const isFailure = (e) => !!(e && Array.isArray(e.problems));
 
+// The problems of exactly the build `owner`, removed (see within)
+/**
+ * @param {object} owner
+ * @returns {string[]}
+ */
+function takeOwn(owner) {
+  const mine = state.pending.filter(p => p.owner === owner);
+  if (mine.length) state.pending = state.pending.filter(p => p.owner !== owner);
+  return mine.map(p => p.text);
+}
+
+// Runs fn outside of any build (see within): what continues a bundler's own work - a callback that resumes the
+// compiler - must not count as part of the hook that calls it.
+/**
+ * @template T
+ * @param {() => T} fn
+ * @returns {T}
+ */
+const outside = (fn) => state.scope.exit(fn);
+
 // For the end of an adapter's hook: in strict mode, if the build the hook runs for (see within) or none has problems
 // pending, fail(failure) with them taken. Returns whether it did.
 /**
@@ -138,4 +161,4 @@ function failIfAny(fail) {
   return true;
 }
 
-module.exports = { problem, take, count, pending, failure, failIfAny, isFailure, atExit, within, current };
+module.exports = { problem, take, takeOwn, count, pending, failure, failIfAny, isFailure, atExit, within, outside, current };
