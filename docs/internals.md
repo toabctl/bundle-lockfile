@@ -274,10 +274,11 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
   `@rspack/cli` or `@rsbuild/core` (the adapters' `esmPackages`) — the `vite`, `rspack` or `rsbuild` command, a build
   script of a project using one of them, tools such as `headlamp-plugin` —, whose project has one of them installed
   (`node_modules/<package>` in the working directory or above, also pnpm's and bun's `node_modules/.pnpm/node_modules/`,
-  `node_modules/.bun/node_modules/`: `nuxi`, `storybook`, which load their bundler through a dependency), or that have another loader-thread hook (`--experimental-loader`, `--loader` or `--import` in
-  `NODE_OPTIONS` or on the command line, e.g. Yarn Plug'n'Play's, see below), because a loader thread costs time and
-  memory in every process. Also in each worker thread of such a process, which gets a loader thread of its own: the
-  main thread's `module.register()` hooks do not reach a worker, which runs the `--require` preload again
+  `node_modules/.bun/node_modules/`: `nuxi`, `storybook`, which load their bundler through a dependency), or that have
+  another loader-thread hook (`--experimental-loader`, `--loader` or `--import` in `NODE_OPTIONS` or on the command
+  line, e.g. Yarn Plug'n'Play's, see below), because a loader thread costs time and memory in every process. Also in
+  each worker thread of such a process, which gets a loader thread of its own: the main thread's `module.register()`
+  hooks do not reach a worker, which runs the `--require` preload again
   ([nodejs/node#52706](https://github.com/nodejs/node/pull/52706), which shared them, was reverted).
 - Node.js 20.0 – 20.5 have neither: a process that would get the loader thread has a problem (its ES-module bundlers
   would write no lockfile).
@@ -295,8 +296,8 @@ The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrid
 
 ### CommonJS modules a loader hook provides
 
-Node.js loads a CommonJS module without its module handlers (`Module._extensions`) — and everything that module `require()`s — when a
-loader-thread hook provided its source. Only the ESM hooks see such modules.
+Node.js loads a CommonJS module without its module handlers (`Module._extensions`) — and everything that module
+`require()`s — when a loader-thread hook provided its source. Only the ESM hooks see such modules.
 
 Yarn Plug'n'Play's loader does this for the files in its zip cache on Node.js 22.22.3+, 24.15+, 25.7+ and 26.x
 ([yarnpkg/berry#7070](https://github.com/yarnpkg/berry/pull/7070), extended to 24.15 by #7104 and to 22.22.3 by

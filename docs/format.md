@@ -17,7 +17,8 @@ output directory):
   (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
   `node_modules` (e.g. Vite's dependency pre-bundling) - except below `node_modules/.cache/`, where tools build what
   they ship (Nuxt's build directory for `nuxi build`).
-- A copy of an output's files elsewhere, made with fs in the build's process: see [copies of outputs](#copies-of-outputs).
+- A copy of an output's files elsewhere, made with fs in the build's process: see [copies of
+  outputs](#copies-of-outputs).
 
 With `BUNDLE_LOCKFILE_EXPORT_DIR`, every lockfile is also written below the export directory
 ([layout](configuration.md#the-export-directory)). A `package-lock.json` in a lockfile's place that bundle-lockfile
@@ -77,9 +78,9 @@ machine, whatever its locale.
 Not written: `resolved` and `integrity` (an SBOM gets no download location or hash of a package; osv-scanner, which
 counts an entry without a registry `resolved` URL as a local package, therefore matches no vulnerabilities),
 `dependencies`, `peerDependencies` and `optionalDependencies`, and the install-time fields (`dev`, `optional`, `link`,
-`bin`, `engines`, …). The lockfile is an inventory of what is shipped, not a dependency graph: SBOM tools report the packages
-without relationships between them (Trivy calls every one `indirect`, as for any lockfile whose root entry declares no
-dependencies).
+`bin`, `engines`, …). The lockfile is an inventory of what is shipped, not a dependency graph: SBOM tools report the
+packages without relationships between them (Trivy calls every one `indirect`, as for any lockfile whose root entry
+declares no dependencies).
 
 syft (`javascript-lock-cataloger`; tested with Wolfi's current version, last 1.54.1) and Trivy (npm analyzer; last
 0.75.0, also 0.70.0) read it; the README's [SBOM tools](../README.md#sbom-tools) says in which scans. Both read only
@@ -281,14 +282,14 @@ and `trivy rootfs` (also `trivy image`) report every package once, with its lice
 `trivy fs`) read no `package.json` files and report the lockfile's packages, also once. Node.js and the bundlers never
 resolve into it: no output file is below it.
 
-The tree is written with the lockfile, under its lock, built aside and renamed into place: a rewrite with fewer
-packages leaves none of the others' stubs, and one with the same packages leaves the tree as it is. bundle-lockfile's
-own checks of the output (files written after the build, copies made with fs) leave the tree out. A tool that reads
-both a shipped tree and the lockfile lists each package twice: syft with both its lock and package catalogers (a
-melange SBOM generator that adds `javascript-lock-cataloger` to the image catalogers), so leave the setting off where the
-lockfile is read already. With `BUNDLE_LOCKFILE_TREE=only` there is no `package-lock.json`: the lockfile, record and
-all, is `record.json` next to the tree, for outputs that are scanned only as images. syft reports a stub as found by
-its `javascript-package-cataloger` ("installed node module manifest file"): bundled packages look installed.
+The tree is written with the lockfile, under its lock, built aside and renamed into place: a rewrite with fewer packages
+leaves none of the others' stubs, and one with the same packages leaves the tree as it is. bundle-lockfile's own checks
+of the output (files written after the build, copies made with fs) leave the tree out. A tool that reads both a shipped
+tree and the lockfile lists each package twice: syft with both its lock and package catalogers (a melange SBOM generator
+that adds `javascript-lock-cataloger` to the image catalogers), so leave the setting off where the lockfile is read
+already. With `BUNDLE_LOCKFILE_TREE=only` there is no `package-lock.json`: the lockfile, record and all, is
+`record.json` next to the tree, for outputs that are scanned only as images. syft reports a stub as found by its
+`javascript-package-cataloger` ("installed node module manifest file"): bundled packages look installed.
 
 ## Several writers, one lockfile
 

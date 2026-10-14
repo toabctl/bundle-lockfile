@@ -74,7 +74,7 @@ export NODE_OPTIONS="--require /opt/bundle-lockfile/src/register.cjs"
 npm run build                    # or however the build is started: yarn build, pnpm run build, npx vite build,
                                  # ./node_modules/.bin/webpack, npx next build --webpack (Next.js 16), ...
 
-test -f dist/bundle-lockfile/package-lock.json   # a bundler it does not hook writes none, and does not fail
+test -f dist/bundle-lockfile/package-lock.json   # a bundler it does not hook writes none (see Limitations)
 syft scan dir:dist -q            # or: trivy fs --format cyclonedx --output sbom.cdx.json dist
 ```
 
@@ -248,7 +248,7 @@ variable that is set wins. The defaults need no configuration.
 | `BUNDLE_LOCKFILE_STRICT` | on | off: warn instead of failing a build whose lockfile would be missing or incomplete |
 | `BUNDLE_LOCKFILE_DEBUG` | off | on: log what gets patched and written to stderr |
 | `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are never listed as vendored copies |
-| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated bundlers to skip: `webpack`, `rspack`, `vite`, `rollup`, `rolldown`, or `all` |
+| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated bundlers to skip: `webpack`, `rspack`, `vite`, `rollup`, `rolldown`, `esbuild`, `parcel`, `angular`, `next` (Next.js' runtime lockfile), or `all` |
 | `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | `sync`, `async` or `off`: how ES-module bundlers are hooked, instead of choosing by Node.js version |
 | `BUNDLE_LOCKFILE_TREE` | `off` | `on`: also a `package.json` per package next to the lockfile, for image scans; `only`: instead of the lockfile |
 | `BUNDLE_LOCKFILE_REGISTER` | found by the shim | an absolute path: the `register.cjs` the node shim preloads (environment only) |
@@ -281,13 +281,13 @@ Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, b
 
 ## Limitations
 
-- **Recognized, not hooked** — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile): Turbopack
-  (Next.js 16's default build: use `next build --webpack`), the `rolldown` command line, `@vercel/ncc`, webpack < 4,
-  rspack 0.x.
+- **Recognized, not hooked** — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile of the bundle;
+  a Turbopack build still gets Next.js' runtime lockfile): Turbopack (Next.js 16's default build: use
+  `next build --webpack`), the `rolldown` command line, `@vercel/ncc`, webpack < 4, rspack 0.x.
 - **Not hooked** — no lockfile, and no failure: the `esbuild` command line and Go API (their metafile gives one:
-  [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Bun's own runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed), and a bundler in a
-  process that `NODE_OPTIONS` (or the node shim) does not reach. Check in CI that every lockfile the package should
-  ship exists.
+  [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Bun's own runtime (`bun --bun`, `Bun.build`, and
+  `bun run` where Node.js is not installed), and a bundler in a process that `NODE_OPTIONS` (or the node shim) does
+  not reach. Check in CI that every lockfile the package should ship exists.
 - **Older Node.js:** on 20, 22 before 22.22.3 and 24 before 24.11.1, ES-module bundlers (Vite, Rolldown, rspack 2,
   Rollup through `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on
   one Rsbuild build; [which processes](docs/bundlers.md#which-processes-are-hooked)).
@@ -339,7 +339,7 @@ The format, keys, licenses and bundle-lockfile's own record are described in [do
 - [docs/troubleshooting.md](docs/troubleshooting.md): error messages, missing lockfiles, debug output
 - [docs/format.md](docs/format.md): the lockfile, keys, vendored copies, several writers, nested bundles
 - [docs/internals.md](docs/internals.md): how it hooks the bundlers, source files, adding a bundler
-- [test/README.md](test/README.md): unit, contract and matrix tests, the comparison with the CycloneDX webpack plugin
+- [test/README.md](test/README.md): unit, contract and matrix tests, the comparison with other tools
 
 ## License
 

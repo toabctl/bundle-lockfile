@@ -27,12 +27,12 @@ What is supported and tested, which processes are hooked, and what is particular
   after every rebuild.
   The dev servers of rspack (`rspack serve`, `rsbuild dev`) serve it from memory (webpack's dev server goes the same
   way, through its in-memory output file system, but is not tested).
-- **Node.js:** 20.18 or later, the oldest that is tested (Vite 7 and 8, Rolldown, rspack 2 and Rsbuild 2 need
-  20.19). Builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite, Rollup, Rolldown,
-  SvelteKit, rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn Plug'n'Play; a
-  few on 20. The unit tests and a few builds per kind of hook also run on the releases at which the hooks behave
-  differently, from 20.18.2 to 26.4.0 ([which](../test/node-versions.json)). Node.js 25 and Linux distributions other than Wolfi are not tested.
-  Next.js 12 does not build on Node.js 25 and later.
+- **Node.js:** 20.18 or later, the oldest that is tested (Vite 7 and 8, Rolldown, rspack 2 and Rsbuild 2 need 20.19).
+  Builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite, Rollup, Rolldown, SvelteKit,
+  rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn Plug'n'Play; a few on 20. The
+  unit tests and a few builds per kind of hook also run on the releases at which the hooks behave differently, from
+  20.18.2 to 26.4.0 ([which](../test/node-versions.json)). Node.js 25 and Linux distributions other than Wolfi are not
+  tested. Next.js 12 does not build on Node.js 25 and later.
 - **SBOM tools:** every lockfile of the matrix is read by syft and Trivy (Wolfi's current versions; [which
   scans](../README.md#sbom-tools)).
 
@@ -53,9 +53,10 @@ Package managers tested ([details](../test/README.md#environments)):
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
 
-Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile): Turbopack (Next.js
-16's default build; known when `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack < 4 and rspack 0.x (when a compiler
-compiles).
+Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile of the bundle; a
+Turbopack build still gets [Next.js' runtime lockfile](#nextjs)): Turbopack (Next.js 16's default build; known when
+`next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack
+< 4 and rspack 0.x (when a compiler compiles).
 
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Bun's own
 runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed).
@@ -75,9 +76,10 @@ hook:
     which load Vite through a dependency), or
   - that have another loader hook (e.g. Yarn Plug'n'Play's).
 
-  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async` (without, it fails the build). A `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader
-  thread these versions use costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on Node.js 22; each worker
-  thread of such a process starts one more (60 – 300 ms for a Vite build in a worker).
+  A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async` (without, it fails the build). A
+  `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader thread these
+  versions use costs time: redpanda-console's Rsbuild 2 build took 8.7 % longer on Node.js 22; each worker thread of
+  such a process starts one more (60 – 300 ms for a Vite build in a worker).
 
 Every process logs how ES modules are hooked with `BUNDLE_LOCKFILE_DEBUG=1`, e.g. `ESM hooks: sync (Node 24.21.0)`.
 The details are in [internals.md](internals.md#vite-rollup-rolldown).
@@ -149,9 +151,10 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   externals and modules a browser field maps to `false` do not. Modules of plugins (a namespace) count if their path is
   a file.
 - Several builds into one directory (other entry points) share one lockfile.
-- `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile, and no failure. Their packages are listed where their output's bytes end up in another hooked build's output, or in a file
-  written into an output after the build ([coverage](coverage.md#also-listed)). Angular's builder builds that
-  way and writes the files itself: its lockfile comes from its own adapter ([Angular](#angular)).
+- `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile, and no failure. Their
+  packages are listed where their output's bytes end up in another hooked build's output, or in a file written into an
+  output after the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files
+  itself: its lockfile comes from its own adapter ([Angular](#angular)).
 - Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
   below `node_modules` are left alone.
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
