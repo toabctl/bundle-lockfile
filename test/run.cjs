@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fixtures, cases, warnings: WARNINGS } = require('./matrix.cjs');
-const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, sameMap, same, show } = require('./lib/check.cjs');
+const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, viaOf, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
 const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
@@ -205,6 +205,16 @@ function runCase(c) {
     const want = Object.entries(c.expectKeys).map(([k, v]) => `${k} = ${v}`).sort(cmp);
     if (JSON.stringify(keys) !== JSON.stringify(want)) throw new Error(`lockfile keys\n    got:  ${keys.join(', ')}\n    want: ${want.join(', ')}`);
     notes.push('keys as expected');
+  }
+  // expectVia: { class: [name@version] } - exactly these packages are recorded as found that way (src/core/via.cjs),
+  // as the case knows from its fixture (which files are workers, copies, style sheets); the classes it does not name are
+  // not checked
+  if (c.expectVia) {
+    const v = viaOf(path.join(lockDir, c.lockfile || LOCKFILE));
+    for (const [cls, want] of Object.entries(c.expectVia)) {
+      if (!same(v[cls] || [], want)) throw new Error(`via ${cls}: ${(v[cls] || []).join(' ') || '(none)'}, want ${want.join(' ') || '(none)'}`);
+    }
+    notes.push(`via ${Object.keys(c.expectVia).join(', ')} as expected`);
   }
   if (c.watchBuilds) {
     const builds = JSON.parse(build.stdout.trim().split('\n').pop());

@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
+const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
@@ -152,6 +153,14 @@ function hasBytes(file, data) {
 }
 
 const once = (fn) => { let v; return () => (v === undefined ? (v = fn()) : v); };
+
+// { name, version } of the bundler that runs a build (core/lockfile.cjs), from the plugin context's meta: Vite's version
+// where Vite gives it, Rolldown's, Rollup's
+function bundlerOf(kind, meta) {
+  const m = meta || {};
+  const version = kind === 'vite' ? m.viteVersion : kind === 'rolldown' ? m.rolldownVersion : m.rollupVersion;
+  return { name: kind, ...(typeof version === 'string' && version ? { version } : {}) };
+}
 
 // The file an asset was emitted from, given its originalFileName (or null). Rollup leaves the name's base to the plugin
 // that emits the asset: Vite's are relative to its root, which is not always the working directory (root: 'web',
@@ -341,7 +350,12 @@ function createPlugin(kind, inputOptions, engine) {
               sources.push(...own);
             }
           }
-          for (const id of ids) { const file = fileOf(id); if (file) sources.push(file); }
+          // how each source file was found (core/via.cjs): a module (chunk), a file an asset was emitted from (asset), a
+          // file a plugin inlined (style, inlined)
+          const kinds = new Map();
+          const mark = (f, cls) => { if (!kinds.has(f)) kinds.set(f, new Set()); kinds.get(f).add(cls); };
+          for (const f of sources) mark(f, 'asset');
+          for (const id of ids) { const file = fileOf(id); if (file) { sources.push(file); mark(file, 'chunk'); } }
           // Rolldown: the files plugins inlined into this output's modules, as recorded (rolldown-watch.cjs), and the
           // build's watch files if rolldown() returned the build. Neither, in a build with style (style modules, CSS
           // files): the style sheets @imported from packages would be missing - a problem
@@ -361,13 +375,19 @@ function createPlugin(kind, inputOptions, engine) {
           }
           const inlined = inlinedFiles(watched, this);
           sources.push(...inlined);
-          const { all, byFile } = packages.packagesOfFiles(sources, buildOf(bundle));
-          const pkgs = packages.unique(all, generatedIn(bundle, ids).values());
+          for (const f of inlined) mark(f, STYLE.test(f) ? 'style' : 'inlined');
+          const result = packages.packagesOfFiles(sources, buildOf(bundle));
+          const { all, byFile } = result;
+          const gen = [...generatedIn(bundle, ids).values()];
+          const pkgs = packages.unique(all, gen);
+          const found = via.ofFiles(result, kinds);
+          found.add('generated', gen);
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, inlined, byFile);
           const target = path.join(dir, config.file);
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
-          written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, landed: false });
-          outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents });
+          const bundler = bundlerOf(kind, this && this.meta);
+          written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, bundler, via: found, landed: false });
+          outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents, bundler, via: found });
         } catch (e) { problems.problem(`${kind}: could not collect the bundled packages of ${out.dir || out.file || 'a build that writes nothing itself'}`, e); }
         // what went wrong fails the build (strict mode, see core/problems.cjs): this.error throws the build's error
         problems.failIfAny((err) => this.error(err));
@@ -399,8 +419,9 @@ function createPlugin(kind, inputOptions, engine) {
             if (!add.length) continue;
             config.debug(`${kind}: files written into`, w.dir, 'after the build:', late.map(l => path.relative(w.dir, l.file)).join(' '), '- adding', add.map(p => `${p.name}@${p.version}`).join(' '));
             w.pkgs = packages.unique(w.pkgs, add);
+            w.via.add('late', add);
             for (const l of late) w.files.add(l.file);
-            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents });
+            outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files], { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via });
             await write(w);
           } catch (e) {
             if (problems.isFailure(e)) { failClose(this, e); return; } // from write()

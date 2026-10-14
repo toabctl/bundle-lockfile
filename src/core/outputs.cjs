@@ -64,7 +64,7 @@ function foreign(target, own, all = false) {
   if (!meta) return [];
   return meta.writers.filter(w => !own.has(w.id) && (all || w.files.some(there)))
     .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, outputCount: w.outputCount, context: meta.context, anchored: meta.anchored,
-      contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
+      bundler: w.bundler, via: w.via, contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
 }
 
 // A build with its packages checked (seen: package directory -> its package, read once per render): a package's path
@@ -82,7 +82,13 @@ const stillThere = (seen) => (b) => {
     return q;
   });
   const contents = Object.fromEntries(Object.entries(b.contents || {}).map(([f, paths]) => [f, paths.map(x => ids.get(x) || x)]));
-  return { ...b, pkgs, contents };
+  const via = new Map();
+  for (const [x, classes] of b.via || []) {
+    const to = ids.get(x) || x;
+    if (!via.has(to)) via.set(to, new Set());
+    for (const c of classes) via.get(to).add(c);
+  }
+  return { ...b, pkgs, contents, via };
 };
 
 // The packages in the output directory: every writer's landed build; for `own`, the build it is about to write;
@@ -107,7 +113,8 @@ function render(target, own) {
   // context of a copy is not the project (two directories above it, for SvelteKit's build/)
   const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(p => !p.unknown && !p.outside)));
   const context = (valid.length ? valid : checked).map(b => b.context).sort(cmp)[0];
-  const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, outputCount: b.outputCount, contents: b.contents, paths: b.pkgs.map(p => p.path) }));
+  const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, outputCount: b.outputCount, contents: b.contents,
+    paths: b.pkgs.map(p => p.path), bundler: b.bundler, via: b.via }));
   return toPackageLock([...byPath.values()], context, { dir: path.dirname(target), writers });
 }
 
@@ -116,13 +123,15 @@ function render(target, own) {
 // there, to tell later whether they are still there (see prune). opts.id: the writer's id in the lockfile (default:
 // a hash of `writer`, which therefore must not contain machine-specific paths); opts.disk: see outputs.disk;
 // opts.outputs: { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, opts.contents: { absolute
-// path: [package paths] } the packages in each of them (see core/nested.cjs).
+// path: [package paths] } the packages in each of them (see core/nested.cjs); opts.bundler: { name, version } of the
+// bundler that ran; opts.via: how it found its packages (a core/via.cjs collector, or Map(package path -> classes)).
 function record(target, writer, pkgs, context, files = [], opts = {}) {
   let writers = outputs.files.get(target);
   if (!writers) outputs.files.set(target, (writers = new Map()));
   const w = writers.get(writer) || { building: null, landed: null };
   w.id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
-  w.building = { pkgs, context, files, outputs: opts.outputs || {}, contents: opts.contents || {} };
+  const via = opts.via ? (opts.via.byPath || opts.via) : null;
+  w.building = { pkgs, context, files, outputs: opts.outputs || {}, contents: opts.contents || {}, bundler: opts.bundler || null, via };
   writers.set(writer, w);
   if (opts.disk) outputs.disk.set(target, true);
   return render(target, writer);

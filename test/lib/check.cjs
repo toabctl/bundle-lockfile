@@ -125,4 +125,21 @@ function canaries(dir) {
   return [...found].sort();
 }
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, canaries, dataUrls, sameMap, same, show };
+// How the writers of a lockfile found its packages (its record's "via", see src/core/via.cjs): { class: [name@version] },
+// over all writers, sorted and unique
+function viaOf(f) {
+  const lock = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const out = {};
+  for (const w of (lock['bundle-lockfile'] || {}).writers || []) {
+    for (const [cls, list] of Object.entries(w.via || {})) {
+      for (const i of list) {
+        const p = lock.packages[w.packages[i]];
+        if (!p) throw new Error(`${f}: via ${cls} names package ${i} of writer ${w.id}, which it does not have`);
+        (out[cls] = out[cls] || new Set()).add(`${p.name}@${p.version}`);
+      }
+    }
+  }
+  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, [...v].sort()]));
+}
+
+module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, canaries, dataUrls, viaOf, sameMap, same, show };

@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { posix } = require('./paths.cjs');
+const { CLASSES, KNOWN } = require('./via.cjs');
 
 // Code-unit order, not localeCompare: the output must not depend on the build machine's locale
 // (with LC_ALL=da_DK.UTF-8, "aa-utils" sorts after "zod").
@@ -57,12 +58,15 @@ function licenseString(l) {
 // { absolute path: [package paths] } of those files, the packages in each - recorded as indices into the writer's
 // "packages" (a file without them brings all of the writer's packages); outputCount (optional): the number of output
 // files, if outputs has only some of them (MAX_OUTPUTS; a reader then attributes a file it does not find to all of the
-// writer's packages, see core/nested.cjs). The field also has "self": the lockfile's
+// writer's packages, see core/nested.cjs); bundler (optional): { name, version } of the bundler that ran, as it reports
+// itself; via (optional): Map(package path -> its classes, see core/via.cjs), recorded as { class: [indices into
+// "packages"] }. The field also has "self": the lockfile's
 // directory relative to the context, so that a reader can tell a copy elsewhere (whose "context" points elsewhere)
 // from the lockfile itself; "locations": { key: location relative to the context } of the packages whose key is not
 // their location (see npmKey); "outside": the keys of packages outside the project, which have no location in it; and
 // "unknown": the keys of packages whose location is not known (p.unknown: read from a copy, or no longer where a
 // record said, see core/outputs.cjs), which are the same package as any other one with that name and version.
+const VERSION = 2; // of the record: 2 has "bundler" and "via"; a record of another version is not read (see readMeta)
 const MAX_FILES = 20; // enough to tell whether the writer's output is still there
 const MAX_OUTPUTS = 500;
 const entry = (p) => { const license = licenseString(p.license); return { name: p.name, version: p.version, ...(license ? { license } : {}) }; };
@@ -83,6 +87,24 @@ function outputsOf(w, keyOf, rel) {
   }
   return { packages, outputs: Object.fromEntries(files.map(([, r, h]) => [r, h])), ...(total > files.length ? { outputCount: total } : {}),
     ...(contents.length ? { contents: Object.fromEntries(contents) } : {}) };
+}
+// A writer's "bundler" and "via" (see toPackageLock): the classes in core/via.cjs order, each with the sorted indices
+// of its packages in "packages".
+function provenanceOf(w, keyOf, packages) {
+  const out = {};
+  const b = w.bundler;
+  if (b && typeof b.name === 'string' && b.name) out.bundler = { name: b.name, ...(typeof b.version === 'string' && b.version ? { version: b.version } : {}) };
+  if (!w.via) return out;
+  const index = new Map(packages.map((k, i) => [k, i]));
+  const by = new Map();
+  for (const [p, classes] of w.via) {
+    const i = index.get(keyOf.get(p));
+    if (i === undefined) continue;
+    for (const c of classes) if (KNOWN.has(c)) { if (!by.has(c)) by.set(c, new Set()); by.get(c).add(i); }
+  }
+  const via = CLASSES.filter(c => by.has(c)).map(c => [c, [...by.get(c)].sort((a, b) => a - b)]);
+  if (via.length) out.via = Object.fromEntries(via);
+  return out;
 }
 
 function toPackageLock(pkgs, context, meta) {
@@ -166,18 +188,22 @@ function toPackageLock(pkgs, context, meta) {
   if (meta) {
     const rel = (p) => posix(path.relative(meta.dir, p)) || '.';
     doc['bundle-lockfile'] = {
-      v: 1,
+      v: VERSION,
       context: rel(context), // as given, like dir: through the same symlinks both, never a real path of this machine
       self: posix(path.relative(context, meta.dir)) || '.',
       ...(Object.keys(locations).length ? { locations: Object.fromEntries(Object.entries(locations).sort((a, b) => cmp(a[0], b[0]))) } : {}),
       ...(outsideKeys.length ? { outside: outsideKeys.sort(cmp) } : {}),
       ...(unknownKeys.length ? { unknown: unknownKeys.sort(cmp) } : {}),
-      writers: meta.writers.map(w => ({
-        id: w.id,
-        count: typeof w.count === 'number' ? w.count : w.files.length, // other processes: only a sample of files
-        files: w.files.map(rel).sort(cmp).slice(0, MAX_FILES),
-        ...outputsOf(w, keyOf, rel),
-      })).sort((a, b) => cmp(a.id, b.id)),
+      writers: meta.writers.map((w) => {
+        const out = outputsOf(w, keyOf, rel);
+        return {
+          id: w.id,
+          count: typeof w.count === 'number' ? w.count : w.files.length, // other processes: only a sample of files
+          files: w.files.map(rel).sort(cmp).slice(0, MAX_FILES),
+          ...out,
+          ...provenanceOf(w, keyOf, out.packages),
+        };
+      }).sort((a, b) => cmp(a.id, b.id)),
     };
   }
   return JSON.stringify(doc, null, 2) + '\n';
@@ -192,7 +218,8 @@ const anchoredAt = (dir, context, self) => path.resolve(dir, context, self) === 
 
 // The "bundle-lockfile" field of a lockfile's content (see toPackageLock), with absolute paths again (dir: the
 // lockfile's directory): { context, anchored, writers: [{ id, files, count, outputs, contents: { file: [package] },
-// pkgs: [{ name, version, license, path }] }] }, or null. anchored: true if the record was written in dir, false for
+// pkgs: [{ name, version, license, path }], bundler, via: Map(package path -> Set(class)) }] }, or null (also for a record
+// of another version than VERSION). anchored: true if the record was written in dir, false for
 // a copy of one written elsewhere - its packages' locations are then not known (p.unknown) -, null for a record without
 // "self" (v0.0.3 and earlier). files and outputs are paths in the output, relative to dir in a copy too (a copy of
 // the output keeps them where they were relative to the lockfile).
@@ -203,7 +230,7 @@ function readMeta(json, dir) {
   const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
   const strings = (v) => (Array.isArray(v) ? v.filter(s => typeof s === 'string') : []);
   // a lockfile of another shape (edited, another tool's) is no record: it must not stop this one from being written
-  if (!isObject(m) || m.v !== 1 || !Array.isArray(m.writers) || typeof m.context !== 'string' || !isObject(doc.packages)) return null;
+  if (!isObject(m) || m.v !== VERSION || !Array.isArray(m.writers) || typeof m.context !== 'string' || !isObject(doc.packages)) return null;
   let context = path.resolve(dir, m.context);
   try { context = fs.realpathSync(context); } catch { /* keep it */ } // package paths are real paths
   const outside = new Set(strings(m.outside));
@@ -232,8 +259,21 @@ function readMeta(json, dir) {
         if (!Array.isArray(list)) continue;
         contents[path.resolve(dir, f)] = list.filter(i => Number.isInteger(i) && i >= 0 && i < keys.length).map(i => pkgOf(keys[i])).filter(Boolean);
       }
+      const via = new Map(); // package path -> Set(class)
+      for (const [c, list] of Object.entries(isObject(w.via) ? w.via : {})) {
+        if (!KNOWN.has(c) || !Array.isArray(list)) continue;
+        for (const i of list) {
+          const p = Number.isInteger(i) && i >= 0 && i < keys.length && pkgOf(keys[i]);
+          if (!p) continue;
+          if (!via.has(p.path)) via.set(p.path, new Set());
+          via.get(p.path).add(c);
+        }
+      }
+      const b = w.bundler;
       return {
         id: w.id,
+        bundler: isObject(b) && typeof b.name === 'string' ? { name: b.name, ...(typeof b.version === 'string' ? { version: b.version } : {}) } : undefined,
+        via,
         files: strings(w.files).map(f => path.resolve(dir, f)),
         count: typeof w.count === 'number' ? w.count : undefined,
         outputs: isObject(w.outputs)
@@ -254,7 +294,7 @@ function unreadableRecord(json) {
   try { doc = JSON.parse(json); } catch { return 'is not JSON'; }
   const m = doc && typeof doc === 'object' ? doc['bundle-lockfile'] : undefined;
   if (m === undefined) return null;
-  if (m && typeof m === 'object' && !Array.isArray(m) && m.v !== 1) return `has a record of version ${JSON.stringify(m.v)}, which this bundle-lockfile does not read`;
+  if (m && typeof m === 'object' && !Array.isArray(m) && m.v !== VERSION) return `has a record of version ${JSON.stringify(m.v)}, which this bundle-lockfile does not read (it reads version ${VERSION}): build it again with this one`;
   return 'has a bundle-lockfile record of a shape it does not read';
 }
 
@@ -276,4 +316,4 @@ function reanchor(json, from, to) {
   return JSON.stringify(doc, null, 2) + '\n';
 }
 
-module.exports = { cmp, toPackageLock, readMeta, unreadableRecord, reanchor, unknownPackage };
+module.exports = { cmp, toPackageLock, readMeta, unreadableRecord, reanchor, unknownPackage, VERSION };

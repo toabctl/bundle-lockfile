@@ -14,6 +14,7 @@ const SRC = path.join(__dirname, '../src');
 const config = require(path.join(SRC, 'core/config.cjs'));
 const problems = require(path.join(SRC, 'core/problems.cjs'));
 const packages = require(path.join(SRC, 'core/packages.cjs'));
+const via = require(path.join(SRC, 'core/via.cjs'));
 const outputs = require(path.join(SRC, 'core/outputs.cjs'));
 const { hashOf } = require(path.join(SRC, 'core/hashes.cjs'));
 const { portable, exportPath } = require(path.join(SRC, 'core/paths.cjs'));
@@ -50,12 +51,14 @@ function done() {
 
 if (!metafile) done();
 else {
-  const byOutput = filesOfOutputs(metafile, wd);
+  const kinds = new Map(); // (how each file was found, see src/core/via.cjs: inlined files; the rest are modules)
+  const byOutput = filesOfOutputs(metafile, wd, undefined, kinds);
   const files = [...byOutput.keys()];
   const dir = outArg ? path.resolve(outArg) : commonDir(files);
   if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else {
     const entries = Object.values(metafile.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
-    const { all, byFile } = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });
+    const result = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });
+    const { all, byFile } = result;
     const hashes = {}, contents = {};
     for (const [file, inputs] of byOutput) {
       if (!/\.([cm]?js|css)$/i.test(file)) continue;
@@ -64,7 +67,8 @@ else {
     }
     const target = path.join(dir, config.file);
     const writer = JSON.stringify(['metafile', portable(wd, metaFile)]);
-    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents });
+    // (no bundler: the metafile does not say which one wrote it - esbuild, Bun, Angular)
+    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents, via: via.ofFiles(result, kinds) });
     outputs.emitted(target, writer);
     outputs.prune(target, writer, (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT')), () => {
       outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
