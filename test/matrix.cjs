@@ -1350,14 +1350,17 @@ const cases = [
   // server-side rendering (outputMode server): a lockfile for each side, dist/browser/ and dist/server/ (the oracle
   // reads each side's source maps: left-pad and bl-canary-used only in the server's). Angular 17 - 21 write one
   // metafile for both sides, keyed by each output's path in its side's directory; 22 one per side. outputMode static
-  // only prerenders: Angular writes no server, so there is no server lockfile.
+  // only prerenders: Angular writes no server, so there is no server lockfile. On Node.js 26 Angular's prerendering
+  // prints DEP0205 itself: its in-memory ESM loader calls module.register() (@angular/build
+  // src/utils/server-rendering/esm-in-memory-loader/register-hooks.js; the same without bundle-lockfile)
   ...[['22.2.2', 'angular22-ssr'], ['21.2.26', 'angular21-ssr'], ['20.3.39', 'angular20-ssr']].flatMap(([v, fixture]) => [
     { name: `Angular ${v}: ng build with server-side rendering, a lockfile per side`, fixture, cmd: 'npm run -s build',
-      oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] },
+      oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] }, allowWarnings: [MODULE_REGISTER],
       expectIncludes: ['left-pad@1.3.0', `@angular/ssr@${v}`, `@angular/platform-server@${fixtures[fixture].deps['@angular/platform-server']}`, 'bl-canary-used@1.0.0', 'bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0'],
       expectExcludes: ['bl-canary-unused@1.0.0', 'uuid@9.0.1'] },
     { name: `Angular ${v}: ng build, server-side rendering with outputMode static (no server written, no server lockfile)`, fixture,
       cmd: 'npm run -s build -- --configuration production,static', oracleArgs: '--configuration static', oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] },
+      allowWarnings: [MODULE_REGISTER],
       expectExcludes: ['left-pad@1.3.0', 'bl-canary-used@1.0.0', 'bl-canary-unused@1.0.0', 'bl-canary-dup@1.0.0'] },
   ]),
   { name: 'esbuild-wasm 0.28.2: build()', fixture: 'esbuild-wasm', cmd: 'node build.mjs build', env: { BLTEST_ESBUILD_PKG: 'esbuild-wasm' }, expect: ESBUILD,
