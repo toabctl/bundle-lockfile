@@ -35,7 +35,8 @@ if (mode === 'api') {
     fs.rmSync(lockfile);
     setTimeout(() => fs.writeFileSync(input, builds.length === 1 ? without : source), 200);
   });
-  await Promise.race([finished, new Promise((_, rej) => setTimeout(() => rej(new Error('watch: timeout')), 120000))]).catch(e => fail(e.message));
+  // (the timer is unref'd: done, the process exits at once instead of after it)
+  await Promise.race([finished, new Promise((_, rej) => setTimeout(() => rej(new Error('watch: timeout')), 120000).unref())]).catch(e => fail(e.message));
   await sub.unsubscribe();
   console.log(JSON.stringify(builds));
 } else fail(`unknown mode ${mode}`);

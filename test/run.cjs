@@ -15,7 +15,8 @@
 //      loads both (oracles/esm-entries.cjs; once per fixture)
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const os = require('os');
 const { fixtures, cases, warnings: WARNINGS } = require('./matrix.cjs');
 const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, viaOf, treeOf, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
@@ -34,12 +35,31 @@ if (process.env.BLTEST_REQUIRE_SBOM === '1' && !(hasSyft && hasTrivy)) {
   process.exit(1);
 }
 const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
-const TIMEOUT = 15 * 60 * 1000; // per command: a hanging build (e.g. an installer retrying the registry offline) fails its case
+// per command: a hanging build (e.g. an installer retrying the registry offline) fails its case (BLTEST_TIMEOUT_S: shorter)
+const TIMEOUT = (Number(process.env.BLTEST_TIMEOUT_S) || 15 * 60) * 1000;
+
+// A command that hangs is killed at TIMEOUT: by then nothing shows where it hung. A watchdog started with it (a process of
+// its own: spawnSync blocks this one) writes, 30 s before the timeout, every process with its state and the kernel
+// function it waits in (/proc/<pid>/wchan), to a file the timeout's error then shows.
+function watched(cmd, opts) {
+  const file = path.join(os.tmpdir(), `bltest-hang-${process.pid}-${Date.now()}.txt`);
+  const dog = spawn('sh', ['-c', `sleep ${Math.max(1, TIMEOUT / 1000 - 30)} && sh ${path.join(__dirname, 'lib/ps-dump.sh')} > ${file} 2>&1`],
+    { stdio: 'ignore', detached: true });
+  dog.unref();
+  try {
+    const r = spawnSync('sh', ['-c', cmd], opts);
+    if (r.error && r.error.code === 'ETIMEDOUT') { try { r.hang = fs.readFileSync(file, 'utf8'); } catch { r.hang = '(no process dump)'; } }
+    return r;
+  } finally {
+    try { process.kill(-dog.pid); } catch { /* done */ }
+    fs.rmSync(file, { force: true });
+  }
+}
 
 function run(cmd, cwd, env) {
-  const r = spawnSync('sh', ['-c', cmd], { cwd, env, encoding: 'utf8', maxBuffer: 64 << 20, timeout: TIMEOUT });
+  const r = watched(cmd, { cwd, env, encoding: 'utf8', maxBuffer: 64 << 20, timeout: TIMEOUT });
   const tail = () => `${r.stdout || ''}${r.stderr || ''}`.split('\n').slice(-15).join('\n');
-  if (r.error) throw new Error(`"${cmd}" failed: ${r.error.code === 'ETIMEDOUT' ? `timed out after ${TIMEOUT / 60000} min` : r.error.message}\n${tail()}`);
+  if (r.error) throw new Error(`"${cmd}" failed: ${r.error.code === 'ETIMEDOUT' ? `timed out after ${TIMEOUT / 1000} s; the processes 30 s before (pid, state, wchan, command):\n${r.hang}` : r.error.message}\n${tail()}`);
   if (r.status !== 0) throw new Error(`"${cmd}" exited ${r.status === null ? `on ${r.signal}` : r.status}\n${tail()}`);
   return r;
 }
@@ -184,7 +204,8 @@ function runCase(c) {
   if (c.installed) notes.push(`${c.installed.length} packages installed`);
 
   if (c.expectError) { // a known failure of the build tool: the build must fail, with this output
-    const r = spawnSync('sh', ['-c', c.cmd], { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 << 20, timeout: TIMEOUT });
+    const r = watched(c.cmd, { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 << 20, timeout: TIMEOUT });
+    if (r.error && r.error.code === 'ETIMEDOUT') throw new Error(`"${c.cmd}" timed out after ${TIMEOUT / 1000} s; the processes 30 s before (pid, state, wchan, command):\n${r.hang}`);
     const out = `${r.stdout || ''}${r.stderr || ''}`;
     if (r.status === 0) throw new Error(`"${c.cmd}" succeeded, expected it to fail with ${c.expectError}`);
     if (!c.expectError.test(out)) throw new Error(`"${c.cmd}" failed, but its output does not match ${c.expectError}\n${out.split('\n').slice(-15).join('\n')}`);
