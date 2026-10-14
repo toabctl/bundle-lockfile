@@ -7,7 +7,8 @@
 // prints {"browser": [name@version, ...]} (the browser output, relative to the output path dist/; and "server" when
 // the build wrote one: SSR), or with --browser-as-root {"": [...]} (a case whose output directory is dist/browser).
 // --configuration: one more of angular.json's configurations (outputMode static: no server written)
-// --locales <a,b>: a localized build (i18n): each side's output is a copy per locale, "<side>/<locale>" each
+// --locales <a,b>: a localized build (i18n): each side's output is a copy per locale, "<side>/<locale>" each, and the
+// files written once in the side's own directory (the server's entry with server-side rendering) "<side>"
 const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
@@ -24,10 +25,10 @@ const r = spawnSync(process.execPath, [ng, 'build', '--configuration', `producti
 if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
 
 let files = new Set();
-const walk = (d) => {
+const walk = (d, deep = true) => {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
     const p = path.join(d, e.name);
-    if (e.isDirectory()) walk(p);
+    if (e.isDirectory()) { if (deep) walk(p); }
     else if (e.name.endsWith('.map')) {
       const m = JSON.parse(fs.readFileSync(p, 'utf8'));
       for (const s of m.sources || []) {
@@ -44,6 +45,17 @@ const builder = ['@angular/build', '@angular-devkit/build-angular'].map(n => { t
 const result = {};
 const locales = process.argv.includes('--locales') ? process.argv[process.argv.indexOf('--locales') + 1].split(',') : [''];
 for (const side of ['browser', 'server']) {
+  // with i18n, the files Angular writes once, in the side's own directory (the server's entry with server-side
+  // rendering): their own lockfile, "<side>"
+  if (locales[0] && fs.existsSync(path.join(out, side))) {
+    files = new Set();
+    walk(path.join(out, side), false);
+    const top = fs.readdirSync(path.join(out, side)).filter(f => /\.[cm]?js$/.test(f));
+    if (top.length) {
+      const esbuild = builder ? [bl.resolved('esbuild', builder)].filter(Boolean) : [];
+      result[side] = [...new Set([...owner.packagesOf(files), ...esbuild])].sort();
+    }
+  }
   for (const locale of locales) {
     const dir = path.join(out, side, locale);
     if (!fs.existsSync(dir)) continue;

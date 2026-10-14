@@ -125,23 +125,27 @@ function complete(options, result, forced) {
     if (side === 'server' && out.ignoreServer) { config.debug('angular: the server output is not written (ignoreServer): no server lockfile'); continue; }
     // (via, see core/via.cjs: the outputs' inputs are chunks, files they inline style or inlined, Angular's asset copies
     // assets)
-    const kinds = new Map();
-    const sources = [...new Set([...filesOfOutputs(metafile, wd, undefined, kinds).values()].flat())];
-    if (side === 'browser') for (const a of assets) { sources.push(a); kinds.set(a, 'asset'); }
-    const entries = Object.values(metafile.outputs || {}).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
-    const collected = packages.packagesOfFiles(sources, { context, entries });
-    const found = via.ofFiles(collected, kinds);
-    // the bundler's own code (esbuild's runtime helpers) in every side that has JavaScript (see core/bundler.cjs)
-    const sideFiles = files.filter(f => f && f.type === (side === 'browser' ? TYPE.Browser : TYPE.ServerApplication) && typeof f.path === 'string');
-    const runtime = sideFiles.some(f => /\.[cm]?js$/.test(f.path)) ? [esbuildOf(wd)].filter(Boolean) : [];
-    found.add('runtime', runtime);
-    const all = packages.unique(collected.all, runtime);
+    // the side's files, by their path in its directory: the server's are the application's and its SSR entry bundle's
+    // (ServerRoot: server.mjs and its chunks, which i18n writes once, not per locale)
+    const sideFiles = files.filter(f => f && typeof f.path === 'string'
+      && (side === 'browser' ? f.type === TYPE.Browser : f.type === TYPE.ServerApplication || f.type === TYPE.ServerRoot));
+    // The packages, via and all of the outputs `keys` of the side's metafile (with its asset copies: browser)
+    const collect = (keys, withAssets) => {
+      const sub = { ...metafile, outputs: Object.fromEntries(Object.entries(metafile.outputs || {}).filter(([k]) => keys.has(k))) };
+      const kinds = new Map();
+      const sources = [...new Set([...filesOfOutputs(sub, wd, undefined, kinds).values()].flat())];
+      if (withAssets) for (const a of assets) { sources.push(a); kinds.set(a, 'asset'); }
+      const entries = Object.values(sub.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
+      const collected = packages.packagesOfFiles(sources, { context, entries });
+      const found = via.ofFiles(collected, kinds);
+      // the bundler's own code (esbuild's runtime helpers) in every output that has JavaScript (see core/bundler.cjs)
+      const runtime = [...keys].some(k => /\.[cm]?js$/.test(k)) ? [esbuildOf(wd)].filter(Boolean) : [];
+      found.add('runtime', runtime);
+      return { all: packages.unique(collected.all, runtime), found };
+    };
     const file = config.file.split(path.sep).join('/');
-    for (const locale of locales) {
-      const dir = path.join(out.base, out[side] || side, locale);
-      const target = path.join(dir, config.file);
-      const own = sideFiles.filter(f => !locale || f.path.startsWith(`${locale}/`)).map(f => path.join(out.base, out[side] || side, f.path));
-      const content = render(locale ? `${side} (${locale})` : side, target, JSON.stringify(locale ? ['angular', side, locale, portable(context, out.base)] : ['angular', side, portable(context, out.base)]), all, context, own, found);
+    const write = (label, dir, writer, own, { all, found }, locale) => {
+      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found);
       // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server
       // file of the same name are one (the one added last): the server's lockfile is a file of the output path's root,
       // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
@@ -149,6 +153,27 @@ function complete(options, result, forced) {
         if (side === 'browser') result.addOutputFile(path.posix.join(locale, file), content, TYPE.Browser);
         else result.addOutputFile(path.posix.join(out.server || 'server', locale, file), content, TYPE.Root);
       }
+    };
+    const sideDir = path.join(out.base, out[side] || side);
+    const keys = new Set(Object.keys(metafile.outputs || {}));
+    if (locales.length === 1 && !locales[0]) {
+      write(side, sideDir, ['angular', side, portable(context, out.base)], sideFiles.map(f => path.join(sideDir, f.path)), collect(keys, side === 'browser'), '');
+      continue;
+    }
+    // i18n: the outputs Angular writes once, in the side's own directory (with server-side rendering: the server's
+    // entry, server.mjs, and its chunks), get a lockfile there; those it copies per locale one in each locale's. An
+    // output of the metafile no file names counts for both: a package listed too many beats a missing one.
+    const atRoot = new Set(sideFiles.filter(f => !locales.some(l => f.path.startsWith(`${l}/`))).map(f => f.path));
+    const perLocale = new Set(sideFiles.map(f => unlocalized(f.path)).filter((p, i) => sideFiles[i].path !== p));
+    const rootKeys = new Set([...keys].filter(k => atRoot.has(k) || !perLocale.has(k)));
+    const localeKeys = new Set([...keys].filter(k => perLocale.has(k) || !atRoot.has(k)));
+    if (atRoot.size && rootKeys.size) {
+      write(side, sideDir, ['angular', side, portable(context, out.base)], [...atRoot].map(p => path.join(sideDir, p)), collect(rootKeys, false), '');
+    }
+    const ofLocales = collect(localeKeys, side === 'browser');
+    for (const locale of locales) {
+      const own = sideFiles.filter(f => f.path.startsWith(`${locale}/`)).map(f => path.join(sideDir, f.path));
+      write(`${side} (${locale})`, path.join(sideDir, locale), ['angular', side, locale, portable(context, out.base)], own, ofLocales, locale);
     }
   }
 }

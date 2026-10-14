@@ -49,6 +49,12 @@
             },
             "static": {
               "outputMode": "static"
+            },
+            "i18n": {
+              "localize": true,
+              "polyfills": [
+                "@angular/localize/init"
+              ]
             }
           },
           "defaultConfiguration": "production"
@@ -58,6 +64,12 @@
           "options": {
             "buildTarget": "app:build"
           }
+        }
+      },
+      "i18n": {
+        "sourceLocale": "en-US",
+        "locales": {
+          "de": "src/locale/messages.de.xlf"
         }
       }
     }
