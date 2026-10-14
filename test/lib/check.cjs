@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
 
 const LOCKFILE = 'bundle-lockfile/package-lock.json';
 
@@ -53,15 +54,23 @@ function readLockfiles(outDir, lockfile = LOCKFILE) {
 // lists is where the record says - its key, or its "locations" entry for a key that is not the location, relative to
 // the context is a directory whose package.json has that name and version (in Yarn PnP's cache: in a zip that is
 // there). Packages outside the project ("outside") and those whose location is not known ("unknown") have none.
-// Returns the number checked.
-function checkLocations(f, at = path.dirname(f)) {
+// A record without its paths (an output outside the project: "contextId" and "selfId", docs/format.md) is checked
+// against the case's contexts: one of them must have its ids. Returns the number checked.
+function checkLocations(f, at = path.dirname(f), contexts = []) {
   const lock = JSON.parse(fs.readFileSync(f, 'utf8'));
   const m = lock['bundle-lockfile'];
-  if (!m || typeof m.context !== 'string') throw new Error(`${f}: no bundle-lockfile record`);
+  if (!m || (typeof m.context !== 'string' && typeof m.contextId !== 'string')) throw new Error(`${f}: no bundle-lockfile record`);
   const outside = new Set([...(m.outside || []), ...(m.unknown || [])]), locations = m.locations || {};
-  const context = path.resolve(at, m.context);
-  if (typeof m.self !== 'string' || path.resolve(context, m.self) !== path.resolve(at)) {
-    throw new Error(`${f}: its record is not for where it is (context ${m.context}, self ${m.self})`);
+  let context;
+  if (typeof m.context === 'string') {
+    context = path.resolve(at, m.context);
+    if (typeof m.self !== 'string' || path.resolve(context, m.self) !== path.resolve(at)) {
+      throw new Error(`${f}: its record is not for where it is (context ${m.context}, self ${m.self})`);
+    }
+  } else {
+    context = contexts.find(c => anchorIds(c, at).contextId === m.contextId);
+    if (!context) throw new Error(`${f}: its record's contextId ${m.contextId} is none of ${contexts.join(', ') || '(no contexts)'}`);
+    if (anchorIds(context, at).selfId !== m.selfId) throw new Error(`${f}: its record's selfId ${m.selfId} is not for where it is`);
   }
   let n = 0;
   for (const [key, p] of Object.entries(lock.packages)) {
@@ -81,6 +90,16 @@ function checkLocations(f, at = path.dirname(f)) {
     n++;
   }
   return n;
+}
+
+// The ids of a record without its paths, as docs/format.md defines them: of the context's real path, device and inode,
+// and of the lockfile's directory relative to the context (both real)
+function anchorIds(context, dir) {
+  const sha = (x) => crypto.createHash('sha256').update(x).digest('hex');
+  const real = fs.realpathSync(context), st = fs.statSync(real);
+  const secret = sha(`bundle-lockfile\0${real}\0${st.dev}\0${st.ino}`);
+  const rel = path.relative(real, fs.realpathSync(dir)).split(path.sep).join('/');
+  return { contextId: sha(`context\0${secret}`).slice(0, 16), selfId: sha(`self\0${secret}\0${rel}`).slice(0, 16) };
 }
 
 const sortedKeys = (o) => Object.fromEntries(Object.keys(o).sort().map(k => [k, [...o[k]].sort()]));
@@ -142,4 +161,4 @@ function viaOf(f) {
   return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, [...v].sort()]));
 }
 
-module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, unlocated, canaries, dataUrls, viaOf, sameMap, same, show };
+module.exports = { LOCKFILE, readLockfile, readLockfiles, checkLocations, anchorIds, unlocated, canaries, dataUrls, viaOf, sameMap, same, show };

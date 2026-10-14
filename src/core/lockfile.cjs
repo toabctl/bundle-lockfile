@@ -1,6 +1,7 @@
 'use strict';
 // Serializes packages as package-lock.json (lockfileVersion 3, npm's format: docs.npmjs.com/cli/configuring-npm/
 // package-lock-json), in the subset that syft's javascript-lock-cataloger and Trivy's npm analyzer both read.
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { posix } = require('./paths.cjs');
@@ -189,8 +190,7 @@ function toPackageLock(pkgs, context, meta) {
     const rel = (p) => posix(path.relative(meta.dir, p)) || '.';
     doc['bundle-lockfile'] = {
       v: VERSION,
-      context: rel(context), // as given, like dir: through the same symlinks both, never a real path of this machine
-      self: posix(path.relative(context, meta.dir)) || '.',
+      ...anchorOf(context, meta.dir),
       ...(Object.keys(locations).length ? { locations: Object.fromEntries(Object.entries(locations).sort((a, b) => cmp(a[0], b[0]))) } : {}),
       ...(outsideKeys.length ? { outside: outsideKeys.sort(cmp) } : {}),
       ...(unknownKeys.length ? { unknown: unknownKeys.sort(cmp) } : {}),
@@ -209,6 +209,45 @@ function toPackageLock(pkgs, context, meta) {
   return JSON.stringify(doc, null, 2) + '\n';
 }
 
+// Where a record is anchored (see readMeta): "context", the context relative to the lockfile's directory dir, and
+// "self", dir relative to the context - both as given (through the same symbolic links), never a real path of this
+// machine. A lockfile outside the context's project (the outermost directory with a package.json among the context
+// and those above it; an absolute outDir elsewhere) would spell out the directories on the way there (../../home/
+// builder/out): it gets "contextId" and "selfId" instead, hashes that only a process with the same context can match
+// (see readMeta). They are of the context's real path and its device and inode numbers, so a guessed path cannot be
+// checked against them, and of dir relative to the context.
+function anchorOf(context, dir) {
+  const plain = { context: posix(path.relative(dir, context)) || '.', self: posix(path.relative(context, dir)) || '.' };
+  const real = realish(context);
+  if (within(projectOf(real), realish(dir))) return plain;
+  const secret = secretOf(context);
+  return secret ? { contextId: contextIdOf(secret), selfId: selfIdOf(secret, context, dir) } : plain;
+}
+const within = (dir, p) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+// The real path of p, also of one that is not there (yet): of its nearest ancestor that is, and the rest as it is
+function realish(p) {
+  const rest = [];
+  for (let d = path.resolve(p); ; d = path.dirname(d)) {
+    try { return path.join(fs.realpathSync(d), ...rest.reverse()); } catch { /* not there */ }
+    if (path.dirname(d) === d) return path.resolve(p);
+    rest.push(path.basename(d));
+  }
+}
+// The outermost directory with a package.json among dir and those above it, else dir
+function projectOf(dir) {
+  let root = dir;
+  for (let d = dir; ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, 'package.json'))) root = d;
+    if (path.dirname(d) === d) return root;
+  }
+}
+function secretOf(context) {
+  try { const real = fs.realpathSync(context), st = fs.statSync(real); return sha256(`bundle-lockfile\0${real}\0${st.dev}\0${st.ino}`); } catch { return null; }
+}
+const contextIdOf = (secret) => sha256(`context\0${secret}`).slice(0, 16);
+const selfIdOf = (secret, context, dir) => sha256(`self\0${secret}\0${posix(path.relative(realish(context), realish(dir)))}`).slice(0, 16);
+
 // The record was written where it is read: "self" from its "context" leads back to dir. Both are as the writer had
 // them (through the same symbolic links), so this holds where the lockfile was written, also in a project moved as a
 // whole, and not in a copy at another depth or in another directory, whose "context" is not the project. A copy
@@ -223,18 +262,27 @@ const anchoredAt = (dir, context, self) => path.resolve(dir, context, self) === 
 // a copy of one written elsewhere - its packages' locations are then not known (p.unknown) -, null for a record without
 // "self" (v0.0.3 and earlier). files and outputs are paths in the output, relative to dir in a copy too (a copy of
 // the output keeps them where they were relative to the lockfile).
-function readMeta(json, dir) {
+function readMeta(json, dir, contexts = []) {
   let doc;
   try { doc = JSON.parse(json); } catch { return null; }
   const m = doc && doc['bundle-lockfile'];
   const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
   const strings = (v) => (Array.isArray(v) ? v.filter(s => typeof s === 'string') : []);
   // a lockfile of another shape (edited, another tool's) is no record: it must not stop this one from being written
-  if (!isObject(m) || m.v !== VERSION || !Array.isArray(m.writers) || typeof m.context !== 'string' || !isObject(doc.packages)) return null;
-  let context = path.resolve(dir, m.context);
-  try { context = fs.realpathSync(context); } catch { /* keep it */ } // package paths are real paths
+  if (!isObject(m) || m.v !== VERSION || !Array.isArray(m.writers) || !isObject(doc.packages)) return null;
+  let context, anchored;
+  if (typeof m.context === 'string') {
+    context = path.resolve(dir, m.context);
+    try { context = fs.realpathSync(context); } catch { /* keep it */ } // package paths are real paths
+    anchored = typeof m.self === 'string' ? anchoredAt(dir, m.context, m.self) : null;
+  } else if (typeof m.contextId === 'string') {
+    // a record without its paths (see anchorOf): anchored where one of the reader's contexts has its id and leads to
+    // dir; else its packages' locations are not known (a copy elsewhere, or a writer of another project)
+    const c = contexts.find(x => { const sec = typeof x === 'string' && secretOf(x); return sec && contextIdOf(sec) === m.contextId; });
+    context = c ? realish(c) : null;
+    anchored = !!c && typeof m.selfId === 'string' && selfIdOf(secretOf(c), c, dir) === m.selfId;
+  } else return null;
   const outside = new Set(strings(m.outside));
-  const anchored = typeof m.self === 'string' ? anchoredAt(dir, m.context, m.self) : null;
   const unknown = new Set(strings(m.unknown));
   // a key is the package's location unless "locations" gives it (no "locations": written by v0.0.3 or earlier, whose
   // keys were all locations)
@@ -246,7 +294,7 @@ function readMeta(json, dir) {
     const p = own(doc.packages, k) && doc.packages[k];
     if (!isObject(p) || typeof p.name !== 'string' || !p.name || typeof p.version !== 'string' || !p.version) return null;
     if (outside.has(k)) return { ...p, path: `\0outside:${k}`, outside: k };
-    if (unknown.has(k) || anchored === false) return unknownPackage(p);
+    if (unknown.has(k) || anchored === false || !context) return unknownPackage(p);
     return { ...p, path: path.resolve(context, locationOf(k)) };
   };
   return {
@@ -302,17 +350,17 @@ function unreadableRecord(json) {
 const unknownPackage = (p) => ({ ...p, path: `\0unknown:${p.name}@${p.version}`, unknown: true });
 
 // The content of a copy of a lockfile, for its directory `to`: the record of the lockfile (anchored in `from`, see
-// readMeta) with "context" and "self" for `to`; the paths relative to the context and to the lockfile stay as they
-// are (a copy of the output has its files where they were relative to the lockfile). null if the content has no
-// record anchored in `from`.
-function reanchor(json, from, to) {
-  const meta = readMeta(json, from);
-  if (!meta || meta.anchored !== true) return null;
+// readMeta; contexts: as for readMeta) anchored at `to` (see anchorOf); the paths relative to the context and to the
+// lockfile stay as they are (a copy of the output has its files where they were relative to the lockfile). null if
+// the content has no record anchored in `from`.
+function reanchor(json, from, to, contexts = []) {
+  const meta = readMeta(json, from, contexts);
+  if (!meta || meta.anchored !== true || !meta.context) return null;
   const doc = JSON.parse(json);
-  const m = doc['bundle-lockfile'];
-  const context = path.resolve(from, m.context); // as given, through the same symbolic links as the writer's
-  m.context = posix(path.relative(to, context)) || '.';
-  m.self = posix(path.relative(context, to)) || '.';
+  const { context: c, self, contextId, selfId, v, ...rest } = doc['bundle-lockfile'];
+  // as given, through the same symbolic links as the writer's (a record without its paths: the reader's context)
+  const context = typeof c === 'string' ? path.resolve(from, c) : contexts.find(x => realish(x) === meta.context) || meta.context;
+  doc['bundle-lockfile'] = { v, ...anchorOf(context, to), ...rest };
   return JSON.stringify(doc, null, 2) + '\n';
 }
 

@@ -33,6 +33,17 @@ const outputs = globalThis[KEY] || (globalThis[KEY] = { files: new Map(), queues
 if (!outputs.exports) outputs.exports = new Map();
 const MAX_COPIES = 1000;
 
+// The contexts of this process's writers of `target` (all writers: target null), for records without their paths (see
+// core/lockfile.cjs anchorOf): a record whose context is one of them is read as written here.
+function contextsOf(target) {
+  const out = new Set();
+  for (const [t, writers] of outputs.files) {
+    if (target && t !== target) continue;
+    for (const w of writers.values()) for (const b of [w.building, w.landed]) if (b && b.context) out.add(b.context);
+  }
+  return [...out];
+}
+
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
 const stateFile = (target) => (config.inline ? target : exportPath(target));
 
@@ -53,7 +64,7 @@ function foreign(target, own, all = false) {
   if (!file) return [];
   let meta;
   try {
-    meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(target));
+    meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(target), contextsOf(target));
     outputs.read.set(target, meta);
   } catch (e) {
     // not there (any more, or a file where a directory of its path would be); any other error (EACCES, EMFILE, EISDIR)
@@ -112,7 +123,8 @@ function render(target, own) {
   // another process's record only if it is no copy's (see readMeta) and has a package that is still where it says: the
   // context of a copy is not the project (two directories above it, for SvelteKit's build/)
   const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(p => !p.unknown && !p.outside)));
-  const context = (valid.length ? valid : checked).map(b => b.context).sort(cmp)[0];
+  // (a record of another project, without its paths, has none: its packages' locations are not known, see readMeta)
+  const context = (valid.length ? valid : checked).map(b => b.context).filter(Boolean).sort(cmp)[0] || path.dirname(target);
   const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, outputCount: b.outputCount, contents: b.contents,
     paths: b.pkgs.map(p => p.path), bundler: b.bundler, via: b.via }));
   return toPackageLock([...byPath.values()], context, { dir: path.dirname(target), writers });
@@ -212,7 +224,7 @@ function copied(src, dest, isDirectory) {
     // the record of an export copy is anchored where its lockfile is, that of a copy where it is
     const anchor = target && exportPath(target) === from ? path.dirname(target) : path.dirname(from);
     let json;
-    try { json = reanchor(fs.readFileSync(to, 'utf8'), anchor, path.dirname(to)); } catch { continue; } // not copied after all
+    try { json = reanchor(fs.readFileSync(to, 'utf8'), anchor, path.dirname(to), contextsOf(target)); } catch { continue; } // not copied after all
     if (json === null) continue; // no record written where it comes from: left as it is
     // a copy that cannot be re-anchored keeps the record of where it was copied from, and is not followed
     try { writeAtomic(to, json); } catch (e) { problems.problem(`could not write the copy ${to} of ${from}`, e); continue; }
@@ -248,7 +260,7 @@ function outputCopy(src, dest, isDirectory) {
     try { content = fs.readFileSync(stateFile(target), 'utf8'); } catch { /* not written yet: when it is (follow) */ }
     let json = null;
     if (content !== null) {
-      json = reanchor(content, path.dirname(target), path.dirname(copy));
+      json = reanchor(content, path.dirname(target), path.dirname(copy), contextsOf(target));
       if (json === null) return; // no record anchored there
       try { writeAtomic(copy, json); } catch (e) { problems.problem(`could not write ${copy}, the lockfile of a copy of ${odir}`, e); return; }
     }
@@ -269,7 +281,7 @@ function follow(target, content) {
     try { now = fs.readFileSync(copy, 'utf8'); } catch { /* removed */ }
     if (now !== c.content) { outputs.copies.delete(copy); continue; }
     try {
-      const json = reanchor(content, path.dirname(target), path.dirname(copy));
+      const json = reanchor(content, path.dirname(target), path.dirname(copy), contextsOf(target));
       if (json === null) { outputs.copies.delete(copy); continue; }
       writeAtomic(copy, json);
       c.content = json;

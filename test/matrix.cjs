@@ -1391,6 +1391,11 @@ const cases = [
   // different contexts); each one run again keeps the other's packages
   { name: 'edge: a Vite and a webpack process, one output dir, then each of them again', fixture: 'mixed-output',
     cmd: `${VITE_BIN} build && ${WEBPACK_BIN} && ${VITE_BIN} build && ${WEBPACK_BIN}`, expect: ['ms@2.1.3', 'nanoid@3.3.20'] },
+  // the same into a directory outside the project: the record has no paths there (contextId, selfId), and each process
+  // still keeps the other's packages, at their locations
+  { name: 'edge: a Vite and a webpack process, one output dir outside the project: a record without its paths', fixture: 'mixed-output',
+    env: { MIXED_OUT: '../mixed-output-elsewhere' }, outDir: '../mixed-output-elsewhere', expectAnchor: 'ids',
+    cmd: `${VITE_BIN} build && ${WEBPACK_BIN} && ${VITE_BIN} build && ${WEBPACK_BIN}`, expect: ['ms@2.1.3', 'nanoid@3.3.20'] },
   // Bun's own runtime (bun --bun) does not load NODE_OPTIONS' --require: not supported (yet), no lockfile
   { name: 'bun --bun (Bun\'s runtime, unsupported: no lockfile), webpack', fixture: 'wp5-bun', cmd: 'bun --bun run build', expect: null },
   { name: 'bun --bun (Bun\'s runtime, unsupported: no lockfile), Vite 8.3.3', fixture: 'vite8-bun', cmd: 'bun --bun run build', expect: null },
