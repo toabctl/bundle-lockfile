@@ -273,7 +273,7 @@ must not go on without doing what was asked of it. Every setting in full, and wh
 | Rolldown | 1 | not the `rolldown` command line |
 | esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line ([details](docs/bundlers.md#esbuild)) |
 | Parcel | 2 | `parcel build`, `parcel watch`, its JavaScript API ([details](docs/bundlers.md#parcel)) |
-| Angular | 20 – 22 | its application builder (`ng build`, `@angular/build`) ([details](docs/bundlers.md#angular)) |
+| Angular | 20 – 22 | its application builder (`ng build`, `@angular/build`), also SSR and i18n; `ng serve` writes no lockfile ([details](docs/bundlers.md#angular)) |
 
 Watch mode writes the lockfile after every rebuild; rspack's dev servers serve it from memory. The tested versions,
 Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, bun, turbo, workspaces) are in
