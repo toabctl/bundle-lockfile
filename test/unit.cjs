@@ -6118,7 +6118,7 @@ test('strict: a Node.js without the CommonJS hook points fails a process that bu
   // (hooks.cjs is loaded first: loading a module needs _compile)
   const script = (main) => `const Module = require('module'); process.argv[1] = ${JSON.stringify(main)};
     const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
-    hooks.register({ name: 'w', onCjsLoad() {}, cjsFiles: [/x/], cjsPackages: ['webpack'] });
+    hooks.register({ name: 'w', onCjsLoad() {}, cjsFiles: [/[\\\\/]x\\.cjs$/], cjsPackages: ['webpack'] });
     const compile = Module.prototype._compile; Module.prototype._compile = undefined;
     hooks.install();
     Module.prototype._compile = compile;`;
