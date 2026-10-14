@@ -307,6 +307,7 @@ function wrapOld(fn, version, sync) {
 module.exports = {
   name: 'esbuild',
   cjsFiles: [MAIN],
+  cjsPackages: ['esbuild'], // processes that build with it (see hooks.cjs installCjs)
   onCjsLoad(exp, request, resolve) {
     if (!request.endsWith('main.js') || !MAIN.test(request) || !exp || typeof exp !== 'object' || exp[WRAPPED]) return undefined;
     if (typeof exp.build !== 'function' || typeof exp.version !== 'string') {

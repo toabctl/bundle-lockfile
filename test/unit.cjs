@@ -4447,10 +4447,11 @@ test('strict: an ES-module bundler in a thread without ESM hooks fails when it l
     'node_modules/@rspack/binding/binding.js': 'module.exports = {};\n',
   };
   const root = project({ ...Object.fromEntries(Object.entries(tools).map(([k, v]) => [`tools/${k}`, v])), 'app/package.json': { name: 'app', version: '1.0.0' } });
-  // rspack 1: a CommonJS dist/index.js loads the same binding
+  // rspack 1: a CommonJS dist/index.js loads the same binding (and exports rspack() as rspack 1 does: one of another shape
+  // is a problem of its own)
   const cjs = project({
     'node_modules/@rspack/core/package.json': { name: '@rspack/core', version: '1.7.12' },
-    'node_modules/@rspack/core/dist/index.js': "require('@rspack/binding/binding.js');\nmodule.exports = {};\n",
+    'node_modules/@rspack/core/dist/index.js': "require('@rspack/binding/binding.js');\nmodule.exports = Object.assign(function rspack() {}, { rspackVersion: '1.7.12',\n  Compiler: class Compiler { compile() {} run() {} watch() {} isChild() {} runAsChild() {} createChildCompiler() {} } });\n",
     'node_modules/@rspack/binding/package.json': { name: '@rspack/binding', version: '1.7.12' },
     'node_modules/@rspack/binding/binding.js': 'module.exports = {};\n',
   });
@@ -5252,4 +5253,105 @@ test('generated: more chunks than kept warns once; packages of generate-only chu
   r = run("for (let i = 0; i < 10002; i++) { g.addChunk('c' + i, [p('a')]); g.byContent('c' + i); }");
   assert.equal(r.status, 0);
   assert.equal((r.stderr.match(/WARNING: more than 10000 chunks of builds that write nothing themselves/g) || []).length, 1, r.stderr);
+});
+
+// The CommonJS hook in a child process: hooks.cjs with `adapter` (source of an object), after `before` ran; no ESM hooks
+const cjsHookScript = (adapter, before = '', after = '') => `const Module = require('module');
+  ${before}
+  const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+  hooks.register(${adapter});
+  hooks.install();
+  ${after}`;
+const cjsEnv = (strict) => ({ ...strictEnv(strict), BUNDLE_LOCKFILE_ESM_HOOKS: 'off' });
+
+test('strict: a Node.js without the CommonJS hook points fails a process that builds with webpack, and is silent elsewhere', () => {
+  const root = project({ 'package.json': { name: 'app', devDependencies: { webpack: '5.0.0' } }, 'build.cjs': '' });
+  const elsewhere = project({ 'package.json': { name: 'tool' }, 'x.cjs': '' });
+  // (hooks.cjs is loaded first: loading a module needs _compile)
+  const script = (main) => `const Module = require('module'); process.argv[1] = ${JSON.stringify(main)};
+    const hooks = require(${JSON.stringify(J(SRC, 'hooks.cjs'))});
+    hooks.register({ name: 'w', onCjsLoad() {}, cjsFiles: [/x/], cjsPackages: ['webpack'] });
+    const compile = Module.prototype._compile; Module.prototype._compile = undefined;
+    hooks.install();
+    Module.prototype._compile = compile;`;
+  const msg = /Node\.js \S+ has no Module\.prototype\._compile: CommonJS bundlers \(webpack, rspack 1, Rollup's CommonJS build, esbuild\) are not hooked/;
+  const strict = spawnSync(process.execPath, ['-e', script(J(root, 'build.cjs'))], { encoding: 'utf8', env: cjsEnv(undefined), cwd: root });
+  assert.equal(strict.status, 1, strict.stderr);
+  assert.match(strict.stderr, new RegExp(`ERROR: ${msg.source}`));
+  const off = spawnSync(process.execPath, ['-e', script(J(root, 'build.cjs'))], { encoding: 'utf8', env: cjsEnv('0'), cwd: root });
+  assert.equal(off.status, 0, off.stderr);
+  assert.match(off.stderr, new RegExp(`WARNING: ${msg.source}`));
+  const other = spawnSync(process.execPath, ['-e', script(J(elsewhere, 'x.cjs'))], { encoding: 'utf8', env: cjsEnv(undefined), cwd: elsewhere });
+  assert.deepEqual([other.status, other.stderr], [0, '']);
+});
+
+test('hooks: modules that ran before the hooks were installed are reported when they are', () => {
+  const root = project({ 'node_modules/early/index.js': 'module.exports = { early: true };', 'node_modules/late/index.js': 'module.exports = { late: true };' });
+  const r = nodeWith(cjsEnv('0'), ['-e', cjsHookScript(
+    "{ name: 'w', onCjsLoad(exp, request) { if (/node_modules[\\\\/](early|late)[\\\\/]/.test(request)) console.log(Object.keys(exp)[0]); } }",
+    `require(${JSON.stringify(J(root, 'node_modules/early/index.js'))});`,
+    `require(${JSON.stringify(J(root, 'node_modules/late/index.js'))});`)]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'early\nlate\n');
+});
+
+test('strict: a bundler module that ran past the CommonJS hook fails the process at exit (BUNDLE_LOCKFILE_STRICT=0: a warning)', () => {
+  const root = project({ 'node_modules/webpack/lib/Compiler.js': 'module.exports = class Compiler {};', 'node_modules/other/lib/Compiler.js': '' });
+  const file = J(root, 'node_modules/webpack/lib/Compiler.js');
+  // a loader that compiles a module itself, as ncc's or a test runner's: in require.cache, never through _compile
+  const past = (f) => `{ const m = new Module(${JSON.stringify(f)}); m.filename = ${JSON.stringify(f)}; m.loaded = true; Module._cache[${JSON.stringify(f)}] = m; }`;
+  const adapter = "{ name: 'webpack', onCjsLoad() {}, cjsFiles: [/[\\\\/]webpack[\\\\/]lib[\\\\/]Compiler\\.js$/] }";
+  const msg = 'ran past bundle-lockfile\'s CommonJS hook (a loader that compiles modules itself): the bundler in it was not patched, its builds wrote no lockfile';
+  const strict = nodeWith(cjsEnv(undefined), ['-e', cjsHookScript(adapter, '', past(file))]);
+  assert.equal(strict.status, 1, strict.stderr);
+  assert.ok(strict.stderr.includes(`ERROR: ${file} ${msg}`), strict.stderr);
+  const off = nodeWith(cjsEnv('0'), ['-e', cjsHookScript(adapter, '', past(file))]);
+  assert.equal(off.status, 0, off.stderr);
+  assert.ok(off.stderr.includes(`WARNING: ${file} ${msg}`), off.stderr);
+  // loaded through the hook, or another file that ran past it: nothing to say
+  const hooked = nodeWith(cjsEnv(undefined), ['-e', cjsHookScript(adapter, '', `require(${JSON.stringify(file)}); ${past(J(root, 'node_modules/other/lib/Compiler.js'))}`)]);
+  assert.deepEqual([hooked.status, hooked.stderr], [0, '']);
+  // loaded before the hooks were installed: reported when they are, so not past them
+  const early = nodeWith(cjsEnv(undefined), ['-e', cjsHookScript(adapter, `require(${JSON.stringify(file)});`)]);
+  assert.deepEqual([early.status, early.stderr], [0, '']);
+});
+
+test('strict: an adapter that fails on a module it patches (cjsFiles) fails its require(); on other modules only warns', () => {
+  const root = project({ 'node_modules/webpack/lib/Compiler.js': 'module.exports = class Compiler {};', 'node_modules/x/index.js': '' });
+  const adapter = "{ name: 'webpack', onCjsLoad(exp, request) { if (/node_modules/.test(request)) throw new Error('boom'); }, cjsFiles: [/[\\\\/]webpack[\\\\/]lib[\\\\/]Compiler\\.js$/] }";
+  const load = (f) => `try { require(${JSON.stringify(f)}); console.log('loaded'); } catch (e) { console.log('failed:', e.message.split('\\n')[1]); }`;
+  const file = J(root, 'node_modules/webpack/lib/Compiler.js');
+  const strict = nodeWith(cjsEnv(undefined), ['-e', cjsHookScript(adapter, '', load(file))]);
+  assert.equal(strict.stdout, `failed:   webpack adapter failed on ${file}: its builds would write no lockfile: boom\n`, strict.stderr);
+  const off = nodeWith(cjsEnv('0'), ['-e', cjsHookScript(adapter, '', load(file))]);
+  assert.equal(off.stdout, 'loaded\n');
+  assert.match(off.stderr, /WARNING: webpack adapter failed on .*Compiler\.js: its builds would write no lockfile: Error: boom/);
+  const other = nodeWith(cjsEnv(undefined), ['-e', cjsHookScript(adapter, '', load(J(root, 'node_modules/x/index.js')))]);
+  assert.equal(other.stdout, 'loaded\n');
+  assert.match(other.stderr, /WARNING: webpack adapter failed while inspecting .*index\.js:/);
+});
+
+test('strict: @rspack/core of an unknown shape fails its require() from 1.0 on; rspack 0.x loads (it fails when it compiles)', () => {
+  const at = (version, src) => project({ 'node_modules/@rspack/core/package.json': { name: '@rspack/core', version }, 'node_modules/@rspack/core/dist/index.js': src });
+  const adapter = `require(${JSON.stringify(J(SRC, 'adapters/rspack.cjs'))})`;
+  const run = (root, strict) => nodeWith(cjsEnv(strict), ['-e', cjsHookScript(adapter, '',
+    `try { require(${JSON.stringify(J(root, 'node_modules/@rspack/core/dist/index.js'))}); console.log('loaded'); } catch (e) { console.log('failed:', e.message.split('\\n')[1]); }`)]);
+  const unknown = at('1.7.0', 'module.exports = { rspack() {} };');
+  const file = J(unknown, 'node_modules/@rspack/core/dist/index.js');
+  const msg = `rspack: ${file} (rspack 1.7.0) exports no rspack() with rspackVersion and Compiler, as bundle-lockfile knows it: its builds would write no lockfile`;
+  assert.equal(run(unknown, undefined).stdout, `failed:   ${msg}\n`);
+  const off = run(unknown, '0');
+  assert.equal(off.stdout, 'loaded\n');
+  assert.ok(off.stderr.includes(`WARNING: ${msg}`), off.stderr);
+  const old = run(at('0.7.5', 'module.exports = { rspack() {} };'), undefined);
+  assert.deepEqual([old.stdout, old.stderr], ['loaded\n', '']);
+  // rspack 2's ES module through require(esm), as its namespace (no "module.exports" export): patched (on a Node.js that
+  // can require() an ES module: 20.19, 22.12 and later)
+  if (!process.features.require_module) return;
+  const esm = at('2.2.8', "export class Compiler { compile() {} run() {} watch() {} isChild() {} runAsChild() {} createChildCompiler() {} } export const rspackVersion = '2.2.8';");
+  fs.writeFileSync(J(esm, 'node_modules/@rspack/core/package.json'), JSON.stringify({ name: '@rspack/core', version: '2.2.8', type: 'module' }));
+  const ns = nodeWith(cjsEnv(undefined), ['-e', cjsHookScript(adapter, '',
+    `console.log(require(${JSON.stringify(J(esm, 'node_modules/@rspack/core/dist/index.js'))}).Compiler.prototype[Symbol.for('bundle-lockfile.rspack.patched')]);`)]);
+  assert.equal(ns.stdout, 'true\n', ns.stderr);
+  assert.doesNotMatch(ns.stderr, /bundle-lockfile/); // (Node.js may warn that require(esm) is experimental)
 });

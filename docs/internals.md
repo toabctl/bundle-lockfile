@@ -10,8 +10,9 @@ For maintainers. What gets listed, and how to use it, is in the [README](../READ
 module once it has run, also one another loader compiles itself (tsx's handler for `.js` files does, without the
 handler before it); not `Module._load`, whose wrapper would be the caller of every built-in module for Node's
 deprecation warnings and, depending on the
-Node.js version (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)), an ESM load hook. Each recognizes a bundler's module when it is loaded and patches
-it so that every build gets bundle-lockfile's plugin — without a config change.
+Node.js version (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)), an ESM load hook. Each recognizes a bundler's
+module when it is loaded and patches it so that every build gets bundle-lockfile's plugin — without a config change.
+Modules that ran before the hook was installed (loaded by an earlier preload) are looked at when it is.
 
 ```mermaid
 flowchart LR
@@ -437,11 +438,15 @@ the build, reading or writing a lockfile, its export copy or a copy of it (also 
 never replaced, and two lockfiles at one export path), taking or creating the lock, nowhere to write
 (`BUNDLE_LOCKFILE_INLINE=0` without an export directory), a bundled package without a `package.json`, patching or
 wrapping a bundler, a bundler it recognizes but does not know (an entry without the functions to wrap, a compiler of
-another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an unsupported rspack (1.0, 0.x when it compiles), a build bundle-lockfile recognizes but does not hook (Turbopack, Parcel,
-the `rolldown` command line, ncc, webpack < 4: `core/unsupported.cjs`, the webpack adapter), installing the ESM hooks in a
-bundler process (or a Node.js without them), an ES-module bundler loaded in a thread without them, a settings file that cannot be read, a setting that is not recognized or
-cannot work (`config.invalid`), another copy of bundle-lockfile preloaded too - and the adapter of the build takes the
-recorded problems at the end of its hooks:
+another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an
+unsupported rspack (1.0, 0.x when it compiles), a build bundle-lockfile recognizes but does not hook (Turbopack, Parcel,
+the `rolldown` command line, ncc, webpack < 4: `core/unsupported.cjs`, the webpack adapter), installing the ESM hooks in
+a bundler process (or a Node.js without them), an ES-module bundler loaded in a thread without them, a Node.js without
+the CommonJS hook points (`Module.prototype._compile`, `Module._extensions`) in a process that builds with a CommonJS
+bundler, a bundler's module (`cjsFiles`) that recognizing throws on or that ran past the CommonJS hook (checked at exit:
+in `require.cache`, never reported), a settings file that cannot be read, a setting that is not recognized or cannot
+work (`config.invalid`), another copy of bundle-lockfile preloaded too - and the adapter of the build takes the recorded
+problems at the end of its hooks:
 
 | Bundler | Before the output is written | After |
 |---|---|---|
@@ -459,17 +464,18 @@ line and a newline: the `rollup` command line strips exactly that before it prin
 stack.
 
 An ESM hook (in the thread or in the loader thread) that cannot wrap a module (an entry module, or a `cjsFiles` source)
-makes it a module that throws, so its import fails with the reason (`BUNDLE_LOCKFILE_STRICT=0`: it loads unchanged,
-with a warning in the thread). Problems are taken process-wide: a compiler may fail with another one's problem - a build
+makes it a module that throws, so its import fails with the reason (`BUNDLE_LOCKFILE_STRICT=0`: it loads unchanged, with
+a warning in the thread). Problems are taken process-wide: a compiler may fail with another one's problem - a build
 fails either way. Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that
-is a bundler counts.
+is a bundler counts, and recognizing one an adapter patches (its `cjsFiles`).
 
 To add a bundler:
 1. Write `src/adapters/<name>.cjs` (the interface is described at the top of `src/hooks.cjs`):
    - `name` (or `names`, if it serves several bundlers, for `BUNDLE_LOCKFILE_DISABLE`);
    - for a CommonJS bundler: `onCjsLoad(exports, request, resolve)`, which recognizes and patches it (or returns
      `{ exports }` to replace exports it cannot patch), and `cjsFiles`, the files it patches, which the ESM hooks report
-     when Node loads them without the CommonJS hook;
+     when Node loads them without the CommonJS hook (and which fail the process at exit if they ran past both), and
+     `cjsPackages`, the packages whose processes build with it;
    - for an ES module one: `esmEntries`, `esmWrap` and `esmPackages` (the packages whose processes get the
      loader-thread hooks);
    - write through `core/outputs.cjs`, so that shared output directories work.
