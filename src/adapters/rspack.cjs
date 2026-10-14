@@ -14,9 +14,10 @@
 // core/problems.cjs). rspack 0.x fails its builds too.
 const fs = require('fs');
 const path = require('path');
+const { fileURLToPath } = require('url');
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
-const { APPLIED, BundleLockfilePlugin, attach, versionOf } = require('./webpack-family.cjs');
+const { APPLIED, BUNDLER_FILE, BundleLockfilePlugin, attach, versionOf } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.rspack.patched'); // Compiler.prototype
 const SEEN = Symbol.for('bundle-lockfile.rspack.seen');       // compiler: listeners have run
@@ -42,6 +43,7 @@ function patchCompiler(Compiler, where) {
   if (!p || !['compile', 'run', 'watch', 'isChild', 'runAsChild', 'createChildCompiler'].every(k => typeof p[k] === 'function')) return false;
   if (p[PATCHED]) return true;
   p[PATCHED] = true;
+  p[BUNDLER_FILE] = where; // the bundler's package is the one around it (core/bundler.cjs)
   const orig = p.compile;
   p.compile = function (...args) {
     if (!this[SEEN] && this.hooks && !this.isChild()) {
@@ -81,11 +83,11 @@ module.exports = {
   esmCompanions: [{ id: 'rspack', names: ['rspack'], file: /[\\/]node_modules[\\/]@rspack[\\/]binding[\\/]binding\.js$/ }],
   BundleLockfilePlugin, // usable directly in an rspack config, without injection
   onCompiler,
-  esmWrap(id, name, value) {
+  esmWrap(id, name, value, url) {
     // (an entry without a Compiler: hooks.cjs found() reports it)
     if (id !== 'rspack' || name !== 'Compiler' || typeof value !== 'function') return null;
     // the ES module entry is rspack 2's (or later)
-    try { patchRspack(value, '2', '@rspack/core (ES module)'); } catch (e) { problems.problem('rspack: could not patch @rspack/core', e); }
+    try { patchRspack(value, '2', typeof url === 'string' && url.startsWith('file:') ? fileURLToPath(url) : '@rspack/core (ES module)'); } catch (e) { problems.problem('rspack: could not patch @rspack/core', e); }
     return value; // the class itself, patched
   },
   onCjsLoad(exp, request, resolve) {

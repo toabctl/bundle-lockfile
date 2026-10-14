@@ -5,7 +5,7 @@
 // listing the packages in its output.
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
-const { APPLIED, BundleLockfilePlugin, bundledFiles, sourceFile, isRspack, attach } = require('./webpack-family.cjs');
+const { APPLIED, BUNDLER_FILE, BundleLockfilePlugin, bundledFiles, sourceFile, isRspack, attach } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
 const SEEN = Symbol.for('bundle-lockfile.webpack.seen');       // compiler: listeners have run
@@ -28,6 +28,7 @@ function patchCompiler(Compiler, where) {
   if (!p || !['compile', 'run', 'watch', 'newCompilation', 'isChild'].every(k => typeof p[k] === 'function')) return false;
   if (p[PATCHED]) return true;
   p[PATCHED] = true;
+  p[BUNDLER_FILE] = where; // the bundler's package is the one around it (core/bundler.cjs)
   const orig = p.compile;
   p.compile = function (...args) {
     // compile() runs for run(), watch() and child compilers

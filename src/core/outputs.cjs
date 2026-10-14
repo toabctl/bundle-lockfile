@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
 const { cmp, toPackageLock, readMeta, reanchor, unknownPackage } = require('./lockfile.cjs');
-const { readPackage } = require('./manifest.cjs');
+const { readManifest } = require('./manifest.cjs');
 const { exportPath } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
 const { writeTree } = require('./tree.cjs');
@@ -90,12 +90,15 @@ function foreign(target, own, all = false) {
 // the build (npm install during a watch session), reinstalled elsewhere (pnpm's .pnpm directory names) or removed is
 // no longer the one at that path, and another build's package at that path must not replace it: its location is
 // then not known (see toPackageLock), in the build's packages and in its outputs' contents.
+// A copy whose package.json has no version has the version its code says (Next.js' webpack, see core/bundler.cjs): its
+// name is checked.
 const stillThere = (seen) => (b) => {
-  const at = (dir) => { if (!seen.has(dir)) seen.set(dir, readPackage(dir)); return seen.get(dir); };
+  const at = (dir) => { if (!seen.has(dir)) seen.set(dir, readManifest(dir)); return seen.get(dir); };
   const ids = new Map(); // path -> path after the check, of this build's packages
   const pkgs = b.pkgs.map((p) => {
     const there = !p.outside && !p.unknown && at(p.path);
-    const q = p.outside || p.unknown || (there && there.name === p.name && there.version === p.version) ? p : unknownPackage(p);
+    const same = !!there && typeof there.name === 'string' && there.name === p.name && (there.version === p.version || there.version === undefined);
+    const q = p.outside || p.unknown || same ? p : unknownPackage(p);
     ids.set(p.path, q.path);
     return q;
   });

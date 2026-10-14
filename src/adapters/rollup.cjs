@@ -16,6 +16,8 @@ const { sha256 } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const rolldownWatch = require('./rolldown-watch.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
+const { createRequire } = require('module');
+const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
 const VITE = /^(vite:|builtin:vite-)/; // Vite's own plugins (Vite 8 has native builtin: ones)
@@ -187,9 +189,42 @@ function failClose(ctx, err) {
   throw err;
 }
 
+// The packages of the bundler code in a build's chunks (see core/bundler.cjs): the Rollup or Rolldown copy whose rollup()
+// or rolldown() was called (its entry module, as the hooks saw it: `from.file`), and for a build Vite made, Vite's
+// package (`from.vite`: package.json of the vite or rolldown-vite around a file of the caller; Vite 5 - 7 build with
+// Rollup, 8 with Rolldown). A plugin configured by hand, in a build without the preload: the copies that ran its hooks
+// (`from.runner`: buildStart's caller; Vite: the config hook's), else those the working directory resolves, if they are
+// of the version the build runs - else a problem. ctx: a hook's plugin context (meta.rollupVersion,
+// meta.rolldownVersion - Rolldown sets rollupVersion too, to a compatible value -, meta.viteVersion from Vite 7 on).
+const ROLLUP_NAMES = ['rollup', '@rollup/wasm-node'];
+function bundlersOf(kind, from, ctx, cwd) {
+  const meta = (ctx && ctx.meta) || {};
+  const rolldown = typeof meta.rolldownVersion === 'string';
+  const id = from.id || (rolldown ? 'rolldown' : 'rollup');
+  const names = id === 'rolldown' ? ['rolldown'] : ROLLUP_NAMES;
+  const version = id === 'rolldown' ? meta.rolldownVersion : rolldown ? undefined : meta.rollupVersion;
+  const resolved = (names, v, what) => {
+    let found = null;
+    for (const n of names) { try { found = createRequire(path.join(cwd, 'x')).resolve(`${n}/package.json`); break; } catch { /* next */ } }
+    const p = found && bundlerPackage(kind, found, names, v);
+    if (p && (!v || p.version === v)) return p;
+    problems.problem(`${kind}: the build runs ${what}${v ? `@${v}` : ''}, which was not loaded with the preload, and ${found ? `${found} is another copy` : `${cwd} resolves none`}: the lockfile would miss the bundler, whose code is in the output`);
+    return null;
+  };
+  const runner = from.runner && from.runner[id];
+  const out = [from.file || runner ? bundlerPackage(kind, from.file || runner, names, version) : resolved(names, version, id)];
+  if (kind === 'vite') {
+    const vite = from.vite ? bundlerPackage(kind, from.vite, VITE_NAMES) : resolved(VITE_NAMES, meta.viteVersion, 'vite');
+    if (vite && typeof meta.viteVersion === 'string' && meta.viteVersion !== vite.version) {
+      problems.problem(`vite: the build runs Vite ${meta.viteVersion}, its caller is in ${vite.path} (${vite.name}@${vite.version}): the lockfile would list another copy`);
+    } else out.push(vite);
+  }
+  return out.filter(Boolean);
+}
+
 // kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler
-// the plugin is added to (undefined: not known, a plugin from a config)
-function createPlugin(kind, inputOptions, engine) {
+// the plugin is added to (undefined: not known, a plugin from a config); from: where the bundler packages are (bundlersOf)
+function createPlugin(kind, inputOptions, engine, from = {}) {
   const cwd = realCwd();
   const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
   let unreadable = null; // what keeps the files Rolldown's plugins inlined from being recorded (see rolldown-watch.cjs)
@@ -237,12 +272,14 @@ function createPlugin(kind, inputOptions, engine) {
     // every build itself): a plugin from the config adds a copy of itself there. Vite 5 and later take a function.
     ...(kind === 'vite' && {
       config(cfg) {
+        // Vite calls this hook (also when the plugin is in the config, without the preload): its caller is Vite
+        if (!from.vite) from.vite = viteOf(callerFiles());
         if (!cfg || typeof cfg !== 'object') return;
         const prev = cfg.worker && cfg.worker.plugins;
         const user = typeof prev === 'function' ? prev : Array.isArray(prev) ? () => prev : () => [];
         cfg.worker = { ...cfg.worker, plugins(...args) {
           const list = [].concat(user(...args) || []);
-          return flat(list).some(p => p.name === NAME) ? list : [...list, createPlugin(kind)];
+          return flat(list).some(p => p.name === NAME) ? list : [...list, createPlugin(kind, undefined, undefined, { vite: from.vite })];
         } };
       },
     }),
@@ -256,6 +293,8 @@ function createPlugin(kind, inputOptions, engine) {
       },
     }),
     buildStart(options) {
+      // a plugin configured by hand: the bundler that runs this hook (see bundlersOf)
+      if (!from.file && !from.runner) from.runner = { rollup: packageOnStack(ROLLUP_NAMES), rolldown: packageOnStack(['rolldown']) };
       if (closed || !(this && this.meta && this.meta.rolldownVersion)) { written.clear(); modulesOf.clear(); ordinals.clear(); }
       closed = false;
       transformed = new Set();
@@ -308,6 +347,8 @@ function createPlugin(kind, inputOptions, engine) {
           // when .nuxt is there, and Nitro copies the client's files from there into .output/public (see core/outputs.cjs
           // outputCopy). Without dir and file, Rolldown writes to dist/ (Rollup does not write at all); the hooks get neither
           const dir = path.resolve(cwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
+          // the bundler's code is in every chunk
+          const bundlers = Object.values(bundle).some(f => f.type === 'chunk') ? bundlersOf(kind, from, this, cwd) : [];
           if (isWrite === false || (dir.split(path.sep).includes('node_modules') && !CACHE.test(dir + path.sep))) {
             const all = [];
             const bases = once(() => entryDirs(bundle));
@@ -315,7 +356,7 @@ function createPlugin(kind, inputOptions, engine) {
               let pkgs;
               if (f.type === 'chunk') {
                 const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean), buildOf(bundle)).all;
-                pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values());
+                pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values(), bundlers);
                 generated.addChunk(f.code, pkgs);
               } else {
                 // an asset emitted from a package file (a worker's font or wasm): the build that uses it emits its bytes
@@ -379,10 +420,16 @@ function createPlugin(kind, inputOptions, engine) {
           const result = packages.packagesOfFiles(sources, buildOf(bundle));
           const { all, byFile } = result;
           const gen = [...generatedIn(bundle, ids).values()];
-          const pkgs = packages.unique(all, gen);
+          const pkgs = packages.unique(all, gen, bundlers);
           const found = via.ofFiles(result, kinds);
           found.add('generated', gen);
+          found.add('runtime', bundlers);
           const { hashes, contents } = outputContents(bundle, dir, ids, originals, inlined, byFile);
+          // the bundler's code is in every chunk: its JavaScript files bring it too (core/nested.cjs)
+          for (const f of Object.values(bundle)) {
+            const c = f.type === 'chunk' && contents[path.join(dir, f.fileName)];
+            if (c) for (const p of bundlers) if (!c.includes(p.path)) c.push(p.path);
+          }
           const target = path.join(dir, config.file);
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           const bundler = bundlerOf(kind, this && this.meta);
@@ -436,7 +483,8 @@ function createPlugin(kind, inputOptions, engine) {
 
 // One more plugin for the options of a rollup()/rolldown() call (also each config of watch()/build()), unless it
 // has one already (configured by hand, or build() calling rolldown()) or its kind is disabled.
-function attach(id, options) {
+// file: the entry module of the Rollup or Rolldown copy whose function was called (see bundlersOf).
+function attach(id, options, file) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) return options;
   const plugins = flat(options.plugins);
   if (plugins.some(p => p.name === NAME)) return options;
@@ -446,16 +494,18 @@ function attach(id, options) {
   const kind = plugins.some(p => typeof p.name === 'string' && VITE.test(p.name)) ? 'vite' : id;
   if (config.isDisabled(kind)) { config.debug(`${kind}: disabled`); return options; }
   config.debug(`${kind}: adding the plugin to a ${id}() call`);
-  return { ...options, plugins: [...[].concat(options.plugins == null ? [] : options.plugins), createPlugin(kind, options, id)] };
+  // a build Vite makes: Vite's package is around its caller, a file on the stack now (core/bundler.cjs)
+  const from = { id, file, vite: kind === 'vite' ? viteOf(callerFiles()) : null };
+  return { ...options, plugins: [...[].concat(options.plugins == null ? [] : options.plugins), createPlugin(kind, options, id, from)] };
 }
 
-const each = (id, v) => (Array.isArray(v) ? v.map(o => attach(id, o)) : attach(id, v));
+const each = (id, v, file) => (Array.isArray(v) ? v.map(o => attach(id, o, file)) : attach(id, v, file));
 
 // rollup()/rolldown() with the plugin; the plugin gets the build the call returns (Rolldown's watch files, see
 // watchFilesOf) - also one that was in the options already (configured by hand): only the caller of rolldown() has it.
-function wrapBuild(id, fn) {
+function wrapBuild(id, fn, file) {
   return function (options, ...rest) {
-    const o = attach(id, options);
+    const o = attach(id, options, file);
     const result = fn.call(this, o, ...rest);
     const plugin = o && typeof o === 'object' && !Array.isArray(o) && flat(o.plugins).find(p => p.name === NAME && p.api && p.api.setBuild);
     if (plugin && result && typeof result.then === 'function') result.then(b => plugin.api.setBuild(b), () => {});
@@ -487,10 +537,10 @@ module.exports = {
     { id: 'rolldown', names: ['rolldown', 'vite'], file: /[\\/]node_modules[\\/]@rolldown[\\/]binding-[^\\/]+[\\/](?:package\.json|[^\\/]+\.node)$/ },
   ],
 
-  esmWrap(id, name, fn) {
+  esmWrap(id, name, fn, url) {
     if (typeof fn !== 'function') return null;
-    if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn);
-    if (name === 'watch' || name === 'build') return function (options, ...rest) { return fn.call(this, each(id, options), ...rest); };
+    if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn, url);
+    if (name === 'watch' || name === 'build') return function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
     return null;
   },
   onCjsLoad(exp, request, resolve) {
@@ -510,8 +560,8 @@ module.exports = {
     try {
       exp[PATCHED] = true;
       const rollup = exp.rollup, internal = exp.rollupInternal;
-      if (typeof rollup === 'function') exp.rollup = wrapBuild('rollup', rollup);
-      exp.rollupInternal = wrapBuild('rollup', internal); // (options, watcher hooks)
+      if (typeof rollup === 'function') exp.rollup = wrapBuild('rollup', rollup, resolve());
+      exp.rollupInternal = wrapBuild('rollup', internal, resolve()); // (options, watcher hooks)
       config.debug('rollup: patched its CommonJS build', resolve());
     } catch (e) { problems.problem(`rollup: could not patch ${resolve()}`, e); } // its builds would write no lockfile
   },

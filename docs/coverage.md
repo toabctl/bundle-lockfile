@@ -49,6 +49,16 @@ the source maps show none of its code.
   source.
 - **vendored copies**: a package copied into another package or outside `node_modules`, with its own `package.json`
   ([rules](format.md#which-package-a-file-belongs-to)).
+- **the bundler, whose own code is in the JavaScript it writes**: webpack's and rspack's runtime and chunk loading
+  code, Rollup's and Rolldown's format wrappers and helpers (also their `import.meta.url` code), Vite's preload helper,
+  esbuild's runtime helpers, Parcel's prelude. Advisories about that code name the bundler's package (webpack's
+  CVE-2024-43788, Rollup's CVE-2024-47068, Vite's CVE-2024-45812). Listed per output with a JavaScript file, at the
+  copy that ran: `webpack` (Next.js' own copy as `node_modules/next/dist/compiled/webpack`, at the version webpack
+  says), `@rspack/core`, `rollup`, `rolldown`, `vite` or `rolldown-vite` (with the Rollup or Rolldown it builds with),
+  `esbuild` (also the one Angular's builder runs), `@parcel/packager-js`. Scanners then also report the bundler's
+  advisories about its build-time code and dev server (most of Vite's): a package listed too many is better than
+  one missing. The metafile importer lists the esbuild the working directory resolves, or the package `--bundler`
+  names.
 - **nested bundles**: a bundled file that another Vite, Rollup or Rolldown build wrote brings that build's packages
   ([details](format.md#nested-bundles)).
 
@@ -80,10 +90,10 @@ the source maps show none of its code.
   directory without one: as the package around it, with a warning), outside `node_modules` (a copied
   `jquery.min.js`) as first-party;
 - workspace packages and other linked first-party packages (their dependencies are listed);
-- the bundler's runtime code (webpack 5's runtime modules, Vite's preload helper and modulepreload polyfill,
-  Rolldown's runtime, @rollup/plugin-commonjs's helpers), which is generated, not a package's file. webpack 4's
-  `webpack/buildin/*` are files of webpack, so webpack 4 builds list `webpack`; Parcel generates its runtime as a file
-  of `@parcel/runtime-js`, which is listed;
+- helpers a transpiler or plugin generates into the code: Babel's inlined helpers (not those of `@babel/runtime`,
+  which is a package: listed), TypeScript's and swc's, @rollup/plugin-commonjs's - the code is in the output, the
+  package that wrote it is not listed (Babel's CVE-2025-27789 is in such helpers); Angular's chunk optimizer
+  (Rolldown), which re-bundles Angular's chunks;
 - Sass and Less partials that Parcel's transformers inline (no assets).
 
 ## Listed although not shipped

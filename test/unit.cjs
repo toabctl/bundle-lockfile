@@ -38,7 +38,33 @@ function project(files) {
   }
   return root;
 }
-const ids = (pkgs) => pkgs.map(p => `${p.name}@${p.version}`).sort();
+// The bundlers of the tests' compilers and builds, in a project of their own: every output with JavaScript lists the
+// bundler (core/bundler.cjs; tests of that below), at version 0.0.0-unit - which the helpers that compare package lists
+// leave out (ids, entries, lockedNames). The fake webpack compilers are patched ones (BUNDLER_FILE: their webpack's
+// lib/Compiler.js); the Rollup plugin's hooks run from a file of rollup's or rolldown's (rollupBuild), as in a build of
+// a plugin from the config, and Vite's config hook from one of vite's.
+const UNIT = '0.0.0-unit';
+const BUNDLER_FILE = Symbol.for('bundle-lockfile.webpack.bundler-file');
+const BUNDLERS = (() => {
+  const files = {};
+  const CALL = 'module.exports = (fn, self, args) => fn.apply(self, args);\n';
+  for (const [name, call] of [['webpack', 'lib/Compiler.js'], ['@rspack/core', 'dist/index.js'], ['rollup', 'dist/shared/rollup.js'], ['rolldown', 'dist/shared/call.js'], ['vite', 'dist/node/chunks/call.js']]) {
+    files[`node_modules/${name}/package.json`] = { name, version: UNIT, license: 'MIT' };
+    files[`node_modules/${name}/${call}`] = CALL;
+  }
+  const root = fs.realpathSync(fs.mkdtempSync(J(os.tmpdir(), 'blr-bundlers-')));
+  for (const [f, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(J(root, f)), { recursive: true });
+    fs.writeFileSync(J(root, f), typeof content === 'string' ? content : JSON.stringify(content));
+  }
+  return {
+    root, webpack: J(root, 'node_modules/webpack/lib/Compiler.js'), rspack: J(root, 'node_modules/@rspack/core/dist/index.js'),
+    rollup: require(J(root, 'node_modules/rollup/dist/shared/rollup.js')), rolldown: require(J(root, 'node_modules/rolldown/dist/shared/call.js')),
+    vite: require(J(root, 'node_modules/vite/dist/node/chunks/call.js')),
+  };
+})();
+const notUnit = (p) => p.version !== UNIT;
+const ids = (pkgs) => pkgs.filter(notUnit).map(p => `${p.name}@${p.version}`).sort();
 const pkg = (name, version, dir) => ({ name, version, path: dir });
 // runs fn with config.warn recorded; returns the messages
 function warnings(fn) {
@@ -47,7 +73,8 @@ function warnings(fn) {
   try { fn(); } finally { config.warn = orig; }
   return seen;
 }
-const entries = (json) => Object.entries(JSON.parse(json).packages).filter(([k]) => k);
+const entries = (json) => Object.entries(JSON.parse(json).packages).filter(([k, p]) => k && notUnit(p));
+const allEntries = (json) => Object.entries(JSON.parse(json).packages).filter(([k]) => k); // with the bundler
 
 test('packageRoot: directory below the last node_modules', () => {
   const r = (p) => packageRoot(p.split('/').join(path.sep));
@@ -414,7 +441,7 @@ test('webpack adapter: Next.js vendored webpack, whose exports are filled in by 
 let outputDirs = 0;
 function compilation({ context, outputPath = J(context, `dist-${++outputDirs}`), chunks, children = [], assets = {}, clean }) {
   return {
-    compiler: { context, outputPath },
+    compiler: { context, outputPath, [BUNDLER_FILE]: BUNDLERS.webpack },
     outputOptions: { clean },
     chunks: chunks.map(c => ({ files: new Set(c.files || []), modules: c.modules, entry: c.entry || [] })),
     chunkGraph: { getChunkModulesIterable: (chunk) => chunk.modules, getChunkEntryModulesIterable: (chunk) => chunk.entry },
@@ -427,7 +454,7 @@ function compilation({ context, outputPath = J(context, `dist-${++outputDirs}`),
 // the same in webpack 4's shape: chunk.modulesIterable / chunk.entryModule, assets as an object, no getAsset(s)
 function compilation4({ context, chunks, children = [], assets = {} }) {
   return {
-    compiler: { context, outputPath: J(context, `dist-${++outputDirs}`) },
+    compiler: { context, outputPath: J(context, `dist-${++outputDirs}`), [BUNDLER_FILE]: BUNDLERS.webpack },
     outputOptions: {},
     chunks: chunks.map(c => ({ files: c.files || [], modulesIterable: new Set(c.modules), entryModule: (c.entry || [])[0] })),
     children: children.map(c => compilation4({ context, ...c })),
@@ -438,6 +465,58 @@ const LOCK = 'bundle-lockfile/package-lock.json';
 const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
 const plugin = () => new webpack.BundleLockfilePlugin(LOCK);
 const lockedNames = (json) => entries(json).map(([k]) => k.replace(/^node_modules\//, '')).sort();
+
+test('webpack adapter: the bundler whose code is in the output is listed - the patched copy, Next.js\' at its version, the one that applied a configured plugin', () => withConfig({ strict: true }, () => {
+  problems.take();
+  const root = project({
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    'node_modules/next/package.json': { name: 'next', version: '16.4.0' },
+    'node_modules/next/dist/compiled/webpack/package.json': { name: 'webpack', main: 'bundle5.js', license: 'MIT' }, // (no version, as Next ships it)
+    'node_modules/next/dist/compiled/webpack/webpack.js': '',
+    'node_modules/webpack/package.json': { name: 'webpack', version: '5.111.1' },
+  });
+  const a = { resource: J(root, 'node_modules/a/i.js') };
+  const lock = (c) => Object.fromEntries(allEntries(plugin().lockfile(c)).map(([k, p]) => [k, `${p.name}@${p.version}`]));
+  // a JavaScript chunk: its webpack (the patched Compiler's: BUNDLERS.webpack)
+  assert.deepEqual(lock(compilation({ context: root, chunks: [{ files: ['main.js'], modules: [a] }] })),
+    { 'node_modules/a': 'a@1.0.0', 'node_modules/webpack': `webpack@${UNIT}` });
+  // only a style sheet and assets: no code of webpack's
+  assert.deepEqual(lock(compilation({ context: root, chunks: [{ files: ['main.css'], modules: [a] }] })), { 'node_modules/a': 'a@1.0.0' });
+  // Next.js' copy: at its location, at the version the compiler says
+  const next = compilation({ context: root, chunks: [{ files: ['main.js?v=1'], modules: [a] }] });
+  next.compiler[BUNDLER_FILE] = J(root, 'node_modules/next/dist/compiled/webpack/webpack.js');
+  next.compiler.webpack = { version: '5.98.0' };
+  assert.deepEqual(lock(next), { 'node_modules/a': 'a@1.0.0', 'node_modules/next/dist/compiled/webpack': 'webpack@5.98.0' });
+  const json = JSON.parse(plugin().lockfile(next));
+  assert.deepEqual(json.packages['node_modules/next/dist/compiled/webpack'], { name: 'webpack', version: '5.98.0', license: 'MIT' });
+  assert.deepEqual(problems.take(), []);
+  // a plugin in the config, without the preload: the webpack that applies it
+  const { compiler } = fakeCompiler5({ outputPath: J(root, 'dist-configured') });
+  delete compiler[BUNDLER_FILE];
+  const configured = new webpack.BundleLockfilePlugin(LOCK);
+  require(BUNDLERS.webpack)(configured.apply, configured, [compiler]);
+  const c = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [a] }] });
+  c.compiler = compiler;
+  assert.equal(allEntries(configured.lockfile(c)).find(([k]) => k === 'node_modules/webpack')[1].version, UNIT);
+  // applied by anything else: the webpack the context resolves, if it is the compiler's version
+  const other = fakeCompiler5({ outputPath: J(root, 'dist-other') }).compiler;
+  delete other[BUNDLER_FILE];
+  other.webpack.version = '5.111.1';
+  const p2 = new webpack.BundleLockfilePlugin(LOCK);
+  p2.apply(other);
+  const c2 = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [a] }] });
+  c2.compiler = other;
+  assert.equal(allEntries(p2.lockfile(c2)).find(([k]) => k === 'node_modules/webpack')[1].version, '5.111.1');
+  assert.deepEqual(problems.take(), []);
+  // ... else the copy that ran is not known: a problem (strict mode: the build fails)
+  other.webpack.version = '5.112.0';
+  const p3 = new webpack.BundleLockfilePlugin(LOCK);
+  p3.apply(other);
+  assert.equal(allEntries(p3.lockfile(c2)).some(([, p]) => p.name === 'webpack'), false);
+  const taken = problems.take();
+  assert.equal(taken.length, 1);
+  assert.match(taken[0], /is webpack@5\.112\.0, which was not loaded with the preload, and .*node_modules.webpack.package\.json is another copy/);
+}));
 
 test('webpack adapter: chunks, concatenated modules, shipped child compilations and copied files', () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
@@ -509,7 +588,7 @@ test('webpack adapter: more than 20,000 files below a copied directory in node_m
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/dir/package.json': { name: 'dir', version: '1.0.0' } });
   for (let i = 0; i < 20001; i++) fs.writeFileSync(J(root, `node_modules/dir/${i}.txt`), '');
   const assets = new Map([['main.js', 'main'], ['copied.txt', 'unnamed']].map(([name, content]) => [name, { name, source: { size: () => content.length, source: () => content }, info: {} }]));
-  const compiler = { context: root, outputPath: J(root, `dist-${++outputDirs}`) };
+  const compiler = { context: root, outputPath: J(root, `dist-${++outputDirs}`), [BUNDLER_FILE]: BUNDLERS.webpack };
   const compilation = () => ({ // (a new one per build: the plugin keeps what it found on it)
     compiler,
     chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }],
@@ -1087,7 +1166,7 @@ function fakeCompiler5({ outputPath, withWebpack = true }) {
   const taps = {};
   const hook = (name) => ({ tap: (o, fn) => (taps[name] = fn), tapAsync: (o, fn) => (taps[name] = fn) });
   const compiler = {
-    context: path.dirname(outputPath), outputPath, name: 'fake',
+    context: path.dirname(outputPath), outputPath, name: 'fake', [BUNDLER_FILE]: BUNDLERS.webpack,
     hooks: { thisCompilation: hook('thisCompilation'), emit: hook('emit'), afterEmit: hook('afterEmit') },
     outputFileSystem: { writeFile: (f, c, cb) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, c); cb(); } },
   };
@@ -1426,10 +1505,10 @@ test('esm-wrap: finds the entry, its exports, and wraps its functions; an entry 
   assert.deepEqual([...esmWrap.exportedNames("const s = '// x';\nexport { a as default };")], ['default']);
   const src = esmWrap.source('file:///p/rollup.js', "export { VERSION, rollup } from './x.js';", rollupEntry);
   assert.match(src, /export \* from "file:\/\/\/p\/rollup\.js\?bundle-lockfile-real";/);
-  assert.match(src, /export const rollup = api \? api\.wrap\("rollup", "rollup", real\.rollup\) : real\.rollup;/);
+  assert.match(src, /export const rollup = api \? api\.wrap\("rollup", "rollup", real\.rollup, "file:\/\/\/p\/rollup\.js"\) : real\.rollup;/);
   // every function to wrap, whatever the source says (an `export *` of it is not in the source): one the module does not
   // have stays undefined; whether it had any, the wrapper tells the hooks when it runs
-  assert.match(src, /export const watch = api \? api\.wrap\("rollup", "watch", real\.watch\) : real\.watch;/);
+  assert.match(src, /export const watch = api \? api\.wrap\("rollup", "watch", real\.watch, "file:\/\/\/p\/rollup\.js"\) : real\.watch;/);
   assert.match(src, /api\.found\("rollup", "file:\/\/\/p\/rollup\.js", \["rollup","watch"\], \["rollup","watch"\]\.some\(n => typeof real\[n\] === 'function'\)\)/);
   const star = esmWrap.source('file:///p/rollup.js', "export * from './shared/x.js';", rollupEntry);
   assert.match(star, /export const rollup = api \? api\.wrap/);
@@ -1452,6 +1531,86 @@ test('esm-wrap: an entry module of a version the adapter does not know fails whe
   const off = run('0');
   assert.equal(off.stdout.trim(), 'loaded');
   assert.match(off.stderr, /WARNING: file:\/\/\/p\/rollup\.js exports none of rollup, watch/);
+});
+
+test('bundler: the package around the file the adapter patched, a copy without a version at the bundler\'s', () => withConfig({ strict: true }, () => {
+  const { bundlerPackage } = require('../src/core/bundler.cjs');
+  const root = project({
+    'node_modules/webpack/package.json': { name: 'webpack', version: '5.111.1', license: 'MIT' },
+    'node_modules/webpack/lib/Compiler.js': '',
+    'node_modules/next/package.json': { name: 'next', version: '16.4.0' },
+    'node_modules/next/dist/compiled/webpack/package.json': { name: 'webpack', main: 'bundle5.js', license: 'MIT' },
+    'node_modules/next/dist/compiled/webpack/webpack.js': '',
+    'node_modules/.pnpm/rollup@4.0.2/node_modules/rollup/package.json': { name: 'rollup', version: '4.0.2' },
+    'node_modules/.pnpm/rollup@4.0.2/node_modules/rollup/dist/es/package.json': { type: 'module' },
+    'node_modules/.pnpm/rollup@4.0.2/node_modules/rollup/dist/es/rollup.js': '',
+    'node_modules/.store/vite-npm-8.3.3-ab/package/package.json': { name: 'vite', version: '8.3.3' },
+    'node_modules/.store/vite-npm-8.3.3-ab/package/dist/node/chunks/node.js': '',
+    'node_modules/x/package.json': { name: 'x', version: '1.0.0' },
+    'node_modules/x/node_modules/webpack/package.json': { name: 'webpack', version: '4.47.0' },
+    'node_modules/x/node_modules/webpack/lib/Compiler.js': '',
+    'node_modules/nameless/package.json': { name: 'webpack' },
+    'node_modules/nameless/lib/Compiler.js': '',
+    'src/Compiler.js': '',
+  });
+  problems.take();
+  const at = (p) => J(root, p);
+  // its package.json's version, over the version the code says (strings in code can be stale)
+  assert.deepEqual(bundlerPackage('webpack', at('node_modules/webpack/lib/Compiler.js'), ['webpack'], '5.111.0'),
+    { name: 'webpack', version: '5.111.1', path: at('node_modules/webpack'), license: 'MIT' });
+  // Next.js' copy: its package.json has no version - the compiler's (compiler.webpack.version); at its own location
+  assert.deepEqual(bundlerPackage('webpack', at('node_modules/next/dist/compiled/webpack/webpack.js'), ['webpack'], '5.98.0'),
+    { name: 'webpack', version: '5.98.0', path: at('node_modules/next/dist/compiled/webpack'), license: 'MIT' });
+  // a file: URL (an ES module entry), past dist/es/package.json ({"type": "module"}); pnpm
+  assert.equal(bundlerPackage('rollup', pathToFileURLHref(at('node_modules/.pnpm/rollup@4.0.2/node_modules/rollup/dist/es/rollup.js')) + '?q', ['rollup']).path,
+    at('node_modules/.pnpm/rollup@4.0.2/node_modules/rollup'));
+  // Yarn's pnpm linker store
+  assert.equal(bundlerPackage('vite', at('node_modules/.store/vite-npm-8.3.3-ab/package/package.json'), ['vite']).version, '8.3.3');
+  // two copies: each at its own location
+  assert.equal(bundlerPackage('webpack', at('node_modules/x/node_modules/webpack/lib/Compiler.js'), ['webpack']).version, '4.47.0');
+  assert.deepEqual(problems.take(), []);
+  // no version anywhere, no package of that name around the file: problems (strict mode: the build fails), nothing listed
+  assert.equal(bundlerPackage('webpack', at('node_modules/nameless/lib/Compiler.js'), ['webpack']), null);
+  assert.equal(bundlerPackage('webpack', at('src/Compiler.js'), ['webpack']), null);
+  assert.equal(bundlerPackage('webpack', '@rspack/core (ES module)', ['@rspack/core']), null);
+  const got = problems.take();
+  assert.equal(got.length, 3);
+  assert.match(got[0], /nameless \(webpack\) has no version/);
+  assert.match(got[1], /no package\.json of webpack around .*src.Compiler\.js/);
+  // again on the next build: not cached
+  assert.equal(bundlerPackage('webpack', at('src/Compiler.js'), ['webpack']), null);
+  assert.equal(problems.take().length, 1);
+}));
+
+test('bundler: Vite\'s package is the vite or rolldown-vite around a file of the caller; other packages\' files are skipped', () => {
+  const { viteOf, callerFiles } = require('../src/core/bundler.cjs');
+  const root = project({
+    'node_modules/vite/package.json': { name: 'vite', version: '7.3.7' },
+    'node_modules/vite/dist/node/package.json': { type: 'module' },
+    'node_modules/vite/dist/node/chunks/config.js': '',
+    'node_modules/rolldown-vite/package.json': { name: 'rolldown-vite', version: '7.3.1' },
+    'node_modules/rolldown-vite/dist/node/chunks/x.js': '',
+    'node_modules/@sveltejs/kit/package.json': { name: '@sveltejs/kit', version: '2.0.0' },
+    'node_modules/@sveltejs/kit/src/vite.js': '',
+    'node_modules/@sveltejs/kit/node_modules/vite-like/package.json': { name: 'vite-like', version: '1.0.0' },
+    'tools/build.mjs': '',
+  });
+  const at = (p) => J(root, p);
+  assert.equal(viteOf([at('node_modules/vite/dist/node/chunks/config.js')]), at('node_modules/vite/package.json'));
+  assert.equal(viteOf([at('node_modules/rolldown-vite/dist/node/chunks/x.js')]), at('node_modules/rolldown-vite/package.json'));
+  // a tool calling Vite: its frames are not Vite's, the next one is
+  assert.equal(viteOf([at('tools/build.mjs'), at('node_modules/@sveltejs/kit/src/vite.js'), at('node_modules/vite/dist/node/chunks/config.js')]),
+    at('node_modules/vite/package.json'));
+  assert.equal(viteOf([at('node_modules/@sveltejs/kit/src/vite.js')]), null);
+  // the caller's files: none of bundle-lockfile's own, also with a tool's Error.stackTraceLimit = 0 - which stays
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 0;
+  try {
+    const files = callerFiles();
+    assert.ok(files.includes(__filename), files.join(' '));
+    assert.ok(!files.some(f => f.startsWith(SRC + path.sep)));
+    assert.equal(Error.stackTraceLimit, 0);
+  } finally { Error.stackTraceLimit = limit; }
 });
 
 test('hooks: in-thread ESM hooks only on Node >= 22.22.3 / 24.11.1 / 25.1 (nodejs/node#59929); loader-thread hooks only in bundler processes', () => {
@@ -1644,7 +1803,9 @@ test('hooks: another loader-thread hook is recognized in NODE_OPTIONS and the co
 // getWatchFiles); late(): what other plugins do after the write, before the plugin's closeBundle
 async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true, ctx = {}, late, input }) {
   const out = { dir: outDir, format: 'es' };
-  plugin.buildStart.call(ctx, { input }); // Rollup and Rolldown pass the (normalized) input options
+  if (plugin.config) BUNDLERS.vite(plugin.config, ctx, [{}]); // Vite runs it (core/bundler.cjs: Vite's package)
+  // Rollup or Rolldown run the hooks
+  BUNDLERS[ctx.meta && ctx.meta.rolldownVersion ? 'rolldown' : 'rollup'](plugin.buildStart, ctx, [{ input }]); // the (normalized) input options
   plugin.renderStart.call(ctx, out);
   for (const c of chunks) plugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
   const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
@@ -1703,6 +1864,43 @@ test('rollup adapter: the file of a module id: queries and fragments cut, a "#" 
     assert.deepEqual(lockedNames(fs.readFileSync(p(`dist/${LOCK}`), 'utf8')), ['a']);
   } finally { process.chdir(cwd); }
 });
+
+test('rollup adapter: the bundler whose code is in the chunks is listed - Rollup or Rolldown, and Vite; the copies that ran', async () => withConfig({ strict: true }, async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/vite/package.json': { name: 'vite', version: '7.3.7' } });
+  const cwd = process.cwd();
+  process.chdir(root);
+  problems.take();
+  const listed = (dir) => allEntries(fs.readFileSync(J(dir, LOCK), 'utf8')).map(([, p]) => `${p.name}@${p.version}`).sort();
+  const chunk = { fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js')] };
+  try {
+    // configured by hand: the Rollup that runs its hooks
+    await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'r'), chunks: [chunk] });
+    assert.deepEqual(listed(J(root, 'r')), ['a@1.0.0', `rollup@${UNIT}`]);
+    // Rolldown (which says it is a Rollup too, meta.rollupVersion): Rolldown only
+    await rollupBuild(rollupAdapter.bundleLockfile('rolldown'), { outDir: J(root, 'rd'), chunks: [chunk], ctx: { meta: { rolldownVersion: UNIT, rollupVersion: '4.0.0' } } });
+    assert.deepEqual(listed(J(root, 'rd')), ['a@1.0.0', `rolldown@${UNIT}`]);
+    // Vite: also the Vite that runs its config hook
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'v'), chunks: [chunk] });
+    assert.deepEqual(listed(J(root, 'v')), ['a@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
+    // an output without chunks (only assets): no code of the bundler's
+    await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: J(root, 'assets'), assets: [{ fileName: 'x.txt', source: 'x' }] });
+    assert.deepEqual(listed(J(root, 'assets')), []);
+    assert.deepEqual(problems.take(), []);
+    // Vite says it is another version (Vite 7+: meta.viteVersion) than the package its caller is in: a problem
+    await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'vm'), chunks: [chunk], ctx: { meta: { viteVersion: '7.3.7' }, error: (e) => { throw e; } } }),
+      /the build runs Vite 7\.3\.7, its caller is in .*vite \(vite@0\.0\.0-unit\)/);
+    problems.take();
+    // added by the preload: the copy whose rollup() was called (its entry module), and Vite around the caller
+    let opts = null;
+    const rollup = rollupAdapter.esmWrap('rollup', 'rollup', (o) => { opts = o; return Promise.resolve({}); }, pathToFileURLHref(J(BUNDLERS.root, 'node_modules/rollup/dist/shared/rollup.js')));
+    BUNDLERS.vite(rollup, null, [{ plugins: [{ name: 'vite:build-html' }] }]); // (Vite calls it)
+    const p = opts.plugins.find(x => x.name === 'bundle-lockfile');
+    await rollupBuild(p, { outDir: J(root, 'pre'), chunks: [chunk] });
+    assert.deepEqual(listed(J(root, 'pre')), ['a@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
+    assert.deepEqual(problems.take(), []);
+  } finally { process.chdir(cwd); }
+}));
 
 test('rollup adapter: an asset emitted from a package file, named relative to a Vite root that is not the working directory', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
@@ -1867,12 +2065,13 @@ test('nested: a bundled file another build produced brings its packages, also wh
     // the island: a Vite build into island/dist with main.js containing node_modules/inner
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
     const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
-    assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
+    // the island's packages, and its bundler (Vite, its Rollup), whose code is in it
+    assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
     // post-processed after its build: the record says by path that the island's build wrote it
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
     let got;
     const warned = warnings(() => { got = ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]); });
-    assert.deepEqual(got, ['inner@1.0.0', 'outer@1.0.0']);
+    assert.deepEqual(got, ['inner@1.0.0', 'outer@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
     assert.deepEqual(warned, [`${J(root, 'island/dist/main.js')} changed after the build that wrote it into ${J(root, 'island/dist')}: listed with that build's packages`]);
     assert.deepEqual(warnings(() => ids([J(root, 'island/dist/main.js')])), []); // once per file
     // a file the record does not have: first-party
@@ -1934,17 +2133,18 @@ test('nested: each JavaScript and CSS file another build produced brings the pac
       assets: [{ fileName: 'style.css', source: 'css code' }, { fileName: 'w.js', source: 'nested island worker code' },
         { fileName: 'l.svg', source: '<svg/>', originalFileNames: ['node_modules/logo/l.svg'] }] });
     const ids = (f) => packages.packagesOfFiles([J(dir, f)]).all.map(p => `${p.name}@${p.version}`).sort();
-    assert.deepEqual(ids('main.js'), ['inline@1.0.0', 'js@1.0.0']);
-    assert.deepEqual(ids('lazy.js'), ['lazy@1.0.0']);
+    // the bundler's code is in each chunk (and in the worker, a generate-only Vite build's chunk), not in the style sheet
+    assert.deepEqual(ids('main.js'), ['inline@1.0.0', 'js@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
+    assert.deepEqual(ids('lazy.js'), ['lazy@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
     assert.deepEqual(ids('style.css'), ['imported@1.0.0', 'sheet@1.0.0']);
-    assert.deepEqual(ids('w.js'), ['worker@1.0.0']);
+    assert.deepEqual(ids('w.js'), [`rollup@${UNIT}`, `vite@${UNIT}`, 'worker@1.0.0']);
     assert.deepEqual(ids('l.svg'), []); // no JavaScript or CSS: its package is the file's own if bundled from there
     // recorded by a version that did not record the packages of each file: all of the island's
     const lock = J(dir, LOCK), json = JSON.parse(fs.readFileSync(lock, 'utf8'));
     assert.deepEqual(Object.keys(json['bundle-lockfile'].writers[0].contents).sort(), ['../l.svg', '../lazy.js', '../main.js', '../style.css', '../w.js'].filter(f => f !== '../l.svg'));
     delete json['bundle-lockfile'].writers[0].contents;
     fs.writeFileSync(lock, JSON.stringify(json));
-    assert.deepEqual(ids('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', 'sheet@1.0.0', 'worker@1.0.0']);
+    assert.deepEqual(ids('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', `rollup@${UNIT}`, 'sheet@1.0.0', `vite@${UNIT}`, 'worker@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
@@ -1959,8 +2159,9 @@ test('nested: a workspace package another build produced brings its packages, al
   try {
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'packages/island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
     const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
-    assert.deepEqual(ids([J(root, 'packages/island/dist/main.js')]), ['inner@1.0.0']);          // its real path (resolve.symlinks)
-    assert.deepEqual(ids([J(root, 'node_modules/@acme/island/dist/main.js')]), ['inner@1.0.0']); // the link (resolve.symlinks: false)
+    const island = ['inner@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]; // with the island's bundler
+    assert.deepEqual(ids([J(root, 'packages/island/dist/main.js')]), island);          // its real path (resolve.symlinks)
+    assert.deepEqual(ids([J(root, 'node_modules/@acme/island/dist/main.js')]), island); // the link (resolve.symlinks: false)
     // a package's own files are no other build's output, even with the same bytes
     fs.mkdirSync(J(root, 'node_modules/copy/dist'), { recursive: true });
     fs.writeFileSync(J(root, 'node_modules/copy/package.json'), JSON.stringify({ name: 'copy', version: '1.0.0' }));
@@ -2052,7 +2253,7 @@ test('rollup adapter: files plugins inlined - watch files that are no module of 
     assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'glsl', 'icons']);
     // for nested bundles: the CSS file has every inlined file's package, the chunk those that are no style's
     const w = lock['bundle-lockfile'].writers[0];
-    const names = (f) => w.contents[f].map(i => lock.packages[w.packages[i]].name).sort(); // indices into the writer's packages
+    const names = (f) => w.contents[f].map(i => lock.packages[w.packages[i]]).filter(notUnit).map(p => p.name).sort(); // indices into the writer's packages; without the unit tests' bundlers
     assert.deepEqual(names('../i.css'), ['glsl', 'icons']);
     assert.deepEqual(names('../i.js'), ['a', 'glsl', 'icons']);
   } finally { process.chdir(cwd); }
@@ -2289,6 +2490,7 @@ const taps = {};
 const hook = (n) => ({ tap: (o, fn) => (taps[n] = fn), tapAsync: (o, fn) => (taps[n] = fn) });
 class NodeOutputFileSystem { writeFile(f, c, cb) { fs.writeFile(f, c, cb); } stat(f, cb) { fs.stat(f, cb); } lstat(f, cb) { fs.lstat(f, cb); } readFile(f, cb) { fs.readFile(f, cb); } }
 const compiler = { context: root, outputPath, name, options: { entry: './src/' + name + '.js' }, outputFileSystem: new NodeOutputFileSystem(),
+  [Symbol.for('bundle-lockfile.webpack.bundler-file')]: ${JSON.stringify(BUNDLERS.webpack)},
   hooks: { thisCompilation: hook('thisCompilation'), emit: hook('emit'), afterEmit: hook('afterEmit') },
   webpack: { sources: { RawSource: class { constructor(s) { this.s = s; } source() { return this.s; } } } } };
 new webpack.BundleLockfilePlugin('bundle-lockfile/package-lock.json').apply(compiler);
@@ -3521,6 +3723,7 @@ function rspackCompiler(exp, outputPath = '/p/dist') {
   const taps = [];
   c.outputPath = outputPath;
   c.hooks = { thisCompilation: { tap: (n, fn) => taps.push(fn) }, emit: { tap() {} }, afterEmit: { tapAsync() {} } };
+  c[BUNDLER_FILE] = BUNDLERS.rspack;
   c.webpack = { rspackVersion: exp.rspackVersion, sources: { RawSource: class { constructor(s) { this.s = s; } source() { return this.s; } } } };
   return { c, taps };
 }
@@ -3649,7 +3852,7 @@ test('esm-wrap: only ES modules are wrapped (rspack 1\'s CommonJS file at rspack
   assert.equal(esm.format, 'module');
   assert.match(esm.source, /export \* from "file:\/\/\/p\/node_modules\/@rspack\/core\/dist\/index\.js\?bundle-lockfile-real";/);
   assert.match(esm.source, /export \{ default \} from/);
-  assert.match(esm.source, /export const Compiler = api \? api\.wrap\("rspack", "Compiler", real\.Compiler\) : real\.Compiler;/);
+  assert.match(esm.source, /export const Compiler = api \? api\.wrap\("rspack", "Compiler", real\.Compiler, "file:\/\/\/p\/node_modules\/@rspack\/core\/dist\/index\.js"\) : real\.Compiler;/);
   assert.doesNotMatch(esm.source, /module\.exports/);
 });
 
@@ -3719,6 +3922,7 @@ test('esm-wrap: regular expression literals and the code in template literals st
 function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, exportsUsed = () => false }) {
   const c = compilation({ context: root, chunks, assets: Object.fromEntries(Object.entries(assets).map(([n, a]) => [n, a.info || {}])) });
   c.compiler.webpack = { rspackVersion: '2.2.8' };
+  c.compiler[BUNDLER_FILE] = BUNDLERS.rspack;
   c.compiler.options = { optimization };
   c.getAsset = (name) => (name in assets ? { name, info: assets[name].info || {}, source: { source: () => assets[name].bytes, size: () => Buffer.byteLength(assets[name].bytes) } } : undefined);
   c.fileDependencies = fileDependencies;
@@ -4054,8 +4258,8 @@ test('esbuild adapter: an esbuild of a shape it does not know, or before 0.17, f
 }));
 
 // runs the plugin of one build: its setup with the options, then onEnd with the result; returns onEnd's return value
-async function esbuildEnd(options, result) {
-  const plugin = esbuildAdapter().attach(options).plugins.at(-1);
+async function esbuildEnd(options, result, file) {
+  const plugin = esbuildAdapter().attach(options, file).plugins.at(-1);
   let end = null;
   plugin.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
   return end(result);
@@ -4088,6 +4292,22 @@ test('esbuild adapter: onEnd lists the packages of the inputs of every output, w
   const asked = { errors: [], metafile };
   await esbuildEnd({ ...options, metafile: true }, asked);
   assert.equal(asked.metafile, metafile);
+  // the esbuild whose build() ran (its runtime helpers are in the JavaScript): listed, as found by "runtime", for the
+  // JavaScript output only - not without a JavaScript output
+  const esb = J(root, 'node_modules/esbuild/lib/main.js');
+  fs.mkdirSync(path.dirname(esb), { recursive: true });
+  fs.writeFileSync(J(root, 'node_modules/esbuild/package.json'), JSON.stringify({ name: 'esbuild', version: '0.28.2', license: 'MIT' }));
+  await esbuildEnd({ ...options }, { errors: [], metafile }, esb);
+  const withRt = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(withRt)), ['a', 'esbuild', 'font', 'ns', 'reexp']);
+  const w2 = withRt['bundle-lockfile'].writers[0];
+  assert.deepEqual(w2.via.runtime.map(i => w2.packages[i]), ['node_modules/esbuild']);
+  const at = (f) => w2.contents[f].map(i => w2.packages[i]);
+  assert.ok(at('../main.js').includes('node_modules/esbuild'));
+  assert.ok(!at('../main.css').includes('node_modules/esbuild'));
+  const cssOnly = { outputs: { 'dist/main.css': metafile.outputs['dist/main.css'] } };
+  await esbuildEnd({ ...options }, { errors: [], metafile: cssOnly }, esb);
+  assert.ok(!lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')).includes('esbuild'));
   // a failed build wrote nothing: nothing recorded
   fs.rmSync(J(root, 'dist', LOCK));
   await esbuildEnd({ ...options }, { errors: [{ text: 'x' }], metafile });
@@ -4181,6 +4401,7 @@ console.log((await Promise.all([ns.build({ outdir: 'd' }), def.build({ outdir: '
 test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild metafile; what it cannot read fails (STRICT=0: a warning)', () => {
   const CLI = J(__dirname, '../bin/bundle-lockfile-from-metafile');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/b/package.json': { name: 'b', version: '2.0.0' },
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: '0.28.2', license: 'MIT' }, 'tools/bun/package.json': { name: 'bun', version: '1.4.2' },
     'node_modules/nopj/i.js': '', 'dist/main.js': 'x', 'dist/assets/f.woff2': 'f',
     'meta.json': { inputs: {}, outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 }, '(disabled):node_modules/b/i.js': { bytesInOutput: 9 } } },
       'dist/assets/f.woff2': { inputs: { 'node_modules/b/f.woff2': { bytesInOutput: 1 } } } } },
@@ -4192,8 +4413,21 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   const ok = run(['meta.json']);
   assert.equal(ok.status, 0, ok.stderr);
   const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')); // dist/: the directory of all outputs
-  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'b']); // b: the font's package (not its disabled module)
-  assert.deepEqual([...lock['bundle-lockfile'].writers[0].files].sort(), ['../assets/f.woff2', '../main.js']);
+  // b: the font's package (not its disabled module); esbuild: the one the working directory resolves, for the
+  // JavaScript output (its runtime helpers)
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a', 'b', 'esbuild']);
+  const w = lock['bundle-lockfile'].writers[0];
+  assert.deepEqual([...w.files].sort(), ['../assets/f.woff2', '../main.js']);
+  assert.deepEqual(w.via.runtime.map(i => w.packages[i]), ['node_modules/esbuild']);
+  // --bundler: another package (its directory); none: none
+  assert.equal(run(['meta.json', '--bundler', 'tools/bun']).status, 0);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'b', 'bun']);
+  assert.equal(run(['meta.json', '--bundler', 'none']).status, 0);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'b']);
+  // a directory without a package.json: fails
+  const nob = run(['meta.json', '--bundler', 'nowhere']);
+  assert.equal(nob.status, 1);
+  assert.match(nob.stderr, /nowhere has no package\.json: the bundler that wrote \S*meta\.json is not known/);
   const out = run(['meta.json', '--out', 'elsewhere', '--working-dir', root]);
   assert.equal(out.status, 0, out.stderr);
   assert.ok(fs.existsSync(J(root, 'elsewhere', LOCK)));
@@ -4250,7 +4484,8 @@ function fakeBundleGraph(bundles) {
 test('parcel adapter: the reporter writes the packages of every bundle\'s assets per distDir, not those the packager skips', () => withConfig({ strict: true }, async () => {
   const parcel = require('../src/adapters/parcel.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
-  const root = project({ ...pj('a'), ...pj('inl'), ...pj('skip'), ...pj('ref'), ...pj('lib'), 'node_modules/nopj/i.js': '', 'src/i.js': '' });
+  const root = project({ ...pj('a'), ...pj('inl'), ...pj('skip'), ...pj('ref'), ...pj('lib'), 'node_modules/nopj/i.js': '', 'src/i.js': '',
+    'node_modules/@parcel/packager-js/package.json': { name: '@parcel/packager-js', version: UNIT } }); // the code Parcel writes around JavaScript
   for (const f of ['dist/main.js', 'dist/main.css', 'lib/out/index.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
   const target = (d) => ({ name: d, distDir: J(root, d) });
   const graph = fakeBundleGraph([
@@ -4265,7 +4500,8 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   assert.deepEqual(lockedNames(dist), ['a', 'inl', 'ref']); // not skip: no side effects, no used symbol, not referenced
   const w0 = JSON.parse(dist)['bundle-lockfile'].writers[0];
   assert.equal(w0.bundler.name, 'parcel');
-  assert.deepEqual(Object.keys(w0.via), ['chunk']);
+  assert.deepEqual(Object.keys(w0.via).sort(), ['chunk', 'runtime']);
+  assert.deepEqual(w0.via.runtime.map(i => w0.packages[i]), ['node_modules/@parcel/packager-js']);
   assert.deepEqual([...JSON.parse(dist)['bundle-lockfile'].writers[0].files].sort(), ['../main.css', '../main.js']);
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'lib/out', LOCK), 'utf8')), ['lib']);
   // other events: nothing; a problem: thrown (Parcel fails the build with it)
@@ -4276,6 +4512,14 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
+  // a JavaScript bundle of a project that resolves no @parcel/packager-js: a problem (the code Parcel wrote would be
+  // missing); a CSS-only output needs none
+  const bare = project({ ...pj('a') });
+  for (const f of ['dist/main.js', 'dist/main.css']) { fs.mkdirSync(path.dirname(J(bare, f)), { recursive: true }); fs.writeFileSync(J(bare, f), f); }
+  const css = fakeBundleGraph([{ filePath: J(bare, 'dist/main.css'), target: { name: 'dist', distDir: J(bare, 'dist') }, assets: [J(bare, 'node_modules/a/s.css')] }]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: css }, options: { projectRoot: bare } });
+  const js = fakeBundleGraph([{ filePath: J(bare, 'dist/main.js'), target: { name: 'dist', distDir: J(bare, 'dist') }, assets: [J(bare, 'node_modules/a/i.js')] }]);
+  await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: js }, options: { projectRoot: bare } }), /resolves no @parcel\/packager-js/);
 }));
 
 // Angular: executeBuild() of a fake application builder, whose result has Angular's shape (ExecutionResult)
@@ -4296,7 +4540,8 @@ function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors =
 test('angular adapter: executeBuild with stats on; the lockfile added to its output files; the stats taken out again unless asked for', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
-  const root = project({ ...pj('a'), ...pj('font'), 'node_modules/nopj/i.js': '', 'src/main.ts': '' });
+  const root = project({ ...pj('a'), ...pj('font'), 'node_modules/nopj/i.js': '', 'src/main.ts': '',
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: UNIT } }); // the esbuild the build ran (its runtime helpers)
   const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' } };
   for (const stats of ['split', 'combined']) {
     const run = angular.wrap(fakeExecuteBuild(root, { stats, inputs: ['src/main.ts', 'node_modules/a/i.js'], assets: [J(root, 'node_modules/font/f.woff2')] }));
@@ -4309,7 +4554,7 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
     const w = JSON.parse(lock.text)['bundle-lockfile'].writers[0];
     assert.equal(w.bundler.name, 'angular');
     const pk = w.packages;
-    assert.deepEqual(Object.fromEntries(Object.entries(w.via).map(([c, ix]) => [c, ix.map(i => pk[i])])), { chunk: ['node_modules/a'], asset: ['node_modules/font'] }, stats);
+    assert.deepEqual(Object.fromEntries(Object.entries(w.via).map(([c, ix]) => [c, ix.map(i => pk[i])])), { chunk: ['node_modules/a'], asset: ['node_modules/font'], runtime: ['node_modules/esbuild'] }, stats);
     const asked = await run({ ...options, stats: true });
     assert.ok(asked.outputFiles.some(f => /stats\.json$/.test(f.path)), stats);
   }

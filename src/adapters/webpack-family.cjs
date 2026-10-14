@@ -13,6 +13,7 @@ const generated = require('../core/generated.cjs');
 const via = require('../core/via.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const { posix, packageRoot, portable, exportPath } = require('../core/paths.cjs');
+const { bundlerPackage, packageOnStack } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
 const APPLIED = Symbol.for('bundle-lockfile.webpack.applied'); // compiler: has a BundleLockfilePlugin
@@ -25,6 +26,7 @@ const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: file
 const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: copiedUnnamed() before the assets were optimized
 const STARTED = Symbol('bundle-lockfile.webpack.started');     // compilation: when it started (ms; see filesWrittenAfter)
 const GENERATED = Symbol('bundle-lockfile.webpack.generated'); // compilation: its generatedAssets() (before emit: sources)
+const BUNDLER_FILE = Symbol.for('bundle-lockfile.webpack.bundler-file'); // Compiler.prototype: the file it was patched in
 const JS = /\.[cm]?js$/i;
 
 // Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (the path
@@ -498,6 +500,29 @@ function generatedAssets(compilation) {
   return out;
 }
 
+// The bundler package of a compiler whose output has JavaScript the bundler wrote (its runtime, chunk wrappers; see
+// core/bundler.cjs): webpack, Next.js' copy of it (next/dist/compiled/webpack, at the version the compiler says), or
+// @rspack/core - the copy whose Compiler webpack.cjs or rspack.cjs patched. A plugin in the config of a build without the
+// preload: the copy that applied it (`applier`: its package.json, a file on the stack of apply()), else the one the
+// compiler's context resolves, if it is of the compiler's version - else a problem: the copy that ran is not known.
+const bundlerName = (compiler) => (isRspack(compiler) ? '@rspack/core' : 'webpack');
+function bundlerOf(compiler, applier) {
+  const rspack = isRspack(compiler), kind = rspack ? 'rspack' : 'webpack', name = bundlerName(compiler);
+  const version = compiler.webpack ? (rspack ? compiler.webpack.rspackVersion : compiler.webpack.version) : undefined;
+  const file = compiler[BUNDLER_FILE] || applier;
+  if (file) return bundlerPackage(kind, file, [name], version);
+  let found = null;
+  try { found = createRequire(path.join(compiler.context, 'x')).resolve(`${name}/package.json`); } catch { /* none */ }
+  const p = found && bundlerPackage(kind, found, [name], version);
+  if (!found || (p && version && p.version !== version)) {
+    problems.problem(`${kind}: the compiler of ${compiler.outputPath || '(no output path)'} is ${name}${version ? `@${version}` : ''}, which was not loaded with the preload, and ${found ? `${found} is another copy` : `${compiler.context} resolves no ${name}`}: the lockfile would miss the bundler, whose code is in the output`);
+    return null;
+  }
+  return p;
+}
+// The compilation writes JavaScript chunks (not only style sheets or assets).
+const writesJs = (compilation) => [...(compilation.chunks || [])].some(c => [...(c.files || [])].some(f => JS.test(f.split('?')[0])));
+
 class BundleLockfilePlugin {
   // compilerFile: path of the Compiler module, used to find webpack-sources for webpack < 5.1
   constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
@@ -516,7 +541,10 @@ class BundleLockfilePlugin {
     const result = packages.packagesOfFiles([...bundled, ...copied.values()], build);
     const found = via.ofFiles(result, kinds);
     found.add('generated', gen); found.add('generated', late.generated); found.add('late', late.late);
-    const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || []);
+    // the bundler, whose runtime and chunk wrappers are in the JavaScript it writes (see bundlerOf)
+    const own = writesJs(compilation) ? [bundlerOf(compiler, this.applier)].filter(Boolean) : [];
+    found.add('runtime', own);
+    const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || [], own);
     return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)), { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
   }
@@ -535,6 +563,8 @@ class BundleLockfilePlugin {
 
   apply(compiler) {
     compiler[APPLIED] = true;
+    // a plugin from the config, in a build without the preload: the bundler that applies it (see bundlerOf)
+    if (!compiler[BUNDLER_FILE]) this.applier = packageOnStack([bundlerName(compiler)]);
     const why = unsupported(compiler);
     if (why) { // each compilation fails (strict mode), or a warning once
       compiler.hooks.thisCompilation.tap(NAME, (compilation) => { problems.problem(why, null, { once: why }); failCompilation(compilation); });
@@ -708,4 +738,4 @@ function attach(compiler, listeners, where, args, kind) {
   return failed;
 }
 
-module.exports = { NAME, APPLIED, BundleLockfilePlugin, bundledFiles, sourceFile, compilationError, isRspack, attach, versionOf };
+module.exports = { NAME, APPLIED, BUNDLER_FILE, BundleLockfilePlugin, bundledFiles, sourceFile, compilationError, isRspack, attach, versionOf };

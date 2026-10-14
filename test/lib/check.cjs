@@ -84,7 +84,8 @@ function checkLocations(f, at = path.dirname(f), contexts = []) {
     } else {
       let j = null;
       try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { /* checked below */ }
-      if (!j || j.name !== p.name || j.version !== p.version) {
+      // (a copy whose package.json has no version - Next.js' webpack - has the version the bundler reports: name only)
+      if (!j || j.name !== p.name || (j.version !== p.version && j.version !== undefined)) {
         throw new Error(`${f}: ${key} (${p.name}@${p.version}) is recorded at ${at}, where ${j ? `${j.name}@${j.version} is` : 'no package.json is'}`);
       }
     }

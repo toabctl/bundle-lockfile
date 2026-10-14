@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
 const { spawnSync } = require('child_process');
+const { hasJs, resolved } = require('../lib/bundlers.cjs');
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : dflt; };
 const script = arg('--script', 'build.mjs');
@@ -30,4 +31,6 @@ const walk = (d) => {
   }
 };
 walk(out);
-console.log(JSON.stringify({ '': owner.packagesOf(files) }));
+// and esbuild, whose runtime helpers are in its JavaScript (test/lib/bundlers.cjs)
+const esbuild = hasJs(out) ? [resolved(process.env.BLTEST_ORACLE_BUNDLER || 'esbuild', '.')].filter(Boolean) : []; // (run.cjs: esbuild-wasm)
+console.log(JSON.stringify({ '': [...new Set([...owner.packagesOf(files), ...esbuild])].sort() }));

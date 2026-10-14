@@ -19,6 +19,7 @@ const { spawnSync } = require('child_process');
 const { fixtures, cases, warnings: WARNINGS } = require('./matrix.cjs');
 const { LOCKFILE, readLockfiles, checkLocations, unlocated, canaries, viaOf, treeOf, sameMap, same, show } = require('./lib/check.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
+const bundlers = require('./lib/bundlers.cjs');
 
 const { shard, fixtures: only, rest: [fxDir, filter] } = parseArgs(process.argv.slice(2));
 if (!fxDir) { console.error('usage: node test/run.cjs <fixtures-dir> [case-name-regex] [--shard=<i>/<n>]'); process.exit(2); }
@@ -251,17 +252,39 @@ function runCase(c) {
     }
     notes.push(`records with ${c.expectAnchor}`);
   }
-  if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
+  // the bundler of each output (whose code is in it): with JavaScript, at least one, each a package installed in the
+  // fixture (or Next.js' webpack, at its version) - which one exactly, the oracle says. The expectations below are about
+  // the other packages: the bundlers' versions are not pinned in the fixtures (Vite's Rollup, workbox-build's)
+  // (Yarn PnP: none; a case whose packages are outside the project - pnpm's global store - neither)
+  const inFixture = fs.existsSync(path.join(dir, 'node_modules')) && !c.outside ? bundlers.installed(dir) : null;
+  // (JavaScript: a file its writers wrote - an output directory can hold other compilers' outputs, Next.js' .next/server)
+  const writesJs = (k) => {
+    let m = null;
+    try { m = JSON.parse(fs.readFileSync(path.join(lockDir, k, c.lockfile || LOCKFILE), 'utf8'))['bundle-lockfile']; } catch { return false; }
+    return !!m && (m.writers || []).some(w => (w.files || []).some(f => /\.[cm]?js$/.test(f)));
+  };
+  for (const [k, list] of Object.entries(got)) {
+    const listed = list.filter(bundlers.isBundler);
+    // (with an oracle, the oracle says exactly which bundler, and whether one: a JavaScript asset a plugin writes - Next.js'
+    // manifests - has no bundler code; without one, JavaScript means a bundler)
+    if (!listed.length && c.oracle === false && writesJs(k)) throw new Error(`${k || '.'}: its writers wrote JavaScript, its lockfile lists no bundler`);
+    const strange = inFixture ? listed.filter(id => !inFixture.has(id)) : [];
+    if (strange.length) throw new Error(`${k || '.'}: listed as the bundler, installed nowhere in the fixture: ${strange.join(' ')}`);
+  }
+  if (Object.values(got).some(l => l.some(bundlers.isBundler))) notes.push('bundlers installed');
+  const plain = Object.fromEntries(Object.entries(got).map(([k, l]) => [k, bundlers.without(l)]));
+  const strip = (m) => Object.fromEntries(Object.entries(m).map(([k, l]) => [k, bundlers.without(l)]));
+  if (c.expect && !sameMap(plain, { '': bundlers.without(c.expect) })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectIn) {
     // "oracle": the output must be there; what it lists is the oracle's (compared below)
     if (Object.values(c.expectIn).includes('oracle') && c.oracle === false) throw new Error('expectIn: "oracle" needs the oracle');
     const want = Object.fromEntries(Object.entries(c.expectIn).map(([k, v]) => [k, v === 'oracle' ? got[k] || ['(missing)'] : v]));
-    if (!sameMap(got, want)) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(want)}`);
+    if (!sameMap(plain, strip(want))) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(want)}`);
   }
   if (c.expectKeys) {
     const lock = JSON.parse(fs.readFileSync(path.join(lockDir, c.lockfile || LOCKFILE), 'utf8'));
-    const keys = Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
-    const want = Object.entries(c.expectKeys).map(([k, v]) => `${k} = ${v}`).sort(cmp);
+    const keys = Object.entries(lock.packages).filter(([k, p]) => k && !bundlers.isBundler(`${p.name}@${p.version}`)).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
+    const want = Object.entries(c.expectKeys).filter(([, v]) => !bundlers.isBundler(v)).map(([k, v]) => `${k} = ${v}`).sort(cmp);
     if (JSON.stringify(keys) !== JSON.stringify(want)) throw new Error(`lockfile keys\n    got:  ${keys.join(', ')}\n    want: ${want.join(', ')}`);
     notes.push('keys as expected');
   }
@@ -271,13 +294,17 @@ function runCase(c) {
   if (c.expectVia) {
     const v = viaOf(path.join(lockDir, c.lockfile || LOCKFILE));
     for (const [cls, want] of Object.entries(c.expectVia)) {
-      if (!same(v[cls] || [], want)) throw new Error(`via ${cls}: ${(v[cls] || []).join(' ') || '(none)'}, want ${want.join(' ') || '(none)'}`);
+      // (the bundlers, whose versions the fixtures do not pin - workbox-build's Rollup -, only where the case names them:
+      // the runtime class; the check above and the oracle cover them)
+      const ofCls = cls === 'runtime' ? (v[cls] || []) : bundlers.without(v[cls] || []);
+      if (!same(ofCls, cls === 'runtime' ? want : bundlers.without(want))) throw new Error(`via ${cls}: ${(v[cls] || []).join(' ') || '(none)'}, want ${want.join(' ') || '(none)'}`);
     }
     notes.push(`via ${Object.keys(c.expectVia).join(', ')} as expected`);
   }
   if (c.watchBuilds) {
-    const builds = JSON.parse(build.stdout.trim().split('\n').pop());
-    if (builds.length !== c.watchBuilds.length || !builds.every((b, i) => same(b, c.watchBuilds[i]))) throw new Error(`watch builds: ${JSON.stringify(builds)}, want ${JSON.stringify(c.watchBuilds)}`);
+    const builds = JSON.parse(build.stdout.trim().split('\n').pop()).map(b => (Array.isArray(b) ? bundlers.without(b) : b));
+    const want = c.watchBuilds.map(b => (Array.isArray(b) ? bundlers.without(b) : b));
+    if (builds.length !== want.length || !builds.every((b, i) => same(b, want[i]))) throw new Error(`watch builds: ${JSON.stringify(builds)}, want ${JSON.stringify(c.watchBuilds)}`);
     notes.push(`${builds.length} watch builds`);
   }
   const missing = (c.expectIncludes || []).filter(p => !all.includes(p));
@@ -356,7 +383,11 @@ function runCase(c) {
     const oracle = path.join(__dirname, 'oracles', `${c.oracleScript || fx.bundler || 'webpack'}.cjs`);
     const node = fs.existsSync(path.join(dir, '.pnp.cjs')) ? 'yarn node' : 'node';
     // PATH: not through the node shim, which would inject bundle-lockfile
-    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: caseOptions(c.nodeOptions), PATH: process.env.PATH, BLTEST_OUT_DIR: outDir }).trim().split('\n').pop());
+    // (the Rollup oracle builds with Rollup's command line: the bundler of a case whose command runs Rolldown's API -
+    // build.mjs rolldown-*, rolldown.mjs - is Rolldown, BLTEST_ORACLE_BUNDLER)
+    const oracleBundler = c.oracleBundler || (fx.bundler === 'esbuild' ? (/wasm/.test(c.fixture) ? 'esbuild-wasm' : '')
+      : fx.bundler !== 'rollup' ? '' : /\brolldown(\.mjs|-|\b)/.test(c.cmd) ? 'rolldown' : /wasm/.test(c.cmd) ? '@rollup/wasm-node' : '');
+    const printed = JSON.parse(sh(`${node} ${oracle} ${c.oracleArgs || ''}${c.expectSources ? ' --sources' : ''}`, dir, { ...base, NODE_OPTIONS: caseOptions(c.nodeOptions), PATH: process.env.PATH, BLTEST_OUT_DIR: outDir, BLTEST_ORACLE_BUNDLER: oracleBundler }).trim().split('\n').pop());
     const truth = c.expectSources ? printed.packages : printed;
     // expectSources: the files the case is about are in the output, by the oracle - without them it would test nothing
     if (c.expectSources) {

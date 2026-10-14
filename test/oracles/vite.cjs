@@ -13,6 +13,7 @@ const path = require('path');
 const owner = require('./owner.cjs');
 const { spawnSync } = require('child_process');
 const { createRequire } = require('module');
+const { hasJs, viteBundlers, workboxRollup } = require('../lib/bundlers.cjs');
 
 const flag = (name) => { const i = args.indexOf(name); if (i >= 0) args.splice(i, 1); return i >= 0; };
 const args = process.argv.slice(2);
@@ -48,9 +49,12 @@ const walk = (d) => {
 };
 walk(out);
 
-// the packages of source files: see owner.cjs (the build's working directory is its context)
+// the packages of source files: see owner.cjs (the build's working directory is its context); with JavaScript in the
+// output, also Vite and its Rollup or Rolldown, whose code is in it (test/lib/bundlers.cjs)
 const packagesOf = (list) => owner.packagesOf(list);
-const result = { '': packagesOf(files) };
+const viteAndBundler = viteBundlers();
+const result = { '': [...new Set([...packagesOf(files), ...(hasJs(out) ? viteAndBundler : []), ...workboxRollup(out)])].sort() };
 console.log(JSON.stringify(listSources || byFile ? {
-  packages: result, sources: [...files].sort(), byFile: Object.fromEntries([...filesOf].map(([f, list]) => [f, packagesOf(list)])),
+  packages: result, sources: [...files].sort(),
+  byFile: Object.fromEntries([...filesOf].map(([f, list]) => [f, [...packagesOf(list), ...(/\.[cm]?js$/.test(f) ? viteAndBundler : [])].sort()])),
 } : result));

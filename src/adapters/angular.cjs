@@ -17,7 +17,9 @@ const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
+const { createRequire } = require('module');
 const { filesOfOutputs, fileOfInput } = require('./esbuild.cjs');
+const { bundlerPackage } = require('../core/bundler.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.angular.patched');
 const EXECUTE_BUILD = /[\\/](@angular[\\/]build|@angular-devkit[\\/]build-angular)[\\/]src[\\/]builders[\\/]application[\\/]execute-build\.js$/;
@@ -29,6 +31,9 @@ const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } }
 // the version of the builder whose executeBuild() was wrapped (@angular/build, or @angular-devkit/build-angular 17), as
 // its package.json says: the record's bundler
 let version = null;
+// the esbuild the builder bundles with (the one its package resolves): its runtime helpers are in the JavaScript files
+// (see core/bundler.cjs); Angular's chunk optimizer (Rolldown) is not listed
+let esbuildFile = null;
 
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
 // that path), and its export copy written; returns the content Angular writes, or null.
@@ -44,6 +49,16 @@ function render(side, target, writer, pkgs, context, files, found) {
   } else if (!config.inline) outputs.nowhere();
   config.debug(`angular: the ${side} lockfile`, target, 'with', pkgs.length, 'packages');
   return content;
+}
+
+// The esbuild package of the builder (as its package resolves it), else of the workspace (an executeBuild wrapped by
+// hand); none: a problem
+function esbuildOf(wd) {
+  let file = esbuildFile;
+  if (!file) try { file = createRequire(path.join(wd, 'x')).resolve('esbuild/package.json'); } catch { /* none */ }
+  if (file) return bundlerPackage('angular', file, ['esbuild']);
+  problems.problem(`angular: neither its builder nor ${wd} resolves esbuild: the lockfile would miss it, whose code is in the output`);
+  return null;
 }
 
 // The result of executeBuild: the lockfiles added to its output files; problems as its errors
@@ -84,11 +99,15 @@ function complete(options, result, forced) {
     if (side === 'browser') for (const a of assets) { sources.push(a); kinds.set(a, 'asset'); }
     const entries = Object.values(metafile.outputs || {}).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
     const collected = packages.packagesOfFiles(sources, { context, entries });
-    const { all } = collected;
     const dir = path.join(out.base, out[side] || side);
     const target = path.join(dir, config.file);
     const own = files.filter(f => f && f.type === (side === 'browser' ? TYPE.Browser : TYPE.ServerApplication)).map(f => path.join(dir, f.path));
-    const content = render(side, target, JSON.stringify(['angular', side, portable(context, out.base)]), all, context, own, via.ofFiles(collected, kinds));
+    const found = via.ofFiles(collected, kinds);
+    const runtime = own.some(f => /\.[cm]?js$/.test(f))
+      ? [esbuildOf(wd)].filter(Boolean) : [];
+    found.add('runtime', runtime);
+    const all = packages.unique(collected.all, runtime);
+    const content = render(side, target, JSON.stringify(['angular', side, portable(context, out.base)]), all, context, own, found);
     if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
       result.addOutputFile(config.file, content, side === 'browser' ? TYPE.Browser : TYPE.ServerApplication);
     }
@@ -122,6 +141,7 @@ module.exports = {
       exp.executeBuild = wrap(exp.executeBuild);
       exp[PATCHED] = true;
       try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../../../package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+      try { esbuildFile = createRequire(resolve()).resolve('esbuild/package.json'); } catch { /* reported when a build writes JavaScript */ }
       config.debug('angular: wrapped executeBuild() of', resolve(), version || '');
     } catch (e) { problems.problem(`angular: could not wrap ${resolve()}`, e); }
   },

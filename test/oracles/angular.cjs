@@ -35,4 +35,8 @@ const walk = (d) => {
   }
 };
 walk(path.join(out, 'browser'));
-console.log(JSON.stringify({ [process.argv.includes('--browser-as-root') ? '' : 'browser']: owner.packagesOf(files) }));
+// and the esbuild Angular's builder ran, whose runtime helpers are in the JavaScript (test/lib/bundlers.cjs)
+const bl = require('../lib/bundlers.cjs');
+const builder = ['@angular/build', '@angular-devkit/build-angular'].map(n => { try { return path.dirname(require('module').createRequire(path.resolve('package.json')).resolve(`${n}/package.json`)); } catch { return null; } }).find(Boolean);
+const esbuild = bl.hasJs(path.join(out, 'browser')) && builder ? [bl.resolved('esbuild', builder)].filter(Boolean) : [];
+console.log(JSON.stringify({ [process.argv.includes('--browser-as-root') ? '' : 'browser']: [...new Set([...owner.packagesOf(files), ...esbuild])].sort() }));
