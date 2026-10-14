@@ -16,8 +16,9 @@
 // - fs-copy: a file copied out of a package with fs, in this process
 // - nested: a file another build wrote, as its lockfile records
 // - vendored: a vendored copy, inside a package or outside node_modules
+// - traced: a file Next.js traced for its server, which loads it from node_modules at runtime (adapters/next.cjs)
 const CLASSES = ['chunk', 'child', 'asset', 'copy-source', 'copy-bytes', 'style', 'inlined', 'inlined-exports', 'generated',
-  'late', 'fs-copy', 'nested', 'vendored'];
+  'late', 'fs-copy', 'nested', 'vendored', 'traced'];
 const KNOWN = new Set(CLASSES);
 
 // A collector: add(cls, packages) records that the packages were found that way; byPath: package path -> Set(cls).

@@ -11,6 +11,8 @@ output directory):
   plugin: one per top-level compiler, in its `output.path` (placeholders such as `[fullhash]` resolved). None in an
   output directory that another plugin removed after the build (only the export copy). Below, "webpack" stands for
   both.
+- Next.js: also one for its server's runtime packages, in `<distDir>/runtime/` (and with `output: 'standalone'` in
+  `<distDir>/standalone/`), whose writer's files are the trace files it was made from ([Next.js](bundlers.md#nextjs)).
 - Vite, Rollup, Rolldown: one per output of a build that writes, in its `dir`, or the directory of its `file`
   (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
   `node_modules` (e.g. Vite's dependency pre-bundling) - except below `node_modules/.cache/`, where tools build what
@@ -211,7 +213,8 @@ configuration.
     more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`),
     for [nested bundles](#nested-bundles);
   - `bundler`: the bundler that ran, `{ "name", "version" }` as it reports itself (`webpack`, `rspack`, `rollup`,
-    `rolldown`, `vite`, `esbuild`; Vite's version where Vite gives it to plugins). It is the bundler that wrote the
+    `rolldown`, `vite`, `esbuild`, `parcel`, `angular`; Vite's version where Vite gives it to plugins), or `next` for
+    the runtime packages of Next.js' server (the version of that copy of Next). It is the bundler that wrote the
     output, not a package of it;
   - `via`: how it found each package, `{ "<class>": [indices into its packages] }`. A package found in several ways is
     listed under each class:
@@ -231,6 +234,7 @@ configuration.
     | `fs-copy` | files copied out of the package with fs, in the build's process |
     | `nested` | files another build wrote, whose lockfile lists the package ([nested bundles](#nested-bundles)) |
     | `vendored` | a [vendored copy](#which-package-a-file-belongs-to) |
+    | `traced` | files Next.js traced for its server, which loads them from `node_modules` at runtime |
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time.
 - `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or

@@ -294,13 +294,20 @@ compared with an oracle that builds again with source maps into other directorie
 the adapters bundle again — except SvelteKit 2's edge function (built by esbuild, no lockfile) and adapter-node with
 `BUNDLE_LOCKFILE_DISABLE=vite`. A server dependency must not be listed, except in an edge function, which bundles it.
 
-**Next.js** 12–16 are compared per compiler output with webpack's stats:
+**Next.js** 12–16 are compared per compiler output with webpack's stats, and the server's runtime packages
+(`.next/runtime/`) with the packages of the oracle build's own `.nft.json` traces (`oracles/next.cjs`, mapped by
+`oracles/owner.cjs`):
 - a Pages Router app on each
 - on 15 and 16: an App Router app with server and client components, an edge route handler and middleware
 - with next-rspack (15.5: rspack 1.4; 16.4: rspack 2.0): the Pages Router app on both, the App Router app on 16, with
   exactly the lockfiles of the webpack builds
-- on 16: a static export (`output: 'export'`), a standalone output (`output: 'standalone'`, no lockfile), a warm build
-  from `.next/cache`, a Turbopack build (no lockfile)
+- on 16: a static export (`output: 'export'`), a standalone output (`output: 'standalone'`: the runtime packages and
+  copies of the bundles' lockfiles), a warm build from `.next/cache`, a Turbopack build (no lockfile)
+- on 15 and 16, `apps/next-runtime`: canaries the server requires at request time (one only through a deep `.cjs`
+  require, of which Next copies no `package.json` into `.next/standalone`), one it bundles; in the standalone output
+  also with Turbopack (`BUNDLE_LOCKFILE_STRICT=0`: the runtime packages only). The standalone server is started with
+  `oracles/runtime-tracer.cjs` and every route requested (`runtimeTrace`): each package it loads from `node_modules`
+  must be listed - a lower bound that does not rely on Next's traces
 - another `--require` preload next to bundle-lockfile's (Next 15 fails, see
   [bundlers.md](../docs/bundlers.md#nextjs); 16.4 builds)
 

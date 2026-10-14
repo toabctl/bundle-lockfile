@@ -199,21 +199,31 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
 | `.next/bundle-lockfile/` | client |
 | `.next/server/chunks/bundle-lockfile/` | server |
 | `.next/server/bundle-lockfile/` | edge server: middleware and routes with `runtime = 'edge'` (without packages if there are none) |
+| `.next/runtime/bundle-lockfile/` | the server's runtime packages: what it loads from `node_modules`, from Next's traces (below) |
+| `.next/standalone/bundle-lockfile/` | with `output: 'standalone'`: the runtime packages, keyed where Next copied them (`.next/standalone/node_modules`); the client's, server's and edge server's lockfiles are copied to their places in `.next/standalone` too |
 
 - Next.js 16 builds with Turbopack by default, which is not hooked: the build fails when it ends (strict mode). Use
   `next build --webpack` (or next-rspack).
 - With next-rspack, rspack builds the same compilers: the same lockfiles.
 - With the App Router, the server output uses Next's vendored React (`next/dist/compiled/react`), which is listed as
   `next`; the client output lists `react` and `react-dom`.
-- Next does not bundle many server dependencies (Pages Router dependencies, `serverExternalPackages`): the server
-  loads them from `node_modules` at runtime, and Next records them in `.next/server/**/*.nft.json`. They are in no
-  bundle-lockfile. Ship `node_modules` with the server: image scans read its installed `package.json` files
-  ([which scans](../README.md#sbom-tools)).
+- Next does not bundle many server dependencies (Pages Router dependencies, `serverExternalPackages`, its own server's):
+  the server loads them from `node_modules` at runtime, and Next traces the files it needs into `.nft.json` files
+  (`.next/server/**/*.nft.json`, `.next/next-server.js.nft.json`). Once `next build` has run, bundle-lockfile lists the
+  packages of those files in `.next/runtime/bundle-lockfile/package-lock.json` (Next.js 12 – 16, with webpack, rspack
+  and Turbopack; `BUNDLE_LOCKFILE_DISABLE=next` turns it off). They are what Next copies into the standalone output,
+  also packages of which Next copies no `package.json` (a deep `require()` of a `.cjs` file of a package without
+  `exports`), which an image scan of `.next/standalone` therefore cannot name. A trace that cannot be read, or a traced
+  package without a `package.json` with name and version, fails the build. A file Next does not trace (e.g. a
+  `require()` of a computed path) is not listed: Next would not copy it into the standalone output either.
 - A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, but not the lockfiles. Ship
   `.next/bundle-lockfile/package-lock.json` with it, or use an [export
   directory](../README.md#outputs-that-do-not-ship-as-files). In this mode a custom `distDir` names the export
   destination; the lockfiles are in `.next` anyway.
-- The standalone output (`output: 'standalone'`) leaves the lockfiles out: use an export directory.
+- The standalone output (`output: 'standalone'`) gets the runtime packages' lockfile, and copies of the bundles'
+  lockfiles where Next copied their outputs (`.next/standalone/.next/server/chunks/` etc.; the client's in
+  `.next/standalone/.next/`, for the `.next/static` that is copied there by hand). With Turbopack (not hooked, so with
+  `BUNDLE_LOCKFILE_STRICT=0` only) it has the runtime packages only.
 - Each process that inherits `NODE_OPTIONS` and loads webpack logs its own `patched Compiler` line with
   `BUNDLE_LOCKFILE_DEBUG=1` (Next.js's build workers do).
 - **Next.js 15.0 – 16.3: use a single `--require`.** These versions merge repeated flags when they rewrite

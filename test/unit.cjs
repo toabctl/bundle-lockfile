@@ -1244,9 +1244,10 @@ test('hooks: a throwing adapter is reported and does not break require()', () =>
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
   const script = `const M = require('module'); const before = M._extensions['.js']; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._extensions['.js'] === before);`;
-  // the rollup, rspack, esbuild, parcel and angular adapters hook CommonJS modules too (Rollup's CommonJS build, rspack,
-  // esbuild, @parcel/core, Angular's builder): only off with all names
-  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel,angular', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild,Parcel,Angular', 'true'],
+  // the rollup, rspack, esbuild, parcel, angular and next adapters hook CommonJS modules too (Rollup's CommonJS build,
+  // rspack, esbuild, @parcel/core, Angular's builder, next build): only off with all names
+  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel,angular,next', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild,Parcel,Angular,Next', 'true'],
+    ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel,angular', 'false'], ['next', 'false'],
     ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel', 'false'], ['webpack,rollup,rolldown,vite,rspack,esbuild', 'false'], ['webpack,rollup,rolldown,vite,rspack', 'false'], ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false'], ['esbuild', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
     assert.equal(r.stdout.trim(), untouched, `BUNDLE_LOCKFILE_DISABLE=${disable}: ${r.stderr}`);
@@ -3879,7 +3880,7 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
-  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular or all');
+  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular, next or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
   assert.equal(one({ BUNDLE_LOCKFILE_TREE: 'both' }), 'BUNDLE_LOCKFILE_TREE=both is none of off, on, only');
   // the tree: off unless asked for (also for a value not recognized); only: the record in record.json, which no SBOM
@@ -4332,7 +4333,7 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
 }));
 
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
-  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
+  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular', 'next'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
   assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
 });
 
@@ -5679,3 +5680,142 @@ test('strict: @rspack/core of an unknown shape fails its require() from 1.0 on; 
   assert.equal(ns.stdout, 'true\n', ns.stderr);
   assert.doesNotMatch(ns.stderr, /bundle-lockfile/); // (Node.js may warn that require(esm) is experimental)
 });
+
+// Next.js' file traces (core/traces.cjs) and the server's runtime packages (adapters/next.cjs)
+const traces = require('../src/core/traces.cjs');
+const nextAdapter = () => require('../src/adapters/next.cjs');
+const nft = (files, extra = {}) => ({ version: 1, files, ...extra });
+
+test('traces: the .nft.json files of a distDir, not those of its caches and standalone copy; their files as absolute paths', () => {
+  const root = project({
+    '.next/next-server.js.nft.json': nft(['../node_modules/next/dist/server/next-server.js']),
+    '.next/server/pages/index.js.nft.json': nft(['../../../node_modules/rt/index.js', '../chunks/1.js'], { fileHashes: {}, symlinks: {} }),
+    '.next/cache/next-server.js.nft.json': 'not a trace',
+    '.next/standalone/.next/server/pages/index.js.nft.json': nft([]),
+    '.next/static/x.nft.json': nft([]),
+  });
+  const files = traces.traceFiles(J(root, '.next'));
+  assert.deepEqual(files.map(f => path.relative(root, f).split(path.sep).join('/')), ['.next/next-server.js.nft.json', '.next/server/pages/index.js.nft.json']);
+  assert.deepEqual(traces.filesOf(files[1]), [J(root, 'node_modules/rt/index.js'), J(root, '.next/server/chunks/1.js')]);
+  assert.deepEqual(traces.traceFiles(J(root, 'none')), []);
+  const bad = project({ 'a.nft.json': '{', 'b.nft.json': { version: 2, files: [] }, 'c.nft.json': { version: 1, files: 'x' } });
+  assert.throws(() => traces.filesOf(J(bad, 'a.nft.json')), /could not read/);
+  assert.throws(() => traces.filesOf(J(bad, 'b.nft.json')), /a trace of a version bundle-lockfile does not know \(2\)/);
+  assert.throws(() => traces.filesOf(J(bad, 'c.nft.json')), /has no list of files/);
+});
+
+// a project with a fake next build (next/dist/build/index.js and build-context.js) and traces; returns
+// { root, build(): the wrapped build function, ctx: Next's build context }
+function fakeNext(files, ctx = () => ({})) {
+  const root = project({
+    'package.json': { name: 'app', private: true },
+    'node_modules/next/package.json': { name: 'next', version: '16.4.0' },
+    'node_modules/next/dist/build/build-context.js': 'exports.NextBuildContext = {};',
+    'node_modules/next/dist/build/index.js': '',
+    'node_modules/next/dist/server/next-server.js': '',
+    'node_modules/rt/package.json': { name: 'rt', version: '1.0.0', license: 'MIT' },
+    'node_modules/rt/index.js': '',
+    'node_modules/legacy/package.json': { name: 'legacy', version: '2.0.0' },
+    'node_modules/legacy/lib/x.cjs': '',
+    '.next/server/chunks/1.js': '',
+    '.next/next-server.js.nft.json': nft(['../node_modules/next/dist/server/next-server.js']),
+    '.next/server/pages/index.js.nft.json': nft(['../../../node_modules/rt/index.js', '../../../node_modules/legacy/lib/x.cjs', '../chunks/1.js']),
+    ...files,
+  });
+  const buildFile = J(root, 'node_modules/next/dist/build/index.js');
+  const context = require(J(root, 'node_modules/next/dist/build/build-context.js')).NextBuildContext;
+  Object.assign(context, { dir: root, distDir: J(root, '.next'), config: { distDir: '.next' }, ...ctx(root) });
+  let ran = 0;
+  const exp = {};
+  Object.defineProperty(exp, 'default', { enumerable: true, get: () => async () => { ran++; return 'built'; } }); // Next's getter exports
+  const copy = nextAdapter().onCjsLoad(exp, buildFile, () => buildFile).exports;
+  return { root, build: () => copy.default(root), ran: () => ran, copy };
+}
+const runtimeLock = (root, at = '.next/runtime') => JSON.parse(fs.readFileSync(J(root, at, LOCK), 'utf8'));
+
+test('next adapter: after next build, the packages of its traces in .next/runtime/bundle-lockfile (also Next itself, not first-party files)', () => withConfig({ strict: true }, async () => {
+  const { root, build, ran, copy } = fakeNext({}, () => ({}));
+  assert.equal(copy.__esModule, true); // ES-module interop: next build's own require of it gets the copy's default
+  problems.take();
+  assert.equal(await build(), 'built');
+  assert.equal(ran(), 1);
+  const lock = runtimeLock(root);
+  assert.deepEqual(Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} ${p.name}@${p.version}`),
+    ['node_modules/legacy legacy@2.0.0', 'node_modules/next next@16.4.0', 'node_modules/rt rt@1.0.0']);
+  const [w] = lock['bundle-lockfile'].writers;
+  assert.deepEqual(w.bundler, { name: 'next', version: '16.4.0' });
+  assert.deepEqual(w.via, { traced: [0, 1, 2] });
+  assert.equal(fs.existsSync(J(root, '.next/standalone')), false);
+  assert.equal(problems.count(), 0);
+}));
+
+test('next adapter: no traces (output: export) writes nothing; Next.js 12 (no build context) takes distDir from the config its build loaded', () => withConfig({ strict: true }, async () => {
+  const none = fakeNext({ '.next/next-server.js.nft.json': nft([]), '.next/server/pages/index.js.nft.json': nft([]) }, () => ({}));
+  fs.rmSync(J(none.root, '.next/next-server.js.nft.json')); fs.rmSync(J(none.root, '.next/server/pages/index.js.nft.json'));
+  await none.build();
+  assert.equal(fs.existsSync(J(none.root, '.next/runtime')), false);
+  // Next.js 12: server/config.js's default export (a plain property) is wrapped; the build reads the config through it
+  const root = project({
+    'node_modules/next/package.json': { name: 'next', version: '12.3.7' },
+    'node_modules/next/dist/build/index.js': '',
+    'node_modules/rt/package.json': { name: 'rt', version: '1.0.0' },
+    'node_modules/rt/index.js': '',
+    'out12/server/pages/index.js.nft.json': nft(['../../../node_modules/rt/index.js']),
+  });
+  const a = nextAdapter();
+  const configFile = J(root, 'node_modules/next/dist/server/config.js');
+  const confExp = { default: async (phase) => ({ distDir: phase === 'phase-production-build' ? 'out12' : 'x' }) };
+  a.onCjsLoad(confExp, configFile, () => configFile);
+  const buildFile = J(root, 'node_modules/next/dist/build/index.js');
+  const copy = a.onCjsLoad({ default: async function build(dir) { await confExp.default('phase-production-build', dir); } }, buildFile, () => buildFile).exports;
+  await copy.default(root);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'out12/runtime', LOCK), 'utf8')), ['rt']);
+}));
+
+test('next adapter: output: standalone - the runtime packages in .next/standalone, keyed where Next copied them; the bundles\' lockfiles copied along', () => withConfig({ strict: true }, async () => {
+  const { root, build } = fakeNext({
+    '.next/standalone/server.js': '',
+    '.next/standalone/node_modules/rt/index.js': '',
+    '.next/standalone/node_modules/rt/package.json': { name: 'rt', version: '1.0.0', license: 'MIT' },
+    '.next/standalone/node_modules/legacy/lib/x.cjs': '', // no package.json: Next copies only traced files
+    '.next/standalone/.next/server/chunks/1.js': '',
+    '.next/server/chunks/bundle-lockfile/package-lock.json': '{"lockfileVersion":3,"packages":{"":{}}}',
+    '.next/bundle-lockfile/package-lock.json': '{"lockfileVersion":3,"packages":{"":{}}}',
+  }, () => ({ config: { distDir: '.next', output: 'standalone' } }));
+  await build();
+  const lock = runtimeLock(root, '.next/standalone');
+  assert.deepEqual(Object.keys(lock.packages).filter(Boolean), ['node_modules/legacy', 'node_modules/next', 'node_modules/rt']);
+  assert.equal(lock['bundle-lockfile'].context, '../../..'); // anchored where the packages are installed (the tracing root)
+  // the server output's directory is in .next/standalone: its lockfile goes along; the client's (.next) too
+  assert.equal(fs.existsSync(J(root, '.next/standalone/.next/server/chunks', LOCK)), true);
+  assert.equal(fs.existsSync(J(root, '.next/standalone/.next', LOCK)), true);
+  assert.equal(fs.existsSync(J(root, '.next/standalone/runtime')), false);
+}));
+
+test('next adapter: an unreadable trace, or a traced package without package.json, fails next build (strict); STRICT=0 warns', async () => {
+  for (const strict of [true, false]) {
+    await withConfig({ strict }, async () => {
+      const bad = fakeNext({ '.next/server/pages/broken.js.nft.json': '{' }, () => ({}));
+      problems.take();
+      if (strict) await assert.rejects(bad.build(), /could not read .*broken\.js\.nft\.json.*the server's runtime packages are unknown/s);
+      else { const w = await (async () => { const seen = []; const orig = config.warn; config.warn = (...m) => seen.push(m.join(' ')); try { await bad.build(); } finally { config.warn = orig; } return seen; })(); assert.match(w.join('\n'), /broken\.js\.nft\.json/); }
+      problems.take();
+      const nopj = fakeNext({ 'node_modules/nopj/i.js': '', '.next/server/pages/n.js.nft.json': nft(['../../../node_modules/nopj/i.js']) }, () => ({}));
+      if (strict) await assert.rejects(nopj.build(), /no package\.json with name and version in .*nopj/);
+      else await nopj.build();
+      problems.take();
+    });
+  }
+});
+
+test('next adapter: a next/dist/build of a shape it does not know fails (strict); BUNDLE_LOCKFILE_DISABLE takes next', () => withConfig({ strict: true }, async () => {
+  problems.take();
+  const f = '/p/node_modules/next/dist/build/index.js';
+  assert.equal(nextAdapter().onCjsLoad({ build: () => {} }, f, () => f), undefined);
+  assert.match(problems.take().join('\n'), /exports no build function bundle-lockfile knows/);
+  assert.equal(nextAdapter().onCjsLoad({ default: () => {} }, '/p/node_modules/other/dist/build/index.js', () => '/p/x'), undefined); // not Next's
+  assert.equal(problems.count(), 0);
+  const r = nodeWith({ ...strictEnv(undefined), BUNDLE_LOCKFILE_DISABLE: 'next' }, ['-e', `require(${JSON.stringify(J(SRC, 'core/config.cjs'))}); console.log(require(${JSON.stringify(J(SRC, 'core/config.cjs'))}).isDisabled('next'))`]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'true');
+}));

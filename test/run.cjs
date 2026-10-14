@@ -97,6 +97,35 @@ function checkEntries(c, dir) {
   return r;
 }
 
+// runtimeTrace: starts the standalone Next.js server in outDir with test/oracles/runtime-tracer.cjs, requests each route,
+// stops it; every package it loaded from node_modules (the directory below the last node_modules) must be listed (by
+// name: Next copies no package.json of some of them into .next/standalone)
+function runtimeTrace(c, outDir, listed, env) {
+  const trace = path.join(outDir, '..', '.runtime-trace.txt'), port = String(41000 + Math.floor(Math.random() * 2000));
+  const script = `
+    const { spawn } = require('child_process');
+    const srv = spawn(process.execPath, ['--require', ${JSON.stringify(path.join(__dirname, 'oracles/runtime-tracer.cjs'))}, 'server.js'],
+      { cwd: ${JSON.stringify(outDir)}, env: { ...process.env, PORT: ${JSON.stringify(port)}, HOSTNAME: '127.0.0.1', BLTEST_RUNTIME_TRACE: ${JSON.stringify(trace)}, NODE_OPTIONS: '' }, stdio: 'ignore' });
+    const get = (r) => fetch('http://127.0.0.1:${port}' + r).then(x => x.status, () => 0);
+    (async () => {
+      for (let i = 0; i < 100 && !(await get('/')); i++) await new Promise(r => setTimeout(r, 200));
+      const codes = [];
+      for (const r of ${JSON.stringify(c.runtimeTrace.routes)}) codes.push(r + ' ' + await get(r));
+      srv.on('exit', () => console.log(JSON.stringify(codes)));
+      srv.kill('SIGTERM');
+    })();`;
+  const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env, timeout: 120000 });
+  const codes = JSON.parse((r.stdout || '[]').trim().split('\n').pop() || '[]');
+  const bad = codes.filter(x => !/ 200$/.test(x));
+  if (!codes.length || bad.length) throw new Error(`runtimeTrace: the standalone server answered ${codes.join(', ') || 'nothing'}${r.stderr ? `\n${r.stderr}` : ''}`);
+  const nameOf = (f) => { const p = f.split(path.sep), i = p.lastIndexOf('node_modules'); return p[i + 1].startsWith('@') ? `${p[i + 1]}/${p[i + 2]}` : p[i + 1]; };
+  const loaded = [...new Set(fs.readFileSync(trace, 'utf8').split('\n').filter(Boolean).map(nameOf))].sort();
+  const names = new Set(listed.map(p => p.replace(/@[^@]*$/, '')));
+  const missing = loaded.filter(n => !names.has(n));
+  if (missing.length) throw new Error(`runtimeTrace: the server loaded ${missing.join(' ')} from node_modules, which the lockfile does not list`);
+  return `the standalone server loaded ${loaded.length} packages, all listed`;
+}
+
 function runCase(c) {
   const fx = fixtures[c.fixture];
   const dir = path.join(FX, c.fixture);
@@ -223,7 +252,12 @@ function runCase(c) {
     notes.push(`records with ${c.expectAnchor}`);
   }
   if (c.expect && !sameMap(got, { '': c.expect })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
-  if (c.expectIn && !sameMap(got, c.expectIn)) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(c.expectIn)}`);
+  if (c.expectIn) {
+    // "oracle": the output must be there; what it lists is the oracle's (compared below)
+    if (Object.values(c.expectIn).includes('oracle') && c.oracle === false) throw new Error('expectIn: "oracle" needs the oracle');
+    const want = Object.fromEntries(Object.entries(c.expectIn).map(([k, v]) => [k, v === 'oracle' ? got[k] || ['(missing)'] : v]));
+    if (!sameMap(got, want)) throw new Error(`lockfiles mismatch\n  got:${show(got)}\n  want:${show(want)}`);
+  }
   if (c.expectKeys) {
     const lock = JSON.parse(fs.readFileSync(path.join(lockDir, c.lockfile || LOCKFILE), 'utf8'));
     const keys = Object.entries(lock.packages).filter(([k]) => k).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
@@ -250,10 +284,18 @@ function runCase(c) {
   if (missing.length) throw new Error(`missing ${missing.join(' ')} in${show(got)}`);
   const unwanted = (c.expectExcludes || []).filter(p => all.includes(p));
   if (unwanted.length) throw new Error(`unexpected ${unwanted.join(' ')} in${show(got)}`);
+  for (const [k, list] of Object.entries(c.expectIncludesIn || {})) {
+    const miss = list.filter(p => !(got[k] || []).includes(p));
+    if (miss.length) throw new Error(`missing ${miss.join(' ')} in output ${k || '.'}:${show(got)}`);
+  }
+  for (const [k, list] of Object.entries(c.expectExcludesIn || {})) {
+    const extra = list.filter(p => (got[k] || []).includes(p));
+    if (extra.length) throw new Error(`unexpected ${extra.join(' ')} in output ${k || '.'}:${show(got)}`);
+  }
 
   // canaries (test/apps/canary): found in the output's bytes, not through the bundler - each one listed (except exactly
   // the case's canaryUnlisted: a documented limit, pinned), and each listed one there
-  const shipped = canaries(outDir);
+  const shipped = [...new Set([outDir, ...(c.canaryDirs || []).map(d => path.resolve(dir, d))].flatMap(canaries))].sort();
   const unlisted = shipped.filter(p => !all.includes(p));
   if (!same(unlisted, c.canaryUnlisted || [])) {
     throw new Error(`in the output, not listed: ${unlisted.join(' ') || '(none)'}${c.canaryUnlisted ? `; want exactly ${c.canaryUnlisted.join(' ')}` : ''}`);
@@ -261,6 +303,8 @@ function runCase(c) {
   const absent = all.filter(p => p.startsWith('bl-canary-') && !shipped.includes(p));
   if (absent.length) throw new Error(`listed, not in the output: ${absent.join(' ')}`);
   if (shipped.length) notes.push(`${shipped.length} canaries in the output, ${unlisted.length ? `all listed but ${unlisted.join(' ')}, as expected` : 'all listed'}`);
+
+  if (c.runtimeTrace) notes.push(runtimeTrace(c, outDir, got[''] || [], base));
 
   // syft first: the oracle's build may write where the case's build wrote (adapter-netlify's .netlify/, Next's .next/
   // with output: 'export')

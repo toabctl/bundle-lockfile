@@ -82,8 +82,7 @@ They do not fail the build:
 - Another plugin removed a webpack or rspack output directory after the build: only the export copy is written.
 - `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing (and fails the build unless
   `BUNDLE_LOCKFILE_STRICT=0`).
-- A step after the build dropped it: Next.js' static export and standalone output, a copy of only some files. Use an
-  export directory.
+- A step after the build dropped it: Next.js' static export, a copy of only some files. Use an export directory.
 
 ## Debug output
 
