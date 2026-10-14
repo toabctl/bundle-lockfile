@@ -420,8 +420,16 @@ replaces that export with a wrapper that runs it with `stats: true`: Angular the
 chunk optimizer) as output files, `browser-stats.json` and `server-stats.json` (22), or one `stats.json` for both
 (17 – 21). The wrapper reads them (and takes them out again unless the build asked for stats), maps their outputs'
 inputs and the result's asset files (`assetFiles`, copies Angular makes, also from `node_modules`) to packages, renders
-the lockfile with `core/outputs.cjs` and adds it with `addOutputFile` (type Browser, or ServerApplication). Angular writes
-it; the export copy is written by bundle-lockfile. Angular's own esbuild builds (`write: false`) still get the esbuild
+the lockfile with `core/outputs.cjs` and adds it with `addOutputFile`. Angular writes it; the export copy is written by
+bundle-lockfile.
+- One `stats.json` (17 – 21) keys both sides' outputs by their path in their own directory (`main.server.mjs`, not
+  `server/main.server.mjs`): an output belongs to the side whose output files (type Browser; ServerApplication or
+  ServerRoot) have its path, to both if both have it; one no output file has counts for the browser in a build without
+  a server, else for both.
+- Those versions also key the files they write by that path (`result.files`), so a browser and a server file of one
+  name are one file: the browser's lockfile is a Browser file at `<file>`, the server's a Root file at
+  `<server>/<file>`. A server Angular does not write (`outputOptions.ignoreServer`: `outputMode: 'static'`, no SSR
+  entry) gets none. Angular's own esbuild builds (`write: false`) still get the esbuild
 adapter's plugin: they write nothing, but a problem there fails the build too.
 
 ## webpack: which file a module is

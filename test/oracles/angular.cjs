@@ -3,9 +3,11 @@
 // configuration: no packages' own source maps, vendor: false), into dist-oracle, and derives the packages from the
 // maps' sources (Angular writes them relative to the workspace root; else relative to the map's directory). Shares no code with the adapter, which reads Angular's stats metafile. Source maps leave out what has no
 // mappings (an asset Angular copies): a case names those.
-// usage (cwd = fixture): node oracles/angular.cjs [--browser-as-root]
-// prints {"browser": [name@version, ...]} (the browser output, relative to the output path dist/), or with
-// --browser-as-root {"": [...]} (a case whose output directory is dist/browser)
+// usage (cwd = fixture): node oracles/angular.cjs [--browser-as-root] [--configuration <name>]
+// prints {"browser": [name@version, ...]} (the browser output, relative to the output path dist/; and "server" when
+// the build wrote one: SSR), or with --browser-as-root {"": [...]} (a case whose output directory is dist/browser).
+// --configuration: one more of angular.json's configurations (outputMode static: no server written)
+// --locales <a,b>: a localized build (i18n): each side's output is a copy per locale, "<side>/<locale>" each
 const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
@@ -16,11 +18,12 @@ fs.rmSync(out, { recursive: true, force: true });
 const ng = require('module').createRequire(path.resolve('package.json')).resolve('@angular/cli/bin/ng.js');
 // without the chunk optimizer: the maps of the chunks it re-bundles (with Rolldown) no longer name the source files.
 // Its view is esbuild's before the optimizer, which does not add packages, and may leave some out (a case says so).
-const r = spawnSync(process.execPath, [ng, 'build', '--configuration', 'production,oracle', '--output-path', out],
+const extra = process.argv.includes('--configuration') ? `,${process.argv[process.argv.indexOf('--configuration') + 1]}` : '';
+const r = spawnSync(process.execPath, [ng, 'build', '--configuration', `production${extra},oracle`, '--output-path', out],
   { encoding: 'utf8', env: { ...process.env, NG_CLI_ANALYTICS: 'false', NG_BUILD_OPTIMIZE_CHUNKS: '0' } });
 if (r.status !== 0) { console.error(r.stdout, r.stderr); process.exit(1); }
 
-const files = new Set();
+let files = new Set();
 const walk = (d) => {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
     const p = path.join(d, e.name);
@@ -34,9 +37,21 @@ const walk = (d) => {
     }
   }
 };
-walk(path.join(out, 'browser'));
-// and the esbuild Angular's builder ran, whose runtime helpers are in the JavaScript (test/lib/bundlers.cjs)
+// and the esbuild Angular's builder ran, whose runtime helpers are in the JavaScript (test/lib/bundlers.cjs): in each
+// output that has JavaScript
 const bl = require('../lib/bundlers.cjs');
 const builder = ['@angular/build', '@angular-devkit/build-angular'].map(n => { try { return path.dirname(require('module').createRequire(path.resolve('package.json')).resolve(`${n}/package.json`)); } catch { return null; } }).find(Boolean);
-const esbuild = bl.hasJs(path.join(out, 'browser')) && builder ? [bl.resolved('esbuild', builder)].filter(Boolean) : [];
-console.log(JSON.stringify({ [process.argv.includes('--browser-as-root') ? '' : 'browser']: [...new Set([...owner.packagesOf(files), ...esbuild])].sort() }));
+const result = {};
+const locales = process.argv.includes('--locales') ? process.argv[process.argv.indexOf('--locales') + 1].split(',') : [''];
+for (const side of ['browser', 'server']) {
+  for (const locale of locales) {
+    const dir = path.join(out, side, locale);
+    if (!fs.existsSync(dir)) continue;
+    files = new Set();
+    walk(dir);
+    const esbuild = bl.hasJs(dir) && builder ? [bl.resolved('esbuild', builder)].filter(Boolean) : [];
+    const key = side === 'browser' && process.argv.includes('--browser-as-root') ? '' : side;
+    result[locale ? path.posix.join(key, locale) : key] = [...new Set([...owner.packagesOf(files), ...esbuild])].sort();
+  }
+}
+console.log(JSON.stringify(result));

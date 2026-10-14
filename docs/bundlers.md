@@ -19,7 +19,7 @@ What is supported and tested, which processes are hooked, and what is particular
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
 | Parcel | 2 | 2.0 (with the 2.16 plugins its ranges install), 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
-| Angular | 20 – 22 (application builder) | 20.3, 21.2, 22.2 | CommonJS: its `executeBuild()` | `ng build`; the lockfile in `<outputPath>/browser/`; [details](#angular) |
+| Angular | 20 – 22 (application builder) | 20.3, 21.2, 22.2 | CommonJS: its `executeBuild()` | `ng build`; the lockfile in `<outputPath>/browser/` (SSR: also `server/`; i18n: each locale's directory); `ng serve` writes none; [details](#angular) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
   older Node.js versions only some processes get ([which processes](#which-processes-are-hooked)).
@@ -193,14 +193,24 @@ itself, after its own steps: its chunk optimizer re-bundles lazy chunks with Rol
 bundle-lockfile wraps the function that runs one build (`executeBuild()`) and takes Angular's final metafile — the
 one its `stats` option writes, turned on for the build and taken out of its output again unless asked for.
 
-- The lockfile is one of the build's output files: `<outputPath>/browser/bundle-lockfile/package-lock.json` (and with
-  SSR one in `<outputPath>/server/`), which Angular writes with the others, after it cleaned the output path.
+- The lockfile is one of the build's output files: `<outputPath>/browser/bundle-lockfile/package-lock.json`, which
+  Angular writes with the others, after it cleaned the output path.
+- With server-side rendering (`outputMode: 'server'`) the server gets its own,
+  `<outputPath>/server/bundle-lockfile/package-lock.json`: the packages bundled into the server (`@angular/ssr`,
+  `@angular/platform-server`, the server entry's own dependencies, what the rendered components use). `outputMode:
+  'static'` only prerenders: Angular writes no server, so there is no server lockfile.
+- With i18n (`localize`) Angular writes a copy of each side's output per locale, translations inlined, in
+  `<subPath>/` (the locale by default): each copy gets the lockfile, `<outputPath>/browser/<locale>/bundle-lockfile/`
+  (and the server's in `<outputPath>/server/<locale>/`), with the same packages.
+- `ng build --watch` writes the lockfile again with every rebuild that changes it. `ng serve` writes none: the dev
+  server serves its builds from memory (bundle-lockfile tells them by the `partialSSRBuild` option the dev server
+  sets; with `NG_BUILD_PARTIAL_SSR` set, `ng build` sets it too, and every build counts as one that writes).
 - It lists the packages of the inputs of every output (Angular's own packages, rxjs, the app's), and of the assets
   Angular copies from `node_modules` (an `assets` glob there).
 - A problem is an error of the build. `BUNDLE_LOCKFILE_DISABLE=angular` leaves Angular alone (its esbuild builds then
   write nothing: no lockfile).
-- Tested: Angular 20, 21, 22 with npm, browser builds. Not tested: SSR's server lockfile, i18n, `ng build --watch`,
-  `ng serve`.
+- Tested: Angular 20, 21, 22 with npm: browser builds, SSR (`outputMode` server and static); on 20 and 22 also i18n
+  (two locales), `ng build --watch`, `ng serve`. Not tested: SSR together with i18n, other package managers.
 
 ## Next.js
 

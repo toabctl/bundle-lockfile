@@ -89,6 +89,18 @@ const angularApp = (tools, fw, ts, installer = { type: 'npm' }) => ({ app: 'angu
     ['typescript', ts], ['rxjs', '7.8.2'], ['tslib', '2.8.1'], ['lodash-es', '4.18.1'], ['uuid', '9.0.1'], ['ms', '2.1.3'], ['nanoid', '3.3.20'],
     ['normalize.css', '8.0.1'], ['bootstrap-icons', '1.13.2'], ['is-number', '7.0.0'], ['debug', '2.6.9']]),
   packageJson: { scripts: { build: 'ng build' } } });
+// test/apps/angular-ssr: the same app with server-side rendering (@angular/ssr: a server bundle, prerendered routes),
+// left-pad only in the server; canaries (test/apps/canary's packages): bl-canary-dup 2.0.0 in the component (both
+// outputs), bl-canary-used with its own bl-canary-dup 1.0.0 only in the server, bl-canary-unused imported, unused
+const ANGULAR_CANARIES = 'rm -rf node_modules/bl-canary-* && cd pkgs && mv bl-canary-used bl-canary-unused ../node_modules/'
+  + ' && mv bl-canary-dup-2 ../node_modules/bl-canary-dup && mkdir ../node_modules/bl-canary-used/node_modules'
+  + ' && mv bl-canary-dup-1 ../node_modules/bl-canary-used/node_modules/bl-canary-dup && cd .. && rmdir pkgs';
+const angularSsrApp = (tools, fw, ts) => { const a = angularApp(tools, fw, ts);
+  return { ...a, app: 'angular-ssr', deps: { ...a.deps, '@angular/ssr': tools, '@angular/platform-server': fw, '@angular/router': fw,
+    'left-pad': '1.3.0', '@types/node': '24.19.2' }, postInstall: ANGULAR_CANARIES }; };
+// test/apps/angular-i18n: the same app localized (en-US, de: a copy of the output per locale, translations inlined)
+const angularI18nApp = (tools, fw, ts) => { const a = angularApp(tools, fw, ts);
+  return { ...a, app: 'angular-i18n', deps: { ...a.deps, '@angular/localize': fw } }; };
 const esbuildApp = (esbuild, installer = { type: 'npm' }, extra = {}) => ({ app: 'esbuild', bundler: 'esbuild', installer,
   deps: { esbuild, 'lodash-es': '4.18.1', uuid: '9.0.1', debug: '2.6.9', ms: '2.1.3', nanoid: '3.3.20', 'normalize.css': '8.0.1', 'bootstrap-icons': '1.13.2', 'is-number': '7.0.0', ...extra },
   packageJson: { type: 'module', scripts: { build: 'node build.mjs build' } } });
@@ -217,6 +229,11 @@ const fixtures = {
   'angular22': angularApp('22.2.2', '22.2.2', '6.0.3'),
   'angular21': angularApp('21.2.26', '21.2.25', '5.9.3'),
   'angular20': angularApp('20.3.39', '20.3.33', '5.8.3'),
+  'angular22-i18n': angularI18nApp('22.2.2', '22.2.2', '6.0.3'),
+  'angular20-i18n': angularI18nApp('20.3.39', '20.3.33', '5.8.3'),
+  'angular22-ssr': angularSsrApp('22.2.2', '22.2.2', '6.0.3'),
+  'angular21-ssr': angularSsrApp('21.2.26', '21.2.25', '5.9.3'),
+  'angular20-ssr': angularSsrApp('20.3.39', '20.3.33', '5.8.3'),
   // a project directory with "#" in its name, which is no fragment of the module ids
   'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
@@ -526,6 +543,8 @@ const DD_ENV = { DD_TRACE_AGENT_URL: 'http://127.0.0.1:9', DD_TRACE_TELEMETRY_EN
   DD_TRACE_STARTUP_LOGS: 'false', DD_REMOTE_CONFIGURATION_ENABLED: 'false' };
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
+const ANGULAR_WATCH = `node ${path.join(__dirname, 'lib/angular-watch.cjs')}`;
+const ANGULAR_SERVE = `node ${path.join(__dirname, 'lib/angular-serve.cjs')}`;
 // the metafile importer (bin/bundle-lockfile-from-metafile), for the esbuild command line
 const FROM_METAFILE = `node ${path.join(__dirname, '../bin/bundle-lockfile-from-metafile')}`;
 // the esbuild command line building what build.mjs's "build" mode builds, with a metafile
@@ -1313,6 +1332,37 @@ const cases = [
   { name: 'Angular 22.2.2: export directory only', fixture: 'angular22', cmd: 'npm run -s build', exportOnly: true, expectIn: { browser: ANGULAR('angular22') },
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Angular: BUNDLE_LOCKFILE_DISABLE=angular', fixture: 'angular22', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'angular' }, expect: null },
+  // i18n (localize: en-US, de): Angular writes a copy of the output per locale, translations inlined - each gets the
+  // lockfile, in dist/browser/<locale>/ (the oracle reads each locale's source maps)
+  ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
+    { name: `Angular ${v}: ng build with i18n, a lockfile in each locale's output`, fixture, cmd: 'npm run -s build', oracleArgs: '--locales de,en-US',
+      oracleMissing: ['bootstrap-icons@1.13.2'], expectIncludes: ANGULAR(fixture) })),
+  // ng serve: the dev server builds into memory and serves it - no lockfile, served or written, not even an export copy
+  ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
+    { name: `Angular ${v}: ng serve writes no lockfile`, fixture, cmd: ANGULAR_SERVE, env: { BUNDLE_LOCKFILE_EXPORT_DIR: '/tmp/bl-angular-serve-export' }, expect: null })),
+  // ng build --watch: every rebuild writes the lockfile with that build's packages - without the lazy imports' line
+  // (nanoid, is-number, debug with its own ms 2.0.0) and with it again
+  ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
+    { name: `Angular ${v}: ng build --watch, every rebuild writes the lockfile with the packages of that build`, fixture,
+      cmd: `${ANGULAR_WATCH} src/app/app.ts "import('nanoid')"`, outDir: 'dist/browser', expect: ANGULAR(fixture), oracleArgs: '--browser-as-root',
+      oracleMissing: ['bootstrap-icons@1.13.2'],
+      watchBuilds: [ANGULAR(fixture), ANGULAR(fixture).filter(p => !['nanoid@3.3.20', 'is-number@7.0.0', 'debug@2.6.9', 'ms@2.0.0'].includes(p)), ANGULAR(fixture)] })),
+  // server-side rendering (outputMode server): a lockfile for each side, dist/browser/ and dist/server/ (the oracle
+  // reads each side's source maps: left-pad and bl-canary-used only in the server's). Angular 17 - 21 write one
+  // metafile for both sides, keyed by each output's path in its side's directory; 22 one per side. outputMode static
+  // only prerenders: Angular writes no server, so there is no server lockfile. On Node.js 26 Angular's prerendering
+  // prints DEP0205 itself: its in-memory ESM loader calls module.register() (@angular/build
+  // src/utils/server-rendering/esm-in-memory-loader/register-hooks.js; the same without bundle-lockfile)
+  ...[['22.2.2', 'angular22-ssr'], ['21.2.26', 'angular21-ssr'], ['20.3.39', 'angular20-ssr']].flatMap(([v, fixture]) => [
+    { name: `Angular ${v}: ng build with server-side rendering, a lockfile per side`, fixture, cmd: 'npm run -s build',
+      oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] }, allowWarnings: [MODULE_REGISTER],
+      expectIncludes: ['left-pad@1.3.0', `@angular/ssr@${v}`, `@angular/platform-server@${fixtures[fixture].deps['@angular/platform-server']}`, 'bl-canary-used@1.0.0', 'bl-canary-dup@1.0.0', 'bl-canary-dup@2.0.0'],
+      expectExcludes: ['bl-canary-unused@1.0.0', 'uuid@9.0.1'] },
+    { name: `Angular ${v}: ng build, server-side rendering with outputMode static (no server written, no server lockfile)`, fixture,
+      cmd: 'npm run -s build -- --configuration production,static', oracleArgs: '--configuration static', oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] },
+      allowWarnings: [MODULE_REGISTER],
+      expectExcludes: ['left-pad@1.3.0', 'bl-canary-used@1.0.0', 'bl-canary-unused@1.0.0', 'bl-canary-dup@1.0.0'] },
+  ]),
   { name: 'esbuild-wasm 0.28.2: build()', fixture: 'esbuild-wasm', cmd: 'node build.mjs build', env: { BLTEST_ESBUILD_PKG: 'esbuild-wasm' }, expect: ESBUILD,
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   ...[['0.19.12 (Vite 5\'s)', 'esbuild-0.19'], ['0.17.0 (the oldest supported)', 'esbuild-floor'], ['0.28.2, pnpm 10', 'esbuild-pnpm10'], ['0.28.2, yarn 4 Plug\'n\'Play', 'esbuild-yarn4-pnp']].map(([what, fixture]) => (
