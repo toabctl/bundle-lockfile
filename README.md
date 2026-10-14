@@ -32,7 +32,7 @@ Its source code imports only `lodash-es` and `classnames`:
 | | reports |
 |---|---|
 | syft on the project's `package-lock.json` | `lodash-es`, `is-number` (not shipped) and the project itself — but not `classnames` (shipped; skipped as a devDependency) |
-| syft on bundle-lockfile's output | `lodash-es`, `classnames` |
+| syft on bundle-lockfile's output | `lodash-es`, `classnames`, and `webpack`, whose runtime code is in the bundle |
 
 bundle-lockfile lists only the packages whose files the bundler put into the output, so SBOM tools such as
 [syft](https://github.com/anchore/syft) and [Trivy](https://github.com/aquasecurity/trivy) report what is shipped.
@@ -92,8 +92,12 @@ lodash-es  4.18.1   npm
 ms         2.0.0    npm
 ms         2.1.3    npm
 nanoid     3.3.20   npm
+webpack    5.111.1  npm
 yallist    5.0.0    npm
 ```
+
+`webpack` is listed because its runtime and chunk loading code is in the bundle: advisories about that code, such as
+CVE-2024-43788, name webpack. Every bundler is listed so ([what is listed](docs/coverage.md#also-listed)).
 
 ## Usage
 

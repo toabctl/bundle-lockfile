@@ -15,6 +15,8 @@ const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { hashOf } = require('../core/hashes.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
+const { createRequire } = require('module');
+const { bundlerPackage } = require('../core/bundler.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.parcel.patched');
 const PARCEL = /[\\/]@parcel[\\/]core[\\/]lib[\\/]Parcel\.js$/;
@@ -92,6 +94,24 @@ function write(w, pkgs, context, opts) {
   });
 }
 
+// The package whose code Parcel writes into JavaScript bundles, around their assets' code (the prelude, parcelRequire,
+// the module wrappers; see core/bundler.cjs): @parcel/packager-js, as Parcel resolves its plugins - from the default
+// config (@parcel/config-default, which names it; pnpm installs it there only), else from the project, else from
+// @parcel/core's copy. A problem without one.
+function packagerOf(projectRoot) {
+  const project = path.join(projectRoot, 'index');
+  const froms = [];
+  try { froms.push(createRequire(project).resolve('@parcel/config-default/package.json')); } catch { /* none */ }
+  froms.push(project);
+  if (parcelFile) froms.push(parcelFile);
+  for (const from of froms) {
+    try { return bundlerPackage('parcel', createRequire(from).resolve('@parcel/packager-js/package.json'), ['@parcel/packager-js']); } catch { /* next */ }
+  }
+  problems.problem(`parcel: ${projectRoot} resolves no @parcel/packager-js: the lockfile would miss the code Parcel writes into its JavaScript bundles`);
+  return null;
+}
+let parcelFile = null; // @parcel/core's lib/Parcel.js, as patched
+
 // The reporter (parcel-reporter/index.cjs). Throws the problems (strict mode): Parcel fails the build.
 async function report({ event, options }) {
   if (!event || event.type !== 'buildSuccess') return;
@@ -103,7 +123,12 @@ async function report({ event, options }) {
   for (const w of writes) {
     try {
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
-      const { all, byFile } = result;
+      const { byFile } = result;
+      const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath));
+      const runtime = js ? [packagerOf(projectRoot)].filter(Boolean) : [];
+      const all = packages.unique(result.all, runtime);
+      const found = via.ofFiles(result, w.kinds);
+      found.add('runtime', runtime);
       const hashes = {}, contents = {};
       for (const b of w.bundles) {
         if (!JS_CSS.test(b.filePath)) continue;
@@ -112,9 +137,9 @@ async function report({ event, options }) {
         hashes[b.filePath] = h;
         const own = [];
         b.traverseAssets((a) => { if (typeof a.filePath === 'string' && byFile.has(a.filePath) && !skipped(event.bundleGraph, b, a)) own.push(...byFile.get(a.filePath)); });
-        contents[b.filePath] = packages.unique(own).map(p => p.path);
+        contents[b.filePath] = packages.unique(own, /\.[cm]?js$/i.test(b.filePath) ? runtime : []).map(p => p.path);
       }
-      await write(w, all, context, { outputs: hashes, contents, via: via.ofFiles(result, w.kinds),
+      await write(w, all, context, { outputs: hashes, contents, via: found,
         bundler: { name: 'parcel', ...(version ? { version } : {}) } });
     } catch (e) { problems.problem(`parcel: could not collect the bundled packages of ${w.dir}`, e); }
   }
@@ -138,6 +163,7 @@ module.exports = {
       class BundleLockfileParcel extends Parcel { constructor(options, ...rest) { super(withReporter(options), ...rest); } }
       Object.defineProperty(BundleLockfileParcel, 'name', { value: Parcel.name });
       exp.default = BundleLockfileParcel;
+      parcelFile = resolve();
       if (exp.Parcel === Parcel) exp.Parcel = BundleLockfileParcel;
       exp[PATCHED] = true;
       try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../package.json'), 'utf8')).version || null; } catch { /* unknown */ }

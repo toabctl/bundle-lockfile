@@ -568,7 +568,7 @@ const PARALLEL_RSPACK = `${RSPACK_BIN} build --config-name app & a=$!; ${RSPACK_
 const SHARED = ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'];
 // the rspack app's two compilers into dist/[fullhash] (RSPACK_SHARED=fullhash): exactly two directories, app.js next
 // to a lockfile with app's packages, sw.js next to one with sw's
-const RSPACK_FULLHASH = `npm run -s build && test "$(for d in dist/*/; do echo "$(cd "$d" && ls app.js sw.js 2>/dev/null) $(node ${path.join(__dirname, 'lib/locks.cjs')} "$d")"; done | sort)" = "$(printf 'app.js .: ms@2.1.3\\nsw.js .: debug@2.6.9 ms@2.0.0')"`;
+const RSPACK_FULLHASH = `npm run -s build && test "$(for d in dist/*/; do echo "$(cd "$d" && ls app.js sw.js 2>/dev/null) $(node ${path.join(__dirname, 'lib/locks.cjs')} "$d")"; done | sort)" = "$(printf 'app.js .: @rspack/core@2.2.8 ms@2.1.3\\nsw.js .: @rspack/core@2.2.8 debug@2.6.9 ms@2.0.0')"`;
 // consts-only and consts-default as installed packages (npm links a file: directory)
 const RSPACK_CONSTS = 'rm -rf node_modules/consts-only node_modules/consts-default && cp -r pkgs/consts-only pkgs/consts-default node_modules/';
 // (and the copy of modern-normalize.css was minimized: not the package file's bytes)
@@ -590,8 +590,9 @@ const MF_RUNTIME = (v) => ['error-codes', 'runtime', 'runtime-core', 'sdk', 'web
 const FEDERATION = (v) => ({ host: [...MF_RUNTIME(v), 'lodash-es@4.18.1'], remote: [...MF_RUNTIME(v), 'lodash-es@4.18.1', 'ms@2.1.3'] });
 // with tree shaking of the shared lodash-es (RSPACK_MF_TS=1), rspack builds it again for each, in a compiler of its own
 // (IndependentSharedPlugin's, created while the build runs) into <output>/independent-packages/lodash_es/. The oracle
-// builds the config's compilers and does not see those
-const FEDERATION_TS = { 'host/independent-packages/lodash_es': ['lodash-es@4.18.1'], 'remote/independent-packages/lodash_es': ['lodash-es@4.18.1'] };
+// builds the config's compilers and does not see those: they are lodash-es and rspack (the fixture's 2.2.8), whose
+// runtime is in each
+const FEDERATION_TS = { 'host/independent-packages/lodash_es': ['@rspack/core@2.2.8', 'lodash-es@4.18.1'], 'remote/independent-packages/lodash_es': ['@rspack/core@2.2.8', 'lodash-es@4.18.1'] };
 // rspack-monaco: Monaco, its workers' (ms only in the custom language's), lodash-es, the own worker's is-number
 const MONACO = ['is-number@7.0.0', 'lodash-es@4.18.1', 'monaco-editor@0.52.2', 'ms@2.1.3'];
 // dev-server.cjs <command>: the lockfile a dev server serves from memory, written to dist/ afterwards
@@ -789,11 +790,11 @@ const cases = [
     sbom: [
       // the package ships only the build output: the SBOM lists exactly what is in the bundle
       { name: 'build output', stage: { 'usr/share/app/dist': 'dist' },
-        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK)] },
+        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK), npmPkg('webpack', '5.111.1', 'MIT', DIST_LOCK)] },
       // the package also ships the project's own lockfile: the SBOM gets the union, incl. the never-bundled
       // is-number and the project itself (see README)
       { name: 'build output + project lockfile', stage: { 'usr/share/app/dist': 'dist', 'usr/share/app/package-lock.json': 'package-lock.json' },
-        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK),
+        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK), npmPkg('webpack', '5.111.1', 'MIT', DIST_LOCK),
           npmPkg('lodash-es', '4.18.1', 'MIT', PROJECT_LOCK), npmPkg('is-number', '7.0.0', 'MIT', PROJECT_LOCK),
           npmPkg('fixture-wp5-devdeps-npm', '1.0.0', 'NOASSERTION', PROJECT_LOCK)] },
     ] },

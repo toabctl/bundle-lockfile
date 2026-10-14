@@ -113,11 +113,21 @@ function rspackResult(stats, oracleDist, sources = new Set()) {
     const rel = path.relative(oracleDist, outputPath).split(path.sep).join('/');
     const json = s.toJson(STATS_OPTIONS);
     const copied = rspackCopies(s.compilation, json, outputPath);
-    const pkgs = packagesFromStats(json, s.compilation.compiler.context, copied);
+    // and rspack, whose runtime is in the JavaScript chunks
+    const pkgs = [...packagesFromStats(json, s.compilation.compiler.context, copied), ...bundlerOf(json, compilerBundler(s.compilation.compiler))];
     result[rel] = [...new Set([...(result[rel] || []), ...pkgs])].sort();
     for (const f of filesFromStats(json, s.compilation.compiler.context, copied)) sources.add(f);
   }
   return result;
 }
 
-module.exports = { STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles, rspackCopies, rspackResult };
+// The bundler whose code is in the output (test/lib/bundlers.cjs): `id` (name@version, of the compiler the oracle ran)
+// if a chunk of the compilation is a JavaScript file
+const JS_FILE = (f) => typeof f === 'string' && /\.[cm]?js$/.test(f.split('?')[0]);
+const bundlerOf = (json, id) => ((json.chunks || []).some(c => (c.files || []).some(JS_FILE))
+  || (json.assets || []).some(a => JS_FILE(a.name) && (a.chunks || []).length) ? [id] : []);
+// name@version of a compiler's bundler: rspack's @rspack/core, or webpack (also Next.js' copy) at the version it says
+const compilerBundler = (compiler, fallback) => (compiler.webpack && compiler.webpack.rspackVersion ? `@rspack/core@${compiler.webpack.rspackVersion}`
+  : compiler.webpack && compiler.webpack.version ? `webpack@${compiler.webpack.version}` : fallback);
+
+module.exports = { bundlerOf, compilerBundler, STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles, rspackCopies, rspackResult };

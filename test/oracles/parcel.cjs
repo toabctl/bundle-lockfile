@@ -41,4 +41,9 @@ const walk = (d) => {
   }
 };
 walk(out);
-console.log(JSON.stringify({ '': owner.packagesOf(files) }));
+// and @parcel/packager-js, whose prelude and module wrappers are in the JavaScript bundles (test/lib/bundlers.cjs)
+// (as Parcel resolves its plugins: from its default config, which names it)
+const bl = require('../lib/bundlers.cjs');
+const configDir = (() => { try { return path.dirname(require('module').createRequire(path.resolve('package.json')).resolve('@parcel/config-default/package.json')); } catch { return '.'; } })();
+const packager = bl.hasJs(out) ? [bl.resolved('@parcel/packager-js', configDir) || bl.resolved('@parcel/packager-js', '.')].filter(Boolean) : [];
+console.log(JSON.stringify({ '': [...new Set([...owner.packagesOf(files), ...packager])].sort() }));

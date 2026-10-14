@@ -36,7 +36,9 @@ function unlanded() {
   if (!state.unmatched.size) return;
   const listed = require('./outputs.cjs').listedPaths();
   const missing = new Map();
-  for (const pkgs of state.unmatched.values()) for (const p of pkgs) if (!listed.has(p.path)) missing.set(p.path, p);
+  // (not the bundler of such a chunk, whose own code is in every one: rolldown-vite 7 generates a chunk of nothing else)
+  const { isBundlerPath } = require('./bundler.cjs');
+  for (const pkgs of state.unmatched.values()) for (const p of pkgs) if (!listed.has(p.path) && !isBundlerPath(p.path)) missing.set(p.path, p);
   config.debug(`${state.unmatched.size} chunk(s) of builds that write nothing themselves reached no written output`);
   if (!missing.size) return;
   const names = [...missing.values()].map(p => `${p.name}@${p.version}`).sort();

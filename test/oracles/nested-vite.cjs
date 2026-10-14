@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
 const { execFileSync } = require('child_process');
+const { resolved } = require('../lib/bundlers.cjs');
 
 // The packages of the island's output files among sources (absolute paths, also through a node_modules link), by
 // byFile: { "<file relative to the island's output dir>": [name@version, ...] }. The island oracle builds the same
@@ -36,7 +37,8 @@ function rolldownIsland() {
   for (const name of fs.readdirSync(out).filter(n => n.endsWith('.map'))) {
     const map = JSON.parse(fs.readFileSync(path.join(out, name), 'utf8'));
     const sources = (map.sources || []).map(src => path.resolve(out, map.sourceRoot || '', src.split('?')[0]));
-    byFile[name.slice(0, -'.map'.length)] = owner.packagesOf(sources); // see owner.cjs
+    // see owner.cjs; and the Rolldown that wrote it (test/lib/bundlers.cjs)
+    byFile[name.slice(0, -'.map'.length)] = [...owner.packagesOf(sources), ...[resolved('rolldown', '.')].filter(Boolean)].sort();
   }
   return byFile;
 }

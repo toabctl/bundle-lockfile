@@ -152,7 +152,7 @@ function source(url, realSrc, entry, strict = true) {
     `const api = globalThis[Symbol.for('bundle-lockfile.esm')];`,
     `if (!api) ${noApi}`,
     `if (api && api.found) api.found(${id}, ${JSON.stringify(url)}, ${JSON.stringify(entry.wrap)}, ${JSON.stringify(entry.wrap)}.some(n => typeof real[n] === 'function'));`,
-    ...entry.wrap.map(n => `export const ${n} = api ? api.wrap(${id}, ${JSON.stringify(n)}, real.${n}) : real.${n};`),
+    ...entry.wrap.map(n => `export const ${n} = api ? api.wrap(${id}, ${JSON.stringify(n)}, real.${n}, ${JSON.stringify(url)}) : real.${n};`),
   ].filter(Boolean).join('\n') + '\n';
 }
 

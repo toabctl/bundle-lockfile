@@ -7,7 +7,8 @@
 // every emitted source file>] } (for oracles/nested.cjs)
 const path = require('path');
 const { createRequire } = require('module');
-const { STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles } = require('./stats.cjs');
+const { STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles, bundlerOf, compilerBundler } = require('./stats.cjs');
+const { workboxRollup } = require('../lib/bundlers.cjs');
 
 const req = createRequire(path.join(process.cwd(), 'package.json'));
 const webpack = req('webpack');
@@ -29,7 +30,9 @@ webpack(Array.isArray(config) ? configs : configs[0], (err, stats) => {
     const rel = path.relative(oracleDist, outputPath).split(path.sep).join('/');
     const json = s.toJson(STATS_OPTIONS);
     const copied = copiedFiles(s.compilation, json, outputPath);
-    const pkgs = packagesFromStats(json, s.compilation.compiler.context, copied);
+    // and the webpack that built it (webpack 4: no compiler.webpack, the module's version)
+    const pkgs = [...packagesFromStats(json, s.compilation.compiler.context, copied), ...bundlerOf(json, compilerBundler(s.compilation.compiler, `webpack@${req('webpack/package.json').version}`)),
+      ...workboxRollup(outputPath)]; // (GenerateSW's service worker, workbox-build's Rollup)
     result[rel] = [...new Set([...(result[rel] || []), ...pkgs])].sort();
     for (const f of filesFromStats(json, s.compilation.compiler.context, copied)) sources.add(f);
   }

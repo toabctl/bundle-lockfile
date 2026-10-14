@@ -18,6 +18,7 @@ const generated = require('../core/generated.cjs');
 const { hashOf } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
+const { bundlerPackage } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
 const WRAPPED = Symbol.for('bundle-lockfile.esbuild.wrapped'); // on the original exports and on their replacement
@@ -169,7 +170,8 @@ const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs
 // A build that has run (no errors): writes its lockfile, or keeps the packages of what it generated in memory.
 // Calls done() once the lockfile has landed. state (the plugin's, optional): { inlined (see watched), since: when the
 // build started (ms), late: the files written into the output after the last build, version: esbuild's, as it reports
-// itself }.
+// itself, file: the esbuild module whose build() ran (its package is listed for the JavaScript it writes: esbuild's
+// runtime helpers, __commonJS, __toESM and the like, are in it; see core/bundler.cjs) }.
 function finish(options, result, done, state = {}) {
   const place = placeOf(options);
   if (!place) { config.debug('esbuild: output below node_modules, left alone'); return done(null); }
@@ -181,13 +183,18 @@ function finish(options, result, done, state = {}) {
       return done(null);
     }
     const entries = entryFiles(metafile, wd);
-    const { byOutput, all, byFile, found } = collect(metafile, wd, entries, state.inlined);
+    const { byOutput, all: own, byFile, found } = collect(metafile, wd, entries, state.inlined);
+    // esbuild itself, in an output with JavaScript
+    const js = [...byOutput.keys()].some(f => JS.test(f));
+    const runtime = js && state.file ? [bundlerPackage('esbuild', state.file, ['esbuild', 'esbuild-wasm'], state.version)].filter(Boolean) : [];
+    found.add('runtime', runtime);
+    const all = packages.unique(own, runtime);
     const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
     // written by esbuild? Not with write: false (nor without outdir and outfile)
     const written = dir && [...byOutput.keys()].some(f => fs.existsSync(f));
     if (!written) {
       for (const of of (result.outputFiles || [])) {
-        const pkgs = pkgsOf(byOutput.get(of.path) || []);
+        const pkgs = packages.unique(pkgsOf(byOutput.get(of.path) || []), JS.test(of.path) ? runtime : []);
         if (JS.test(of.path) || CSS.test(of.path)) generated.addChunk(of.text !== undefined ? of.text : of.contents, pkgs);
         else generated.addAsset(of.contents, pkgs);
       }
@@ -200,7 +207,7 @@ function finish(options, result, done, state = {}) {
     let pkgs = all;
     for (const [file, inputs] of byOutput) {
       if (!JS.test(file) && !CSS.test(file)) continue;
-      const own = pkgsOf(inputs);
+      const own = packages.unique(pkgsOf(inputs), JS.test(file) ? runtime : []);
       // a JavaScript file with the bytes of a generate-only build's chunk (core/generated.cjs)
       let gen = null;
       if (JS.test(file) && generated.any()) { try { gen = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
@@ -241,8 +248,8 @@ function finish(options, result, done, state = {}) {
 }
 
 // The plugin of one build() / context() call; inlined: see watched.
-function createPlugin(inlined) {
-  const state = { inlined, since: undefined, late: new Set() };
+function createPlugin(inlined, file) {
+  const state = { inlined, since: undefined, late: new Set(), file };
   return {
     name: NAME,
     setup(build) {
@@ -271,7 +278,8 @@ const flat = (plugins) => (Array.isArray(plugins) ? plugins.filter(p => p && typ
 
 // The options of a build() / context() call with the plugin, unless it has it already, is Vite's own, or writes below
 // node_modules; the caller's object is left as it is.
-function attach(options) {
+// file: the esbuild module whose build() / context() was called (see finish)
+function attach(options, file) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) return options;
   const plugins = flat(options.plugins);
   if (plugins.some(p => p.name === NAME)) return options;
@@ -279,18 +287,18 @@ function attach(options) {
   if (!placeOf(options)) { config.debug('esbuild: output below node_modules, left alone'); return options; }
   config.debug('esbuild: adding the plugin to a build');
   const w = watched();
-  return { ...options, plugins: [...w.plugins(Array.isArray(options.plugins) ? options.plugins : []), createPlugin(w.inlined)] };
+  return { ...options, plugins: [...w.plugins(Array.isArray(options.plugins) ? options.plugins : []), createPlugin(w.inlined, file)] };
 }
 
 // buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs
 // synchronously up to the write, which is queued: a process that exits right away still writes it - see
 // core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
-function wrapSync(fn, version) {
+function wrapSync(fn, version, file) {
   return function (options, ...rest) {
     if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
     const result = fn.call(this, { ...options, metafile: true }, ...rest);
-    finish(options, result, () => {}, { version });
+    finish(options, result, () => {}, { version, file });
     if (!asked) delete result.metafile;
     problems.failIfAny((err) => { throw err; });
     return result;
@@ -336,9 +344,10 @@ module.exports = {
       if (typeof exp.buildSync === 'function') copy.buildSync = wrapOld(exp.buildSync, exp.version, true);
     } else {
       const build = exp.build, context = exp.context;
-      copy.build = function (options, ...rest) { return build.call(this, attach(options), ...rest); };
-      if (typeof context === 'function') copy.context = function (options, ...rest) { return context.call(this, attach(options), ...rest); };
-      if (typeof exp.buildSync === 'function') copy.buildSync = wrapSync(exp.buildSync, exp.version);
+      const file = resolve();
+      copy.build = function (options, ...rest) { return build.call(this, attach(options, file), ...rest); };
+      if (typeof context === 'function') copy.context = function (options, ...rest) { return context.call(this, attach(options, file), ...rest); };
+      if (typeof exp.buildSync === 'function') copy.buildSync = wrapSync(exp.buildSync, exp.version, file);
     }
     copy.default = copy;
     Object.defineProperty(copy, '__esModule', { value: true });

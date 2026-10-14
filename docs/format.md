@@ -26,7 +26,8 @@ and an output directory that is the project) is never replaced: the build fails.
 
 ## Example
 
-A webpack build that bundles `debug` 2.6.9 (with its own `ms` 2.0.0) and `ms` 2.1.3:
+A webpack build that bundles `debug` 2.6.9 (with its own `ms` 2.0.0) and `ms` 2.1.3, and lists webpack, whose runtime is
+in the bundle:
 
 ```json
 {
@@ -36,7 +37,8 @@ A webpack build that bundles `debug` 2.6.9 (with its own `ms` 2.0.0) and `ms` 2.
     "": {},
     "node_modules/debug": { "name": "debug", "version": "2.6.9", "license": "MIT" },
     "node_modules/debug/node_modules/ms": { "name": "ms", "version": "2.0.0", "license": "MIT" },
-    "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" }
+    "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" },
+    "node_modules/webpack": { "name": "webpack", "version": "5.111.1", "license": "MIT" }
   },
   "bundle-lockfile": {
     "v": 2,
@@ -44,8 +46,8 @@ A webpack build that bundles `debug` 2.6.9 (with its own `ms` 2.0.0) and `ms` 2.
     "self": "dist/bundle-lockfile",
     "writers": [
       { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
-        "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms"],
-        "bundler": { "name": "webpack", "version": "5.111.1" }, "via": { "chunk": [0, 1, 2] } }
+        "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms", "node_modules/webpack"],
+        "bundler": { "name": "webpack", "version": "5.111.1" }, "via": { "chunk": [0, 1, 2], "runtime": [3] } }
     ]
   }
 }
@@ -235,6 +237,7 @@ configuration.
     | `nested` | files another build wrote, whose lockfile lists the package ([nested bundles](#nested-bundles)) |
     | `vendored` | a [vendored copy](#which-package-a-file-belongs-to) |
     | `traced` | files Next.js traced for its server, which loads them from `node_modules` at runtime |
+    | `runtime` | the bundler itself: its runtime, chunk wrappers and helpers are in the JavaScript it writes ([what is listed](coverage.md#also-listed)) |
 - `outside` (only if there are any): the keys of packages outside the project, so that another process listing the
   same package does not list it a second time.
 - `unknown` (only if there are any): the keys of packages whose location is not known — read from a copy's record, or

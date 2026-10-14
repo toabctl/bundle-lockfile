@@ -82,6 +82,14 @@ hook:
 Every process logs how ES modules are hooked with `BUNDLE_LOCKFILE_DEBUG=1`, e.g. `ESM hooks: sync (Node 24.21.0)`.
 The details are in [internals.md](internals.md#vite-rollup-rolldown).
 
+## Every bundler
+
+Each output with a JavaScript file lists the bundler whose own code is in it, at the copy that ran
+([what is listed](coverage.md#also-listed)): webpack (Next.js' copy as `node_modules/next/dist/compiled/webpack`),
+`@rspack/core`, Rollup or Rolldown, and for a Vite build also `vite` (or `rolldown-vite`), esbuild (for Angular, the
+esbuild its builder runs), Parcel's `@parcel/packager-js`. Its version is its `package.json`'s; a copy without one
+(Next.js') has the version the bundler reports. A bundler bundle-lockfile cannot place fails the build (strict mode).
+
 ## Vite, Rollup, Rolldown
 
 - Vite 8's dependency pre-bundling (`vite dev`) is never hooked, wherever its cache directory (`cacheDir`) is.
@@ -157,7 +165,9 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
 - The command line and the Go API are not hooked; their metafile (`--metafile=meta.json`) gives the lockfile:
   `node /opt/bundle-lockfile/bin/bundle-lockfile-from-metafile meta.json` writes it into the directory of the outputs
   (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one). It sees no
-  `watchFiles` and no files copied with fs; it reads the settings and fails as a build would.
+  `watchFiles` and no files copied with fs; it reads the settings and fails as a build would. It lists the esbuild the
+  working directory resolves, as the bundler of the JavaScript outputs; `--bundler <package dir>` names another
+  (Angular's builder's esbuild), `--bundler none` none (a metafile Bun wrote: Bun is no npm package).
 
 ## Parcel
 
@@ -171,7 +181,9 @@ writes the lockfile too.
 - It lists the packages of the assets of every bundle (also of bundles inlined into others), except those the
   scope-hoisting packager leaves out (no side effects, no used symbol, not referenced). CSS `@import`s and files a
   style sheet's `url()` loads (fonts) are assets. So is Parcel's runtime, which loads lazy bundles: Parcel generates it
-  as a file of `@parcel/runtime-js`, which is listed.
+  as a file of `@parcel/runtime-js`, which is listed. The prelude and module wrappers around the JavaScript bundles'
+  assets are written by Parcel's JavaScript packager: `@parcel/packager-js`, as the project resolves it, is listed for
+  every output with a JavaScript bundle.
 - Sass and Less partials (`@use`, `@import`) are inlined by Parcel's transformers and no assets: not listed.
 - A problem fails the build: the reporter throws, Parcel reports the build as failed.
 ## Angular

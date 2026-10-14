@@ -19,11 +19,13 @@ const outputs = require(path.join(SRC, 'core/outputs.cjs'));
 const { hashOf } = require(path.join(SRC, 'core/hashes.cjs'));
 const { portable, exportPath } = require(path.join(SRC, 'core/paths.cjs'));
 const { filesOfOutputs, fileOfInput } = require(path.join(SRC, 'adapters/esbuild.cjs'));
+const { bundlerPackage } = require(path.join(SRC, 'core/bundler.cjs'));
+const { createRequire } = require('module');
 
-const usage = 'usage: bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>]';
+const usage = 'usage: bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>] [--bundler <package dir>|none]';
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); if (!v) { console.error(usage); process.exit(2); } return v; };
-const wdArg = opt('--working-dir'), outArg = opt('--out');
+const wdArg = opt('--working-dir'), outArg = opt('--out'), bundlerArg = opt('--bundler');
 if (args.length !== 1 || args[0].startsWith('-')) { console.error(usage); process.exit(2); }
 for (const msg of config.invalid) problems.problem(msg);
 const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
@@ -58,17 +60,32 @@ else {
   if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else {
     const entries = Object.values(metafile.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
     const result = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });
-    const { all, byFile } = result;
+    const { byFile } = result;
+    // the bundler whose code is in the JavaScript outputs (its runtime helpers, see src/core/bundler.cjs): the package
+    // --bundler names (its directory), else the esbuild the working directory resolves; --bundler none: none (Bun's
+    // metafile: Bun is no npm package). Neither: a problem
+    const found = via.ofFiles(result, kinds);
+    let runtime = [];
+    if (files.some(f => /\.[cm]?js$/i.test(f)) && bundlerArg !== 'none') {
+      let pj = null;
+      if (bundlerArg) pj = path.join(path.resolve(bundlerArg), 'package.json');
+      else try { pj = createRequire(path.join(wd, 'x')).resolve('esbuild/package.json'); } catch { /* none */ }
+      if (pj && fs.existsSync(pj)) {
+        const name = (() => { try { return JSON.parse(fs.readFileSync(pj, 'utf8')).name; } catch { return null; } })();
+        runtime = [bundlerPackage('metafile', pj, [name || 'esbuild'])].filter(Boolean);
+      } else problems.problem(`${bundlerArg ? `${bundlerArg} has no package.json` : `${wd} resolves no esbuild`}: the bundler that wrote ${metaFile} is not known - name its package directory with --bundler (or --bundler none)`);
+    }
+    found.add('runtime', runtime);
+    const all = packages.unique(result.all, runtime);
     const hashes = {}, contents = {};
     for (const [file, inputs] of byOutput) {
       if (!/\.([cm]?js|css)$/i.test(file)) continue;
       const h = hashOf(file);
-      if (h) { hashes[file] = h; contents[file] = packages.unique(...inputs.map(f => byFile.get(f) || [])).map(p => p.path); }
+      if (h) { hashes[file] = h; contents[file] = packages.unique(...inputs.map(f => byFile.get(f) || []), /\.[cm]?js$/i.test(file) ? runtime : []).map(p => p.path); }
     }
     const target = path.join(dir, config.file);
     const writer = JSON.stringify(['metafile', portable(wd, metaFile)]);
-    // (no bundler: the metafile does not say which one wrote it - esbuild, Bun, Angular)
-    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents, via: via.ofFiles(result, kinds) });
+    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents, via: found });
     outputs.emitted(target, writer);
     outputs.prune(target, writer, (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT')), () => {
       outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {

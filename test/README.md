@@ -76,6 +76,12 @@ A case that expects a lockfile checks every lockfile the build writes:
   says why (a global store or cache, copies of outputs);
 - no other `package-lock.json` below the output directory (e.g. from a child compiler);
 - it lists the expected packages (exactly, or including / excluding given ones);
+- it lists the bundler whose code is in it (webpack, `@rspack/core`, Rollup, Rolldown, Vite, esbuild, Parcel's
+  `@parcel/packager-js`; `lib/bundlers.cjs`): each a package installed in the fixture (or Next.js' webpack, at its
+  version). Which one exactly, and whether one, the oracle says: each oracle adds the bundler package of its own build,
+  from the fixture's installed `package.json` files (a case without an oracle needs one where its writers wrote
+  JavaScript). The expected lists above leave the bundlers out, whose versions the fixtures do not all pin (Vite's
+  Rollup, workbox-build's);
 - it agrees exactly with an oracle (`oracles/`): an independent build per bundler that derives the packages from the
   bundler's own reporting (webpack's stats, Vite's and Rollup's source maps) and shares no code with the adapters. A
   case names the packages its oracle cannot see (CSS-only packages, fonts loaded by `url()`, copied files and service

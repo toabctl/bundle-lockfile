@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const owner = require('./owner.cjs');
 const { spawnSync } = require('child_process');
+const { hasJs, viteBundlers } = require('../lib/bundlers.cjs');
 
 const dirArg = process.argv.indexOf('--dir');
 const ownDir = dirArg >= 0 ? path.resolve(process.argv.splice(dirArg, 2)[1]) : null;
@@ -83,7 +84,21 @@ const walk = (d) => {
 };
 walk(ownDir || out);
 
-// the packages of each output's source files: see owner.cjs
+// the packages of each output's source files: see owner.cjs; with JavaScript in it, also Vite and its Rollup or
+// Rolldown (test/lib/bundlers.cjs)
+const viteAndBundler = viteBundlers();
+// an adapter's own bundle (--dir: adapter-netlify's edge function): also the bundler the adapter bundles it with, as its
+// package.json depends on (esbuild: adapter-netlify 5; rolldown: 7)
+const adapterBundler = (() => {
+  if (!ownDir || !/edge-functions/.test(ownDir)) return [];
+  let dir = null;
+  try { dir = path.dirname(require('module').createRequire(path.resolve('package.json')).resolve('@sveltejs/adapter-netlify/package.json')); } catch { return []; }
+  const j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  return ['esbuild', 'rolldown'].filter(n => (j.dependencies || {})[n]).map(n => require('../lib/bundlers.cjs').resolved(n, dir)).filter(Boolean);
+})();
 const result = {};
-for (const [key, files] of Object.entries(byOutput)) result[key] = owner.packagesOf(files);
+for (const [key, files] of Object.entries(byOutput)) {
+  const js = hasJs(ownDir || (key ? path.join(out, key) : out));
+  result[key] = [...new Set([...owner.packagesOf(files), ...(js ? [...viteAndBundler, ...adapterBundler] : [])])].sort();
+}
 console.log(JSON.stringify(result));

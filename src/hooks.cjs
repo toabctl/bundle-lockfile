@@ -2,7 +2,7 @@
 // Module-load hooks shared by all adapters.
 //
 // An adapter is { name, onCjsLoad?(exports, request, resolve), cjsFiles?, cjsPackages?, esmEntries?, esmPackages?,
-// esmWrap?(id, name, fn), esmCompanions? }.
+// esmWrap?(id, name, fn, url), esmCompanions? }.
 // - onCjsLoad(exports, request, resolve) is called for every CommonJS module once it has run (and an ES module that
 //   require() loads), and patches the bundler when it recognizes it - or returns { exports }, which replace the module's
 //   exports (esbuild's are getters, which cannot be patched). request is the module's file name as adapters
@@ -11,7 +11,7 @@
 //   when Node loads them without the CommonJS hook (see esm-wrap.cjs cjsSource). cjsPackages: npm packages whose use
 //   makes a process one that builds with the adapter's CommonJS bundlers (see installCjs).
 // - esmEntries ({ id, suffixes, wrap }, see esm-wrap.cjs) are ESM modules replaced by a wrapper whose functions in
-//   `wrap` go through esmWrap(id, name, fn), which returns the function to use instead. esmPackages: npm packages
+//   `wrap` go through esmWrap(id, name, fn, url) (url: the entry module's), which returns the function to use instead. esmPackages: npm packages
 //   whose use makes a process a bundler process (see esmMode). esmCompanions ({ id, names, file }): a CommonJS file
 //   (RegExp of its path) the ES-module build of a bundler loads, the safety net for a thread without ESM hooks (see
 //   companion); names: the bundlers (BUNDLE_LOCKFILE_DISABLE) of which one must be enabled.
@@ -253,13 +253,13 @@ function otherLoader(argv = [process.env.NODE_OPTIONS || '', ...process.execArgv
 
 function installEsm(entries, cjsFiles) {
   globalThis[ESM] = {
-    wrap(id, name, fn) {
+    wrap(id, name, fn, url) {
       for (const a of adapters) {
         if (!a.esmWrap) continue;
         // the entry module is the bundler's: without the wrapped function its builds write no lockfile
         const before = problems.count();
         let w = null;
-        try { w = a.esmWrap(id, name, fn); } catch (e) { problems.problem(`${a.name} adapter failed to wrap ${id} ${name}`, e); }
+        try { w = a.esmWrap(id, name, fn, url); } catch (e) { problems.problem(`${a.name} adapter failed to wrap ${id} ${name}`, e); }
         failLoad(before);
         if (w) return w;
       }
