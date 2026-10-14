@@ -121,4 +121,41 @@ test('installed package.json files: read by image scans, by syft dir: only with 
     assert.deepEqual(trivyPkgs('rootfs', srv), INSTALLED);
   });
 
+// BUNDLE_LOCKFILE_TREE (src/core/tree.cjs): a package.json per package next to the lockfile. on: image scans report
+// every package (from the tree), directory scans too (from the lockfile) - each exactly once, with its license; only:
+// the tree without a package-lock.json (the record in record.json), for image scans alone.
+const { writeTree } = require('../src/core/tree.cjs');
+const licensed = (pairs) => Object.fromEntries(pairs);
+const syftLicensed = (...args) => licensed(run('syft', ['scan', ...args, '-q', '-o', 'json']).artifacts.filter(a => a.type === 'npm')
+  .map(a => [`${a.name}@${a.version}`, (a.licenses || []).map(l => norm(l.value)).sort().join(' OR ') || null]));
+const trivyLicensed = (mode, target) => licensed((run('trivy', [mode, '-q', '--skip-version-check', '--format', 'cyclonedx', target]).components || [])
+  .filter(c => c.type === 'library').map(c => [`${c.group ? `${c.group}/` : ''}${c.name}@${c.version}`,
+    (c.licenses || []).map(l => norm(l.expression || (l.license && (l.license.id || l.license.name)))).sort().join(' OR ') || null]));
+const countOf = (...args) => run('syft', ['scan', ...args, '-q', '-o', 'json']).artifacts.filter(a => a.type === 'npm').length;
+const treeOut = J(tmp, 'tree-on'), onlyOut = J(tmp, 'tree-only');
+for (const [o, name] of [[treeOut, 'package-lock.json'], [onlyOut, 'record.json']]) {
+  fs.mkdirSync(J(o, 'bundle-lockfile'), { recursive: true });
+  fs.writeFileSync(J(o, 'bundle-lockfile', name), json);
+  fs.writeFileSync(J(o, 'main.js'), '');
+  writeTree(J(o, 'bundle-lockfile'), json);
+}
+
+test('BUNDLE_LOCKFILE_TREE=on: image and directory scans report every package once, with its license',
+  { skip: missing(hasSyft, 'syft') || missing(hasTrivy, 'trivy') }, () => {
+    assert.deepEqual(syftLicensed(`dir:${treeOut}`, '--override-default-catalogers', 'image'), WANT);
+    assert.equal(countOf(`dir:${treeOut}`, '--override-default-catalogers', 'image'), ALL.length);
+    assert.deepEqual(trivyLicensed('rootfs', treeOut), WANT);
+    assert.deepEqual(syftLicensed(`dir:${treeOut}`), WANT);
+    assert.equal(countOf(`dir:${treeOut}`), ALL.length);
+    assert.deepEqual(trivyLicensed('fs', treeOut), WANT);
+  });
+
+test('BUNDLE_LOCKFILE_TREE=only: image scans report every package, directory scans none',
+  { skip: missing(hasSyft, 'syft') || missing(hasTrivy, 'trivy') }, () => {
+    assert.deepEqual(syftLicensed(`dir:${onlyOut}`, '--override-default-catalogers', 'image'), WANT);
+    assert.deepEqual(trivyLicensed('rootfs', onlyOut), WANT);
+    assert.deepEqual(syftPkgs(`dir:${onlyOut}`), []);
+    assert.deepEqual(trivyPkgs('fs', onlyOut), []);
+  });
+
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

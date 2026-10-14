@@ -8,6 +8,7 @@ const path = require('path');
 const config = require('./config.cjs');
 const packages = require('./packages.cjs');
 const generated = require('./generated.cjs');
+const { inTree } = require('./tree.cjs');
 const copies = require('./copies.cjs');
 const { ancestors, packageRoot, posix } = require('./paths.cjs');
 
@@ -57,7 +58,7 @@ function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
       if (++seen > MAX_SCAN) return;
       const file = path.join(d, e.name);
       if (e.isDirectory()) { if (file !== skip) walk(file); continue; }
-      if (!e.isFile() || known.has(file)) continue;
+      if (!e.isFile() || known.has(file) || inTree(file)) continue; // (a copied lockfile's package.json tree: no package's)
       let st;
       try { st = fs.statSync(file); } catch { continue; }
       if (st.mtimeMs < since) continue;

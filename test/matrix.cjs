@@ -932,6 +932,21 @@ const cases = [
   // export dir: a copy of every lockfile outside the output (go:embed, jars, copies that drop it), optionally only there
   { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR and the inline lockfile', fixture: 'wp5-npm', cmd: 'npm run -s build', exportDir: true, expect: W5 },
   { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR only (BUNDLE_LOCKFILE_INLINE=0)', fixture: 'wp5-npm', cmd: 'npm run -s build', exportOnly: true, expect: W5 },
+  // BUNDLE_LOCKFILE_TREE (src/core/tree.cjs): a package.json per entry next to each lockfile, which image scans read
+  // (syft's image catalogers, trivy rootfs) - the same packages, each once; the runner checks the tree and both scans
+  ...[['webpack 5.111.1', 'wp5-npm', 'npm run -s build', W5, {}], ['rspack 2.2.8', 'rspack2.2-npm', 'npm run -s build', W5, {}],
+    ['Vite 8.3.3', 'vite8-npm', 'npm run -s build', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }],
+    ['Rollup 4 command line', 'rollup-cli', 'npm run -s build', ['lodash-es@4.18.1', 'nanoid@3.3.20'], {}]].map(([what, fixture, cmd, expect, more]) => (
+    { name: `tree: BUNDLE_LOCKFILE_TREE=on, ${what}`, fixture, cmd, env: { BUNDLE_LOCKFILE_TREE: 'on' }, expect, ...more })),
+  { name: 'tree: BUNDLE_LOCKFILE_TREE=on, watch mode: the tree follows every rebuild', fixture: 'wp5-npm', cmd: `${WATCH} src/index.js "import('nanoid')"`,
+    env: { BUNDLE_LOCKFILE_TREE: 'on' }, expect: W5, watchBuilds: [W5, W5.filter(p => !p.startsWith('nanoid@')), W5] },
+  { name: 'tree: BUNDLE_LOCKFILE_TREE=on, two webpack processes, one output dir, in parallel', fixture: 'edge-shared-output', cmd: PARALLEL,
+    env: { BUNDLE_LOCKFILE_TREE: 'on' }, expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
+  { name: 'tree: BUNDLE_LOCKFILE_TREE=on with BUNDLE_LOCKFILE_EXPORT_DIR: the tree in the export directory too', fixture: 'wp5-npm', cmd: 'npm run -s build',
+    env: { BUNDLE_LOCKFILE_TREE: 'on' }, exportDir: true, expect: W5 },
+  // only: no package-lock.json (directory scans read nothing), the record in record.json; image scans read the tree
+  { name: 'tree: BUNDLE_LOCKFILE_TREE=only, webpack 5.111.1', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_TREE: 'only' },
+    lockfile: 'bundle-lockfile/record.json', expect: W5 },
   // NODE_OPTIONS overwritten by the build script: no lockfile, unless the node shim is first in PATH
   { name: 'shim: a script overwriting NODE_OPTIONS drops the --require (no shim)', fixture: 'wp5-npm', cmd: 'npm run -s build-reset', expect: null },
   { name: 'shim: npm, script overwriting NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build-reset', shim: true, expect: W5 },

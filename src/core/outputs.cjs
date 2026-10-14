@@ -14,6 +14,7 @@ const { cmp, toPackageLock, readMeta, reanchor, unknownPackage } = require('./lo
 const { readPackage } = require('./manifest.cjs');
 const { exportPath } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
+const { writeTree } = require('./tree.cjs');
 const copies = require('./copies.cjs');
 const lru = require('./lru.cjs');
 
@@ -42,6 +43,12 @@ function contextsOf(target) {
     for (const w of writers.values()) for (const b of [w.building, w.landed]) if (b && b.context) out.add(b.context);
   }
   return [...out];
+}
+
+// Writes a lockfile (or a copy, an export copy) and, with BUNDLE_LOCKFILE_TREE, its tree next to it (core/tree.cjs).
+function writeLock(file, content) {
+  writeAtomic(file, content);
+  if (config.tree !== 'off') writeTree(path.dirname(file), content);
 }
 
 // The file other processes see: the lockfile in the output, or its export copy if it is not written inline.
@@ -227,7 +234,7 @@ function copied(src, dest, isDirectory) {
     try { json = reanchor(fs.readFileSync(to, 'utf8'), anchor, path.dirname(to), contextsOf(target)); } catch { continue; } // not copied after all
     if (json === null) continue; // no record written where it comes from: left as it is
     // a copy that cannot be re-anchored keeps the record of where it was copied from, and is not followed
-    try { writeAtomic(to, json); } catch (e) { problems.problem(`could not write the copy ${to} of ${from}`, e); continue; }
+    try { writeLock(to, json); } catch (e) { problems.problem(`could not write the copy ${to} of ${from}`, e); continue; }
     lru.set(outputs.copies, to, { target, content: json }, MAX_COPIES);
     config.debug('copied lockfile', from, '->', to, '- its record is for where it is now');
   }
@@ -262,7 +269,7 @@ function outputCopy(src, dest, isDirectory) {
     if (content !== null) {
       json = reanchor(content, path.dirname(target), path.dirname(copy), contextsOf(target));
       if (json === null) return; // no record anchored there
-      try { writeAtomic(copy, json); } catch (e) { problems.problem(`could not write ${copy}, the lockfile of a copy of ${odir}`, e); return; }
+      try { writeLock(copy, json); } catch (e) { problems.problem(`could not write ${copy}, the lockfile of a copy of ${odir}`, e); return; }
     }
     lru.set(outputs.copies, copy, { target, content: json }, MAX_COPIES);
     config.debug('a copy of the output', odir, 'in', root, '- its lockfile:', copy);
@@ -283,7 +290,7 @@ function follow(target, content) {
     try {
       const json = reanchor(content, path.dirname(target), path.dirname(copy), contextsOf(target));
       if (json === null) { outputs.copies.delete(copy); continue; }
-      writeAtomic(copy, json);
+      writeLock(copy, json);
       c.content = json;
     } catch (e) { outputs.copies.delete(copy); problems.problem(`could not write the copy ${copy} of ${target}`, e); }
   }
@@ -292,7 +299,7 @@ function follow(target, content) {
 // writeFile for rewrite(): a lockfile on the real disk, which other processes read - never one that bundle-lockfile
 // did not write (see ours)
 function writeDisk(file) {
-  return (content, cb) => { try { ours(file); writeAtomic(file, content); } catch (e) { return cb(e); } cb(); };
+  return (content, cb) => { try { ours(file); writeLock(file, content); } catch (e) { return cb(e); } cb(); };
 }
 
 // Throws if `file` is there and is not a lockfile bundle-lockfile wrote (it has no "bundle-lockfile" record): the
@@ -337,7 +344,7 @@ function rewrite(target, writeFile, done) {
       const exported = (err) => {
         let file;
         try { file = exportOf(target); } catch (e) { return finish(err || e); }
-        if (file) try { writeAtomic(file, content); } catch (e) { return finish(err || e); }
+        if (file) try { writeLock(file, content); } catch (e) { return finish(err || e); }
         if (!err) follow(target, content);
         finish(err);
       };
