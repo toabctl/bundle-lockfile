@@ -187,7 +187,10 @@ writes the lockfile too.
   as a file of `@parcel/runtime-js`, which is listed. The prelude and module wrappers around the JavaScript bundles'
   assets are written by Parcel's JavaScript packager: `@parcel/packager-js`, as the project resolves it, is listed for
   every output with a JavaScript bundle.
-- Sass and Less partials (`@use`, `@import`) are inlined by Parcel's transformers and no assets: not listed.
+- Sass and Less partials (`@use`, `@import`) are inlined by Parcel's transformers and no assets: they are listed from
+  Parcel's request graph, where the transformers record them as files the style sheet's asset depends on (also in a
+  build from `.parcel-cache`, which transforms nothing again). A build with style sheets whose request graph cannot be
+  read fails (strict).
 - A problem fails the build: the reporter throws, Parcel reports the build as failed.
 ## Angular
 

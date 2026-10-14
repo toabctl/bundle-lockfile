@@ -20,11 +20,67 @@ const { bundlerPackage } = require('../core/bundler.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.parcel.patched');
 const PARCEL = /[\\/]@parcel[\\/]core[\\/]lib[\\/]Parcel\.js$/;
+const TRACKER = /[\\/]@parcel[\\/]core[\\/]lib[\\/]RequestTracker\.js$/;
 const REPORTER = path.join(__dirname, 'parcel-reporter');
 const JS_CSS = /\.([cm]?js|css)$/i;
 const CODE_TYPES = new Set(['js', 'jsx', 'ts', 'tsx', 'css', 'html', 'json']); // Parcel's asset types that are code
 // @parcel/core's version, as the patched copy's package.json says (the record's bundler)
 let version = null;
+
+// Files a transformer inlines into an asset - a Sass partial, a Less @import - are no assets of their own: the
+// transformer records them as invalidations of the asset's request (asset.invalidateOnFileChange), which Parcel keeps
+// in its request graph, also across builds (.parcel-cache: a cached asset is not transformed again). Each RequestTracker
+// of this process (one per Parcel) is remembered when it runs a request; the reporter reads, for every bundled asset's
+// file, the asset requests that file invalidates and the other files those requests depend on.
+const trackers = new Set();
+let trackerApi = null; // { edge, projectPath, isAsset(node) } of the RequestTracker module, see patchTracker
+function patchTracker(exp, resolve) {
+  if (!exp || typeof exp !== 'object' || exp[PATCHED]) return;
+  const RT = exp.default;
+  const edge = exp.requestGraphEdgeTypes && exp.requestGraphEdgeTypes.invalidated_by_update;
+  let projectPath = null;
+  try { projectPath = require(path.join(path.dirname(resolve()), 'projectPath.js')); } catch { /* checked below */ }
+  if (typeof RT !== 'function' || !RT.prototype || typeof RT.prototype.runRequest !== 'function' || typeof edge !== 'number'
+    || !projectPath || typeof projectPath.toProjectPath !== 'function' || typeof projectPath.fromProjectPath !== 'function') {
+    problems.problem(`parcel: ${resolve()} is no RequestTracker bundle-lockfile knows (runRequest, requestGraphEdgeTypes, projectPath): the style sheets Parcel's transformers inline (Sass partials, Less @imports) would be missing`);
+    return;
+  }
+  // an asset request: 2.0 - 2.8 keep the request in the node (type 'request', value.type 'asset_request'); later ones
+  // its type (requestType, one of requestTypes)
+  const assetType = exp.requestTypes && exp.requestTypes.asset_request;
+  trackerApi = { edge, projectPath, isAsset: (n) => !!n && (assetType != null ? n.requestType === assetType
+    : n.type === 'request' && !!n.value && n.value.type === 'asset_request') };
+  const run = RT.prototype.runRequest;
+  RT.prototype.runRequest = function () { trackers.add(this); return run.apply(this, arguments); };
+  exp[PATCHED] = true;
+  config.debug('parcel: patched', resolve());
+}
+
+// Map(file -> the bundled asset's file it was inlined into) of the files Parcel's transformers inlined into the assets
+// `sources` (absolute paths): the other files their asset requests depend on that core/packages.cjs inlinedFile counts
+// (no code, no build tool's settings). null: no request graph of this project to read.
+function inlinedOf(projectRoot, sources) {
+  if (!trackerApi) return null;
+  const { edge, projectPath, isAsset } = trackerApi;
+  const mine = [...trackers].filter(t => t && t.graph && t.options && t.options.projectRoot === projectRoot);
+  if (!mine.length) return null;
+  const out = new Map();
+  for (const { graph } of mine) {
+    for (const src of sources) {
+      const key = projectPath.toProjectPath(projectRoot, src);
+      if (!graph.hasContentKey(key)) continue;
+      for (const id of graph.getNodeIdsConnectedTo(graph.getNodeIdByContentKey(key), edge)) {
+        if (!isAsset(graph.getNode(id))) continue;
+        for (const inv of graph.getInvalidations(id)) {
+          if (!inv || inv.type !== 'file' || typeof inv.filePath !== 'string') continue;
+          const f = projectPath.fromProjectPath(projectRoot, inv.filePath);
+          if (f !== src && !sources.has(f) && !out.has(f) && packages.inlinedFile(f)) out.set(f, src);
+        }
+      }
+    }
+  }
+  return out;
+}
 
 // The options of a new Parcel(), with the reporter (Parcel's own command line passes its reporters this way; one
 // there already - configured by hand - is not added again). Resolved by its absolute path from the project (its root,
@@ -122,6 +178,15 @@ async function report({ event, options }) {
   try { writes = collect(event.bundleGraph, projectRoot); } catch (e) { problems.problem('parcel: could not collect the bundled packages of the build', e); }
   for (const w of writes) {
     try {
+      // the files transformers inlined into the bundled assets (Sass partials, Less @imports): with style sheets among
+      // the assets, a build whose request graph cannot be read would miss them
+      let inlined = null;
+      try { inlined = inlinedOf(projectRoot, w.sources); } catch (e) { problems.problem(`parcel: could not read the request graph of ${projectRoot}`, e); }
+      if (!inlined) {
+        if ([...w.sources].some(f => packages.STYLE.test(f))) problems.problem(`parcel: no request graph of ${projectRoot}: the style sheets Parcel's transformers inlined into ${w.dir} (Sass partials, Less @imports) would be missing`);
+        inlined = new Map();
+      }
+      for (const [f] of inlined) { w.sources.add(f); w.kinds.set(f, packages.STYLE.test(f) ? 'style' : 'inlined'); }
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
       const { byFile } = result;
       const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath));
@@ -136,7 +201,13 @@ async function report({ event, options }) {
         if (!h) continue;
         hashes[b.filePath] = h;
         const own = [];
-        b.traverseAssets((a) => { if (typeof a.filePath === 'string' && byFile.has(a.filePath) && !skipped(event.bundleGraph, b, a)) own.push(...byFile.get(a.filePath)); });
+        const into = new Set();
+        b.traverseAssets((a) => {
+          if (typeof a.filePath !== 'string' || skipped(event.bundleGraph, b, a)) return;
+          into.add(a.filePath);
+          if (byFile.has(a.filePath)) own.push(...byFile.get(a.filePath));
+        });
+        for (const [f, src] of inlined) if (into.has(src) && byFile.has(f)) own.push(...byFile.get(f));
         contents[b.filePath] = packages.unique(own, /\.[cm]?js$/i.test(b.filePath) ? runtime : []).map(p => p.path);
       }
       await write(w, all, context, { outputs: hashes, contents, via: found,
@@ -151,9 +222,10 @@ globalThis[Symbol.for('bundle-lockfile.parcel')] = { report: (...a) => report(..
 
 module.exports = {
   name: 'parcel',
-  cjsFiles: [PARCEL],
+  cjsFiles: [PARCEL, TRACKER],
   cjsPackages: ['parcel', '@parcel/core'], // processes that build with it (see hooks.cjs installCjs)
   onCjsLoad(exp, request, resolve) {
+    if (request.endsWith('RequestTracker.js') && TRACKER.test(request)) return patchTracker(exp, resolve);
     if (!request.endsWith('Parcel.js') || !PARCEL.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
     const Parcel = exp.default;
     if (typeof Parcel !== 'function' || !Parcel.prototype || typeof Parcel.prototype.run !== 'function' || typeof Parcel.prototype.watch !== 'function') {
@@ -173,6 +245,8 @@ module.exports = {
   },
   report,
   withReporter,
+  inlinedOf,
+  patchTracker,
   skipped,
   REPORTER,
 };

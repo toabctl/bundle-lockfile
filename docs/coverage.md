@@ -35,7 +35,7 @@ the source maps show none of its code.
   loader's `this.addDependency`, a plugin's `this.addWatchFile`):
   - style sheets `@import`ed from packages: CSS, Sass, Less and Stylus in Vite, Rollup and Rolldown; Sass, Less,
     postcss-import and Tailwind through their webpack loaders, also in a Vue single-file component's `<style>` block
-    and an Angular component's styles;
+    and an Angular component's styles; Sass and Less partials in Parcel builds (from its request graph);
   - images and fonts from packages that a style sheet inlines as `data:` URLs: in webpack and rspack builds (also
     those mini-css-extract-plugin builds at build time, in no chunk), in esbuild builds (the `dataurl`, `base64`,
     `text` and `binary` loaders), and in Vite builds from 6.1 on (an image that JavaScript inlines with
@@ -93,8 +93,7 @@ the source maps show none of its code.
 - helpers a transpiler or plugin generates into the code: Babel's inlined helpers (not those of `@babel/runtime`,
   which is a package: listed), TypeScript's and swc's, @rollup/plugin-commonjs's - the code is in the output, the
   package that wrote it is not listed (Babel's CVE-2025-27789 is in such helpers); Angular's chunk optimizer
-  (Rolldown), which re-bundles Angular's chunks;
-- Sass and Less partials that Parcel's transformers inline (no assets).
+  (Rolldown), which re-bundles Angular's chunks.
 
 ## Listed although not shipped
 
