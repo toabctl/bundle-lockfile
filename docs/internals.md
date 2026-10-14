@@ -33,6 +33,7 @@ flowchart LR
   esm -- "@rspack/core/dist/index.js<br/>(rspack 2: @rspack/cli, Rsbuild)" --> rspatch
   cjs -- "rollup/dist/shared/rollup.js<br/>(rollup command line, workbox-build)" --> rpatch["rollup() / rollupInternal() wrapped"]
   cjs -- "esbuild/lib/main.js<br/>(require and import of esbuild)" --> epatch["exports replaced by a copy:<br/>build() context() buildSync() wrapped"]
+  cjs -- "@parcel/core/lib/Parcel.js<br/>(parcel command line, its API)" --> ppatch["Parcel replaced by a subclass:<br/>the reporter in additionalReporters"]
   esm -- "rollup/dist/es/rollup.js (Vite 5-7)<br/>rolldown/dist/index.mjs (Vite 8)" --> wrap["entry module replaced by a wrapper<br/>(esm-wrap.cjs): rollup() rolldown()<br/>watch() build() wrapped"]
 
   wpatch -- "every top-level compiler,<br/>on its first compile()" --> wplugin["BundleLockfilePlugin<br/>(adapters/webpack-family.cjs)"]
@@ -386,6 +387,22 @@ sequenceDiagram
 - esbuild before 0.17 has no `context()` (rebuilds were `build({ incremental })`): a call that would write an output
   fails (strict mode) instead of writing no lockfile.
 
+## Parcel
+
+`@parcel/core` is Babel's CommonJS, one file per module; its `lib/index.js` re-exports `lib/Parcel.js`'s default
+through a getter, read when the command line or a tool constructs a Parcel. The adapter replaces that default with a
+subclass whose constructor adds the reporter to `additionalReporters`: the option Parcel's command line adds its own
+reporters with, prepended to the config's reporters (`ParcelConfigRequest`), loaded in every process (not from
+`.parcel-cache`). Parcel loads a plugin by its package name, here the absolute path of `src/adapters/parcel-reporter/`
+(a `package.json` with `engines.parcel`; the plugin is the object at `Symbol.for('parcel-plugin-config')`, as
+`@parcel/plugin` makes it), resolved from the project: Yarn Plug'n'Play's resolver resolves nothing from a directory
+outside the project. Parcel requires the plugin's own modules through that resolver too, so the reporter reaches the
+adapter through a global, not `require()`.
+
+On `buildSuccess` the reporter goes through `bundleGraph.getBundles({ includeInline: true })`, per target directory,
+and each bundle's `traverseAssets`. An asset the scope-hoisting packager skips - `sideEffects: false`, no used symbol
+(`getUsedSymbols`), not referenced by the bundle (`isAssetReferenced`) - is left out, as Parcel's packager decides.
+
 ## webpack: which file a module is
 
 A module counts as the file webpack itself names it by (its `nameForCondition`: the path `module.rules` match it
@@ -409,6 +426,7 @@ src/adapters/rollup.cjs   Rollup, Rolldown, Vite: which source files are in a bu
 src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that reads the metafile's inputs per output
 src/adapters/rolldown-watch.cjs  Rolldown: the files its plugins inlined (addWatchFile of its plugin contexts), per build and module
 bin/bundle-lockfile-from-metafile  the lockfile from an esbuild metafile (the command line, the Go API)
+src/adapters/parcel.cjs   Parcel: adds the reporter (parcel-reporter/) to every Parcel; the assets of its bundles
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/via.cjs        how each package was found (the record's "via")
@@ -426,7 +444,7 @@ src/core/outputs.cjs    writers of each lockfile, in this process and others; wr
 src/core/lock.cjs       lock across processes, atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record
 src/core/problems.cjs   what makes a lockfile missing or incomplete: fails the build (strict mode) or is a warning
-src/core/unsupported.cjs builds it recognizes but does not hook (Turbopack, Parcel, the rolldown command line, ncc)
+src/core/unsupported.cjs builds it recognizes but does not hook (Turbopack, the rolldown command line, ncc)
 src/core/config.cjs     settings (environment variables, the settings file), debug, warning and error output
 ```
 
@@ -440,7 +458,7 @@ never replaced, and two lockfiles at one export path), taking or creating the lo
 (`BUNDLE_LOCKFILE_INLINE=0` without an export directory), a bundled package without a `package.json`, patching or
 wrapping a bundler, a bundler it recognizes but does not know (an entry without the functions to wrap, a compiler of
 another shape, Rollup before 2.78, an esbuild without `build()`, or before 0.17), attaching to a compiler, an
-unsupported rspack (1.0, 0.x when it compiles), a build bundle-lockfile recognizes but does not hook (Turbopack, Parcel,
+unsupported rspack (1.0, 0.x when it compiles), a build bundle-lockfile recognizes but does not hook (Turbopack,
 the `rolldown` command line, ncc, webpack < 4: `core/unsupported.cjs`, the webpack adapter), installing the ESM hooks in
 a bundler process (or a Node.js without them), an ES-module bundler loaded in a thread without them, a Node.js without
 the CommonJS hook points (`Module.prototype._compile`, `Module._extensions`) in a process that builds with a CommonJS
@@ -455,6 +473,7 @@ problems at the end of its hooks:
 | a compiler the plugin cannot be applied to | a compilation error in each of its compilations (if not even `thisCompilation` can be tapped: `compile()` calls back with the error) | – |
 | Rollup, Rolldown, Vite | `this.error()` in `generateBundle` | `writeBundle` rejects; `closeBundle` throws, except in watch mode, where it prints the error |
 | esbuild | – | `onEnd` returns the problems as errors: `build()` and `rebuild()` reject, `watch()` prints them; `buildSync()` throws |
+| Parcel | – | the reporter throws on `buildSuccess`: Parcel reports the build as failed (exit code 1) |
 | a bundler that could not be hooked (patching or wrapping it failed, or it is of a shape the adapter does not know) | loading it fails: its `require()` or `import` throws the error (also in a worker or child process whose exit code nobody reads) | |
 | no build (a setting, the settings file, a second copy) | the process exits with code 1 (unless it already fails) | |
 

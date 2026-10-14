@@ -1,0 +1,8 @@
+{
+  "name": "bundle-lockfile-parcel-reporter",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bundle-lockfile's Parcel reporter (see src/adapters/parcel.cjs): Parcel loads it by this directory's path",
+  "main": "index.cjs",
+  "engines": { "parcel": ">=2.0.0" }
+}

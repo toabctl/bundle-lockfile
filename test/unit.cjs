@@ -1244,10 +1244,10 @@ test('hooks: a throwing adapter is reported and does not break require()', () =>
 
 test('register: BUNDLE_LOCKFILE_DISABLE=all installs no hooks', () => {
   const script = `const M = require('module'); const before = M._extensions['.js']; require(${JSON.stringify(J(SRC, 'register.cjs'))}); console.log(M._extensions['.js'] === before);`;
-  // the rollup, rspack and esbuild adapters hook CommonJS modules too (Rollup's CommonJS build, rspack, esbuild): only
-  // off with all names
-  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild', 'true'],
-    ['webpack,rollup,rolldown,vite,rspack', 'false'], ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false'], ['esbuild', 'false']]) {
+  // the rollup, rspack, esbuild and parcel adapters hook CommonJS modules too (Rollup's CommonJS build, rspack, esbuild,
+  // @parcel/core): only off with all names
+  for (const [disable, untouched] of [['all', 'true'], ['webpack,rollup,rolldown,vite,rspack,esbuild,parcel', 'true'], ['ALL', 'true'], [' Webpack ,ROLLUP,rolldown, vite,RSPACK,ESBuild,Parcel', 'true'],
+    ['webpack,rollup,rolldown,vite,rspack,esbuild', 'false'], ['webpack,rollup,rolldown,vite,rspack', 'false'], ['webpack,rollup,rolldown,vite', 'false'], ['webpack', 'false'], ['webpack,vite', 'false'], ['', 'false'], ['rspack', 'false'], ['esbuild', 'false']]) {
     const r = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, BUNDLE_LOCKFILE_DISABLE: disable }, encoding: 'utf8' });
     assert.equal(r.stdout.trim(), untouched, `BUNDLE_LOCKFILE_DISABLE=${disable}: ${r.stderr}`);
   }
@@ -3827,7 +3827,7 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
-  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild or all');
+  assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
   for (const k of ['INLINE', 'STRICT', 'DEBUG']) {
     for (const v of ['yes', 'no', '2', 'disabled']) assert.equal(one({ [`BUNDLE_LOCKFILE_${k}`]: v }), `BUNDLE_LOCKFILE_${k}=${v} is not recognized (1, true or on; 0, false or off)`);
@@ -4105,8 +4105,74 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   assert.equal(run(['meta.json', '--out']).status, 2);
 });
 
+// Parcel: a fake @parcel/core lib/Parcel.js and bundle graph of the public API's shape (BundleGraph, Bundle, Asset)
+test('parcel adapter: the Parcel class gets the reporter in its options; another shape fails (strict)', () => withConfig({ strict: true }, () => {
+  const parcel = require('../src/adapters/parcel.cjs');
+  const where = '/p/node_modules/@parcel/core/lib/Parcel.js';
+  class Parcel { constructor(o) { this.options = o; } run() {} watch() {} }
+  const exp = { __esModule: true, default: Parcel };
+  parcel.onCjsLoad(exp, where, () => where);
+  assert.notEqual(exp.default, Parcel);
+  assert.equal(exp.default.name, 'Parcel');
+  const rep = (o) => o.additionalReporters.map(r => r.packageName);
+  const cli = new exp.default({ entries: 'a', additionalReporters: [{ packageName: '@parcel/reporter-cli', resolveFrom: '/x' }] });
+  assert.ok(cli instanceof Parcel);
+  assert.deepEqual(rep(cli.options), ['@parcel/reporter-cli', parcel.REPORTER]); // last, after Parcel's own
+  assert.deepEqual(rep(new exp.default({ entries: 'a' }).options), [parcel.REPORTER]);
+  assert.deepEqual(rep(new exp.default(parcel.withReporter({ entries: 'a' })).options), [parcel.REPORTER]); // once
+  const patched = exp.default;
+  parcel.onCjsLoad(exp, where, () => where);
+  assert.equal(exp.default, patched); // once per module
+  // the reporter Parcel loads by its directory: engines.parcel, the plugin under Symbol.for('parcel-plugin-config')
+  assert.equal(JSON.parse(fs.readFileSync(J(parcel.REPORTER, 'package.json'), 'utf8')).engines.parcel, '>=2.0.0');
+  assert.equal(typeof require(parcel.REPORTER).default[Symbol.for('parcel-plugin-config')].report, 'function');
+  problems.take();
+  parcel.onCjsLoad({ default: class X {} }, where, () => where);
+  assert.match(problems.take().join('\n'), /exports no Parcel class bundle-lockfile knows/);
+  parcel.onCjsLoad({ default: Parcel }, '/p/node_modules/@parcel/core/lib/ParcelConfig.js', () => '');
+  assert.equal(problems.count(), 0);
+}));
+
+function fakeBundleGraph(bundles) {
+  const asset = (filePath, o = {}) => ({ filePath, sideEffects: o.sideEffects !== false, used: o.used || new Set(['default']), ref: !!o.ref });
+  const bs = bundles.map(b => ({ ...b, env: { shouldScopeHoist: b.scope !== false }, assets: b.assets.map(a => (typeof a === 'string' ? asset(a) : asset(a.f, a))),
+    traverseAssets(fn) { for (const a of this.assets) fn(a); }, getMainEntry() { return this.assets[0]; } }));
+  return { getBundles: () => bs, getUsedSymbols: (a) => a.used, isAssetReferenced: (b, a) => a.ref };
+}
+
+test('parcel adapter: the reporter writes the packages of every bundle\'s assets per distDir, not those the packager skips', () => withConfig({ strict: true }, async () => {
+  const parcel = require('../src/adapters/parcel.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('inl'), ...pj('skip'), ...pj('ref'), ...pj('lib'), 'node_modules/nopj/i.js': '', 'src/i.js': '' });
+  for (const f of ['dist/main.js', 'dist/main.css', 'lib/out/index.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
+  const target = (d) => ({ name: d, distDir: J(root, d) });
+  const graph = fakeBundleGraph([
+    { filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'src/i.js'), J(root, 'node_modules/a/i.js'),
+      { f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }, { f: J(root, 'node_modules/ref/i.js'), sideEffects: false, used: new Set(), ref: true }] },
+    { filePath: J(root, 'dist/main.css'), target: target('dist'), assets: [J(root, 'node_modules/a/s.css')] },
+    { filePath: null, bundleBehavior: 'inline', target: target('dist'), assets: [J(root, 'node_modules/inl/i.js')] }, // inlined into another bundle
+    { filePath: J(root, 'lib/out/index.js'), target: target('lib/out'), assets: [J(root, 'node_modules/lib/i.js')] }, // another target
+  ]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options: { projectRoot: root } });
+  const dist = fs.readFileSync(J(root, 'dist', LOCK), 'utf8');
+  assert.deepEqual(lockedNames(dist), ['a', 'inl', 'ref']); // not skip: no side effects, no used symbol, not referenced
+  const w0 = JSON.parse(dist)['bundle-lockfile'].writers[0];
+  assert.equal(w0.bundler.name, 'parcel');
+  assert.deepEqual(Object.keys(w0.via), ['chunk']);
+  assert.deepEqual([...JSON.parse(dist)['bundle-lockfile'].writers[0].files].sort(), ['../main.css', '../main.js']);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'lib/out', LOCK), 'utf8')), ['lib']);
+  // other events: nothing; a problem: thrown (Parcel fails the build with it)
+  await parcel.report({ event: { type: 'buildStart' } });
+  const bad = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'node_modules/nopj/i.js')] }]);
+  await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options: { projectRoot: root } }), /no package\.json with name and version in \S*nopj/);
+  // without scope hoisting nothing is skipped
+  const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
+}));
+
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
-  const names = ['webpack', 'rollup', 'rspack', 'esbuild'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
+  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
   assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
 });
 
@@ -5030,15 +5096,12 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
     'node_modules/next/dist/bin/next': "if (process.env.FAKE_BUNDLER) process.env[process.env.FAKE_BUNDLER] = 'auto';\nconsole.log('built');\nprocess.exit(0);\n",
     'node_modules/@vercel/ncc/package.json': { name: '@vercel/ncc', version: '0.38.4' },
     'node_modules/@vercel/ncc/dist/ncc/index.js': 'module.exports = () => {};\n',
-    'node_modules/@parcel/core/package.json': { name: '@parcel/core', version: '2.16.4' },
-    'node_modules/@parcel/core/lib/Parcel.js': "class Parcel { async run() { return 'ran'; } async watch() { return 'watching'; } }\nexports.default = Parcel;\n",
-    'parcel.cjs': "const Parcel = require('@parcel/core/lib/Parcel.js').default;\nnew Parcel().watch().then(w => new Parcel().run().then(r => console.log(w, r), e => { console.log('failed:', e.message); process.exitCode = 3; }));\n",
     'ncc.cjs': "try { require('@vercel/ncc/dist/ncc/index.js'); console.log('loaded'); } catch (e) { console.log('failed:', e.message); process.exitCode = 3; }\n",
   });
   const node = (env, args) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), ...args], { cwd: root, encoding: 'utf8', env: { ...strictEnv(env.STRICT), ...env } });
   const ROLLDOWN = /the rolldown command line is not hooked: its builds write no lockfile/;
   const TURBO = /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile \(build with next build --webpack, or with next-rspack\)/;
-  // strict: the process fails (at exit: there is no build to fail), or the module's require() / Parcel's run()
+  // strict: the process fails (at exit: there is no build to fail), or the module's require()
   let r = node({}, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
   assert.deepEqual([r.status, r.stdout.trim()], [1, 'built']);
   assert.match(r.stderr, ROLLDOWN);
@@ -5047,8 +5110,6 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
   assert.match(r.stderr, TURBO);
   r = node({}, [J(root, 'ncc.cjs')]);
   assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*@vercel\/ncc builds with a webpack of its own/);
-  r = node({}, [J(root, 'parcel.cjs')]);
-  assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*Parcel is not hooked: its builds write no lockfile/);
   // STRICT=0: warnings, and the builds go on
   r = node({ STRICT: '0' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
   assert.equal(r.status, 0);
@@ -5059,9 +5120,6 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
   r = node({ STRICT: '0' }, [J(root, 'ncc.cjs')]);
   assert.equal(r.stdout.trim(), 'loaded');
   assert.match(r.stderr, /WARNING: @vercel\/ncc builds with a webpack of its own/);
-  r = node({ STRICT: '0' }, [J(root, 'parcel.cjs')]);
-  assert.equal(r.stdout.trim(), 'watching ran');
-  assert.match(r.stderr, /WARNING: Parcel is not hooked/);
   // not these: next build with webpack (no TURBOPACK) or next-rspack, next dev, rolldown disabled
   for (const [env, args] of [[{}, ['build']], [{ FAKE_BUNDLER: 'NEXT_RSPACK' }, ['build']], [{ FAKE_BUNDLER: 'TURBOPACK' }, ['dev']]]) {
     r = node(env, [J(root, 'node_modules/next/dist/bin/next'), ...args]);

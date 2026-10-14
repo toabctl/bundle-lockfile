@@ -80,7 +80,9 @@ the source maps show none of its code.
 - workspace packages and other linked first-party packages (their dependencies are listed);
 - the bundler's runtime code (webpack 5's runtime modules, Vite's preload helper and modulepreload polyfill,
   Rolldown's runtime, @rollup/plugin-commonjs's helpers), which is generated, not a package's file. webpack 4's
-  `webpack/buildin/*` are files of webpack, so webpack 4 builds list `webpack`.
+  `webpack/buildin/*` are files of webpack, so webpack 4 builds list `webpack`; Parcel generates its runtime as a file
+  of `@parcel/runtime-js`, which is listed;
+- Sass and Less partials that Parcel's transformers inline (no assets).
 
 ## Listed although not shipped
 

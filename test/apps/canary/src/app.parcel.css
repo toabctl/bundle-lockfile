@@ -1,0 +1,3 @@
+/* app.css for Parcel: a package's style sheet @imported (npm: is how Parcel names a package there), a package's image */
+@import 'npm:bl-canary-import/index.css';
+.bl-canary-icon { background-image: url('../node_modules/bl-canary-icon/icon.svg'); }
