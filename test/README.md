@@ -352,6 +352,24 @@ by name cost seconds on OHIF, and an output directory another plugin removed aft
 lockfile (Metabase). Not found by any tool: third-party code committed into a project's own directories without a
 `package.json` (OHIF's `public/es6-shim.min.js`).
 
+## Real projects before and after the 2026-10-13 changes
+
+Four Chainguard projects (recipe versions, Wolfi, Node.js 22, strict mode), each built three times: without
+bundle-lockfile, with d2d8d4a (before PRs #39 – #72) and with b6cfed4 (after them). The lockfiles of the two were
+compared per output; every difference is explained (2026-10-14):
+
+| Project | Bundler | Lockfiles before → after | Packages before → after | Differences | Build time: none / before / after |
+|---|---|---|---|---|---|
+| Superset 6.1.0 | webpack 5.105.4 | 1 → 1 | 545 → 546 | `webpack` (its runtime is in all 244 chunks) | 60.3 / 56.6 / 54.5 s |
+| Headlamp 0.45.0 | Vite 6.4.3 (Rollup 4.60.1) | 1 → 1 | 236 → 238 | `vite` (its preload runtime is in the output) and `rollup` | 37.1 / 37.9 / 36.9 s |
+| calico-whisker (calico 3.32.2) | Rsbuild 1.1.10, rspack 1.1.8 | 1 → 1 | 95 → 96 | `@rspack/core` | 10.9 / 11.2 / 11.0 s |
+| mailpit 1.31.4 | esbuild 0.28.2 | 0 → 1 | 0 → 22 | esbuild was not hooked before; the 21 packages other than `esbuild` are exactly those of the build's own metafile | 2.1 / 1.9 / 2.0 s |
+
+The differences are the bundler packages whose code is in the output (PR #69) and the newly hooked esbuild (#46,
+#57): no package was dropped, none was added otherwise. The build times are within the noise of the shared machine.
+LibreChat 0.8.8 was not compared: its recipe's install steps did not reproduce outside its build environment (its
+Vite build fails without bundle-lockfile too).
+
 ## Comparison with other tools
 
 `test/compare/` runs other tools that list a build's packages next to bundle-lockfile, without config changes, and
