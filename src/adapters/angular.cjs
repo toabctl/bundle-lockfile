@@ -24,7 +24,7 @@ const { bundlerPackage } = require('../core/bundler.cjs');
 const PATCHED = Symbol.for('bundle-lockfile.angular.patched');
 const EXECUTE_BUILD = /[\\/](@angular[\\/]build|@angular-devkit[\\/]build-angular)[\\/]src[\\/]builders[\\/]application[\\/]execute-build\.js$/;
 // Angular's BuildOutputFileType (tools/esbuild/bundler-files): where a file of the result goes
-const TYPE = { Browser: 0, ServerApplication: 2, Root: 4 };
+const TYPE = { Browser: 0, ServerApplication: 2, ServerRoot: 3, Root: 4 };
 // its metafiles with the stats option: one per side (22 and later), or both sides in one (stats.json: 17 - 21)
 const STATS = { browser: 'browser-stats.json', server: 'server-stats.json', both: 'stats.json' };
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
@@ -78,11 +78,26 @@ function complete(options, result, forced) {
     problems.problem('angular: a build without outputOptions and workspaceRoot bundle-lockfile knows: its lockfile would be missing');
     return;
   }
-  // the combined metafile of Angular 17 - 21: the server's outputs below the server directory (out.server/...).
-  // UNVERIFIED for SSR builds (no fixture yet): without SSR every output is the browser's.
+  // the combined metafile of Angular 17 - 21: both sides' outputs, keyed by their paths in their own directory
+  // (main.server.mjs, not server/main.server.mjs): each output is the side whose output files have its path - an
+  // output of both (the same name) counts for both. One no output file has (none Angular writes) counts for the browser
+  // in a build without a server, else for both: a package listed too many beats a missing one.
   if (stats.both && !stats.browser) {
-    const server = `${out.server || 'server'}/`, split = { browser: {}, server: {} };
-    for (const [k, v] of Object.entries(stats.both.outputs || {})) split[k.startsWith(server) ? 'server' : 'browser'][k] = v;
+    const sideOf = new Map();
+    for (const f of files) {
+      if (!f || typeof f.path !== 'string') continue;
+      const side = f.type === TYPE.Browser ? 'browser' : f.type === TYPE.ServerApplication || f.type === TYPE.ServerRoot ? 'server' : null;
+      if (!side) continue;
+      if (!sideOf.has(f.path)) sideOf.set(f.path, new Set());
+      sideOf.get(f.path).add(side);
+    }
+    const ssr = [...sideOf.values()].some(s => s.has('server'));
+    const split = { browser: {}, server: {} };
+    for (const [k, v] of Object.entries(stats.both.outputs || {})) {
+      const sides = sideOf.get(k) || (ssr ? ['browser', 'server'] : ['browser']);
+      if (!sideOf.has(k)) config.debug('angular: an output of its metafile without an output file:', k, '- counted for', [...sides].join(' and '));
+      for (const side of sides) split[side][k] = v;
+    }
     stats.browser = { outputs: split.browser };
     if (Object.keys(split.server).length) stats.server = { outputs: split.server };
   }
@@ -92,6 +107,8 @@ function complete(options, result, forced) {
   for (const side of ['browser', 'server']) {
     const metafile = stats[side];
     if (!metafile) continue;
+    // a server Angular does not write (outputMode static: prerendering only; no SSR entry) ships nothing: no lockfile
+    if (side === 'server' && out.ignoreServer) { config.debug('angular: the server output is not written (ignoreServer): no server lockfile'); continue; }
     // (via, see core/via.cjs: the outputs' inputs are chunks, files they inline style or inlined, Angular's asset copies
     // assets)
     const kinds = new Map();
@@ -108,8 +125,12 @@ function complete(options, result, forced) {
     found.add('runtime', runtime);
     const all = packages.unique(collected.all, runtime);
     const content = render(side, target, JSON.stringify(['angular', side, portable(context, out.base)]), all, context, own, found);
+    // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server file
+    // of the same name are one (the one added last): the server's lockfile is a file of the output path's root, at
+    // <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
     if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
-      result.addOutputFile(config.file, content, side === 'browser' ? TYPE.Browser : TYPE.ServerApplication);
+      if (side === 'browser') result.addOutputFile(config.file, content, TYPE.Browser);
+      else result.addOutputFile(path.posix.join(out.server || 'server', config.file.split(path.sep).join('/')), content, TYPE.Root);
     }
   }
 }
