@@ -201,7 +201,9 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
 | `.next/server/bundle-lockfile/` | edge server: middleware and routes with `runtime = 'edge'` (without packages if there are none) |
 
 - Next.js 16 builds with Turbopack by default, which is not hooked: the build fails when it ends (strict mode). Use
-  `next build --webpack` (or next-rspack).
+  `next build --webpack` (or next-rspack). Turbopack has no plugin API, and the module lists `next build --analyze`
+  writes (16.4) do not describe the written client chunks (it builds them again with other source map settings, so
+  their names and bytes differ), leave out modules merged into others, and leave out middleware.
 - With next-rspack, rspack builds the same compilers: the same lockfiles.
 - With the App Router, the server output uses Next's vendored React (`next/dist/compiled/react`), which is listed as
   `next`; the client output lists `react` and `react-dom`.
