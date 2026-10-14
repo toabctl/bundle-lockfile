@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+'use strict';
+// Writes the lockfile of an output from an esbuild metafile, for builds bundle-lockfile cannot hook: the esbuild
+// command line and Go API (--metafile), and other tools that write a metafile of esbuild's shape.
+//   bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>]
+// --working-dir: the build's working directory (esbuild's absWorkingDir), which the metafile's paths are relative to
+// (default: the current directory); --out: the output directory, where <BUNDLE_LOCKFILE_FILE> goes (default: the
+// directory of the metafile's outputs, the deepest one they all are in). The same rules as for a hooked build (see
+// docs/bundlers.md#esbuild), without what only a hook sees: style sheets plugins inline, files copied with fs. Settings
+// as for the preload (BUNDLE_LOCKFILE_*); a problem fails (exit code 1; BUNDLE_LOCKFILE_STRICT=0: a warning).
+const fs = require('fs');
+const path = require('path');
+const SRC = path.join(__dirname, '../src');
+const config = require(path.join(SRC, 'core/config.cjs'));
+const problems = require(path.join(SRC, 'core/problems.cjs'));
+const packages = require(path.join(SRC, 'core/packages.cjs'));
+const outputs = require(path.join(SRC, 'core/outputs.cjs'));
+const { hashOf } = require(path.join(SRC, 'core/hashes.cjs'));
+const { portable, exportPath } = require(path.join(SRC, 'core/paths.cjs'));
+const { filesOfOutputs, fileOfInput } = require(path.join(SRC, 'adapters/esbuild.cjs'));
+
+const usage = 'usage: bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>]';
+const args = process.argv.slice(2);
+const opt = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); if (!v) { console.error(usage); process.exit(2); } return v; };
+const wdArg = opt('--working-dir'), outArg = opt('--out');
+if (args.length !== 1 || args[0].startsWith('-')) { console.error(usage); process.exit(2); }
+for (const msg of config.invalid) problems.problem(msg);
+const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const wd = real(wdArg || process.cwd());
+const metaFile = path.resolve(args[0]);
+
+let metafile;
+try { metafile = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch (e) { problems.problem(`could not read the metafile ${metaFile}`, e); }
+if (metafile && (typeof metafile !== 'object' || !metafile.outputs || typeof metafile.outputs !== 'object')) {
+  problems.problem(`${metaFile} is no esbuild metafile (it has no "outputs")`);
+  metafile = null;
+}
+
+// the deepest directory all output files are in
+function commonDir(files) {
+  if (!files.length) return null;
+  let dir = path.dirname(files[0]);
+  for (const f of files) while (dir !== path.dirname(dir) && !f.startsWith(dir + path.sep)) dir = path.dirname(dir);
+  return dir;
+}
+
+function done() {
+  if (problems.failIfAny((err) => { console.error(`[bundle-lockfile] ERROR: ${err.message.replace(/\n$/, '')}`); process.exitCode = 1; })) return;
+}
+
+if (!metafile) done();
+else {
+  const byOutput = filesOfOutputs(metafile, wd);
+  const files = [...byOutput.keys()];
+  const dir = outArg ? path.resolve(outArg) : commonDir(files);
+  if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else {
+    const entries = Object.values(metafile.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
+    const { all, byFile } = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });
+    const hashes = {}, contents = {};
+    for (const [file, inputs] of byOutput) {
+      if (!/\.([cm]?js|css)$/i.test(file)) continue;
+      const h = hashOf(file);
+      if (h) { hashes[file] = h; contents[file] = packages.unique(...inputs.map(f => byFile.get(f) || [])).map(p => p.path); }
+    }
+    const target = path.join(dir, config.file);
+    const writer = JSON.stringify(['metafile', portable(wd, metaFile)]);
+    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents });
+    outputs.emitted(target, writer);
+    outputs.prune(target, writer, (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT')), () => {
+      outputs.rewrite(target, config.inline ? outputs.writeDisk(target) : null, (err) => {
+        if (err) problems.problem(`could not write ${target}`, err);
+        else config.debug('wrote', [config.inline && target, exportPath(target)].filter(Boolean).join(' and '));
+        done();
+      });
+    });
+  }
+}

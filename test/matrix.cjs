@@ -188,6 +188,7 @@ const fixtures = {
   'esbuild-pnpm10': esbuildApp('0.28.2', { type: 'pnpm', version: '10.34.6' }),
   'esbuild-yarn4-pnp': esbuildApp('0.28.2', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'esbuild-wasm': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-wasm': '0.28.2' }),
+  'esbuild-features': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-sass-plugin': '3.7.0', sass: '1.105.1', bulma: '1.0.4', 'sanitize.css': '13.0.0' }),
   // a project directory with "#" in its name, which is no fragment of the module ids
   'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
@@ -485,6 +486,10 @@ const DD_ENV = { DD_TRACE_AGENT_URL: 'http://127.0.0.1:9', DD_TRACE_TELEMETRY_EN
   DD_TRACE_STARTUP_LOGS: 'false', DD_REMOTE_CONFIGURATION_ENABLED: 'false' };
 // watch.cjs <file> <text>: rebuilds without the lines of <file> that contain <text>, then with them again
 const WATCH = `node ${path.join(__dirname, 'lib/watch.cjs')}`;
+// the metafile importer (bin/bundle-lockfile-from-metafile), for the esbuild command line
+const FROM_METAFILE = `node ${path.join(__dirname, '../bin/bundle-lockfile-from-metafile')}`;
+// the esbuild command line building what build.mjs's "build" mode builds, with a metafile
+const ESBUILD_CLI = './node_modules/.bin/esbuild src/main.js --bundle --outdir=dist --format=esm --splitting --loader:.woff2=file --log-level=warning --metafile=meta.json';
 const WATCH_FAIL = `node ${path.join(__dirname, 'lib/watch-fail.cjs')}`;
 const MEMFS = `node ${path.join(__dirname, 'lib/memfs-build.cjs')}`; // into memfs, then copied to the disk
 const ROLLUP_CLI_WATCH = `node ${path.join(__dirname, 'lib/rollup-cli-watch.cjs')}`; // rollup -c -w, rebuilt twice
@@ -1184,6 +1189,15 @@ const cases = [
   { name: 'esbuild 0.28.2: two build()s into one directory, one lockfile with the packages of both', fixture: 'esbuild', cmd: 'node build.mjs two',
     expect: [...ESBUILD, 'is-number@7.0.0'].sort(), oracleArgs: 'two', oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'esbuild 0.28.2: write: false writes no lockfile', fixture: 'esbuild', cmd: 'node build.mjs write-false', expect: null },
+  // the command line is esbuild's binary: not hooked; its metafile, read by the importer, gives the lockfile
+  { name: 'esbuild 0.28.2 command line: not hooked, no lockfile', fixture: 'esbuild', cmd: ESBUILD_CLI, expect: null },
+  { name: 'esbuild 0.28.2 command line, its metafile read by bundle-lockfile-from-metafile', fixture: 'esbuild', cmd: `${ESBUILD_CLI} && ${FROM_METAFILE} meta.json`,
+    expect: ESBUILD, oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // a style sheet a plugin inlines (esbuild-sass-plugin's watchFiles), a file another plugin's onEnd copies out of a
+  // package; the oracle's source maps see neither (the partial is inlined, the copy is none of esbuild's outputs)
+  { name: 'esbuild 0.28.2: a Sass partial esbuild-sass-plugin inlines, a package file another plugin copies in onEnd', fixture: 'esbuild-features',
+    cmd: 'node build.mjs features', oracleArgs: 'features', expect: ['bulma@1.0.4', 'lodash-es@4.18.1', 'sanitize.css@13.0.0'],
+    oracleMissing: ['bulma@1.0.4', 'sanitize.css@13.0.0'] },
   { name: 'esbuild 0.28.2: export directory only (an output Go embeds)', fixture: 'esbuild', cmd: 'node build.mjs build', exportOnly: true, expect: ESBUILD,
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'esbuild: BUNDLE_LOCKFILE_DISABLE=esbuild', fixture: 'esbuild', cmd: 'node build.mjs build', env: { BUNDLE_LOCKFILE_DISABLE: 'esbuild' }, expect: null },
@@ -1589,12 +1603,11 @@ const cases = [
       // no bundler reports a file inlined into a module; Vite writes no source maps for CSS, and none of the image it
       // inlines: its oracle does not see the style sheets' and the image's packages (here their markers do)
       oracleMissing: fixture.startsWith('canary-vite') ? [...CANARY_INLINED.all, CANARY_URL] : CANARY_INLINED.js })),
-  // esbuild: the shader include comes from an esbuild plugin's onLoad (its watchFiles), which bundle-lockfile does not
-  // read yet; the image a style sheet inlines (dataurl loader) is only among the style sheet's imports in the metafile,
-  // and the oracle's source maps have no source for a data: URL (its marker here shows it); new URL() is left as it is
+  // esbuild: the shader include comes from an esbuild plugin's onLoad (its watchFiles); the image a style sheet inlines
+  // (dataurl loader) is only among the style sheet's imports in the metafile; the oracle's source maps have no source
+  // for either (their markers here show them); new URL() is left as it is
   { name: 'canaries: esbuild 0.28.2', fixture: 'canary-esbuild', cmd: 'npm run -s build', oracleArgs: '--script esbuild.mjs',
-    expect: [...CANARY_JS, ...CANARY_INLINED.all].filter(p => p !== 'bl-canary-glsl@1.0.0').sort(), canaryUnlisted: ['bl-canary-glsl@1.0.0'],
-    oracleMissing: ['bl-canary-icon@1.0.0'] },
+    expect: [...CANARY_JS, ...CANARY_INLINED.all].sort(), oracleMissing: ['bl-canary-glsl@1.0.0', 'bl-canary-icon@1.0.0'] },
   // Rolldown's build() and watch() (also vite build --watch on Vite 8) have no build object with the watch files, nor
   // has a plugin from the config the build rolldown() returns: the files plugins inlined, from the plugin contexts
   ...['1.2.13', '1.0.0'].flatMap(v => ['rolldown', 'build', 'watch'].map(mode => (

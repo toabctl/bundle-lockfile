@@ -69,8 +69,6 @@ the source maps show none of its code.
 - files of packages that configure the build, which loaders and plugins read: `package.json` files, `tsconfig.json`
   and the bases it extends (`@tsconfig/*`), type declarations (`@types/*`), Babel, browserslist, PostCSS, SWC and
   ESLint settings;
-- style sheets that an esbuild plugin inlines (esbuild-sass-plugin's Sass partials): esbuild records only the file
-  the plugin loaded;
 - a package file webpack pulls in under a first-party match resource (`<name>!=!<loaders>!<file>`), e.g.
   vanilla-extract's placeholder in `@vanilla-extract/webpack-plugin`;
 - a package whose only use is a small constant that webpack 5.108+ inlined (`optimization.inlineExports`, on by

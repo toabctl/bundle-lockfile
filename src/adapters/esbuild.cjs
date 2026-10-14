@@ -15,6 +15,7 @@ const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { hashOf } = require('../core/hashes.cjs');
+const { filesWrittenAfter } = require('../core/late.cjs');
 const { portable, exportPath } = require('../core/paths.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -62,7 +63,8 @@ function fileOfInput(key, wd) {
 // A file a style sheet's url() names that is an input of no output was inlined into it (the dataurl, base64, text or
 // binary loader: an image as a data: URL), and counts for that output too: esbuild lists it only among the style
 // sheet's imports (kind url-token), not among the output's inputs. (With the file loader it is an output of its own.)
-function filesOfOutputs(metafile, wd) {
+// pluginInlined(key, file): the files a plugin inlined into that input (see watched), also counted.
+function filesOfOutputs(metafile, wd, pluginInlined = () => []) {
   const out = new Map();
   const outputs = Object.entries((metafile && metafile.outputs) || {});
   const inputs = (metafile && metafile.inputs) || {};
@@ -78,10 +80,42 @@ function filesOfOutputs(metafile, wd) {
         const inlined = fileOfInput(i.path, wd);
         if (inlined) files.push(inlined);
       }
+      files.push(...pluginInlined(key, f));
     }
     out.set(path.resolve(wd, o), files);
   }
   return out;
+}
+
+// The files plugins' onLoad callbacks report as watchFiles, per module they loaded: what they read to make it, e.g.
+// esbuild-sass-plugin's Sass partials, which it inlines into the CSS it returns - no modules, so not in the metafile
+// (esbuild #1268). Of those, the files a plugin inlines (core/packages.cjs inlinedFile: no code, no build tool's
+// settings) count for a module that reaches an output, as Rollup's watch files do (adapters/rollup.cjs). Every plugin of a build gets a build object whose onLoad records them; everything else is the
+// build's own. Keyed as the metafile names the module: its path relative to the working directory in the file
+// namespace (absolute here, see fileOfInput), "<namespace>:<path>" in another.
+function watched() {
+  const byModule = new Map();
+  const keyOf = (args) => (args.namespace && args.namespace !== 'file' ? `${args.namespace}:${args.path}` : args.path);
+  const wrapBuild = (build) => new Proxy(build, {
+    get(target, prop, receiver) {
+      const v = Reflect.get(target, prop, receiver);
+      if (prop !== 'onLoad' || typeof v !== 'function') return typeof v === 'function' ? v.bind(target) : v;
+      return (opts, cb) => v.call(target, opts, typeof cb !== 'function' ? cb : async (args) => {
+        const r = await cb(args);
+        if (r && Array.isArray(r.watchFiles) && args && typeof args.path === 'string') {
+          const style = r.watchFiles.filter(f => typeof f === 'string' && path.isAbsolute(f) && f !== args.path && packages.inlinedFile(f));
+          if (style.length) byModule.set(keyOf(args), style); else byModule.delete(keyOf(args));
+        }
+        return r;
+      });
+    },
+  });
+  // the plugins of the options, each with its setup given the recording build object (a plugin object of another shape
+  // is passed on as it is: esbuild rejects it)
+  const plugins = (list) => list.map(p => (p && typeof p === 'object' && typeof p.setup === 'function'
+    ? { ...p, setup(build) { return p.setup.call(p, wrapBuild(build)); } } : p));
+  const inlined = (key, file) => byModule.get(key) || (file && byModule.get(file)) || [];
+  return { plugins, inlined };
 }
 
 // The entry points of the options as files relative to the working directory, for the writer id: a list of paths, of
@@ -116,8 +150,8 @@ function writerOf(options, wd) {
 
 // The packages of a build's outputs, and the record of each JavaScript and CSS output for nested bundles: hashes
 // { file: "sha256-<hex>" } and contents { file: [package paths] }.
-function collect(metafile, wd, entries) {
-  const byOutput = filesOfOutputs(metafile, wd);
+function collect(metafile, wd, entries, inlined) {
+  const byOutput = filesOfOutputs(metafile, wd, inlined);
   const sources = [...new Set([...byOutput.values()].flat())];
   const { all, byFile } = packages.packagesOfFiles(sources, { context: realOr(wd), entries });
   return { byOutput, all, byFile };
@@ -127,8 +161,9 @@ const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs
   .map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
 
 // A build that has run (no errors): writes its lockfile, or keeps the packages of what it generated in memory.
-// Calls done(failure | null) once the lockfile has landed.
-function finish(options, result, done) {
+// Calls done() once the lockfile has landed. state (the plugin's, optional): { inlined (see watched), since: when the
+// build started (ms), late: the files written into the output after the last build }.
+function finish(options, result, done, state = {}) {
   const place = placeOf(options);
   if (!place) { config.debug('esbuild: output below node_modules, left alone'); return done(null); }
   const { dir, wd } = place;
@@ -139,7 +174,7 @@ function finish(options, result, done) {
       return done(null);
     }
     const entries = entryFiles(metafile, wd);
-    const { byOutput, all, byFile } = collect(metafile, wd, entries);
+    const { byOutput, all, byFile } = collect(metafile, wd, entries, state.inlined);
     const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
     // written by esbuild? Not with write: false (nor without outdir and outfile)
     const written = dir && [...byOutput.keys()].some(f => fs.existsSync(f));
@@ -168,6 +203,18 @@ function finish(options, result, done) {
     }
     const target = path.join(dir, config.file);
     const writer = writerOf(options, wd);
+    // files the other plugins' onEnd callbacks wrote into the output (authentik's fs.cp of assets out of packages,
+    // which run before this one: it is the last), see core/late.cjs - not those of the other writers there
+    if (state.since !== undefined) {
+      const known = new Set([...files, ...[...outputs.filesOf(target)].filter(f => !(state.late || new Set()).has(f))]);
+      const late = filesWrittenAfter(dir, { since: state.since, cwd: realOr(wd), skip: path.dirname(target), known, roots: [realOr(wd)] });
+      state.late = new Set(late.map(l => l.file));
+      if (late.length) {
+        config.debug('esbuild: files written into', dir, 'after the build:', late.map(l => path.relative(dir, l.file)).join(' '));
+        pkgs = packages.unique(pkgs, ...late.map(l => l.pkgs));
+        files.push(...state.late);
+      }
+    }
     outputs.record(target, writer, pkgs, realOr(wd), files, { disk: true, outputs: hashes, contents });
     outputs.emitted(target, writer);
     const exists = (f, cb) => fs.lstat(f, (err) => cb(!err || err.code !== 'ENOENT'));
@@ -184,8 +231,9 @@ function finish(options, result, done) {
   }
 }
 
-// The plugin of one build() / context() call. options: the options of that call (with this plugin).
-function createPlugin() {
+// The plugin of one build() / context() call; inlined: see watched.
+function createPlugin(inlined) {
+  const state = { inlined, since: undefined, late: new Set() };
   return {
     name: NAME,
     setup(build) {
@@ -194,6 +242,7 @@ function createPlugin() {
       // the result then: the caller gets what it asked for)
       const asked = options.metafile === true;
       options.metafile = true;
+      build.onStart(() => { state.since = Date.now() - 2000; }); // (file systems with coarse timestamps)
       build.onEnd((result) => new Promise((resolve) => {
         const end = () => {
           if (!asked && result) delete result.metafile;
@@ -202,7 +251,7 @@ function createPlugin() {
           resolve(errors ? { errors } : undefined);
         };
         if (!result || (result.errors && result.errors.length)) return end(); // a failed build wrote nothing
-        finish(options, result, end);
+        finish(options, result, end, state);
       }));
     },
   };
@@ -219,7 +268,8 @@ function attach(options) {
   if (vitesOwn(plugins)) { config.debug("esbuild: Vite's own build (dependency pre-bundling or scan, its config), left alone"); return options; }
   if (!placeOf(options)) { config.debug('esbuild: output below node_modules, left alone'); return options; }
   config.debug('esbuild: adding the plugin to a build');
-  return { ...options, plugins: [...(Array.isArray(options.plugins) ? options.plugins : []), createPlugin()] };
+  const w = watched();
+  return { ...options, plugins: [...w.plugins(Array.isArray(options.plugins) ? options.plugins : []), createPlugin(w.inlined)] };
 }
 
 // buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs
