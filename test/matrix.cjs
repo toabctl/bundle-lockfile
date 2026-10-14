@@ -1034,7 +1034,7 @@ const cases = [
     { name: `strict: a misspelled setting fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export' },
       expectError: /BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ },
     { name: `strict: a value that is not recognized fails the build (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'rsbuild' },
-      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular or all/ }]),
+      expectError: /BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular, next or all/ }]),
   ...[['webpack 5', 'wp5-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].map(([what, fixture]) => (
     { name: `STRICT=0: a misspelled setting is a warning (${what})`, fixture, cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORTDIR: '{fixture}/.export', BUNDLE_LOCKFILE_STRICT: '0' },
       expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile/ })),
