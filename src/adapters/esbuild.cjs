@@ -263,7 +263,8 @@ function createPlugin(inlined, file) {
       const asked = options.metafile === true;
       options.metafile = true;
       build.onStart(() => { state.since = Date.now() - 2000; }); // (file systems with coarse timestamps)
-      build.onEnd((result) => new Promise((resolve) => {
+      // (as part of this build, core/problems.cjs within: the problems of another build do not fail it)
+      build.onEnd((result) => problems.within(state, () => new Promise((resolve) => {
         const end = () => {
           if (!asked && result) delete result.metafile;
           /** @type {{ text: string, pluginName: string }[] | null} */
@@ -274,7 +275,7 @@ function createPlugin(inlined, file) {
         if (!result || (result.errors && result.errors.length)) return end(); // a failed build wrote nothing
         state.version = build.esbuild && build.esbuild.version;
         finish(options, result, state).then(end);
-      }));
+      })));
     },
   };
 }
@@ -300,6 +301,10 @@ function attach(options, file) {
 // core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
 function wrapSync(fn, version, file) {
   return /** @this {unknown} */ function (options, ...rest) {
+    return problems.within({}, () => buildSync.call(this, options, ...rest)); // (this call's problems)
+  };
+  /** @this {unknown} */
+  function buildSync(options, ...rest) {
     if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
     const result = fn.call(this, { ...options, metafile: true }, ...rest);
@@ -307,7 +312,7 @@ function wrapSync(fn, version, file) {
     if (!asked) delete result.metafile;
     problems.failIfAny((err) => { throw err; });
     return result;
-  };
+  }
 }
 
 // esbuild before 0.17 (build() with incremental / watch, no context()): not supported. A call that writes an output
@@ -315,6 +320,10 @@ function wrapSync(fn, version, file) {
 // write: false) go on.
 function wrapOld(fn, version, sync) {
   return /** @this {unknown} */ function (options, ...rest) {
+    return problems.within({}, () => oldBuild.call(this, options, ...rest)); // (this call's problems)
+  };
+  /** @this {unknown} */
+  function oldBuild(options, ...rest) {
     const place = options && typeof options === 'object' ? placeOf(options) : null;
     if (place && place.dir && !vitesOwn(flat(options.plugins))) {
       problems.problem(`esbuild ${version}: bundle-lockfile needs esbuild 0.17 or later; this build of ${place.dir} would write no lockfile`);
@@ -325,7 +334,7 @@ function wrapOld(fn, version, sync) {
       if (failure) return Promise.reject(failure);
     }
     return fn.call(this, options, ...rest);
-  };
+  }
 }
 
 module.exports = {

@@ -161,8 +161,11 @@ function packagerOf(projectRoot) {
 }
 let parcelFile = null; // @parcel/core's lib/Parcel.js, as patched
 
-// The reporter (parcel-reporter/index.cjs). Throws the problems (strict mode): Parcel fails the build.
-async function report({ event, options }) {
+// The reporter (parcel-reporter/index.cjs). Throws the problems (strict mode): Parcel fails the build. Each report is
+// the build's own (core/problems.cjs within): problems of another Parcel of the process do not fail it.
+/** @param {{ event: any, options: any }} opts */
+const report = (opts) => problems.within({}, () => reportBuild(opts));
+async function reportBuild({ event, options }) {
   if (!event || event.type !== 'buildSuccess') return;
   const projectRoot = (options && options.projectRoot) || process.cwd();
   let context = projectRoot;
@@ -212,7 +215,7 @@ async function report({ event, options }) {
 }
 
 // for the reporter (parcel-reporter/index.cjs)
-globalThis[Symbol.for('bundle-lockfile.parcel')] = { report: (...a) => report(...a) };
+globalThis[Symbol.for('bundle-lockfile.parcel')] = { report };
 
 module.exports = {
   name: 'parcel',

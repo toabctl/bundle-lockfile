@@ -111,12 +111,17 @@ function copyLockfiles(distDir, inStandalone) {
 }
 
 function wrap(build, buildFile) {
-  return /** @this {unknown} */ async function (dir, ...rest) {
+  const owner = {}; // the builds of this copy of Next.js (core/problems.cjs within)
+  return /** @this {unknown} */ function (dir, ...rest) {
+    return problems.within(owner, () => nextBuild.call(this, dir, ...rest));
+  };
+  /** @this {unknown} */
+  async function nextBuild(dir, ...rest) {
     const result = await build.call(this, dir, ...rest);
     try { await runtime(buildFile, dir); } catch (e) { problems.problem("Next.js: could not collect the server's runtime packages", e); }
     problems.failIfAny((err) => { throw err; });
     return result;
-  };
+  }
 }
 
 // Next.js 12: remembers the config each production build loads (loadConfig(phase, dir, customConfig))

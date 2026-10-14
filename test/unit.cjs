@@ -3534,6 +3534,26 @@ test('strict: problems no build took make the process exit with 1 (also after pr
   assert.match(off.stderr, /\[bundle-lockfile\] WARNING: could not write x/);
 });
 
+test('strict: a build fails with its own problems and those of no build, never with another build\'s', () => withConfig({ strict: true }, async () => {
+  problems.take();
+  const a = {}, b = {};
+  const fails = (owner) => problems.within(owner, () => { let got = null; problems.failIfAny((err) => { got = err.problems; }); return got; });
+  problems.within(a, () => problems.problem('a: one'));
+  // also what a build's hook starts asynchronously
+  await problems.within(a, () => new Promise(resolve => setImmediate(() => { problems.problem('a: later'); resolve(); })));
+  problems.within(b, () => problems.problem('b: one'));
+  problems.problem('none: one'); // outside any build (a module that could not be patched)
+  assert.deepEqual(fails(b), ['b: one', 'none: one']);
+  assert.deepEqual(fails(b), null);
+  assert.deepEqual(fails(a), ['a: one', 'a: later']);
+  // outside any build: all of them
+  problems.within(a, () => problems.problem('a: two'));
+  let all = null;
+  problems.failIfAny((err) => { all = err.problems; });
+  assert.deepEqual(all, ['a: two']);
+  assert.equal(problems.pending(), false);
+}));
+
 test('strict: nowhere to write (INLINE off, no export dir) and a lock that cannot be taken are problems of every build', () => withConfig({ strict: true }, async () => {
   problems.take();
   outputs.nowhere(); outputs.nowhere();

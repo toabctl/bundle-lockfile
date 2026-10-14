@@ -186,7 +186,12 @@ function complete(options, result, forced) {
 const devServer = (options) => !!options && options.partialSSRBuild === true && !process.env.NG_BUILD_PARTIAL_SSR;
 
 function wrap(executeBuild) {
-  return /** @this {unknown} */ async function bundleLockfileExecuteBuild(options, ...rest) {
+  const owner = {}; // the builds and rebuilds of this builder (core/problems.cjs within)
+  return /** @this {unknown} */ function bundleLockfileExecuteBuild(options, ...rest) {
+    return problems.within(owner, () => build.call(this, options, ...rest));
+  };
+  /** @this {unknown} */
+  async function build(options, ...rest) {
     if (devServer(options)) {
       config.debug('angular: a build of the dev server (ng serve), which writes nothing: no lockfile');
       return executeBuild.call(this, options, ...rest);
@@ -200,7 +205,7 @@ function wrap(executeBuild) {
       else throw err;
     });
     return result;
-  };
+  }
 }
 
 module.exports = {

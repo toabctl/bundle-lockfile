@@ -188,15 +188,21 @@ class BundleLockfilePlugin {
 
   apply(compiler) {
     compiler[APPLIED] = true;
+    // every hook of the plugin runs as part of this compiler's builds: the problems it records fail this compiler's
+    // compilations, never another compiler's (core/problems.cjs within)
+    const own = (h) => h && {
+      tap: (opts, fn) => h.tap(opts, (...args) => problems.within(compiler, () => fn(...args))),
+      tapAsync: (opts, fn) => h.tapAsync(opts, (...args) => problems.within(compiler, () => fn(...args))),
+    };
     // a plugin from the config, in a build without the preload: the bundler that applies it (see bundlerOf)
     if (!compiler[BUNDLER_FILE]) this.applier = packageOnStack([bundlerName(compiler)]);
     const why = unsupported(compiler);
     if (why) { // each compilation fails (strict mode), or a warning once
-      compiler.hooks.thisCompilation.tap(NAME, (compilation) => { problems.problem(why, null, { once: why }); failCompilation(compilation); });
+      own(compiler.hooks.thisCompilation).tap(NAME, (compilation) => { problems.problem(why, null, { once: why }); failCompilation(compilation); });
       return;
     }
     const RawSource = rawSourceOf(compiler, this.compilerFile);
-    compiler.hooks.thisCompilation.tap(NAME, (compilation) => {
+    own(compiler.hooks.thisCompilation).tap(NAME, (compilation) => {
       compilation[STARTED] = Date.now() - 2000; // (file systems with coarse timestamps)
       // a plugin that makes webpack seal the compilation again (needAdditionalSeal): new chunks and assets
       const unseal = hook(compilation.hooks, 'unseal');
@@ -205,7 +211,7 @@ class BundleLockfilePlugin {
       const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');
       if (processAssets && C && typeof C.PROCESS_ASSETS_STAGE_OPTIMIZE === 'number') {
-        processAssets.tap({ name: NAME, stage: C.PROCESS_ASSETS_STAGE_OPTIMIZE - 1 }, () => {
+        own(processAssets).tap({ name: NAME, stage: C.PROCESS_ASSETS_STAGE_OPTIMIZE - 1 }, () => {
           try { compilation[UNNAMED] = isRspack(compiler) ? copiedRspack(compilation) : copiedUnnamed(compilation); } catch (e) {
             problems.problem(`${kindOf(compiler)}: could not check the files copied into ${outputDir(compilation)}`, e);
           }
@@ -215,7 +221,7 @@ class BundleLockfilePlugin {
       // so compression-webpack-plugin with deleteOriginalAssets would replace the lockfile by a .gz no SBOM
       // tool reads. webpack 4's afterOptimizeAssets (in webpack 5 the same hook) runs after every plugin's
       // additionalAssets, whatever the plugin order (copy-webpack-plugin 6 adds its files there).
-      (hook(compilation.hooks, 'afterProcessAssets') || hook(compilation.hooks, 'afterOptimizeAssets')).tap(NAME, () => {
+      own(hook(compilation.hooks, 'afterProcessAssets') || hook(compilation.hooks, 'afterOptimizeAssets')).tap(NAME, () => {
         try {
           const json = this.lockfile(compilation);
           const src = sourceOf(RawSource, json);
@@ -232,7 +238,7 @@ class BundleLockfilePlugin {
     });
     // Plugins that delete assets in the emit hook (compression-webpack-plugin <= 6 with deleteOriginalAssets
     // on webpack 4): put the lockfile back, after them.
-    compiler.hooks.emit.tap({ name: NAME, stage: 1000 }, (compilation) => {
+    own(compiler.hooks.emit).tap({ name: NAME, stage: 1000 }, (compilation) => {
       if (!compilation[SOURCE] || !compilation[SOURCE].asset || hasAsset(compilation, this.file)) return;
       config.debug('webpack: lockfile asset was deleted by another plugin, emitting it again:', this.file);
       emitAsset(compilation, this.file, compilation[SOURCE].src);
@@ -241,7 +247,7 @@ class BundleLockfilePlugin {
     // its file dependencies): write the lockfile again if files copied in the emit hook add packages, or if it
     // is shared with other compilers - without the compilers whose files are gone (deleted by this one's
     // output.clean, which ran before its emit).
-    compiler.hooks.afterEmit.tapAsync({ name: NAME, stage: 1000 }, (compilation, callback) => {
+    own(compiler.hooks.afterEmit).tapAsync({ name: NAME, stage: 1000 }, (compilation, callback) => {
       // the end of this hook: what went wrong fails the build (a compilation error, see failCompilation) - outside the
       // promise: callback() continues the build
       this.afterEmit(compilation)
@@ -313,8 +319,12 @@ const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { r
 // On a top-level compiler's first compile (see webpack.cjs, rspack.cjs): runs the listeners (the default one applies
 // BundleLockfilePlugin). Without the plugin the compiler would write no lockfile, so if one fails, its compilations
 // fail (strict mode, core/problems.cjs): an error in each of them (see failCompilation) - or, if not even that can be
-// tapped, compile()'s callback gets it, and true is returned: the compiler must not compile.
+// tapped, compile()'s callback gets it, and true is returned: the compiler must not compile. Runs as part of the
+// compiler's builds (core/problems.cjs within).
 function attach(compiler, listeners, where, args, kind) {
+  return problems.within(compiler, () => attachListeners(compiler, listeners, where, args, kind));
+}
+function attachListeners(compiler, listeners, where, args, kind) {
   for (const fn of listeners) {
     try { fn(compiler, where); } catch (e) { problems.problem(`${kind}: could not attach to the compiler of ${compiler.outputPath || '(no output path)'}`, e); }
   }

@@ -529,8 +529,11 @@ stack.
 
 An ESM hook (in the thread or in the loader thread) that cannot wrap a module (an entry module, or a `cjsFiles` source)
 makes it a module that throws, so its import fails with the reason (`BUNDLE_LOCKFILE_STRICT=0`: it loads unchanged, with
-a warning in the thread). Problems are taken process-wide: a compiler may fail with another one's problem - a build
-fails either way. Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that
+a warning in the thread). A problem belongs to the build whose hook recorded it, also asynchronously (each adapter runs
+its hooks in `problems.within(owner)`, an `AsyncLocalStorage` context: the webpack or rspack compiler, the Rollup,
+Rolldown or esbuild plugin of a build, Angular's builder, a Parcel report): a build fails with its own problems and those
+recorded outside any build (a module that could not be patched), never with another build's of the same process.
+Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that
 is a bundler counts, and recognizing one an adapter patches (its `cjsFiles`).
 
 To add a bundler:

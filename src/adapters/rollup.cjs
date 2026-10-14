@@ -125,7 +125,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     await outputs.land(w.target, w.writer, kind);
     problems.failIfAny((err) => { throw err; });
   };
-  return {
+  return withinBuild({
     name: NAME,
     api: { setBuild(b) { build = b; } },
     // Vite bundles workers with the plugins of worker.plugins, not with the config's (the preload adds this plugin to
@@ -287,7 +287,19 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
         problems.failIfAny((err) => failClose(this, err));
       },
     },
-  };
+  });
+}
+
+// Every hook of the plugin runs as part of its build (core/problems.cjs within): the problems it records fail that
+// build, never another build of the process. The plugin is the build's owner, across its watch rebuilds.
+function withinBuild(plugin) {
+  const scoped = (fn) => /** @this {unknown} */ function (...args) { return problems.within(plugin, () => fn.apply(this, args)); };
+  for (const [k, v] of Object.entries(plugin)) {
+    if (k === 'name' || k === 'api') continue;
+    if (typeof v === 'function') plugin[k] = scoped(v);
+    else if (v && typeof v === 'object' && typeof v.handler === 'function') plugin[k] = { ...v, handler: scoped(v.handler) };
+  }
+  return plugin;
 }
 
 // One more plugin for the options of a rollup()/rolldown() call (also each config of watch()/build()), unless it
