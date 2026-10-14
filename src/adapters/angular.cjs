@@ -135,8 +135,18 @@ function complete(options, result, forced) {
   }
 }
 
+// A build of Angular's dev server (ng serve): it serves the output from memory and writes nothing, so it gets no
+// lockfile (as vite dev) - nor stats, which the dev server turns off (they would make it reload instead of replacing
+// modules). The dev server sets partialSSRBuild, which ng build sets only with NG_BUILD_PARTIAL_SSR: with that variable
+// set at all, a build is no dev server's.
+const devServer = (options) => !!options && options.partialSSRBuild === true && !process.env.NG_BUILD_PARTIAL_SSR;
+
 function wrap(executeBuild) {
   return async function bundleLockfileExecuteBuild(options, ...rest) {
+    if (devServer(options)) {
+      config.debug('angular: a build of the dev server (ng serve), which writes nothing: no lockfile');
+      return executeBuild.call(this, options, ...rest);
+    }
     const forced = !!options && typeof options === 'object' && !options.stats;
     const result = await executeBuild.call(this, forced ? { ...options, stats: true } : options, ...rest);
     if (!result || typeof result !== 'object') return result;

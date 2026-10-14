@@ -4624,6 +4624,26 @@ test('angular adapter: server-side rendering - a lockfile per side, from per-sid
   }
 }));
 
+test('angular adapter: a build of the dev server (ng serve) gets no lockfile and no stats; with NG_BUILD_PARTIAL_SSR set, a build gets its lockfile', () => withConfig({ strict: true }, async () => {
+  const angular = require('../src/adapters/angular.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'src/main.ts': '' });
+  const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' }, partialSSRBuild: true };
+  let seen = null;
+  const inner = fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] });
+  const run = angular.wrap(async (o) => { seen = o; return inner(o); });
+  const saved = process.env.NG_BUILD_PARTIAL_SSR;
+  try {
+    delete process.env.NG_BUILD_PARTIAL_SSR;
+    const r = await run(options);
+    assert.deepEqual(r.outputFiles.map(f => f.path), ['main.js']); // no lockfile, no stats
+    assert.equal(seen.stats, undefined); // the options as the dev server made them
+    // ng build with NG_BUILD_PARTIAL_SSR: partialSSRBuild too, but a build that writes - its lockfile
+    process.env.NG_BUILD_PARTIAL_SSR = '1';
+    const b = await run(options);
+    assert.deepEqual(b.outputFiles.map(f => f.path), ['main.js', LOCK]);
+  } finally { if (saved === undefined) delete process.env.NG_BUILD_PARTIAL_SSR; else process.env.NG_BUILD_PARTIAL_SSR = saved; }
+}));
+
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
   const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular', 'next'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
   assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
