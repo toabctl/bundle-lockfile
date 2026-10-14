@@ -411,6 +411,18 @@ adapter through a global, not `require()`.
 On `buildSuccess` the reporter goes through `bundleGraph.getBundles({ includeInline: true })`, per target directory,
 and each bundle's `traverseAssets`. An asset the scope-hoisting packager skips - `sideEffects: false`, no used symbol
 (`getUsedSymbols`), not referenced by the bundle (`isAssetReferenced`) - is left out, as Parcel's packager decides.
+## Angular
+
+`@angular/build/src/builders/application/execute-build.js` (and the copy in `@angular-devkit/build-angular` 17) exports
+`executeBuild(options, context, rebuildState)`, which `buildApplicationInternal` calls through the module's exports for
+every build and rebuild; it returns the build's `ExecutionResult` (output files, asset files, errors). The adapter
+replaces that export with a wrapper that runs it with `stats: true`: Angular then adds its final metafiles (after the
+chunk optimizer) as output files, `browser-stats.json` and `server-stats.json` (22), or one `stats.json` for both
+(17 – 21). The wrapper reads them (and takes them out again unless the build asked for stats), maps their outputs'
+inputs and the result's asset files (`assetFiles`, copies Angular makes, also from `node_modules`) to packages, renders
+the lockfile with `core/outputs.cjs` and adds it with `addOutputFile` (type Browser, or ServerApplication). Angular writes
+it; the export copy is written by bundle-lockfile. Angular's own esbuild builds (`write: false`) still get the esbuild
+adapter's plugin: they write nothing, but a problem there fails the build too.
 
 ## webpack: which file a module is
 
@@ -436,6 +448,7 @@ src/adapters/esbuild.cjs  esbuild's API: replaces its exports, the plugin that r
 src/adapters/rolldown-watch.cjs  Rolldown: the files its plugins inlined (addWatchFile of its plugin contexts), per build and module
 bin/bundle-lockfile-from-metafile  the lockfile from an esbuild metafile (the command line, the Go API)
 src/adapters/parcel.cjs   Parcel: adds the reporter (parcel-reporter/) to every Parcel; the assets of its bundles
+src/adapters/angular.cjs  Angular's application builder: wraps executeBuild(), the lockfile from its stats metafile
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
 src/core/manifest.cjs   a package directory's package.json: name, version, license
 src/core/via.cjs        how each package was found (the record's "via")
@@ -484,6 +497,7 @@ problems at the end of its hooks:
 | Rollup, Rolldown, Vite | `this.error()` in `generateBundle` | `writeBundle` rejects; `closeBundle` throws, except in watch mode, where it prints the error |
 | esbuild | – | `onEnd` returns the problems as errors: `build()` and `rebuild()` reject, `watch()` prints them; `buildSync()` throws |
 | Parcel | – | the reporter throws on `buildSuccess`: Parcel reports the build as failed (exit code 1) |
+| Angular | – | an error of the build's result (`addError`): `ng build` fails |
 | a bundler that could not be hooked (patching or wrapping it failed, or it is of a shape the adapter does not know) | loading it fails: its `require()` or `import` throws the error (also in a worker or child process whose exit code nobody reads) | |
 | no build (a setting, the settings file, a second copy) | the process exits with code 1 (unless it already fails) | |
 

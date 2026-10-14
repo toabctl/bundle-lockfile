@@ -19,6 +19,7 @@ What is supported and tested, which processes are hooked, and what is particular
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
 | Parcel | 2 | 2.0 (with the 2.16 plugins its ranges install), 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
+| Angular | 20 – 22 (application builder) | 20.3, 21.2, 22.2 | CommonJS: its `executeBuild()` | `ng build`; the lockfile in `<outputPath>/browser/`; [details](#angular) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
   older Node.js versions only some processes get ([which processes](#which-processes-are-hooked)).
@@ -47,6 +48,7 @@ Package managers tested ([details](../test/README.md#environments)):
 | esbuild | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 | Nuxt | pnpm 10 |
 | Parcel | npm, pnpm 10, yarn 4 (Plug'n'Play) |
+| Angular | npm |
 
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
@@ -55,9 +57,8 @@ Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warnin
 16's default build; known when `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack < 4 and rspack 0.x (when a compiler
 compiles).
 
-Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Angular's
-esbuild builder (it builds with `write: false` and writes the files itself), Bun's own runtime (`bun --bun`,
-`Bun.build`, and `bun run` where Node.js is not installed).
+Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Bun's own
+runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed).
 
 ## Which processes are hooked
 
@@ -141,8 +142,8 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   a file.
 - Several builds into one directory (other entry points) share one lockfile.
 - `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile, and no failure. Their packages are listed where their output's bytes end up in another hooked build's output, or in a file
-  written into an output after the build ([coverage](coverage.md#also-listed)). Angular's esbuild builder builds that
-  way and writes the files itself: it gets no lockfile.
+  written into an output after the build ([coverage](coverage.md#also-listed)). Angular's builder builds that
+  way and writes the files itself: its lockfile comes from its own adapter ([Angular](#angular)).
 - Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
   below `node_modules` are left alone.
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
@@ -173,6 +174,21 @@ writes the lockfile too.
   as a file of `@parcel/runtime-js`, which is listed.
 - Sass and Less partials (`@use`, `@import`) are inlined by Parcel's transformers and no assets: not listed.
 - A problem fails the build: the reporter throws, Parcel reports the build as failed.
+## Angular
+
+Angular's application builder (`@angular/build`, `ng build`) bundles with esbuild into memory and writes the files
+itself, after its own steps: its chunk optimizer re-bundles lazy chunks with Rolldown, i18n makes a copy per locale.
+bundle-lockfile wraps the function that runs one build (`executeBuild()`) and takes Angular's final metafile — the
+one its `stats` option writes, turned on for the build and taken out of its output again unless asked for.
+
+- The lockfile is one of the build's output files: `<outputPath>/browser/bundle-lockfile/package-lock.json` (and with
+  SSR one in `<outputPath>/server/`), which Angular writes with the others, after it cleaned the output path.
+- It lists the packages of the inputs of every output (Angular's own packages, rxjs, the app's), and of the assets
+  Angular copies from `node_modules` (an `assets` glob there).
+- A problem is an error of the build. `BUNDLE_LOCKFILE_DISABLE=angular` leaves Angular alone (its esbuild builds then
+  write nothing: no lockfile).
+- Tested: Angular 20, 21, 22 with npm, browser builds. Not tested: SSR's server lockfile, i18n, `ng build --watch`,
+  `ng serve`.
 
 ## Next.js
 
