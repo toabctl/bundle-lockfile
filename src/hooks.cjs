@@ -133,7 +133,7 @@ function installCjs() {
   // a cjsFiles module Node evaluated without the CommonJS hook reports itself here once it has run (esm-wrap.cjs cjsSource)
   globalThis[Symbol.for('bundle-lockfile.cjs-loaded')] = report;
   if (missing.length) {
-    const msg = `Node.js ${process.versions.node} has no ${missing.join(', ')}: CommonJS bundlers (webpack, rspack 1, Rollup's CommonJS build, esbuild) are not hooked`;
+    const msg = `Node.js ${process.versions.node} has no ${missing.join(', ')}: CommonJS bundlers (webpack, rspack 1, Rollup's CommonJS build, esbuild, Parcel, Angular's builder, Next.js' build) are not hooked`;
     if (bundlerProcess(cjsPackages())) problems.problem(msg); else config.debug(msg);
   }
   // (not bundle-lockfile's own modules; they came through the CommonJS loader, as the safety net counts modules: entered)

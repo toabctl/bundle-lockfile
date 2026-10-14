@@ -152,6 +152,7 @@ globalThis[Symbol.for('bundle-lockfile.parcel')] = { report: (...a) => report(..
 module.exports = {
   name: 'parcel',
   cjsFiles: [PARCEL],
+  cjsPackages: ['parcel', '@parcel/core'], // processes that build with it (see hooks.cjs installCjs)
   onCjsLoad(exp, request, resolve) {
     if (!request.endsWith('Parcel.js') || !PARCEL.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
     const Parcel = exp.default;

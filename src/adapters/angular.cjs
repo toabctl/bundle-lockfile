@@ -180,6 +180,8 @@ function wrap(executeBuild) {
 module.exports = {
   name: 'angular',
   cjsFiles: [EXECUTE_BUILD],
+  // processes that build with Angular's builder: ng build (@angular/cli), the builder's packages (see hooks.cjs installCjs)
+  cjsPackages: ['@angular/cli', '@angular/build', '@angular-devkit/build-angular'],
   onCjsLoad(exp, request, resolve) {
     if (!request.endsWith('execute-build.js') || !EXECUTE_BUILD.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
     if (typeof exp.executeBuild !== 'function') {
