@@ -4171,9 +4171,6 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
 }));
 
-test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
-  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
-
 // Angular: executeBuild() of a fake application builder, whose result has Angular's shape (ExecutionResult)
 function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors = [] } = {}) {
   return async (options) => {
@@ -4228,6 +4225,8 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
   assert.equal(exp.executeBuild, wrapped); // once
 }));
 
+test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
+  const names = ['webpack', 'rollup', 'rspack', 'esbuild', 'parcel', 'angular'].flatMap(a => { const ad = require(`../src/adapters/${a}.cjs`); return ad.names || [ad.name]; });
   assert.deepEqual([...names].sort(), [...config.ADAPTER_NAMES].sort());
 });
 
