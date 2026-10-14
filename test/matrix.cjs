@@ -459,6 +459,8 @@ const fixtures = {
   ...Object.fromEntries(['1.2.13', '1.0.0'].map(v => [`canary-rolldown${v}`, canary('rollup', { rolldown: v, rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' },
     { type: 'module', scripts: { build: 'node rolldown.mjs build' } })])),
   'canary-rollup': canary('rollup', { rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'rollup -c' } }),
+  // tsdown (tsdown.config.mjs; Rolldown ~1.1); rollup for the oracle, which builds src/main.js with rollup.config.mjs
+  'canary-tsdown': canary('rollup', { tsdown: '0.22.2', rollup: '4.64.2', '@rollup/plugin-node-resolve': '16.0.3' }, { type: 'module', scripts: { build: 'tsdown' } }),
   'canary-esbuild': canary('esbuild', { esbuild: '0.28.2' }, { type: 'module', scripts: { build: 'node esbuild.mjs' } }),
   'canary-parcel': canary('parcel', { parcel: '2.16.4', '@parcel/transformer-glsl': '2.16.4', '@parcel/transformer-sass': '2.16.4', '@parcel/transformer-less': '2.16.4' }, { scripts: { build: 'parcel build parcel.html --dist-dir dist --no-optimize' } }), // (optimized SVGs lose their markers, comments)
   // package.json files inside real packages (test/apps/edge-manifests), built by webpack 5, Vite 8 and Rollup
@@ -1849,6 +1851,10 @@ const cases = [
   ...['1.2.13', '1.0.0'].flatMap(v => ['rolldown', 'build', 'watch'].map(mode => (
     { name: `canaries: Rolldown ${v} ${mode}()`, fixture: `canary-rolldown${v}`, cmd: `node rolldown.mjs ${mode}`, expect: CANARY_ROLLDOWN, oracleMissing: CANARY_INLINED.js,
       ...(mode === 'watch' && { watchBuilds: [CANARY_ROLLDOWN, CANARY_JS, CANARY_ROLLDOWN] }) }))),
+  // tsdown builds with Rolldown and adds Rolldown's importGlobPlugin, named builtin:vite-import-glob: no Vite build (a
+  // Vite build would list a vite package, here none is installed); the bundler is the Rolldown tsdown depends on
+  { name: 'canaries: tsdown 0.22.2 (Rolldown with builtin:vite-import-glob): no Vite build', fixture: 'canary-tsdown', cmd: 'npm run -s build',
+    expect: CANARY_ROLLDOWN, oracleMissing: CANARY_INLINED.js, oracleBundler: 'rolldown' },
   ...[['Vite 8.3.3', 'canary-vite8'], ['rolldown-vite 7.3.1', 'canary-rolldown-vite7'], ['Vite 7.3.7', 'canary-vite7.3.7']].map(([what, fixture]) => (
     { name: `canaries: ${what} vite build --watch`, fixture, cmd: VITE_WATCH_CANARY, expect: CANARY_VITE, oracleMissing: [...CANARY_INLINED.all, CANARY_URL],
       watchBuilds: [CANARY_VITE, CANARY_VITE.filter(p => p !== 'bl-canary-glsl@1.0.0'), CANARY_VITE] })),
