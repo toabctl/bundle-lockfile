@@ -559,7 +559,7 @@ function bundlerOf(compiler, applier) {
   /** @type {string | null} */
   let found = null;
   try { found = createRequire(path.join(compiler.context, 'x')).resolve(`${name}/package.json`); } catch { /* none */ }
-  const p = found && bundlerPackage(kind, found, [name], version);
+  const p = found ? bundlerPackage(kind, found, [name], version) : null;
   if (!found || (p && version && p.version !== version)) {
     problems.problem(`${kind}: the compiler of ${compiler.outputPath || '(no output path)'} is ${name}${version ? `@${version}` : ''}, which was not loaded with the preload, and ${found ? `${found} is another copy` : `${compiler.context} resolves no ${name}`}: the lockfile would miss the bundler, whose code is in the output`);
     return null;
@@ -594,7 +594,7 @@ class BundleLockfilePlugin {
     const found = via.ofFiles(result, kinds);
     found.add('generated', gen); found.add('generated', late.generated); found.add('late', late.late);
     // the bundler, whose runtime and chunk wrappers are in the JavaScript it writes (see bundlerOf)
-    const own = writesJs(compilation) ? [bundlerOf(compiler, this.applier)].filter(Boolean) : [];
+    const own = writesJs(compilation) ? [bundlerOf(compiler, this.applier)].filter(p => p !== null) : [];
     found.add('runtime', own);
     // the transpilers whose helpers they inlined into shipped modules (core/helpers.cjs)
     const inl = compilation[HELPERS] || [];

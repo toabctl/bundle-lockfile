@@ -17,6 +17,7 @@
 // BUNDLE_LOCKFILE_FIRST_PARTY names, or a private package.json. Inside node_modules, the package root still counts;
 // a vendored copy nested in it counts for its files, unless it has the package's own name (socket.io-client's
 // build/esm/package.json is socket.io-client).
+/** @import { BuildScope, Manifest, Package, VendorScope } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -24,19 +25,22 @@ const { ancestors, posix, packageRoot } = require('./paths.cjs');
 const { readManifest, packageOf } = require('./manifest.cjs');
 
 const NAME = /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/; // as Trivy reads names, plus npm's ~
-const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
-const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+const readJson = (/** @type {string} */ file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+const real = (/** @type {string} */ p) => { try { return fs.realpathSync(p); } catch { return p; } };
 
 // package.json content that says it is an npm package another one could be a copy of
+/** @param {Manifest | null | undefined} j */
 function isVendorable(j) {
   return !!j && typeof j.name === 'string' && j.name.length <= 214 && NAME.test(j.name) && typeof j.version === 'string' && !!j.version
     && !j.private && !(j.publisher && j.engines && j.engines.vscode);
 }
 // A workspace pattern as a test of a directory relative to its root ("/" separators): *, **, ?, {a,b}; "./" and a
 // trailing "/" are dropped. Patterns name directories (npm, yarn, pnpm, bun, lerna).
+/** @param {string} pattern @returns {(rel: string) => boolean} */
 function globTest(pattern) {
+  /** @param {string} p @returns {string[]} */
   const expand = (p) => {
-    const m = p.match(/\{([^{}]*)\}/);
+    const m = /** @type {RegExpExecArray | null} */ (p.match(/\{([^{}]*)\}/));
     return m ? m[1].split(',').flatMap(alt => expand(p.slice(0, m.index) + alt + p.slice(m.index + m[0].length))) : [p];
   };
   const res = expand(pattern.replace(/^\.\//, '').replace(/\/+$/, '').replace(/\/package\.json$/, '')).map(p => new RegExp(`^${p.split('/').map(seg =>
@@ -46,8 +50,10 @@ function globTest(pattern) {
 }
 
 // pnpm-workspace.yaml "packages": a block list or a flow list, quoted or not, with comments (any line endings)
+/** @param {string} yaml @returns {string[]} */
 function pnpmPackages(yaml) {
   const text = yaml.replace(/\r\n?/g, '\n');
+  /** @type {string[]} */
   const out = [];
   const flow = text.match(/^packages:\s*\[([^\]]*)\]/m);
   if (flow) return flow[1].split(',').map(s => s.replace(/#.*/, '').trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
@@ -60,6 +66,7 @@ function pnpmPackages(yaml) {
 }
 
 // JSON with // and /* */ comments (rush.json), strings left alone
+/** @param {string} text @returns {any} */
 function parseJsonc(text) {
   let out = '';
   for (let i = 0; i < text.length; i++) {
@@ -73,9 +80,11 @@ function parseJsonc(text) {
 }
 
 // The monorepo definitions in directory d: tests of member directories relative to d
+/** @param {string} d @returns {((dir: string) => boolean) | null} */
 function membersOf(d) {
-  const tests = [], excludes = [];
-  const add = (patterns) => { for (const p of patterns || []) if (typeof p === 'string') (p.startsWith('!') ? excludes : tests).push(globTest(p.replace(/^!/, ''))); };
+  /** @typedef {(rel: string) => boolean} Test */
+  const tests = /** @type {Test[]} */ ([]), excludes = /** @type {Test[]} */ ([]);
+  const add = (/** @type {unknown} */ patterns) => { for (const p of /** @type {unknown[]} */ (patterns || [])) if (typeof p === 'string') (p.startsWith('!') ? excludes : tests).push(globTest(p.replace(/^!/, ''))); };
   const pj = readManifest(d);
   const ws = pj && pj.workspaces;
   add(Array.isArray(ws) ? ws : ws && ws.packages);
@@ -85,10 +94,10 @@ function membersOf(d) {
   /** @type {any} */
   let rush = null;
   try { rush = parseJsonc(fs.readFileSync(path.join(d, 'rush.json'), 'utf8')); } catch { /* none */ }
-  const folders = new Set(rush && Array.isArray(rush.projects) ? rush.projects.map(p => p && typeof p.projectFolder === 'string' && posix(path.normalize(p.projectFolder))).filter(Boolean) : []);
+  const folders = new Set(rush && Array.isArray(rush.projects) ? rush.projects.map((/** @type {any} */ p) => p && typeof p.projectFolder === 'string' && posix(path.normalize(p.projectFolder))).filter(Boolean) : []);
   const nx = fs.existsSync(path.join(d, 'nx.json'));
   if (!tests.length && !folders.size && !nx) return null;
-  return (dir) => {
+  return (/** @type {string} */ dir) => {
     const rel = posix(path.relative(d, dir));
     if (!rel || rel.startsWith('..')) return false;
     if (folders.has(rel)) return true;
@@ -98,9 +107,11 @@ function membersOf(d) {
 }
 
 // Yarn Plug'n'Play: the directory is a workspace, portal or link of the project (its locator says so)
+/** @param {string} dir */
 function pnpFirstParty(dir) {
+  /** @type {any} */
   let api;
-  try { const m = require('module'); api = typeof m.findPnpApi === 'function' && m.findPnpApi(path.join(dir, 'x')); } catch { return false; }
+  try { const m = require('module'); api = typeof (/** @type {any} */ (m)).findPnpApi === 'function' && (/** @type {any} */ (m)).findPnpApi(path.join(dir, 'x')); } catch { return false; }
   if (!api) return false;
   try {
     const loc = api.findPackageLocator(dir + path.sep);
@@ -111,6 +122,10 @@ function pnpFirstParty(dir) {
 // The vendored copy among the package.json files around a file, innermost first (chain: [{ dir, j }], ending with the
 // one where the walk stopped: a first-party package, a private one, the package root): the innermost vendorable one
 // whose name none further out has - build/esm/package.json with its package's name is that package - or null.
+/**
+ * @typedef {{ dir: string, j: Manifest }} Found
+ */
+/** @param {Found[]} chain @returns {Package | null} */
 function innermost(chain) {
   for (let i = 0; i < chain.length; i++) {
     const { dir, j } = chain[i];
@@ -119,7 +134,9 @@ function innermost(chain) {
   return null;
 }
 
+/** @type {Set<string>} */
 const noted = new Set();
+/** @param {Package} p */
 function note(p) {
   if (noted.has(p.path)) return;
   noted.add(p.path);
@@ -128,10 +145,13 @@ function note(p) {
 
 // The packages of one build: { context: its context (webpack) or working directory (Rollup, Vite), entries: its entry
 // modules' files }. Cached for the build (manifests and boundaries do not change during it).
+/** @param {Partial<BuildScope>} [build] @returns {VendorScope} */
 function scope({ context = process.cwd(), entries = [] } = {}) {
   const ctx = real(context);
+  /** @type {Map<string, Manifest | null>} */
   const manifests = new Map(); // dir -> package.json content | null
-  const manifest = (d) => { if (!manifests.has(d)) manifests.set(d, readManifest(d)); return manifests.get(d); };
+  /** @param {string} d @returns {Manifest | null} */
+  const manifest = (d) => { if (!manifests.has(d)) manifests.set(d, readManifest(d)); return /** @type {Manifest | null} */ (manifests.get(d)); };
   const boundary = new Set(ancestors(ctx));
   // the package of each entry module (also a build started from another directory)
   for (const e of entries) {
@@ -149,9 +169,11 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
     const resolved = at < 0 ? prefix : [prefix.replace(/\/$/, ''), ...parts.slice(at)].join('/');
     return [...new Set([posix(g), resolved])].map(globTest);
   });
+  /** @type {Map<string, boolean>} */
   const states = new Map(); // dir -> first-party?
+  /** @param {string} dir @returns {boolean} */
   const isFirstParty = (dir) => {
-    if (states.has(dir)) return states.get(dir);
+    if (states.has(dir)) return /** @type {boolean} */ (states.get(dir));
     const j = manifest(dir);
     const yes = boundary.has(dir) || monorepos.some(m => m(dir)) || firstParty.some(t => t(posix(dir)))
       || (!!j && typeof j.name === 'string' && [...boundary].some(a => real(path.join(a, 'node_modules', j.name)) === dir))
@@ -159,14 +181,17 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
     states.set(dir, yes);
     return yes;
   };
+  /** @type {Map<string, Package | null>} */
   const owners = new Map(); // dir -> package | null, outside node_modules
   // The vendored package a file outside node_modules (real path) belongs to, or null (first-party): the package.json
   // files up to a first-party directory, that one included. A private package.json is first-party - unless a
   // vendorable one further out has it (vendor/preact/hooks/package.json, private, in a copy of preact): it is no
   // boundary, as inside node_modules (nestedIn).
+  /** @param {string} file @returns {Package | null} */
   function ownerOf(file) {
     const dir = path.dirname(file);
-    if (owners.has(dir)) return owners.get(dir);
+    if (owners.has(dir)) return /** @type {Package | null} */ (owners.get(dir));
+    /** @type {Found[]} */
     const chain = [];
     for (const d of ancestors(dir)) {
       const j = manifest(d), stop = isFirstParty(d);
@@ -186,7 +211,15 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
 
 // The vendored copy nested in package `pkg` (at root) that file (real path, inside root) belongs to, or null: a
 // private package.json inside it is a helper of the package (preact/hooks), not a boundary.
+/**
+ * @param {Package} pkg
+ * @param {string} root
+ * @param {string} file
+ * @param {(dir: string) => Manifest | null | undefined} manifest
+ * @returns {Package | null}
+ */
 function nestedIn(pkg, root, file, manifest) {
+  /** @type {Found[]} */
   const chain = [];
   for (const d of ancestors(path.dirname(file))) {
     if (d === root || !d.startsWith(root + path.sep)) break;
@@ -200,6 +233,7 @@ function nestedIn(pkg, root, file, manifest) {
 }
 
 // The package around a package root without a usable package.json: the one below the node_modules before its last.
+/** @param {string} root @returns {string | null} */
 function containerOf(root) {
   const parts = root.split(path.sep);
   const i = parts.lastIndexOf('node_modules');

@@ -1,7 +1,16 @@
-# The actions the workflow uses are pinned by commit SHA: Dependabot proposes the update when a new release is out.
+# The actions the workflow uses are pinned by commit SHA, the development tools by package-lock.json: Dependabot proposes
+# the update when a new release is out.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+  # the development tools (package.json): type check and lint, never needed to run bundle-lockfile
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns: ['*']

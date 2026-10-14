@@ -480,6 +480,9 @@ src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and
 src/core/problems.cjs   what makes a lockfile missing or incomplete: fails the build (strict mode) or is a warning
 src/core/unsupported.cjs builds it recognizes but does not hook (Turbopack, the rolldown command line, ncc)
 src/core/config.cjs     settings (environment variables, the settings file), debug, warning and error output
+src/types.d.ts          the shapes the modules hand each other (Package, Build, Writer, the record, Adapter), for the
+                          type check only: the .cjs files refer to them in JSDoc (tsconfig.json, `npm run typecheck`)
+src/node-internals.d.ts the Node.js internals hooks.cjs uses (Module._extensions, ...), for the type check
 ```
 
 ## Failing closed

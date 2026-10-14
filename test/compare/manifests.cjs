@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const json = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch { return null; } };
+const json = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
 const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 const idOf = (j) => `${j.name}@${typeof j.version === 'string' ? j.version : ''}`;
 const hasLicense = (j) => !!j && (j.license !== undefined || j.licenses !== undefined);

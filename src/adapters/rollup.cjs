@@ -212,7 +212,7 @@ function bundlersOf(kind, from, ctx, cwd) {
     /** @type {string | null} */
     let found = null;
     for (const n of pkgNames) { try { found = createRequire(path.join(cwd, 'x')).resolve(`${n}/package.json`); break; } catch { /* next */ } }
-    const p = found && bundlerPackage(kind, found, pkgNames, v);
+    const p = found ? bundlerPackage(kind, found, pkgNames, v) : null;
     if (p && (!v || p.version === v)) return p;
     problems.problem(`${kind}: the build runs ${what}${v ? `@${v}` : ''}, which was not loaded with the preload, and ${found ? `${found} is another copy` : `${cwd} resolves none`}: the lockfile would miss the bundler, whose code is in the output`);
     return null;
@@ -225,7 +225,7 @@ function bundlersOf(kind, from, ctx, cwd) {
       problems.problem(`vite: the build runs Vite ${meta.viteVersion}, its caller is in ${vite.path} (${vite.name}@${vite.version}): the lockfile would list another copy`);
     } else out.push(vite);
   }
-  return out.filter(Boolean);
+  return out.filter(p => p !== null);
 }
 
 // kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler

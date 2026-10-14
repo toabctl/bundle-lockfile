@@ -13,7 +13,7 @@
 // A first-party package linked into node_modules (a workspace package that another build wrote, e.g. a library built
 // by Vite) is looked at where it really is, also when the bundler reached it through the link (webpack's
 // resolve.symlinks: false, Vite's resolve.preserveSymlinks).
-/** @import { LockRecord } from '../types' */
+/** @import { LockRecord, Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -23,11 +23,17 @@ const { hashOf } = require('./hashes.cjs');
 const { ancestors, packageRoot, realRoot, exportPath } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
-const state = globalThis[S] || (globalThis[S] = { metas: new Map(), changed: new Set() }); // dir -> meta | null; files warned about
+/** @type {{ metas: Map<string, LockRecord | null>, changed: Set<string> }} */
+const state = /** @type {any} */ (globalThis)[S]
+  || (/** @type {any} */ (globalThis)[S] = { metas: new Map(), changed: new Set() }); // dir -> meta | null; files warned about
 if (!state.changed) state.changed = new Set();
 
 // The record's file below an output dir, under both names it can have: package-lock.json, and record.json next to it
 // (BUNDLE_LOCKFILE_TREE=only) - the inner build may have run with another setting than this one.
+/**
+ * @param {string} dir
+ * @returns {string[]}
+ */
 function recordFiles(dir) {
   const target = path.join(dir, config.file);
   const base = path.basename(target) === 'record.json' ? 'package-lock.json' : 'record.json';
@@ -37,10 +43,15 @@ function recordFiles(dir) {
 // The lockfile meta (readMeta) of the build whose output dir is `dir`, or null. Of the records there (each name, and
 // the export copy of each), the most recently written one that records outputs: a build that switched its
 // BUNDLE_LOCKFILE_TREE setting leaves the other name's file behind.
+/**
+ * @param {string} dir
+ * @returns {LockRecord | null}
+ */
 function metaOf(dir) {
-  if (state.metas.has(dir)) return state.metas.get(dir);
+  if (state.metas.has(dir)) return /** @type {LockRecord | null} */ (state.metas.get(dir));
   /** @type {LockRecord | null} */
   let meta = null, newest = -Infinity;
+  /** @type {(why: string) => string} */
   const missing = (why) => `the packages of the build that wrote ${dir} would be missing (${why})`;
   for (const target of recordFiles(dir)) {
     const exp = exportPath(target);
@@ -68,6 +79,11 @@ function metaOf(dir) {
 // The real path of a bundled file that is no file of a package: the file itself outside node_modules, the file in
 // the package's real directory for a first-party package linked into node_modules (as packagesForFiles tells them
 // apart); null for a file of a package. roots: package root -> real directory of a linked first-party package, or null.
+/**
+ * @param {string} file
+ * @param {Map<string, string | null>} roots
+ * @returns {string | null}
+ */
 function ownFile(file, roots) {
   const root = packageRoot(file);
   if (!root) return file;
@@ -75,7 +91,7 @@ function ownFile(file, roots) {
     const real = realRoot(root);
     roots.set(root, real !== root && packageRoot(path.join(real, 'x')) !== real ? real : null);
   }
-  const real = roots.get(root);
+  const real = /** @type {string | null} */ (roots.get(root));
   return real && path.join(real, path.relative(root, file));
 }
 
@@ -85,9 +101,16 @@ function ownFile(file, roots) {
 // its outputs (outputCount) that is none of those it has may be one of the others: all packages of the writers whose
 // record was cut - one package too many rather than the packages inlined into it missing.
 const OUTPUT = /\.([cm]?js|css)$/i;
+/**
+ * @template F
+ * @param {Iterable<F>} files
+ * @returns {Map<F, Package[]>}
+ */
 function nestedByFile(files) {
   state.metas.clear(); // lockfiles change between builds (watch mode)
+  /** @type {Map<F, Package[]>} */
   const out = new Map();
+  /** @type {Map<string, string | null>} */
   const roots = new Map();
   for (const f of files) {
     const bundled = typeof f === 'string' ? f.split('?')[0] : null;
@@ -105,8 +128,9 @@ function nestedByFile(files) {
         out.set(f, writer.contents[file] || writer.pkgs);
         break;
       }
-      const cut = meta.writers.filter(w => w.outputCount > Object.keys(w.outputs).length);
+      const cut = meta.writers.filter(w => /** @type {number} */ (w.outputCount) > Object.keys(w.outputs).length);
       if (cut.length && OUTPUT.test(file)) {
+        /** @type {Map<string, Package>} */
         const pkgs = new Map();
         for (const w of cut) for (const p of w.pkgs) if (!pkgs.has(p.path)) pkgs.set(p.path, p);
         config.debug('maybe built by another build whose record has only some of its outputs:', file);

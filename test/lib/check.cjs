@@ -76,17 +76,17 @@ function checkLocations(f, at = path.dirname(f), contexts = []) {
   let n = 0;
   for (const [key, p] of Object.entries(lock.packages)) {
     if (key === '' || outside.has(key)) continue;
-    const at = Object.prototype.hasOwnProperty.call(locations, key) ? locations[key] : key;
-    const dir = path.resolve(context, at);
+    const loc = Object.prototype.hasOwnProperty.call(locations, key) ? locations[key] : key;
+    const dir = path.resolve(context, loc);
     const zip = dir.match(/^(.*?\.zip)(?=[\\/])/);
     if (zip) {
-      if (!fs.existsSync(zip[1])) throw new Error(`${f}: ${key} is recorded at ${at}, whose zip is not there`);
+      if (!fs.existsSync(zip[1])) throw new Error(`${f}: ${key} is recorded at ${loc}, whose zip is not there`);
     } else {
       let j = null;
       try { j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { /* checked below */ }
       // (a copy whose package.json has no version - Next.js' webpack - has the version the bundler reports: name only)
       if (!j || j.name !== p.name || (j.version !== p.version && j.version !== undefined)) {
-        throw new Error(`${f}: ${key} (${p.name}@${p.version}) is recorded at ${at}, where ${j ? `${j.name}@${j.version} is` : 'no package.json is'}`);
+        throw new Error(`${f}: ${key} (${p.name}@${p.version}) is recorded at ${loc}, where ${j ? `${j.name}@${j.version} is` : 'no package.json is'}`);
       }
     }
     n++;

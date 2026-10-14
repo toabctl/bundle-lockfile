@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc -p .",
-    "check": "tsc -p . && eslint ."
+    "typecheck": "tsc -p . && tsc -p tsconfig.core.json",
+    "check": "npm run typecheck && npm run lint"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -141,7 +141,7 @@ function complete(options, result, forced) {
       const collected = packages.packagesOfFiles(sources, { context, entries });
       const found = via.ofFiles(collected, kinds);
       // the bundler's own code (esbuild's runtime helpers) in every output that has JavaScript (see core/bundler.cjs)
-      const runtime = [...keys].some(k => /\.[cm]?js$/.test(k)) ? [esbuildOf(wd)].filter(Boolean) : [];
+      const runtime = [...keys].some(k => /\.[cm]?js$/.test(k)) ? [esbuildOf(wd)].filter(p => p !== null) : [];
       found.add('runtime', runtime);
       return { all: packages.unique(collected.all, runtime), found };
     };

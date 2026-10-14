@@ -18,8 +18,10 @@ const unique = () => `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
 // package's package.json says, which can be any string: one that is no such path (.., another /, a \, an empty part)
 // would put its stub somewhere else - up out of the tree. Throws then (the tree is not written: a problem, see
 // core/outputs.cjs).
+/** @param {string} name */
 function nameDirs(name) {
   const parts = name.split('/');
+  /** @param {string} s */
   const ok = (s) => s !== '' && s !== '.' && s !== '..' && !/[\\\0]/.test(s);
   if ((parts.length === 1 && ok(parts[0]) && !parts[0].startsWith('@'))
     || (parts.length === 2 && parts[0].startsWith('@') && ok(parts[0].slice(1)) && ok(parts[1]))) return parts;
@@ -27,10 +29,16 @@ function nameDirs(name) {
 }
 
 // The stubs of a lockfile's content: [[path relative to the lockfile's directory, content]], sorted.
+/**
+ * @param {string} json
+ * @returns {[string, string][]}
+ */
 function stubsOf(json) {
+  /** @type {any} */
   const doc = JSON.parse(json);
+  /** @type {[string, string][]} */
   const out = [];
-  for (const [key, p] of Object.entries((doc && doc.packages) || {})) {
+  for (const [key, p] of Object.entries(/** @type {Record<string, any>} */ ((doc && doc.packages) || {}))) {
     if (!key || !p || typeof p.name !== 'string' || typeof p.version !== 'string') continue;
     const dirs = nameDirs(p.name);
     const id = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
@@ -43,6 +51,10 @@ function stubsOf(json) {
 // Writes the tree of the lockfile content `json` into dir (the lockfile's directory), replacing the one there: built
 // aside and renamed into place, so a reader sees the old tree or the new one (and between the two renames, none).
 // Under the lockfile's lock (core/outputs.cjs rewrite). Throws if it cannot.
+/**
+ * @param {string} dir
+ * @param {string} json
+ */
 function writeTree(dir, json) {
   const stubs = stubsOf(json);
   const target = path.join(dir, DIR);
@@ -64,9 +76,14 @@ function writeTree(dir, json) {
 }
 
 // The tree at target has exactly these stubs (a rewrite with the same packages leaves it as it is)
+/**
+ * @param {string} target
+ * @param {[string, string][]} stubs
+ */
 function sameTree(target, stubs) {
   const want = new Map(stubs.map(([rel, c]) => [path.join(path.dirname(target), ...rel.split('/')), c]));
   let n = 0, same = true;
+  /** @param {string} d */
   const walk = (d) => {
     let list;
     try { list = fs.readdirSync(d, { withFileTypes: true }); } catch { same = false; return; }
@@ -80,8 +97,10 @@ function sameTree(target, stubs) {
   walk(target);
   return same && n === want.size;
 }
+/** @param {string} f */
 const readOr = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
 
+/** @param {string} file */
 const inTree = (file) => IN_TREE.test(file);
 
 module.exports = { DIR, stubsOf, writeTree, inTree };

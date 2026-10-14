@@ -8,6 +8,7 @@
 //   ends - Next sets TURBOPACK when it builds with Turbopack (next/dist/lib/bundler.js), NEXT_RSPACK with next-rspack
 // - @vercel/ncc, which runs a webpack of its own from a vm script, which no module hook sees: when it loads
 // webpack before 4 and rspack 0.x are reported by their adapters, when a compiler of theirs compiles.
+/** @import { Adapter } from '../types' */
 const fs = require('fs');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
@@ -16,9 +17,10 @@ const ROLLDOWN_CLI = /[\\/]rolldown[\\/]bin[\\/]cli\.mjs$/;
 const NEXT_BIN = /[\\/]next[\\/]dist[\\/]bin[\\/]next$/;
 const NCC = /[\\/]@vercel[\\/]ncc[\\/]dist[\\/]ncc[\\/](?:cli|index)\.js$/;
 
-const real = (f) => { try { return fs.realpathSync(f); } catch { return f; } };
+const real = (/** @type {string} */ f) => { try { return fs.realpathSync(f); } catch { return f; } };
 
 // At preload, in the main thread: what the process's main script tells (argv: process.argv)
+/** @param {string[]} [argv] */
 function check(argv = process.argv) {
   const main = argv[1] ? real(argv[1]) : '';
   if (ROLLDOWN_CLI.test(main) && !config.isDisabled('rolldown')) {
@@ -35,6 +37,7 @@ function check(argv = process.argv) {
 
 let ncc = false;
 // The CommonJS hook's part (hooks.cjs; a failure in strict mode fails the module's require())
+/** @type {Adapter} */
 const adapter = {
   name: 'unsupported',
   onCjsLoad(exp, request) {

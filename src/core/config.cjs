@@ -38,7 +38,9 @@ const FROM_FILE = NAMES.filter(n => !/_(CONFIG|REGISTER|NODE_SHIM|NODE_SEEN)$/.t
 const ADAPTER_NAMES = ['webpack', 'rspack', 'vite', 'rollup', 'rolldown', 'esbuild', 'parcel', 'angular', 'next'];
 const ESM_HOOKS = ['auto', 'sync', 'async', 'off'];
 const TREES = ['off', 'on', 'only'];
+/** @type {string[]} */
 const invalid = []; // what is set but not recognized, or cannot work: register.cjs reports each (core/problems.cjs)
+/** @type {Set<string>} */
 const fromFile = new Set(); // the settings the settings file set (not the environment)
 
 // The settings file: { "BUNDLE_LOCKFILE_EXPORT_DIR": "/x", ... }. Some build tools pass on NODE_OPTIONS and PATH but
@@ -49,10 +51,12 @@ const fromFile = new Set(); // the settings the settings file set (not the envir
 // values: any other key or value is invalid. Only from bundle-lockfile's own directory or the file
 // BUNDLE_LOCKFILE_CONFIG names: never from the project, which must not redirect a package build's lockfiles.
 // Returns { file, error } (error: the file could not be used; core/problems.cjs reports it, see register.cjs).
+/** @returns {{ file: string | null, error: any }} */
 function readSettingsFile() {
   const named = env.BUNDLE_LOCKFILE_CONFIG && env.BUNDLE_LOCKFILE_CONFIG.trim();
   if (named && !path.isAbsolute(named)) invalid.push(`BUNDLE_LOCKFILE_CONFIG is not an absolute path: ${named} (each process would look for it in its own working directory)`);
   const file = named ? path.resolve(named) : path.join(__dirname, '..', 'config.json');
+  /** @type {any} */
   let settings;
   try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
     if (e.code === 'ENOENT' && !named) return { file: null, error: null }; // no settings file: none
@@ -73,12 +77,20 @@ for (const k of Object.keys(env)) {
   if (k.startsWith('BUNDLE_LOCKFILE_') && !NAMES.includes(k)) invalid.push(`${k} is set, but is no setting of bundle-lockfile`);
 }
 
+/** @type {(k: string) => string} */
 const value = (k) => (env[k] === undefined ? '' : env[k].trim());
 // where a setting comes from, for messages: nothing for the environment, the settings file for one it set
+/** @type {(k: string) => string} */
 const from = (k) => (fromFile.has(k) ? ` (from the settings file ${settingsFile.file})` : '');
+/** @type {(k: string) => string} */
 const shown = (k) => `${k}=${env[k]}${from(k)}`;
 // an on/off setting: unset or empty - the default; 1, true, on / 0, false, off (any case); anything else is invalid
 // (the default then: BUNDLE_LOCKFILE_STRICT=yes stays strict, and fails the build for the invalid value)
+/**
+ * @param {string} k
+ * @param {boolean} dflt
+ * @returns {boolean}
+ */
 function flag(k, dflt) {
   const v = value(k);
   if (!v) return dflt;
@@ -88,6 +100,10 @@ function flag(k, dflt) {
   return dflt;
 }
 // an absolute directory, or null: a relative one would resolve against each process's working directory
+/**
+ * @param {string} k
+ * @returns {string | null}
+ */
 function dir(k) {
   const v = value(k);
   if (!v) return null;
@@ -98,6 +114,7 @@ function dir(k) {
 // node_modules directory - the only files syft and Trivy read. Unset or empty: the default. A backslash separates
 // directories only on Windows: elsewhere it is part of a name (sbom\package-lock.json is no file named package-lock.json).
 // With BUNDLE_LOCKFILE_TREE=only, the file next to it named record.json instead (see tree).
+/** @returns {string} */
 function lockfilePath() {
   const v = value('BUNDLE_LOCKFILE_FILE') || 'bundle-lockfile/package-lock.json';
   const parts = path.sep === '\\' ? v.split(/[\\/]/) : v.split('/');
@@ -114,6 +131,7 @@ if (!TREES.includes(tree)) invalid.push(`${shown('BUNDLE_LOCKFILE_TREE')} is non
 const disabled = new Set(value('BUNDLE_LOCKFILE_DISABLE').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 for (const n of disabled) if (n !== 'all' && !ADAPTER_NAMES.includes(n)) invalid.push(`BUNDLE_LOCKFILE_DISABLE names ${n}${from('BUNDLE_LOCKFILE_DISABLE')}, which is none of ${ADAPTER_NAMES.join(', ')} or all`);
 // BUNDLE_LOCKFILE_ESM_HOOKS as hooks.cjs reads it when it installs the hooks: any case, spaces ignored; unset or empty: auto
+/** @type {(v: unknown) => string} */
 const esmHooksOf = (v) => (v === undefined ? '' : String(v).trim()).toLowerCase() || 'auto';
 if (!ESM_HOOKS.includes(esmHooksOf(env.BUNDLE_LOCKFILE_ESM_HOOKS))) invalid.push(`${shown('BUNDLE_LOCKFILE_ESM_HOOKS')} is none of ${ESM_HOOKS.join(', ')}`);
 // sync needs module.registerHooks: without it no ES-module bundler would be hooked
@@ -146,15 +164,15 @@ module.exports = {
   exportDir,
   exportBase,
   inline: flag('BUNDLE_LOCKFILE_INLINE', true),
-  isDisabled: (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
+  isDisabled: /** @param {string} name */ (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
   firstParty,
   strict: flag('BUNDLE_LOCKFILE_STRICT', true),
-  debug: (...a) => { if (debugOn) console.error('[bundle-lockfile]', ...a); },
+  debug: /** @param {...any} a */ (...a) => { if (debugOn) console.error('[bundle-lockfile]', ...a); },
   // always printed: what is wrong but does not fail the build (with BUNDLE_LOCKFILE_STRICT=0: also what makes a
   // lockfile missing or incomplete, see core/problems.cjs)
-  warn: (...a) => console.error('[bundle-lockfile] WARNING:', ...a),
+  warn: /** @param {...any} a */ (...a) => console.error('[bundle-lockfile] WARNING:', ...a),
   // what fails the build (see core/problems.cjs)
-  error: (...a) => console.error('[bundle-lockfile] ERROR:', ...a),
+  error: /** @param {...any} a */ (...a) => console.error('[bundle-lockfile] ERROR:', ...a),
   // always printed too: what a build lists that it might not expect (vendored copies, see core/vendored.cjs)
-  note: (...a) => console.error('[bundle-lockfile] note:', ...a),
+  note: /** @param {...any} a */ (...a) => console.error('[bundle-lockfile] note:', ...a),
 };

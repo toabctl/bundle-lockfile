@@ -19,13 +19,17 @@
 // - traced: a file Next.js traced for its server, which loads it from node_modules at runtime (adapters/next.cjs)
 // - runtime: the bundler itself, whose code (runtime, chunk wrappers, helpers) is in the JavaScript it writes
 // - helpers: a transpiler whose helpers it inlined into a shipped module (Babel's, swc's, TypeScript's: core/helpers.cjs)
+/** @import { FilePackages, ViaCollector } from '../types' */
 const CLASSES = ['chunk', 'child', 'asset', 'copy-source', 'copy-bytes', 'style', 'inlined', 'inlined-exports', 'generated',
   'late', 'fs-copy', 'nested', 'vendored', 'traced', 'runtime', 'helpers'];
 const KNOWN = new Set(CLASSES);
 
 // A collector: add(cls, packages) records that the packages were found that way; byPath: package path -> Set(cls).
+/** @returns {ViaCollector} */
 function collector() {
+  /** @type {ViaCollector['byPath']} */
   const byPath = new Map();
+  /** @type {ViaCollector['add']} */
   const add = (cls, pkgs) => {
     if (!KNOWN.has(cls)) throw new Error(`unknown via class ${cls}`);
     for (const p of pkgs || []) {
@@ -35,14 +39,22 @@ function collector() {
     }
   };
   // the classes of another collector (or a Map(path -> iterable of classes))
+  /** @type {ViaCollector['merge']} */
   const merge = (other) => {
-    for (const [p, list] of (other && other.byPath) || other || []) for (const cls of list) add(cls, [{ path: p }]);
+    for (const [p, list] of /** @type {Iterable<[string, Iterable<string>]>} */ ((other && /** @type {ViaCollector} */ (other).byPath) || other || []))
+      for (const cls of list) add(cls, [{ path: p }]);
   };
   return { add, merge, byPath };
 }
 
 // The classes of packagesOfFiles' result (core/packages.cjs): each file's own packages by the classes kindOf gives the
 // file (a class or a Set of them; default: chunk), and what the resolver found (fs-copy, vendored, nested).
+/**
+ * @param {Pick<FilePackages, 'ownByFile' | 'via'>} result
+ * @param {Map<string, string | Set<string>>} [kindOf]
+ * @param {string} [def]
+ * @returns {ViaCollector}
+ */
 function ofFiles(result, kindOf = new Map(), def = 'chunk') {
   const c = collector();
   for (const [f, pkgs] of result.ownByFile) {

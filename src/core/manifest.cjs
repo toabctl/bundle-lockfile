@@ -6,11 +6,16 @@ const fs = require('fs');
 const path = require('path');
 
 // "license": "MIT", the legacy {"type": "MIT"} or "licenses": [{"type": "MIT"}, "ISC"]
+/**
+ * @param {Manifest} j
+ * @returns {string | string[] | undefined}
+ */
 function licenseOf(j) {
+  /** @type {(l: any) => string | undefined} */
   const one = (l) => (typeof l === 'string' ? l : l && typeof l.type === 'string' ? l.type : undefined);
   if (j.license !== undefined) return one(j.license);
   if (!Array.isArray(j.licenses)) return undefined;
-  const all = j.licenses.map(one).filter(Boolean);
+  const all = /** @type {string[]} */ (j.licenses.map(one).filter(Boolean));
   return all.length ? all : undefined;
 }
 

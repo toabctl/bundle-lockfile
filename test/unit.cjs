@@ -18,7 +18,7 @@ const { toPackageLock } = require('../src/core/lockfile.cjs');
 const crypto = require('crypto');
 const outputs = require('../src/core/outputs.cjs');
 const config = require('../src/core/config.cjs');
-const webpack = require('../src/adapters/webpack.cjs');
+const webpackAdapter = require('../src/adapters/webpack.cjs');
 const problems = require('../src/core/problems.cjs');
 // the environment of a child process with BUNDLE_LOCKFILE_STRICT unset (undefined) or set to v; a node run with it
 const strictEnv = (v) => { const env = { ...process.env }; if (v === undefined) delete env.BUNDLE_LOCKFILE_STRICT; else env.BUNDLE_LOCKFILE_STRICT = v; return env; };
@@ -387,16 +387,16 @@ const fakeCompiler = () => class Compiler { compile() {} run() {} watch() {} new
 
 test('webpack adapter: patches webpack Compilers, not other classes called Compiler', () => {
   const W = fakeCompiler();
-  webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
+  webpackAdapter.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
   assert.equal(W.prototype[PATCHED], true);
 
   const NS = fakeCompiler();
   const ns = Object.assign(function webpack() {}, { Compiler: NS, Compilation: class {}, version: '5.0.0' });
-  webpack.onCjsLoad(ns, 'webpack', () => '/p/node_modules/webpack/lib/index.js');
+  webpackAdapter.onCjsLoad(ns, 'webpack', () => '/p/node_modules/webpack/lib/index.js');
   assert.equal(NS.prototype[PATCHED], true);
 
   class Compiler { compile() {} } // e.g. snapdragon's
-  webpack.onCjsLoad(Compiler, './compiler', () => '/p/node_modules/snapdragon/lib/compiler.js');
+  webpackAdapter.onCjsLoad(Compiler, './compiler', () => '/p/node_modules/snapdragon/lib/compiler.js');
   assert.equal(Compiler.prototype[PATCHED], undefined);
 });
 
@@ -406,21 +406,21 @@ test('webpack adapter: Next.js vendored webpack, whose exports are filled in by 
   // as next/dist/compiled/webpack/webpack.js: only init() at load time
   const C1 = fakeCompiler();
   const exp = { __esModule: true, init() { Object.assign(exp, { webpack: { Compiler: C1 } }); } };
-  webpack.onCjsLoad(exp, where, () => where);
+  webpackAdapter.onCjsLoad(exp, where, () => where);
   assert.equal(C1.prototype[PATCHED], undefined);
   exp.init();
   assert.equal(C1.prototype[PATCHED], true);
-  webpack.onCjsLoad(exp, where, () => where); // required again: init not wrapped twice
+  webpackAdapter.onCjsLoad(exp, where, () => where); // required again: init not wrapped twice
   exp.init();
 
   // already initialized when required (another copy of the module, or a later require)
   const C2 = fakeCompiler();
-  webpack.onCjsLoad({ webpack: { Compiler: C2 } }, where, () => where);
+  webpackAdapter.onCjsLoad({ webpack: { Compiler: C2 } }, where, () => where);
   assert.equal(C2.prototype[PATCHED], true);
 
   // the same shape at any other path is ignored
   const C3 = fakeCompiler();
-  webpack.onCjsLoad({ webpack: { Compiler: C3 } }, '/p/node_modules/my-webpack/index.js', () => '/p/node_modules/my-webpack/index.js');
+  webpackAdapter.onCjsLoad({ webpack: { Compiler: C3 } }, '/p/node_modules/my-webpack/index.js', () => '/p/node_modules/my-webpack/index.js');
   assert.equal(C3.prototype[PATCHED], undefined);
 
   // next-rspack fills it with rspack's exports: rspack's Compiler (no newCompilation) is rspack.cjs's, no unknown webpack
@@ -428,9 +428,9 @@ test('webpack adapter: Next.js vendored webpack, whose exports are filled in by 
     problems.take();
     const R = fakeRspack('2.0.4');
     const viaInit = { init() { Object.assign(viaInit, { webpack: R }); } };
-    webpack.onCjsLoad(viaInit, where, () => where);
+    webpackAdapter.onCjsLoad(viaInit, where, () => where);
     viaInit.init();
-    webpack.onCjsLoad({ webpack: R }, where, () => where);
+    webpackAdapter.onCjsLoad({ webpack: R }, where, () => where);
     assert.deepEqual(problems.take(), []);
     assert.equal(R.Compiler.prototype[PATCHED], undefined);
   });
@@ -463,7 +463,7 @@ function compilation4({ context, chunks, children = [], assets = {} }) {
 }
 const LOCK = 'bundle-lockfile/package-lock.json';
 const WRITER = Symbol.for('bundle-lockfile.webpack.writer');
-const plugin = () => new webpack.BundleLockfilePlugin(LOCK);
+const plugin = () => new webpackAdapter.BundleLockfilePlugin(LOCK);
 const lockedNames = (json) => entries(json).map(([k]) => k.replace(/^node_modules\//, '')).sort();
 
 test('webpack adapter: the bundler whose code is in the output is listed - the patched copy, Next.js\' at its version, the one that applied a configured plugin', () => withConfig({ strict: true }, () => {
@@ -493,7 +493,7 @@ test('webpack adapter: the bundler whose code is in the output is listed - the p
   // a plugin in the config, without the preload: the webpack that applies it
   const { compiler } = fakeCompiler5({ outputPath: J(root, 'dist-configured') });
   delete compiler[BUNDLER_FILE];
-  const configured = new webpack.BundleLockfilePlugin(LOCK);
+  const configured = new webpackAdapter.BundleLockfilePlugin(LOCK);
   require(BUNDLERS.webpack)(configured.apply, configured, [compiler]);
   const c = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [a] }] });
   c.compiler = compiler;
@@ -502,7 +502,7 @@ test('webpack adapter: the bundler whose code is in the output is listed - the p
   const other = fakeCompiler5({ outputPath: J(root, 'dist-other') }).compiler;
   delete other[BUNDLER_FILE];
   other.webpack.version = '5.111.1';
-  const p2 = new webpack.BundleLockfilePlugin(LOCK);
+  const p2 = new webpackAdapter.BundleLockfilePlugin(LOCK);
   p2.apply(other);
   const c2 = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [a] }] });
   c2.compiler = other;
@@ -510,7 +510,7 @@ test('webpack adapter: the bundler whose code is in the output is listed - the p
   assert.deepEqual(problems.take(), []);
   // ... else the copy that ran is not known: a problem (strict mode: the build fails)
   other.webpack.version = '5.112.0';
-  const p3 = new webpack.BundleLockfilePlugin(LOCK);
+  const p3 = new webpackAdapter.BundleLockfilePlugin(LOCK);
   p3.apply(other);
   assert.equal(allEntries(p3.lockfile(c2)).some(([, p]) => p.name === 'webpack'), false);
   const taken = problems.take();
@@ -589,14 +589,14 @@ test('webpack adapter: more than 20,000 files below a copied directory in node_m
   for (let i = 0; i < 20001; i++) fs.writeFileSync(J(root, `node_modules/dir/${i}.txt`), '');
   const assets = new Map([['main.js', 'main'], ['copied.txt', 'unnamed']].map(([name, content]) => [name, { name, source: { size: () => content.length, source: () => content }, info: {} }]));
   const compiler = { context: root, outputPath: J(root, `dist-${++outputDirs}`), [BUNDLER_FILE]: BUNDLERS.webpack };
-  const compilation = () => ({ // (a new one per build: the plugin keeps what it found on it)
+  const freshCompilation = () => ({ // (a new one per build: the plugin keeps what it found on it)
     compiler,
     chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }],
     modules: [], children: [], fileDependencies: new Set(), contextDependencies: new Set([J(root, 'node_modules/dir')]),
     getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()],
   });
   const p = plugin();
-  const seen = warnings(() => { p.lockfile(compilation()); p.lockfile(compilation()); }); // two builds of one compiler
+  const seen = warnings(() => { p.lockfile(freshCompilation()); p.lockfile(freshCompilation()); }); // two builds of one compiler
   assert.equal(seen.length, 1, seen.join('\n'));
   assert.match(seen[0], /^more than 20000 files below the directories in node_modules that \S+'s build depends on: assets copied from them without naming their source were not all compared$/);
 });
@@ -606,7 +606,7 @@ test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched befo
     'node_modules/file/f.css': 'body {  margin: 0  }' });
   const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'dist') });
   compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
-  const p = new webpack.BundleLockfilePlugin(LOCK);
+  const p = new webpackAdapter.BundleLockfilePlugin(LOCK);
   p.apply(compiler);
   const build = (beforeOptimize) => {
     const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
@@ -825,9 +825,9 @@ test('webpack adapter: writer ids have no paths of this machine; ids of configs 
   };
   // the same config checked out at two paths, with entry: path.resolve(__dirname, 'src/app.js')
   const [a, b] = [project({}), project({})];
-  const ids = [a, b].map(root => writerIn(root, { main: { import: [J(root, 'src/app.js')] } }));
-  assert.equal(ids[0], ids[1]);
-  assert.equal(ids[0], JSON.stringify([null, { main: { import: ['src/app.js'] } }, null, '[name].js', null]));
+  const writerIds = [a, b].map(root => writerIn(root, { main: { import: [J(root, 'src/app.js')] } }));
+  assert.equal(writerIds[0], writerIds[1]);
+  assert.equal(writerIds[0], JSON.stringify([null, { main: { import: ['src/app.js'] } }, null, '[name].js', null]));
   // as before: relative paths, undefined fields (webpack's normalized entry) left out
   assert.equal(writerIn(project({}), { main: { import: ['./src/app.js'], filename: undefined } }),
     JSON.stringify([null, { main: { import: ['./src/app.js'] } }, null, '[name].js', null]));
@@ -952,8 +952,8 @@ test('outputs: two lockfiles of a process at one export path are an error; the s
   const inside = J(root, `w/${require('../src/core/paths.cjs').OUTSIDE_BASE}`, root.slice(1), 'dist', LOCK), outside = J(root, 'dist', LOCK);
   await withConfig({ exportDir: J(root, 'export'), exportBase: J(root, 'w') }, async () => {
     assert.equal(exportPath(inside), exportPath(outside));
-    const write = (target, pkg) => new Promise((resolve) => {
-      outputs.record(target, 'w', [pkg], root, [], { disk: true }); outputs.emitted(target, 'w');
+    const write = (target, p) => new Promise((resolve) => {
+      outputs.record(target, 'w', [p], root, [], { disk: true }); outputs.emitted(target, 'w');
       outputs.rewrite(target, outputs.writeDisk(target), resolve);
     });
     assert.equal(await write(outside, a), undefined);
@@ -1184,7 +1184,7 @@ function sharedCompiler(root, outputPath, name, onEmitAsset = () => {}) {
   compiler.name = name;
   Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
   compiler.options = { entry: { main: { import: [`./src/${name}.js`] } } };
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   return async (assets = { [`${name}.js`]: `${name}.js` }, emitted = assets) => {
     const infos = Object.fromEntries(Object.keys(assets).map(n => [n, {}]));
     const comp = compilation({ context: root, outputPath, chunks: [{ files: Object.keys(assets), modules: [{ resource: J(root, 'node_modules', name, 'i.js') }] }],
@@ -1215,7 +1215,7 @@ test('webpack adapter: plugin emits in webpack 5 and 4 (also without webpack-sou
     comp.hooks = withWebpack
       ? { processAssets: { tap() { throw new Error('emitted in processAssets'); } }, afterProcessAssets: { tap: (o, fn) => (stageTap = fn) } }
       : { afterOptimizeAssets: { tap: (o, fn) => (stageTap = fn) } };
-    new webpack.BundleLockfilePlugin(LOCK).apply(compiler); // webpack 4: no compilerFile, webpack-sources not found
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler); // webpack 4: no compilerFile, webpack-sources not found
     taps.thisCompilation(comp);
     stageTap();
     const json = emitted[LOCK];
@@ -1242,7 +1242,7 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
     const outputPath = J(root, shape === 'webpack 4' ? 'dist4' : 'dist5');
     const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: shape === 'webpack 5' });
     compiler.outputFileSystem.readFile = fs.readFile;
-    new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
     // late: assets the emit hook adds (name -> [content, info]); deps: the compilation's file dependencies
     const build = async (late, deps = DEPS) => {
       const comp = {
@@ -1291,8 +1291,8 @@ test('webpack adapter: every top-level compiler gets the listeners once; child c
   const W = fakeCompiler();
   let applied = 0;
   const seen = [];
-  webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
-  webpack.onCompiler((c) => seen.push(c));
+  webpackAdapter.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
+  webpackAdapter.onCompiler((c) => seen.push(c));
   const top = new W();
   top.hooks = { thisCompilation: { tap() { applied++; } }, emit: { tap() {} }, afterEmit: { tapAsync() {} } };
   top.webpack = { Compilation: {}, sources: {} };
@@ -1801,29 +1801,28 @@ test('hooks: another loader-thread hook is recognized in NODE_OPTIONS and the co
 // runs the plugin's hooks like a rollup/rolldown build writing `outDir`; chunks: [{ fileName, code, modules, entry }]
 // (entry: its facade module), assets: [{ fileName, originalFileNames, source }]; ctx: the plugin context (Rollup's
 // getWatchFiles); late(): what other plugins do after the write, before the plugin's closeBundle
-async function rollupBuild(plugin, { outDir, chunks = [], assets = [], isWrite = true, ctx = {}, late, input }) {
+async function rollupBuild(rollupPlugin, { outDir, chunks = [], assets = [], isWrite = true, ctx = {}, late, input }) {
   const out = { dir: outDir, format: 'es' };
-  if (plugin.config) BUNDLERS.vite(plugin.config, ctx, [{}]); // Vite runs it (core/bundler.cjs: Vite's package)
+  if (rollupPlugin.config) BUNDLERS.vite(rollupPlugin.config, ctx, [{}]); // Vite runs it (core/bundler.cjs: Vite's package)
   // Rollup or Rolldown run the hooks
-  BUNDLERS[ctx.meta && ctx.meta.rolldownVersion ? 'rolldown' : 'rollup'](plugin.buildStart, ctx, [{ input }]); // the (normalized) input options
-  plugin.renderStart.call(ctx, out);
-  for (const c of chunks) plugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
+  BUNDLERS[ctx.meta && ctx.meta.rolldownVersion ? 'rolldown' : 'rollup'](rollupPlugin.buildStart, ctx, [{ input }]); // the (normalized) input options
+  rollupPlugin.renderStart.call(ctx, out);
+  for (const c of chunks) rollupPlugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
   const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
     isEntry: !!c.entry, facadeModuleId: c.entry || null, ...(c.css && { viteMetadata: { importedCss: new Set(c.css) } }) }]), ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
-  await plugin.generateBundle.handler.call(ctx, out, bundle, isWrite);
+  await rollupPlugin.generateBundle.handler.call(ctx, out, bundle, isWrite);
   if (isWrite) {
     for (const f of Object.values(bundle)) {
       fs.mkdirSync(path.dirname(J(outDir, f.fileName)), { recursive: true });
       fs.writeFileSync(J(outDir, f.fileName), f.type === 'chunk' ? f.code : f.source || '');
     }
-    await plugin.writeBundle.handler.call(ctx, out);
+    await rollupPlugin.writeBundle.handler.call(ctx, out);
   }
   if (late) late();
-  await plugin.closeBundle.handler.call(ctx);
+  await rollupPlugin.closeBundle.handler.call(ctx);
 }
 
 test('outputs.hasFile: as filesOf().has(), also after the build\'s file list grew', () => {
-  const outputs = require('../src/core/outputs.cjs');
   const target = J(os.tmpdir(), `bl-hasfile-${process.pid}`, 'bundle-lockfile/package-lock.json');
   const files = ['/o/a.js', '/o/b.js'];
   outputs.record(target, 'hasFile', [], os.tmpdir(), files, { id: 'hasFile' });
@@ -1850,8 +1849,8 @@ test('rollup adapter: a written output gets its lockfile; generate-only builds a
   const cwd = process.cwd();
   process.chdir(root);
   try {
-    const plugin = rollupAdapter.bundleLockfile('vite', { input: J(root, 'index.html') });
-    await rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite', { input: J(root, 'index.html') });
+    await rollupBuild(rollupPlugin, { outDir: J(root, 'dist'), chunks: [
       { fileName: 'assets/index.js', code: 'index', modules: [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js'), '\0vite/modulepreload-polyfill.js',
         `\0${J(root, 'node_modules/b/i.js')}?commonjs-proxy`, `${J(root, 'node_modules/c/x.css')}?inline`] },
     ], assets: [{ fileName: 'assets/logo.svg', originalFileNames: ['node_modules/d/logo.svg'] }] });
@@ -1956,18 +1955,18 @@ test('rollup adapter: outputs of one build written at the same time into one dir
   try {
     // as Promise.all([bundle.write(a), bundle.write(b)]) (the rollup command line): every hook of one output gets
     // its own output options object; the hooks of both outputs interleave
-    const dir = J(root, 'dist'), plugin = rollupAdapter.bundleLockfile('rollup', { input: 'src/main.js' });
+    const dir = J(root, 'dist'), rollupPlugin = rollupAdapter.bundleLockfile('rollup', { input: 'src/main.js' });
     const outs = ['main.js', 'main.min.js'].map(entryFileNames => ({ dir, format: 'es', entryFileNames }));
     const modules = [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')];
     const chunk = (out) => ({ type: 'chunk', fileName: out.entryFileNames, code: `code of ${out.entryFileNames}`, moduleIds: modules, isEntry: true, facadeModuleId: modules[0] });
-    plugin.buildStart.call({});
-    for (const out of outs) plugin.renderStart.call({}, out);
-    for (const out of outs) plugin.renderChunk.call({}, '', { moduleIds: modules }, out);
-    for (const out of outs) await plugin.generateBundle.handler.call({}, out, { [out.entryFileNames]: chunk(out) }, true);
+    rollupPlugin.buildStart.call({});
+    for (const out of outs) rollupPlugin.renderStart.call({}, out);
+    for (const out of outs) rollupPlugin.renderChunk.call({}, '', { moduleIds: modules }, out);
+    for (const out of outs) await rollupPlugin.generateBundle.handler.call({}, out, { [out.entryFileNames]: chunk(out) }, true);
     fs.mkdirSync(dir, { recursive: true });
     for (const out of outs) fs.writeFileSync(J(dir, out.entryFileNames), chunk(out).code);
-    await Promise.all(outs.map(out => plugin.writeBundle.handler.call({}, out)));
-    await plugin.closeBundle.handler.call({});
+    await Promise.all(outs.map(out => rollupPlugin.writeBundle.handler.call({}, out)));
+    await rollupPlugin.closeBundle.handler.call({});
     const writers = JSON.parse(fs.readFileSync(J(dir, LOCK), 'utf8'))['bundle-lockfile'].writers;
     assert.deepEqual(writers.map(w => w.files).sort(), [['../main.js'], ['../main.min.js']]);
     // each with the hash of its own file, for a build that bundles it (nested)
@@ -1982,18 +1981,18 @@ test('rollup adapter: Rolldown write() without dir and file: the lockfile in dis
   const cwd = process.cwd();
   process.chdir(root);
   try {
-    const plugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
+    const rollupPlugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
     const ctx = { meta: { rolldownVersion: '1.2.13', rollupVersion: '4.23.0' } }; // Rolldown's plugin context
     const out = { format: 'es' }; // neither dir nor file in the hooks' output options
     const modules = [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')];
-    plugin.buildStart.call(ctx, { input: ['src/main.js'] });
-    plugin.renderStart.call(ctx, out);
-    plugin.renderChunk.call(ctx, '', { moduleIds: modules }, out);
-    await plugin.generateBundle.handler.call(ctx, out, { 'main.js': { type: 'chunk', fileName: 'main.js', code: 'rolldown main', moduleIds: modules } }, true);
+    rollupPlugin.buildStart.call(ctx, { input: ['src/main.js'] });
+    rollupPlugin.renderStart.call(ctx, out);
+    rollupPlugin.renderChunk.call(ctx, '', { moduleIds: modules }, out);
+    await rollupPlugin.generateBundle.handler.call(ctx, out, { 'main.js': { type: 'chunk', fileName: 'main.js', code: 'rolldown main', moduleIds: modules } }, true);
     fs.mkdirSync(J(root, 'dist'));
     fs.writeFileSync(J(root, 'dist/main.js'), 'rolldown main');
-    await plugin.writeBundle.handler.call(ctx, out);
-    await plugin.closeBundle.handler.call(ctx);
+    await rollupPlugin.writeBundle.handler.call(ctx, out);
+    await rollupPlugin.closeBundle.handler.call(ctx);
     const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
     assert.deepEqual(lockedNames(JSON.stringify(lock)), ['a']);
     assert.deepEqual(lock['bundle-lockfile'].writers.map(w => w.files), [['../main.js']]);
@@ -2009,20 +2008,20 @@ test('rollup adapter: a plugin from the Vite config adds itself to worker.plugin
   process.chdir(root);
   try {
     const names = (list) => list.map(p => p.name);
-    const plugin = rollupAdapter.bundleLockfile('vite');
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite');
     // no worker.plugins, a function (Vite 5+), an array (Vite 4's form), one that has bundle-lockfile's already
     const cfg = {};
-    plugin.config(cfg);
+    rollupPlugin.config(cfg);
     assert.deepEqual(names(cfg.worker.plugins()), ['bundle-lockfile']);
     const fn = { worker: { format: 'es', plugins: () => [{ name: 'user' }] } };
-    plugin.config(fn);
+    rollupPlugin.config(fn);
     assert.equal(fn.worker.format, 'es');
     assert.deepEqual(names(fn.worker.plugins()), ['user', 'bundle-lockfile']);
     const arr = { worker: { plugins: [{ name: 'user' }] } };
-    plugin.config(arr);
+    rollupPlugin.config(arr);
     assert.deepEqual(names(arr.worker.plugins()), ['user', 'bundle-lockfile']);
     const has = { worker: { plugins: () => [[rollupAdapter.bundleLockfile('vite')]] } };
-    plugin.config(has);
+    rollupPlugin.config(has);
     assert.deepEqual(names(has.worker.plugins().flat()), ['bundle-lockfile']);
     // only for Vite
     assert.equal(rollupAdapter.bundleLockfile('rollup').config, undefined);
@@ -2031,7 +2030,7 @@ test('rollup adapter: a plugin from the Vite config adds itself to worker.plugin
     // the worker build (generate-only) with the plugin from worker.plugins, then the main build that emits its chunk
     const worker = cfg.worker.plugins()[0];
     await rollupBuild(worker, { outDir: J(root, 'dist'), chunks: [{ fileName: 'w.js', code: 'the worker', modules: [J(root, 'node_modules/w/i.js')], entry: J(root, 'src/w.js') }], isWrite: false });
-    await rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js')] }],
+    await rollupBuild(rollupPlugin, { outDir: J(root, 'dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js')] }],
       assets: [{ fileName: 'assets/w-1.js', source: 'the worker' }] });
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'w']);
   } finally { process.chdir(cwd); }
@@ -2044,16 +2043,16 @@ test('rollup adapter: the preload hands a plugin from the config the build rolld
   const cwd = process.cwd();
   process.chdir(root);
   try {
-    const plugin = rollupAdapter.bundleLockfile('vite');
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite');
     // Rolldown: the style sheets a style sheet @imports are watch files of the build rolldown() returns only
     const build = { watchFiles: Promise.resolve([J(root, 'src/app.css'), J(root, 'node_modules/s/s.css')]) };
     let got;
     const rolldown = rollupAdapter.esmWrap('rolldown', 'rolldown', (options) => { got = options; return Promise.resolve(build); });
-    const options = { input: 'index.html', plugins: [{ name: 'vite:css' }, [plugin]] };
+    const options = { input: 'index.html', plugins: [{ name: 'vite:css' }, [rollupPlugin]] };
     assert.equal(await rolldown(options), build);
     assert.equal(got, options); // no second plugin
     const ctx = { meta: { rolldownVersion: '1.2.13' } }; // no getWatchFiles in Rolldown's plugin context
-    await rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js'), J(root, 'src/app.css')] }], ctx });
+    await rollupBuild(rollupPlugin, { outDir: J(root, 'dist'), chunks: [{ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js'), J(root, 'src/app.css')] }], ctx });
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 's']);
   } finally { process.chdir(cwd); }
 });
@@ -2085,19 +2084,19 @@ test('nested: a bundled file another build produced brings its packages, also wh
   try {
     // the island: a Vite build into island/dist with main.js containing node_modules/inner
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
-    const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
+    const idsOf = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
     // the island's packages, and its bundler (Vite, its Rollup), whose code is in it
-    assert.deepEqual(ids([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
+    assert.deepEqual(idsOf([J(root, 'src/app.js'), J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
     // post-processed after its build: the record says by path that the island's build wrote it
     fs.appendFileSync(J(root, 'island/dist/main.js'), '/* changed */');
     let got;
-    const warned = warnings(() => { got = ids([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]); });
+    const warned = warnings(() => { got = idsOf([J(root, 'island/dist/main.js'), J(root, 'node_modules/outer/i.js')]); });
     assert.deepEqual(got, ['inner@1.0.0', 'outer@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
     assert.deepEqual(warned, [`${J(root, 'island/dist/main.js')} changed after the build that wrote it into ${J(root, 'island/dist')}: listed with that build's packages`]);
-    assert.deepEqual(warnings(() => ids([J(root, 'island/dist/main.js')])), []); // once per file
+    assert.deepEqual(warnings(() => idsOf([J(root, 'island/dist/main.js')])), []); // once per file
     // a file the record does not have: first-party
     fs.writeFileSync(J(root, 'island/dist/other.js'), 'x');
-    assert.deepEqual(ids([J(root, 'island/dist/other.js')]), []);
+    assert.deepEqual(idsOf([J(root, 'island/dist/other.js')]), []);
   } finally { process.chdir(cwd); }
 });
 
@@ -2192,19 +2191,19 @@ test('nested: each JavaScript and CSS file another build produced brings the pac
         { fileName: 'lazy.js', code: 'lazy code', modules: [m('lazy')] }],
       assets: [{ fileName: 'style.css', source: 'css code' }, { fileName: 'w.js', source: 'nested island worker code' },
         { fileName: 'l.svg', source: '<svg/>', originalFileNames: ['node_modules/logo/l.svg'] }] });
-    const ids = (f) => packages.packagesOfFiles([J(dir, f)]).all.map(p => `${p.name}@${p.version}`).sort();
+    const idsOf = (f) => packages.packagesOfFiles([J(dir, f)]).all.map(p => `${p.name}@${p.version}`).sort();
     // the bundler's code is in each chunk (and in the worker, a generate-only Vite build's chunk), not in the style sheet
-    assert.deepEqual(ids('main.js'), ['inline@1.0.0', 'js@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
-    assert.deepEqual(ids('lazy.js'), ['lazy@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
-    assert.deepEqual(ids('style.css'), ['imported@1.0.0', 'sheet@1.0.0']);
-    assert.deepEqual(ids('w.js'), [`rollup@${UNIT}`, `vite@${UNIT}`, 'worker@1.0.0']);
-    assert.deepEqual(ids('l.svg'), []); // no JavaScript or CSS: its package is the file's own if bundled from there
+    assert.deepEqual(idsOf('main.js'), ['inline@1.0.0', 'js@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
+    assert.deepEqual(idsOf('lazy.js'), ['lazy@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]);
+    assert.deepEqual(idsOf('style.css'), ['imported@1.0.0', 'sheet@1.0.0']);
+    assert.deepEqual(idsOf('w.js'), [`rollup@${UNIT}`, `vite@${UNIT}`, 'worker@1.0.0']);
+    assert.deepEqual(idsOf('l.svg'), []); // no JavaScript or CSS: its package is the file's own if bundled from there
     // recorded by a version that did not record the packages of each file: all of the island's
     const lock = J(dir, LOCK), json = JSON.parse(fs.readFileSync(lock, 'utf8'));
     assert.deepEqual(Object.keys(json['bundle-lockfile'].writers[0].contents).sort(), ['../l.svg', '../lazy.js', '../main.js', '../style.css', '../w.js'].filter(f => f !== '../l.svg'));
     delete json['bundle-lockfile'].writers[0].contents;
     fs.writeFileSync(lock, JSON.stringify(json));
-    assert.deepEqual(ids('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', `rollup@${UNIT}`, 'sheet@1.0.0', `vite@${UNIT}`, 'worker@1.0.0']);
+    assert.deepEqual(idsOf('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', `rollup@${UNIT}`, 'sheet@1.0.0', `vite@${UNIT}`, 'worker@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
@@ -2218,15 +2217,15 @@ test('nested: a workspace package another build produced brings its packages, al
   process.chdir(root);
   try {
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'packages/island/dist'), chunks: [{ fileName: 'main.js', code: 'island code', modules: [J(root, 'node_modules/inner/i.js')] }] });
-    const ids = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
+    const idsOf = (files) => packages.packagesOfFiles(files).all.map(p => `${p.name}@${p.version}`).sort();
     const island = ['inner@1.0.0', `rollup@${UNIT}`, `vite@${UNIT}`]; // with the island's bundler
-    assert.deepEqual(ids([J(root, 'packages/island/dist/main.js')]), island);          // its real path (resolve.symlinks)
-    assert.deepEqual(ids([J(root, 'node_modules/@acme/island/dist/main.js')]), island); // the link (resolve.symlinks: false)
+    assert.deepEqual(idsOf([J(root, 'packages/island/dist/main.js')]), island);          // its real path (resolve.symlinks)
+    assert.deepEqual(idsOf([J(root, 'node_modules/@acme/island/dist/main.js')]), island); // the link (resolve.symlinks: false)
     // a package's own files are no other build's output, even with the same bytes
     fs.mkdirSync(J(root, 'node_modules/copy/dist'), { recursive: true });
     fs.writeFileSync(J(root, 'node_modules/copy/package.json'), JSON.stringify({ name: 'copy', version: '1.0.0' }));
     fs.copyFileSync(J(root, 'packages/island/dist/main.js'), J(root, 'node_modules/copy/dist/main.js'));
-    assert.deepEqual(ids([J(root, 'node_modules/copy/dist/main.js')]), ['copy@1.0.0']);
+    assert.deepEqual(idsOf([J(root, 'node_modules/copy/dist/main.js')]), ['copy@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
@@ -2279,9 +2278,9 @@ test('rollup adapter: style sheets a style sheet @imports from packages (watch f
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'a'), ctx: { getWatchFiles: () => watch }, chunks: [{ fileName: 'i.js', code: 'style a', modules: [J(root, 'src/main.js')] }] });
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'a', LOCK), 'utf8')), ['bootstrap', 'sanitize.css']);
     // Rolldown: the RolldownBuild's watchFiles (a promise), given to the plugin by the rolldown() wrapper
-    const plugin = rollupAdapter.bundleLockfile('vite');
-    plugin.api.setBuild({ get watchFiles() { return Promise.resolve(watch); } });
-    await rollupBuild(plugin, { outDir: J(root, 'b'), chunks: [{ fileName: 'i.js', code: 'style b', modules: [J(root, 'src/main.js')] }] });
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite');
+    rollupPlugin.api.setBuild({ get watchFiles() { return Promise.resolve(watch); } });
+    await rollupBuild(rollupPlugin, { outDir: J(root, 'b'), chunks: [{ fileName: 'i.js', code: 'style b', modules: [J(root, 'src/main.js')] }] });
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'b', LOCK), 'utf8')), ['bootstrap', 'sanitize.css']);
     // the wrapper hands over the build
     let built;
@@ -2334,8 +2333,8 @@ test('rollup adapter: files other plugins write into the output after the build 
     fs.utimesSync(J(dist, 'vendor/node_modules/old/o.css'), before, before);
     // workbox-build: generate-only, written later by vite-plugin-pwa in its closeBundle (with a source map comment)
     await rollupBuild(rollupAdapter.bundleLockfile('rollup'), { outDir: '', isWrite: false, chunks: [{ fileName: 'workbox-1.js', code: 'workbox runtime', modules: [J(root, 'node_modules/workbox-core/i.js')] }] });
-    const plugin = rollupAdapter.bundleLockfile('vite');
-    await rollupBuild(plugin, { outDir: dist, chunks: [{ fileName: 'assets/index.js', code: 'index', modules: [J(root, 'node_modules/app/i.js')] }], late() {
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite');
+    await rollupBuild(rollupPlugin, { outDir: dist, chunks: [{ fileName: 'assets/index.js', code: 'index', modules: [J(root, 'node_modules/app/i.js')] }], late() {
       fs.writeFileSync(J(dist, 'workbox-1.js'), 'workbox runtime\n//# sourceMappingURL=workbox-1.js.map\n');
       fs.writeFileSync(J(dist, 'sw.js'), 'unknown');
       fs.mkdirSync(J(dist, 'vendor/node_modules/normalize.css'), { recursive: true });
@@ -2535,7 +2534,7 @@ test('hooks: a circular require() makes Node print no warning (no adapter reads 
   // the adapters look at an object only once its request is one of theirs
   const read = [];
   const exp = new Proxy({}, { get: (t, k) => { read.push(k); return undefined; }, has: (t, k) => { read.push(k); return false; } });
-  for (const a of [webpack, require('../src/adapters/rollup.cjs')]) a.onCjsLoad(exp, './b', () => J(root, 'b.js'));
+  for (const a of [webpackAdapter, require('../src/adapters/rollup.cjs')]) a.onCjsLoad(exp, './b', () => J(root, 'b.js'));
   assert.deepEqual(read, []);
 });
 
@@ -2609,7 +2608,7 @@ test('webpack adapter: on the real disk the lockfile is no asset: written once t
       const emitted = [];
       comp.emitAsset = (file) => emitted.push(file);
       comp.hooks = { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } };
-      new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+      new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
       taps.thisCompilation(comp);
       comp.stage();
       taps.emit(comp);
@@ -2674,17 +2673,17 @@ test('lockfile: a context reached through a symlink is recorded as given, and re
   const root = fs.realpathSync(project({ 'real/proj/node_modules/a/package.json': { name: 'a', version: '1.0.0' } }));
   fs.symlinkSync(J(root, 'real/proj'), J(root, 'link'));
   const ctx = J(root, 'link'), dir = J(ctx, 'dist/bundle-lockfile'); // webpack's context and output.path as configured
-  const pkg = { name: 'a', version: '1.0.0', path: J(root, 'real/proj/node_modules/a') }; // package paths are real
-  const json = toPackageLock([pkg], ctx, { dir, writers: [{ id: 'w', files: [J(ctx, 'dist/main.js')], paths: [pkg.path] }] });
+  const pkgA = { name: 'a', version: '1.0.0', path: J(root, 'real/proj/node_modules/a') }; // package paths are real
+  const json = toPackageLock([pkgA], ctx, { dir, writers: [{ id: 'w', files: [J(ctx, 'dist/main.js')], paths: [pkgA.path] }] });
   const doc = JSON.parse(json);
   assert.equal(doc['bundle-lockfile'].context, '../..'); // not ../../../real/proj: no path of this machine
   assert.deepEqual(Object.keys(doc.packages), ['', 'node_modules/a']);
   const meta = readMeta(json, dir);
   assert.equal(meta.context, J(root, 'real/proj'));
-  assert.equal(meta.writers[0].pkgs[0].path, pkg.path);
+  assert.equal(meta.writers[0].pkgs[0].path, pkgA.path);
   // a record with the real context (written by v0.0.3, without "self") reads the same
   const old = JSON.stringify({ ...doc, 'bundle-lockfile': { ...doc['bundle-lockfile'], context: path.relative(dir, J(root, 'real/proj')), self: undefined } });
-  assert.equal(readMeta(old, dir).writers[0].pkgs[0].path, pkg.path);
+  assert.equal(readMeta(old, dir).writers[0].pkgs[0].path, pkgA.path);
 });
 
 test('lockfile: a package outside the project another process listed is listed once, also after many writes', async () => {
@@ -2728,7 +2727,7 @@ test('lockfile: a package outside the project another process listed is listed o
 test('lockfile: a lockfile of another shape is no record, and never stops the lockfile from being written', async () => {
   const { readMeta } = require('../src/core/lockfile.cjs');
   const NONE = Symbol('no packages');
-  const field = (m, packages = {}) => JSON.stringify({ lockfileVersion: 3, ...(packages === NONE ? {} : { packages }), 'bundle-lockfile': m });
+  const field = (m, pkgs = {}) => JSON.stringify({ lockfileVersion: 3, ...(pkgs === NONE ? {} : { packages: pkgs }), 'bundle-lockfile': m });
   for (const json of [
     field({ v: 2, context: '.', writers: [{ id: 'x', packages: ['node_modules/a'] }] }, NONE), // no packages
     field({ v: 2, context: '.', writers: [] }, ['node_modules/a']),                                  // packages as an array
@@ -2817,8 +2816,8 @@ test('lockfile: a writer\'s record has at most 20 of its files and 500 output ha
   const dir = J(root, 'dist/bundle-lockfile');
   const files = Array.from({ length: 25 }, (_, i) => J(root, `dist/f${String(i).padStart(2, '0')}.js`));
   const hashes = Object.fromEntries(Array.from({ length: 600 }, (_, i) => [J(root, `dist/o${String(i).padStart(3, '0')}.js`), `sha256-${i}`]));
-  const pkg = packagesForFiles([J(root, 'node_modules/a/i.js')])[0];
-  const json = toPackageLock([pkg], root, { dir, writers: [{ id: 'w', files, paths: [pkg.path], outputs: hashes }] });
+  const pkgA = packagesForFiles([J(root, 'node_modules/a/i.js')])[0];
+  const json = toPackageLock([pkgA], root, { dir, writers: [{ id: 'w', files, paths: [pkgA.path], outputs: hashes }] });
   const w = JSON.parse(json)['bundle-lockfile'].writers[0];
   assert.equal(w.count, 25);
   assert.deepEqual(w.files, files.slice(0, 20).map(f => `../${path.basename(f)}`)); // the first 20 by path
@@ -2842,7 +2841,7 @@ test('lockfile: a writer\'s record has at most 20 of its files and 500 output ha
   assert.deepEqual(ids(changed), ['a@1.0.0']);
   assert.deepEqual(ids(packages.packagesOfFiles([J(root, 'dist/o560.txt')], elsewhere).all), []);
   // a record with all of them has no count
-  const few = JSON.parse(toPackageLock([pkg], root, { dir, writers: [{ id: 'w', files, paths: [pkg.path], outputs: { [J(root, 'dist/o.js')]: 'sha256-0' } }] }));
+  const few = JSON.parse(toPackageLock([pkgA], root, { dir, writers: [{ id: 'w', files, paths: [pkgA.path], outputs: { [J(root, 'dist/o.js')]: 'sha256-0' } }] }));
   assert.equal(few['bundle-lockfile'].writers[0].outputCount, undefined);
 });
 
@@ -3181,7 +3180,7 @@ test('copies of lockfiles: copied with fs in this process - re-anchored where th
   outputs.record(target, 'client', [a, b], root, [J(root, '.svelte-kit/output/client/x.js')], { disk: true });
   outputs.emitted(target, 'client');
   await write();
-  for (const f of [...copiesOf.filter(f => f !== to('promise')), J(root, 'deep/er', LOCK)]) {
+  for (const f of [...copiesOf.filter(c => c !== to('promise')), J(root, 'deep/er', LOCK)]) {
     assert.deepEqual(lockedNames(fs.readFileSync(f, 'utf8')), ['a', 'b'], f);
     assert.equal(valid(f), true, f);
   }
@@ -3586,7 +3585,7 @@ test('strict: the webpack plugin fails the compilation when collecting or writin
     Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
     compiler.outputFileSystem.gracefulify = () => {}; // the real disk
     if (webpackError) compiler.webpack.WebpackError = class WebpackError extends Error {};
-    new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
     const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }], assets: { 'main.js': {} } });
     comp.compiler = compiler;
     comp.errors = [];
@@ -3631,7 +3630,7 @@ test('strict: a compiler the plugin cannot be applied to fails its compilations 
       const W = fakeCompiler();
       let compiled = 0;
       W.prototype.compile = function (cb) { compiled++; cb(null); };
-      webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
+      webpackAdapter.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
       // apply() throws at emit.tap; thisCompilation can be tapped: each compilation fails, watch mode keeps running
       const c = new W();
       c.outputPath = '/p/dist';
@@ -3681,13 +3680,13 @@ test('strict: the Rollup plugin fails the build when collecting or writing fails
       assert.equal(problems.pending(), false);
       // closeBundle: a problem there fails the build by a throw, except in watch mode, where a throw would crash
       // `vite build --watch`: printed then
-      const plugin = rollupAdapter.bundleLockfile('rollup');
+      const rollupPlugin = rollupAdapter.bundleLockfile('rollup');
       problems.problem('late');
-      await assert.rejects(plugin.closeBundle.handler.call({ meta: {} }), (e) => problems.isFailure(e) && /\n {2}late$/.test(e.message));
+      await assert.rejects(rollupPlugin.closeBundle.handler.call({ meta: {} }), (e) => problems.isFailure(e) && /\n {2}late$/.test(e.message));
       problems.problem('late');
       const origError = config.error, printed = [];
       config.error = (...a) => printed.push(a.join(' '));
-      try { await plugin.closeBundle.handler.call({ meta: { watchMode: true } }); } finally { config.error = origError; }
+      try { await rollupPlugin.closeBundle.handler.call({ meta: { watchMode: true } }); } finally { config.error = origError; }
       assert.match(printed.join('\n'), /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*\n {2}late/);
       assert.equal(problems.pending(), false);
     });
@@ -3791,7 +3790,7 @@ function rspackCompiler(exp, outputPath = '/p/dist') {
 test('rspack adapter: patches rspack\'s Compiler (not webpack\'s), once per class whatever path it is seen on', () => {
   const exp = fakeRspack('2.2.8');
   const orig = exp.Compiler.prototype.compile;
-  webpack.onCjsLoad(exp, '@rspack/core', () => '/p/node_modules/@rspack/core/dist/index.js');
+  webpackAdapter.onCjsLoad(exp, '@rspack/core', () => '/p/node_modules/@rspack/core/dist/index.js');
   assert.equal(exp.Compiler.prototype[PATCHED], undefined, 'webpack.cjs leaves rspack alone');
   rspackAdapter.onCjsLoad(exp, '@rspack/core', () => '/p/node_modules/@rspack/core/dist/index.js');
   assert.equal(exp.Compiler.prototype[RSPACK_PATCHED], true);
@@ -3874,7 +3873,7 @@ test('rspack adapter: every top-level compiler of rspack 1.1+ gets the plugin on
 
 test('webpack adapter: never applies itself to an rspack compiler (Next.js with next-rspack loads both)', () => {
   const W = fakeCompiler();
-  webpack.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
+  webpackAdapter.onCjsLoad(W, './Compiler', () => '/p/node_modules/webpack/lib/Compiler.js');
   const c = new W();
   c.hooks = { thisCompilation: { tap() { throw new Error('tapped'); } } };
   c.webpack = { rspackVersion: '2.0.4' };
@@ -3889,7 +3888,7 @@ test('rspack: the plugin reads optional hooks without tripping rspack 2\'s hooks
   compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
   const strictHooks = (o) => new Proxy(o, { get(t, k) { if (!(k in t)) throw new Error(`Compilation.hooks.${String(k)} is not supported in rspack`); return t[k]; } });
   compiler.hooks = strictHooks(compiler.hooks);
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const comp = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
   comp.compiler = compiler;
   const stages = {};
@@ -3902,13 +3901,13 @@ test('rspack: the plugin reads optional hooks without tripping rspack 2\'s hooks
 
 test('esm-wrap: only ES modules are wrapped (rspack 1\'s CommonJS file at rspack 2\'s path goes on to cjsSource)', () => {
   const { transform, CJS_LOADED } = require('../src/esm-wrap.cjs');
-  const entries = rspackAdapter.esmEntries, cjsFiles = rspackAdapter.cjsFiles;
+  const esmEntries = rspackAdapter.esmEntries, cjsFiles = rspackAdapter.cjsFiles;
   const url = 'file:///p/node_modules/@rspack/core/dist/index.js';
-  const cjs = transform(url, { format: 'commonjs', source: 'module.exports = rspack;' }, entries, cjsFiles);
+  const cjs = transform(url, { format: 'commonjs', source: 'module.exports = rspack;' }, esmEntries, cjsFiles);
   assert.equal(cjs.source, `module.exports = rspack;${CJS_LOADED}`);
   // rspack 2's entry (its export statements; the bundle is 700 KB): Compiler and the default wrapped, "module.exports" re-exported by export *
   const src = 'var src_rspack = function(){};\nexport default src_rspack;\nexport { Compiler_Compiler as Compiler, Compilation, MultiCompiler, src_rspack as "module.exports", src_rspack as rspack };\n';
-  const esm = transform(url, { format: 'module', source: src }, entries, cjsFiles);
+  const esm = transform(url, { format: 'module', source: src }, esmEntries, cjsFiles);
   assert.equal(esm.format, 'module');
   assert.match(esm.source, /export \* from "file:\/\/\/p\/node_modules\/@rspack\/core\/dist\/index\.js\?bundle-lockfile-real";/);
   assert.match(esm.source, /export \{ default \} from/);
@@ -4044,8 +4043,8 @@ test('rspack: style sheets loaders inlined - per module from 1.3.14, from the fi
 
 test('rspack: the match resource names a module also where nameForCondition() does not (rspack before 1.7)', () => {
   const m = { resource: '/p/src/a.css.ts', matchResource: '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js?x', nameForCondition: () => '/p/src/a.css.ts' };
-  assert.equal(webpack.sourceFile(m, () => null), '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js');
-  assert.equal(webpack.sourceFile({ resource: '/p/src/b.js', matchResource: '', nameForCondition: () => '/p/src/b.js' }, () => null), '/p/src/b.js');
+  assert.equal(webpackAdapter.sourceFile(m, () => null), '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js');
+  assert.equal(webpackAdapter.sourceFile({ resource: '/p/src/b.js', matchResource: '', nameForCondition: () => '/p/src/b.js' }, () => null), '/p/src/b.js');
 });
 
 test('rspack: modules whose exports were all inlined are listed (only with inlining on); tree-shaken ones not', () => {
@@ -4340,9 +4339,9 @@ test('esbuild adapter: an esbuild of a shape it does not know, or before 0.17, f
 
 // runs the plugin of one build: its setup with the options, then onEnd with the result; returns onEnd's return value
 async function esbuildEnd(options, result, file) {
-  const plugin = esbuildAdapter().attach(options, file).plugins.at(-1);
+  const esbuildPlugin = esbuildAdapter().attach(options, file).plugins.at(-1);
   let end = null;
-  plugin.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
+  esbuildPlugin.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
   return end(result);
 }
 
@@ -4623,14 +4622,14 @@ function fakeParcelTracker(root, deps, shape = '2.16') {
   fs.writeFileSync(J(lib, 'projectPath.js'), "const path = require('path');\n"
     + "exports.toProjectPath = (r, p) => path.relative(r, p);\nexports.fromProjectPath = (r, p) => path.resolve(r, p);\n");
   const EDGE = 3, nodes = [], byKey = new Map(), from = new Map();
-  const node = (key, n) => { if (!byKey.has(key)) { byKey.set(key, nodes.length); nodes.push(n); } return byKey.get(key); };
-  const file = (rel) => node(rel, shape === '2.0' ? { id: rel, type: 'file', value: { filePath: rel } } : { id: rel, type: 0 });
+  const addNode = (key, n) => { if (!byKey.has(key)) { byKey.set(key, nodes.length); nodes.push(n); } return byKey.get(key); };
+  const file = (rel) => addNode(rel, shape === '2.0' ? { id: rel, type: 'file', value: { filePath: rel } } : { id: rel, type: 0 });
   for (const [asset, files] of Object.entries(deps)) {
-    const req = node(`req:${asset}`, shape === '2.0' ? { type: 'request', value: { type: 'asset_request' } } : { type: 1, requestType: 9 });
+    const req = addNode(`req:${asset}`, shape === '2.0' ? { type: 'request', value: { type: 'asset_request' } } : { type: 1, requestType: 9 });
     from.set(req, [asset, ...files].map(file));
   }
   // a request of another kind that depends on a file too (a path request): not an asset request, not counted
-  if (Object.keys(deps).length) from.set(node('path', shape === '2.0' ? { type: 'request', value: { type: 'path_request' } } : { type: 1, requestType: 6 }), [file(Object.keys(deps)[0])]);
+  if (Object.keys(deps).length) from.set(addNode('path', shape === '2.0' ? { type: 'request', value: { type: 'path_request' } } : { type: 1, requestType: 6 }), [file(Object.keys(deps)[0])]);
   const graph = {
     hasContentKey: (k) => byKey.has(k), getNodeIdByContentKey: (k) => byKey.get(k), getNode: (id) => nodes[id],
     getNodeIdsConnectedTo: (id, type) => (type === EDGE ? [...from].filter(([, to]) => to.includes(id)).map(([r]) => r) : []),
@@ -4940,7 +4939,7 @@ test('webpack adapter: an output directory another plugin removed after the buil
   const { compiler, taps } = fakeCompiler5({ outputPath });
   Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
   compiler.outputFileSystem.gracefulify = () => {}; // the real disk
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const comp = compilation({ context: root, outputPath, chunks: [{ files: ['embed.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }], assets: { 'embed.js': {} } });
   comp.compiler = compiler;
   comp.errors = [];
@@ -5392,7 +5391,7 @@ test('webpack adapter: a project path with "#" (webpack resources have "\\0#" th
   const root = project({ 'c#proj/node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'c#proj/src/i.js': '' });
   const esc = (f) => f.replace(/#/g, '\0#'); // enhanced-resolve's escape, kept in resource and nameForCondition()
   const res = esc(J(root, 'c#proj/node_modules/a/i.js'));
-  assert.equal(webpack.sourceFile({ resource: res, nameForCondition: () => res }, () => null), J(root, 'c#proj/node_modules/a/i.js'));
+  assert.equal(webpackAdapter.sourceFile({ resource: res, nameForCondition: () => res }, () => null), J(root, 'c#proj/node_modules/a/i.js'));
   const c = compilation({ context: J(root, 'c#proj'), chunks: [{ files: ['main.js'], modules: [{ resource: res, nameForCondition: () => res },
     { resource: esc(J(root, 'c#proj/src/i.js')), nameForCondition: () => esc(J(root, 'c#proj/src/i.js')) }] }], assets: { 'main.js': {} } });
   assert.deepEqual(lockedNames(plugin().lockfile(c)), ['a']);
@@ -5416,7 +5415,7 @@ test('webpack adapter: assets that are a generate-only build\'s output (workbox 
   // webpack 4: GenerateSW emits them in the emit hook, after the lockfile
   const outputPath = J(root, 'dist4');
   const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: false });
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const comp = { compiler, chunks: [{ files: ['main.js'], modulesIterable: [{ resource: J(root, 'node_modules/app/i.js') }] }], children: [],
     assets: { 'main.js': src('main') }, hooks: { afterOptimizeAssets: { tap: (o, fn) => (comp.stage = fn) } } };
   taps.thisCompilation(comp);
@@ -5438,7 +5437,7 @@ test('webpack adapter: files another plugin copies out of packages into the outp
   const { compiler, taps } = fakeCompiler5({ outputPath });
   Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
   compiler.outputFileSystem.gracefulify = () => {}; // the real disk
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }], assets: { 'main.js': {} } });
   Object.assign(comp, { compiler, errors: [], hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
   taps.thisCompilation(comp);
@@ -5457,7 +5456,7 @@ test('webpack adapter: a compilation sealed again (needAdditionalSeal) lists the
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b') });
   const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'out-unseal') });
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const comp = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
   const emitted = [];
   Object.assign(comp, { compiler, emitAsset: (n, src) => emitted.push(src.source()), getAsset: () => undefined,
@@ -5498,7 +5497,7 @@ test('strict: a bundler an adapter fails to patch is a problem (webpack, rspack,
   problems.take();
   const W = fakeCompiler();
   Object.freeze(W.prototype); // patching throws
-  webpack.onCjsLoad(W, '/p/node_modules/webpack/lib/Compiler.js', () => '/p/node_modules/webpack/lib/Compiler.js');
+  webpackAdapter.onCjsLoad(W, '/p/node_modules/webpack/lib/Compiler.js', () => '/p/node_modules/webpack/lib/Compiler.js');
   const R = fakeRspack('2.2.8');
   Object.freeze(R.Compiler.prototype);
   rspackAdapter.onCjsLoad(R, '/p/node_modules/@rspack/core/dist/index.js', () => '/p/node_modules/@rspack/core/dist/index.js');
@@ -5527,7 +5526,7 @@ test('strict: the files copied into the output that cannot be checked fail the c
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'out-copies') });
   compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const comp = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
   Object.assign(comp, { compiler, errors: [], emitAsset: () => {}, hooks: { processAssets: { tap: (o, fn) => (comp.copies = fn) }, afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
   taps.thisCompilation(comp);
@@ -5555,16 +5554,16 @@ test('rspack: BundleLockfilePlugin in an rspack 1.0 config fails each compilatio
 // --- Rollup, Vite, Rolldown
 
 // one output of a build through the plugin's hooks: out (output options), chunks [{ fileName, code, modules }]
-async function writeOutput(plugin, ctx, out, chunks, input) {
-  plugin.buildStart.call(ctx, { input });
-  plugin.renderStart.call(ctx, out);
-  for (const c of chunks) plugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
+async function writeOutput(rollupPlugin, ctx, out, chunks, input) {
+  rollupPlugin.buildStart.call(ctx, { input });
+  rollupPlugin.renderStart.call(ctx, out);
+  for (const c of chunks) rollupPlugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
   const bundle = Object.fromEntries(chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules, isEntry: true, facadeModuleId: c.modules[0] }]));
-  await plugin.generateBundle.handler.call(ctx, out, bundle, true);
+  await rollupPlugin.generateBundle.handler.call(ctx, out, bundle, true);
   const dir = out.dir || path.dirname(out.file);
   fs.mkdirSync(dir, { recursive: true });
   for (const c of chunks) fs.writeFileSync(J(dir, c.fileName), c.code);
-  await plugin.writeBundle.handler.call(ctx, out);
+  await rollupPlugin.writeBundle.handler.call(ctx, out);
 }
 
 test('rollup adapter: separate builds of one input into one directory, each with its own output.file (rollup -c with a config array), are writers of their own', async () => {
@@ -5575,10 +5574,10 @@ test('rollup adapter: separate builds of one input into one directory, each with
   try {
     // the bundle with its dependencies, and the same input with them external; Rollup's output options (entryFileNames filled in)
     for (const [file, modules] of [['dist/lib.bundle.js', [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')]], ['dist/lib.esm.js', [J(root, 'src/main.js')]]]) {
-      const plugin = rollupAdapter.bundleLockfile('rollup', { input: 'src/main.js' });
+      const rollupPlugin = rollupAdapter.bundleLockfile('rollup', { input: 'src/main.js' });
       const out = { file: J(root, file), format: 'es', entryFileNames: '[name].js' };
-      await writeOutput(plugin, {}, out, [{ fileName: path.basename(file), code: `code of ${file}`, modules }], ['src/main.js']);
-      await plugin.closeBundle.handler.call({});
+      await writeOutput(rollupPlugin, {}, out, [{ fileName: path.basename(file), code: `code of ${file}`, modules }], ['src/main.js']);
+      await rollupPlugin.closeBundle.handler.call({});
     }
     const lock = fs.readFileSync(J(root, 'dist', LOCK), 'utf8');
     assert.deepEqual(lockedNames(lock), ['a']);
@@ -5595,13 +5594,13 @@ test('rollup adapter: Rolldown runs buildStart for every write() of a build: its
   const cwd = process.cwd();
   process.chdir(root);
   try {
-    const plugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
+    const rollupPlugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
     const ctx = { meta: { rolldownVersion: '1.2.13' } };
     for (const dir of ['dist-a', 'dist-b']) {
-      await writeOutput(plugin, ctx, { dir: J(root, dir), format: 'es' }, [{ fileName: 'main.js', code: `main of ${dir}`, modules: [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')] }], 'src/main.js');
+      await writeOutput(rollupPlugin, ctx, { dir: J(root, dir), format: 'es' }, [{ fileName: 'main.js', code: `main of ${dir}`, modules: [J(root, 'src/main.js'), J(root, 'node_modules/a/i.js')] }], 'src/main.js');
     }
     fs.copyFileSync(J(root, 'node_modules/late/l.css'), J(root, 'dist-a/l.css')); // another plugin, after the writes (vite-plugin-static-copy)
-    await plugin.closeBundle.handler.call(ctx);
+    await rollupPlugin.closeBundle.handler.call(ctx);
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist-a', LOCK), 'utf8')), ['a', 'late']);
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist-b', LOCK), 'utf8')), ['a']);
   } finally { process.chdir(cwd); }
@@ -5615,11 +5614,11 @@ test('strict: a generate-only build fails with its own problems (a package witho
   process.chdir(root);
   try {
     // in its generateBundle, as for a build that writes (not left for another build, or the process's exit)
-    const plugin = rollupAdapter.bundleLockfile('vite'), ctx = { error(e) { throw e; } }, out = { format: 'es' };
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite'), ctx = { error(e) { throw e; } }, out = { format: 'es' };
     const modules = [J(root, 'node_modules/noversion/i.js')];
-    plugin.buildStart.call(ctx, {});
-    plugin.renderStart.call(ctx, out);
-    await assert.rejects(plugin.generateBundle.handler.call(ctx, out, { 'w.js': { type: 'chunk', fileName: 'w.js', code: 'worker', moduleIds: modules } }, false),
+    rollupPlugin.buildStart.call(ctx, {});
+    rollupPlugin.renderStart.call(ctx, out);
+    await assert.rejects(rollupPlugin.generateBundle.handler.call(ctx, out, { 'w.js': { type: 'chunk', fileName: 'w.js', code: 'worker', moduleIds: modules } }, false),
       (e) => problems.isFailure(e) && /no package\.json with name and version in .*noversion/.test(e.message));
     assert.equal(problems.pending(), false);
   } finally { process.chdir(cwd); }
@@ -5710,7 +5709,7 @@ test('webpack adapter: a generate-only build\'s assets still count when files wr
   const { compiler, taps } = fakeCompiler5({ outputPath });
   Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
   compiler.outputFileSystem.gracefulify = () => {}; // the real disk
-  new webpack.BundleLockfilePlugin(LOCK).apply(compiler);
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
   const sources = { 'main.js': 'main', 'workbox-1.js': '/* the generated runtime */' };
   let emitted = false; // after the emit, webpack 5 keeps only the size of an asset
   const asset = (name) => ({ name, info: {}, source: { size: () => sources[name].length, source() { if (emitted) throw new Error('size only'); return sources[name]; } } });
@@ -5793,36 +5792,36 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
     'node_modules/@vercel/ncc/dist/ncc/index.js': 'module.exports = () => {};\n',
     'ncc.cjs': "try { require('@vercel/ncc/dist/ncc/index.js'); console.log('loaded'); } catch (e) { console.log('failed:', e.message); process.exitCode = 3; }\n",
   });
-  const node = (env, args) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), ...args], { cwd: root, encoding: 'utf8', env: { ...strictEnv(env.STRICT), ...env } });
+  const spawnNode = (env, args) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), ...args], { cwd: root, encoding: 'utf8', env: { ...strictEnv(env.STRICT), ...env } });
   const ROLLDOWN = /the rolldown command line is not hooked: its builds write no lockfile/;
   const TURBO = /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile \(build with next build --webpack, or with next-rspack\)/;
   // strict: the process fails (at exit: there is no build to fail), or the module's require()
-  let r = node({}, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
+  let r = spawnNode({}, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
   assert.deepEqual([r.status, r.stdout.trim()], [1, 'built']);
   assert.match(r.stderr, ROLLDOWN);
-  r = node({ FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  r = spawnNode({ FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
   assert.deepEqual([r.status, r.stdout.trim()], [1, 'built'], r.stderr);
   assert.match(r.stderr, TURBO);
-  r = node({}, [J(root, 'ncc.cjs')]);
+  r = spawnNode({}, [J(root, 'ncc.cjs')]);
   assert.match(r.stdout, /^failed: bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*@vercel\/ncc builds with a webpack of its own/);
   // STRICT=0: warnings, and the builds go on
-  r = node({ STRICT: '0' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
+  r = spawnNode({ STRICT: '0' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
   assert.equal(r.status, 0);
   assert.match(r.stderr, /WARNING: the rolldown command line is not hooked/);
-  r = node({ STRICT: '0', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  r = spawnNode({ STRICT: '0', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
   assert.equal(r.status, 0);
   assert.match(r.stderr, /WARNING: Next\.js built with Turbopack/);
-  r = node({ STRICT: '0' }, [J(root, 'ncc.cjs')]);
+  r = spawnNode({ STRICT: '0' }, [J(root, 'ncc.cjs')]);
   assert.equal(r.stdout.trim(), 'loaded');
   assert.match(r.stderr, /WARNING: @vercel\/ncc builds with a webpack of its own/);
   // not these: next build with webpack (no TURBOPACK) or next-rspack, next dev, rolldown disabled
   for (const [env, args] of [[{}, ['build']], [{ FAKE_BUNDLER: 'NEXT_RSPACK' }, ['build']], [{ FAKE_BUNDLER: 'TURBOPACK' }, ['dev']]]) {
-    r = node(env, [J(root, 'node_modules/next/dist/bin/next'), ...args]);
+    r = spawnNode(env, [J(root, 'node_modules/next/dist/bin/next'), ...args]);
     assert.deepEqual([r.status, r.stderr], [0, ''], JSON.stringify([env, args]));
   }
-  r = node({ BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, [J(root, 'node_modules/rolldown/bin/cli.mjs')]);
   assert.deepEqual([r.status, r.stderr], [0, '']);
-  r = node({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
   assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
 });
 
@@ -5834,34 +5833,34 @@ test('strict: webpack before 4 (a Compiler without hooks) fails the process when
     'build.cjs': "const Compiler = require('webpack/lib/Compiler.js');\nrequire('webpack/lib/Compiler.js');\nconsole.log('loaded');\nnew Compiler().run();\nconsole.log('built');\n",
     'load.cjs': "require('webpack/lib/Compiler.js');\nconsole.log('loaded');\n",
   });
-  const node = (strict, file) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, file)], { cwd: root, encoding: 'utf8', env: strictEnv(strict) });
-  let r = node(undefined, 'build.cjs');
+  const spawnNode = (strict, file) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, file)], { cwd: root, encoding: 'utf8', env: strictEnv(strict) });
+  let r = spawnNode(undefined, 'build.cjs');
   assert.deepEqual([r.status, r.stdout.trim()], [1, 'loaded\nbuilt']);
   assert.match(r.stderr, /webpack before 4 is not supported \(a Compiler without hooks, from \S+Compiler\.js\): its builds write no lockfile/);
-  r = node('0', 'build.cjs');
+  r = spawnNode('0', 'build.cjs');
   assert.equal(r.status, 0);
   assert.match(r.stderr, /WARNING: webpack before 4 is not supported/);
   // loaded only (an old copy among a project's packages): nothing
-  r = node(undefined, 'load.cjs');
+  r = spawnNode(undefined, 'load.cjs');
   assert.deepEqual([r.status, r.stderr], [0, '']);
 });
 
 test('webpack adapter: a vendored webpack exported as a plain object around its namespace (umi) is patched', () => {
   const W = fakeCompiler();
   const exp = { webpack: Object.assign(function webpack() {}, { Compiler: W, Compilation: class {}, version: '5.110.3' }), Compiler: W };
-  webpack.onCjsLoad(exp, '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js', () => '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js');
+  webpackAdapter.onCjsLoad(exp, '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js', () => '/p/node_modules/@umijs/bundler-webpack/compiled/webpack/index.js');
   assert.equal(W.prototype[PATCHED], true);
   // the same shape around rspack's, or with another name, is not webpack's
   const R = fakeCompiler();
-  webpack.onCjsLoad({ webpack: Object.assign(function rspack() {}, { Compiler: R, Compilation: class {}, version: '5.75.0', rspackVersion: '1.7.12' }) }, '/p/node_modules/x-webpack/index.js', () => '/p/x.js');
+  webpackAdapter.onCjsLoad({ webpack: Object.assign(function rspack() {}, { Compiler: R, Compilation: class {}, version: '5.75.0', rspackVersion: '1.7.12' }) }, '/p/node_modules/x-webpack/index.js', () => '/p/x.js');
   const O = fakeCompiler();
-  webpack.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
+  webpackAdapter.onCjsLoad({ webpack: Object.assign(function webpack() {}, { Compiler: O, Compilation: class {}, version: '5.0.0' }) }, '/p/node_modules/other/index.js', () => '/p/other.js');
   assert.deepEqual([R.prototype[PATCHED], O.prototype[PATCHED]], [undefined, undefined]);
   // the exports of a module in a require() cycle (Node.js gives them a prototype that warns about reading a property
   // they do not have, as webpack 5.0's lib/ files are): only own properties are read
   const read = [];
   const cyclic = Object.create(new Proxy({}, { get: (t, k) => { read.push(k); return undefined; } }));
-  webpack.onCjsLoad(cyclic, '/p/node_modules/webpack/lib/WebpackOptionsApply.js', () => '/p/node_modules/webpack/lib/WebpackOptionsApply.js');
+  webpackAdapter.onCjsLoad(cyclic, '/p/node_modules/webpack/lib/WebpackOptionsApply.js', () => '/p/node_modules/webpack/lib/WebpackOptionsApply.js');
   assert.deepEqual(read, []);
 });
 
@@ -5961,29 +5960,29 @@ test('rollup adapter: Rolldown build() and watch() - the files plugins inlined, 
     const nm = (name, f) => J(root, 'node_modules', name, f);
     const r = rolldownContexts();
     const data = {};
-    const plugin = rollupAdapter.bundleLockfile('vite'); // also the plugin from a config: Rolldown's hooks are there
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite'); // also the plugin from a config: Rolldown's hooks are there
     const ctx = r.base(data);
     const app = J(root, 'src/app.css'), shader = J(root, 'src/shader.glsl'), unused = J(root, 'src/unused.css');
     // the hooks run as Rolldown runs them: buildStart, then per module load and transform (bundle-lockfile's first)
-    plugin.buildStart.call(ctx, {});
+    rollupPlugin.buildStart.call(ctx, {});
     for (const id of [app, shader, unused]) {
       const l = r.load(data, id);
-      plugin.load.handler.call(l, id);
+      rollupPlugin.load.handler.call(l, id);
       if (id === shader) l.addWatchFile(nm('glsl', 'noise.glsl'));
       const t = r.transform(data, id);
-      plugin.transform.handler.call(t, 'code', id);
+      rollupPlugin.transform.handler.call(t, 'code', id);
       if (id === app) { t.addWatchFile(nm('sanitize.css', 'sanitize.css')); t.addWatchFile(nm('icons', 'bell.svg')); }
       if (id === unused) t.addWatchFile(nm('other', 'o.css')); // a module in no chunk of this output
     }
     const out = { dir: J(root, 'dist'), format: 'es' };
-    plugin.renderStart.call(ctx, out);
-    plugin.renderChunk.call(ctx, '', { moduleIds: [app, shader, nm('a', 'i.js')] }, out);
+    rollupPlugin.renderStart.call(ctx, out);
+    rollupPlugin.renderChunk.call(ctx, '', { moduleIds: [app, shader, nm('a', 'i.js')] }, out);
     const bundle = { 'i.js': { type: 'chunk', fileName: 'i.js', code: 'i', moduleIds: [app, shader, nm('a', 'i.js')] }, 'i.css': { type: 'asset', fileName: 'i.css', source: 'css' } };
-    await plugin.generateBundle.handler.call(ctx, out, bundle, true);
+    await rollupPlugin.generateBundle.handler.call(ctx, out, bundle, true);
     fs.mkdirSync(J(root, 'dist'), { recursive: true });
     for (const f of Object.values(bundle)) fs.writeFileSync(J(root, 'dist', f.fileName), f.code || f.source);
-    await plugin.writeBundle.handler.call(ctx, out);
-    await plugin.closeBundle.handler.call(ctx);
+    await rollupPlugin.writeBundle.handler.call(ctx, out);
+    await rollupPlugin.closeBundle.handler.call(ctx);
     assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'glsl', 'icons', 'sanitize.css']);
   } finally { process.chdir(cwd); }
 });
@@ -6001,9 +6000,9 @@ test('strict: a Rolldown build with style whose inlined files cannot be read fai
     await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'), chunks: style, ctx }),
       (e) => problems.isFailure(e) && /Rolldown 9\.0\.0: could not read the files its plugins inlined \(its plugin context has no addWatchFile\): style sheets @imported from packages would be missing/.test(e.message));
     // the same with the build rolldown() returned: its watch files have them
-    const plugin = rollupAdapter.bundleLockfile('vite');
-    plugin.api.setBuild({ get watchFiles() { return Promise.resolve([]); } });
-    await rollupBuild(plugin, { outDir: J(root, 'dist2'), chunks: style, ctx });
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite');
+    rollupPlugin.api.setBuild({ get watchFiles() { return Promise.resolve([]); } });
+    await rollupBuild(rollupPlugin, { outDir: J(root, 'dist2'), chunks: style, ctx });
     // no style: nothing would be missing that the build could have inlined from a style sheet
     await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist3'), chunks: [{ fileName: 'main.js', code: 'm', modules: [J(root, 'node_modules/a/i.js')] }], ctx });
     assert.equal(problems.pending(), false);
@@ -6036,12 +6035,12 @@ test('rollup adapter: Rollup\'s watch mode - the transform dependencies of the m
   try {
     const css = J(root, 'node_modules/sanitize.css/sanitize.css'), noise = J(root, 'node_modules/glsl/noise.glsl');
     const app = J(root, 'src/app.css'), shader = J(root, 'src/shader.glsl'), a = J(root, 'node_modules/a/i.js');
-    const plugin = rollupAdapter.bundleLockfile('vite');
+    const rollupPlugin = rollupAdapter.bundleLockfile('vite');
     // a build: options (with the cache Rollup's watcher passes), then the transforms of the modules not taken from it
     const build = async ({ cache, transform, modules, watch }) => {
-      plugin.options({ input: 'x', cache });
+      rollupPlugin.options({ input: 'x', cache });
       const ctx = { meta: { rollupVersion: '4.64.2', watchMode: true }, getWatchFiles: () => watch, getModuleIds: () => modules.values() };
-      const run = { ...plugin, buildStart(o) { plugin.buildStart.call(this, o); for (const id of transform) plugin.transform.handler.call(this, '', id); } };
+      const run = { ...rollupPlugin, buildStart(o) { rollupPlugin.buildStart.call(this, o); for (const id of transform) rollupPlugin.transform.handler.call(this, '', id); } };
       // (code no other test's chunks have: generate-only builds' chunks are matched by content, process-wide)
       await rollupBuild(run, { outDir: J(root, 'dist'), chunks: [{ fileName: 'i.js', code: 'rebuilt from the cache', modules }], ctx });
       return lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
@@ -6416,8 +6415,8 @@ test('helpers: webpack modules list the transpiler copy their loader resolves; n
   });
   const mod = (resource, loader, code, options) => ({ resource, loaders: loader ? [{ loader, options }] : [], originalSource: () => (code === null ? null : { source: () => code }), identifier: () => resource });
   const BL = J(root, 'node_modules/babel-loader/lib/index.js'), TL = J(root, 'node_modules/ts-loader/index.js');
-  const ids = (list) => list.map(p => `${p.name}@${p.version} ${path.relative(root, p.path)}`).sort();
-  const of = (mods) => ids(helpers.ofWebpackModules(mods, m => m.resource));
+  const idsAt = (list) => list.map(p => `${p.name}@${p.version} ${path.relative(root, p.path)}`).sort();
+  const of = (mods) => idsAt(helpers.ofWebpackModules(mods, m => m.resource));
   assert.deepEqual(of([mod(J(root, 'src/a.js'), BL, 'function _classCallCheck(a, b) {}\nexport class A {}')]),
     ['@babel/helpers@7.29.9 node_modules/@babel/core/node_modules/@babel/helpers']);
   assert.deepEqual(of([mod(J(root, 'src/t.ts'), TL, 'var __awaiter = (this && this.__awaiter) || function () {};')]), ['typescript@5.9.3 node_modules/typescript']);

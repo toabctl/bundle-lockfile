@@ -1,6 +1,6 @@
 'use strict';
 // Maps bundled source files to the npm packages they belong to.
-/** @import { Package, VendorScope, ViaCollector } from '../types' */
+/** @import { BuildScope, FilePackages, Manifest, Package, VendorScope, ViaCollector } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -28,6 +28,7 @@ const CONFIG = /^(package\.json|[jt]sconfig(\..*)?\.json|\.babelrc(\..*)?|babel\
 // caller). No directories: webpack 5's snapshots also have those a module's build looked into
 // (@vanilla-extract/webpack-plugin's loader: node_modules/@vanilla-extract, the package's directory, ...). A path that
 // is not there (any more) counts by its name.
+/** @param {unknown} f */
 function inlinedFile(f) {
   if (typeof f !== 'string') return false;
   const file = f.split('?')[0];
@@ -41,6 +42,7 @@ function inlinedFile(f) {
 // A package root that is not on disk, below a directory that is - the bundler's input file system made it up
 // (webpack-virtual-modules writing node_modules/<name>/index.js): generated code, no package's. Not one inside a file
 // (a Yarn PnP zip archive that fs cannot read here): that package is real, and its files would go missing.
+/** @param {string} root */
 function generated(root) {
   for (let d = root; path.dirname(d) !== d; d = path.dirname(d)) {
     let st;
@@ -50,7 +52,9 @@ function generated(root) {
   return false;
 }
 
+/** @type {Set<string>} */
 const warned = new Set();
+/** @param {string} root @param {Package | null} container */
 function unlisted(root, container) {
   const msg = `no package.json with name and version in ${root} - its bundled files are ${container ? `listed as ${container.name}@${container.version}, the package around it` : 'not listed'}`;
   if (path.basename(root).startsWith('.')) { config.debug(msg); return; }
@@ -66,7 +70,7 @@ function unlisted(root, container) {
 }
 
 // The real path of a file (symbolic links and Yarn PnP's virtual paths resolved), or the file as it is
-const realFile = (file) => { try { return unvirtual(fs.realpathSync(file)); } catch { return unvirtual(file); } };
+const realFile = (/** @type {string} */ file) => { try { return unvirtual(fs.realpathSync(file)); } catch { return unvirtual(file); } };
 
 // A function that gives the packages a bundled source file (absolute, query strings allowed) belongs to ([] if none):
 // - in node_modules: the package directory below its last node_modules, at its real location - a package root
@@ -85,13 +89,19 @@ const realFile = (file) => { try { return unvirtual(fs.realpathSync(file)); } ca
  * @returns {(file: string) => Package[]}
  */
 function resolver(where = null, collector = null) {
+  /** @type {Map<string, { root: string, told?: boolean }>} */
   const byLinked = new Map(); // package directory as reached -> { root: its real location, told: debug message written }
+  /** @type {Map<string, Package | null>} */
   const byReal = new Map();   // real package directory -> package | null
+  /** @type {Map<string, Package | null>} */
   const inside = new Map();   // real directory inside a package -> the vendored copy there | null
+  /** @type {Map<string, Manifest | null>} */
   const manifests = new Map();
+  /** @type {(dir: string) => Manifest | null | undefined} */
   const manifest = where ? where.manifest : (d) => { if (!manifests.has(d)) manifests.set(d, readManifest(d)); return manifests.get(d); };
+  /** @param {string} root @returns {Package | null} */
   const packageAt = (root) => {
-    if (byReal.has(root)) return byReal.get(root);
+    if (byReal.has(root)) return /** @type {Package | null} */ (byReal.get(root));
     let p = readPackage(root);
     if (!p) {
       /** @type {Package | null} */
@@ -103,6 +113,7 @@ function resolver(where = null, collector = null) {
     byReal.set(root, p);
     return p;
   };
+  /** @param {string} cls @param {Package[]} pkgs */
   const tell = (cls, pkgs) => { if (collector) collector.add(cls, pkgs); return pkgs; };
   return (f) => {
     const file = f.split('?')[0];
@@ -112,11 +123,11 @@ function resolver(where = null, collector = null) {
       const src = copies.sourceOf(file);
       if (src) { linked = packageRoot(src); at = src; copied = true; config.debug('a copy of', src, ':', file); }
     }
-    const found = (pkgs) => (copied ? tell('fs-copy', pkgs) : pkgs);
-    const owner = (real) => { const o = where && where.ownerOf(real); return o ? tell('vendored', [o]) : []; };
+    const found = (/** @type {Package[]} */ pkgs) => (copied ? tell('fs-copy', pkgs) : pkgs);
+    const owner = (/** @type {string} */ real) => { const o = where && where.ownerOf(real); return o ? tell('vendored', [o]) : []; };
     if (!linked) return owner(realFile(file));
     if (!byLinked.has(linked)) byLinked.set(linked, { root: realRoot(linked) });
-    const entry = byLinked.get(linked), { root } = entry;
+    const entry = /** @type {{ root: string, told?: boolean }} */ (byLinked.get(linked)), { root } = entry;
     if (root !== linked && packageRoot(path.join(root, 'x')) !== root) {
       if (!entry.told) { entry.told = true; config.debug('first-party package linked into node_modules:', linked, '->', root); }
       return owner(path.join(root, path.relative(linked, at)));
@@ -132,7 +143,9 @@ function resolver(where = null, collector = null) {
 }
 
 // Packages ({ name, version, license, path }) of any number of lists, one per path (the first one).
+/** @param {...Iterable<Package>} lists @returns {Package[]} */
 function unique(...lists) {
+  /** @type {Map<string, Package>} */
   const m = new Map();
   for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p);
   return [...m.values()];
@@ -141,6 +154,7 @@ function unique(...lists) {
 // files: absolute paths of source files that ended up in the bundle (query strings allowed); build (optional): the
 // build's { context, entries }, for vendored copies outside node_modules (see core/vendored.cjs). Returns one entry
 // per real package directory (see resolver).
+/** @param {Iterable<string>} files @param {BuildScope | null} [build] @returns {Package[]} */
 function packagesForFiles(files, build) {
   const of = resolver(build ? vendored.scope(build) : null);
   return unique(Array.from(files, of).flat());
@@ -153,11 +167,13 @@ function packagesForFiles(files, build) {
 // the files (as given) that bring any; ownByFile: the same of the packages the files belong to themselves (not those
 // inside a file another build produced); via: a core/via.cjs collector with the packages found as a copy made with fs,
 // a vendored copy or inside another build's output (nested).
+/** @param {string[]} files @param {BuildScope | null} [build] @returns {FilePackages} */
 function packagesOfFiles(files, build) {
   const found = via.collector();
   const of = resolver(build ? vendored.scope(build) : null, found);
   const nestedOf = nested.nestedByFile(files);
-  const own = [], inner = [], byFile = new Map(), ownByFile = new Map();
+  const own = /** @type {Package[]} */ ([]), inner = /** @type {Package[][]} */ ([]);
+  const byFile = /** @type {Map<string, Package[]>} */ (new Map()), ownByFile = /** @type {Map<string, Package[]>} */ (new Map());
   for (const f of files) {
     const p = nestedOf.has(f) ? [] : of(f), n = nestedOf.get(f) || [];
     own.push(...p);

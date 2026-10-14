@@ -7,6 +7,7 @@
 // writes <output dir>/<BUNDLE_LOCKFILE_FILE>. A problem fails the build: onEnd returns it as an error, which rejects
 // build() and rebuild() (watch mode prints it and keeps watching). buildSync() takes no plugins: its result's metafile.
 // The command line and the Go API are esbuild's Go binary: not hooked.
+/** @import { Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
@@ -196,7 +197,7 @@ function finish(options, result, done, state = {}) {
     const { byOutput, all: own, byFile, found } = collect(metafile, wd, entries, state.inlined);
     // esbuild itself, in an output with JavaScript
     const js = [...byOutput.keys()].some(f => JS.test(f));
-    const runtime = js && state.file ? [bundlerPackage('esbuild', state.file, ['esbuild', 'esbuild-wasm'], state.version)].filter(Boolean) : [];
+    const runtime = js && state.file ? [bundlerPackage('esbuild', state.file, ['esbuild', 'esbuild-wasm'], state.version)].filter(p => p !== null) : [];
     found.add('runtime', runtime);
     const all = packages.unique(own, runtime);
     const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
@@ -219,6 +220,7 @@ function finish(options, result, done, state = {}) {
       if (!JS.test(file) && !CSS.test(file)) continue;
       const inFile = packages.unique(pkgsOf(inputs), JS.test(file) ? runtime : []);
       // a JavaScript file with the bytes of a generate-only build's chunk (core/generated.cjs)
+      /** @type {Package[] | null} */
       let gen = null;
       if (JS.test(file) && generated.any()) { try { gen = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
       if (gen) { pkgs = packages.unique(pkgs, gen); found.add('generated', gen); }
@@ -325,6 +327,7 @@ function wrapOld(fn, version, sync) {
     const place = options && typeof options === 'object' ? placeOf(options) : null;
     if (place && place.dir && !vitesOwn(flat(options.plugins))) {
       problems.problem(`esbuild ${version}: bundle-lockfile needs esbuild 0.17 or later; this build of ${place.dir} would write no lockfile`);
+      /** @type {Error | null} */
       let failure = null;
       problems.failIfAny((err) => { failure = err; });
       if (failure && sync) throw failure;

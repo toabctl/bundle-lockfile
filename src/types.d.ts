@@ -38,7 +38,7 @@ export interface BundlerId { name: string; version?: string }
 export type Manifest = { [key: string]: any };
 
 /** Where a build is, for vendored copies outside node_modules (core/vendored.cjs scope). */
-export interface BuildScope { context: string; entries?: Iterable<string> }
+export interface BuildScope { context: string; /** entry modules' files; scope() skips what is no absolute path */ entries?: Iterable<unknown> }
 
 /** core/vendored.cjs scope(): the vendored copy a file outside node_modules is in. */
 export interface VendorScope {

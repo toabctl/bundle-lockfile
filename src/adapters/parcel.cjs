@@ -193,7 +193,7 @@ async function report({ event, options }) {
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
       const { byFile } = result;
       const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath));
-      const runtime = js ? [packagerOf(projectRoot)].filter(Boolean) : [];
+      const runtime = js ? [packagerOf(projectRoot)].filter(p => p !== null) : [];
       const all = packages.unique(result.all, runtime);
       const found = via.ofFiles(result, w.kinds);
       found.add('runtime', runtime);
@@ -208,9 +208,9 @@ async function report({ event, options }) {
         b.traverseAssets((a) => {
           if (typeof a.filePath !== 'string' || skipped(event.bundleGraph, b, a)) return;
           into.add(a.filePath);
-          if (byFile.has(a.filePath)) own.push(...byFile.get(a.filePath));
+          own.push(...(byFile.get(a.filePath) || []));
         });
-        for (const [f, src] of inlined) if (into.has(src) && byFile.has(f)) own.push(...byFile.get(f));
+        for (const [f, src] of inlined) if (into.has(src)) own.push(...(byFile.get(f) || []));
         contents[b.filePath] = packages.unique(own, /\.[cm]?js$/i.test(b.filePath) ? runtime : []).map(p => p.path);
       }
       await write(w, all, context, { outputs: hashes, contents, via: found,

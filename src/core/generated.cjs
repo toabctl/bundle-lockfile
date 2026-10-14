@@ -5,6 +5,7 @@
 // that imports it); @vitejs/plugin-legacy builds the polyfills and adds the chunk to the parent bundle; workbox-build
 // (vite-plugin-pwa's generateSW) generates sw.js and workbox-<hash>.js and writes them into dist/ with fs after the
 // build. In-process only: these builds run in the process of the build that uses their output.
+/** @import { Package } from '../types' */
 const crypto = require('crypto');
 const config = require('./config.cjs');
 const lru = require('./lru.cjs');
@@ -13,7 +14,17 @@ const S = Symbol.for('bundle-lockfile.generated.v1');
 const MAX = 10000; // entries of each map; a long dev or watch session must not grow them forever
 // hash of the content -> packages of that chunk; entry file -> packages of its whole build; hash of an asset's content ->
 // packages of the files it was emitted from
-const state = globalThis[S] || (globalThis[S] = { content: new Map(), entries: new Map() });
+/**
+ * @typedef {object} State
+ * @property {Map<string, Package[]>} content
+ * @property {Map<string, Package[]>} entries
+ * @property {Map<string, Package[]>} assets
+ * @property {Map<string, Package[]>} unmatched
+ * @property {boolean} [warned]
+ * @property {boolean} [exit]
+ */
+/** @type {State} */
+const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { content: new Map(), entries: new Map() });
 if (!state.assets) state.assets = new Map();
 // content hash -> packages of the generate-only chunks no written output had the bytes of (yet): looked at when the
 // process ends (see unlanded)
@@ -21,6 +32,7 @@ if (!state.unmatched) state.unmatched = new Map();
 
 // Every bounded map that drops its oldest entries warns once per process: their packages are no longer listed where
 // their bytes end up
+/** @param {Map<string, Package[]>} map @param {string} key @param {Package[]} value */
 function bounded(map, key, value) {
   if (lru.set(map, key, value, MAX) && !state.warned) {
     state.warned = true;
@@ -35,6 +47,7 @@ function bounded(map, key, value) {
 function unlanded() {
   if (!state.unmatched.size) return;
   const listed = require('./outputs.cjs').listedPaths();
+  /** @type {Map<string, Package>} */
   const missing = new Map();
   // (not the bundler of such a chunk, whose own code is in every one: rolldown-vite 7 generates a chunk of nothing else)
   const { isBundlerPath } = require('./bundler.cjs');
@@ -50,6 +63,7 @@ const SOURCE_MAP = /\n?\/\/# sourceMappingURL=[^\n]*\n?$/;
 
 // The hash of a chunk's or an asset's content: of its text without a trailing source map comment, the same for a string
 // and its UTF-8 bytes; of the bytes themselves for a binary asset (a font, wasm), which is no UTF-8 text.
+/** @param {unknown} code @returns {string | null} */
 function hash(code) {
   /** @type {string | Buffer | null} */
   let data = null;
@@ -62,6 +76,7 @@ function hash(code) {
 }
 
 // A chunk of a generate-only build with its packages ([{ name, version, license, path }]).
+/** @param {unknown} code @param {Package[]} pkgs */
 function addChunk(code, pkgs) {
   const h = hash(code);
   if (!h || !pkgs.length) return;
@@ -72,12 +87,14 @@ function addChunk(code, pkgs) {
 
 // An asset of a generate-only build emitted from package files (a worker's font or wasm) with their packages: the build
 // that uses the worker emits its bytes again, without naming the files.
+/** @param {unknown} source @param {Package[]} pkgs */
 function addAsset(source, pkgs) {
   const h = hash(source);
   if (h && pkgs.length) bounded(state.assets, h, pkgs);
 }
 
 // The entry file of a generate-only build with the packages of all its chunks.
+/** @param {string | null | undefined} file @param {Package[]} pkgs */
 function addEntry(file, pkgs) {
   if (file && pkgs.length) bounded(state.entries, file, pkgs);
 }
@@ -86,15 +103,17 @@ function addEntry(file, pkgs) {
 const any = () => state.content.size > 0;
 
 // Packages of a generate-only chunk whose content (string, Buffer or Uint8Array) this is, or null.
+/** @param {unknown} code @returns {Package[] | null} */
 function byContent(code) {
   if (!state.content.size) return null;
   const h = hash(code);
   const pkgs = (h && state.content.get(h)) || null;
-  if (pkgs) state.unmatched.delete(h);
+  if (pkgs) state.unmatched.delete(/** @type {string} */ (h));
   return pkgs;
 }
 
 // Packages of a generate-only asset whose content this is, or null.
+/** @param {unknown} source @returns {Package[] | null} */
 function byAsset(source) {
   if (!state.assets.size) return null;
   const h = hash(source);
@@ -102,8 +121,9 @@ function byAsset(source) {
 }
 
 // Packages of the generate-only build with this entry file, or null.
+/** @param {string | null} file @returns {Package[] | null} */
 function byEntry(file) {
-  const pkgs = state.entries.get(file) || null;
+  const pkgs = state.entries.get(/** @type {string} */ (file)) || null;
   // a ?worker&inline build: its chunks are inlined as strings into the importing module
   if (pkgs) {
     const paths = new Set(pkgs.map(p => p.path));

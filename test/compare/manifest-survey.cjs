@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const json = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch { return null; } };
+const json = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
 const NAME = /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/;
 const vendorable = (j) => !!j && typeof j.name === 'string' && j.name.length <= 214 && NAME.test(j.name) && typeof j.version === 'string' && !!j.version
   && j.private !== true && !(j.publisher && j.engines && j.engines.vscode);

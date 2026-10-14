@@ -94,7 +94,7 @@ function installed(dir) {
 // The Rollup of workbox-build, which generates a service worker (GenerateSW: workbox-webpack-plugin's, vite-plugin-pwa's)
 // with Rollup's generate() - its runtime chunk workbox-<hash>.js in the output dir says so: name@version, or none
 function workboxRollup(outDir, from = '.') {
-  let names = [];
+  let names;
   try { names = fs.readdirSync(outDir); } catch { return []; }
   if (!names.some(n => /^workbox-[0-9a-f]+\.js$/.test(n))) return [];
   const wb = dirOf('workbox-build', from);

@@ -13,10 +13,10 @@ const problems = require('./problems.cjs');
 const { readManifest } = require('./manifest.cjs');
 const { ancestors, unvirtual } = require('./paths.cjs');
 
-const real = (p) => { try { return unvirtual(fs.realpathSync(p)); } catch { return unvirtual(p); } };
-const fileOf = (f) => (typeof f === 'string' && f.startsWith('file:') ? fileURLToPath(f.split('?')[0]) : f);
+const real = (/** @type {string} */ p) => { try { return unvirtual(fs.realpathSync(p)); } catch { return unvirtual(p); } };
+const fileOf = (/** @type {unknown} */ f) => (typeof f === 'string' && f.startsWith('file:') ? fileURLToPath(f.split('?')[0]) : f);
 // "license": "MIT", the legacy {"type": "MIT"} (see core/manifest.cjs)
-const licenseOf = (j) => (typeof j.license === 'string' ? j.license : j.license && typeof j.license.type === 'string' ? j.license.type : undefined);
+const licenseOf = (/** @type {Manifest} */ j) => (typeof j.license === 'string' ? j.license : j.license && typeof j.license.type === 'string' ? j.license.type : undefined);
 
 // The package of one of `names` that `file` (a path or file: URL) belongs to: the innermost directory around it whose
 // package.json has one of the names - its package root (node_modules/webpack for lib/Compiler.js), or a copy inside
@@ -30,11 +30,18 @@ const cache = new Map();
 const paths = new Set(); // of the bundler packages found (isBundlerPath)
 // The package at that path is a bundler, as found here (core/generated.cjs: a generate-only chunk of nothing but the
 // bundler's code is no package that went missing)
-const isBundlerPath = (p) => paths.has(p);
+const isBundlerPath = (/** @type {string} */ p) => paths.has(p);
+/**
+ * @param {string} kind
+ * @param {unknown} file a path or file: URL
+ * @param {string[]} names
+ * @param {unknown} [version]
+ * @returns {Package | null}
+ */
 function bundlerPackage(kind, file, names, version) {
   const f = fileOf(file);
   const key = `${f}\0${names.join(',')}\0${version || ''}`;
-  if (cache.has(key)) return cache.get(key);
+  if (cache.has(key)) return /** @type {Package} */ (cache.get(key));
   /** @type {{ dir: string, j: Manifest } | null} */
   let found = null;
   if (typeof f === 'string' && path.isAbsolute(f)) {
@@ -67,11 +74,13 @@ function bundlerPackage(kind, file, names, version) {
 // text of error.stack, which tools such as source-map-support rewrite). The tool may have set Error.stackTraceLimit
 // to 0 (or a few): set for the call, as is prepareStackTrace.
 const SRC = path.resolve(__dirname, '..');
+/** @returns {string[]} */
 function callerFiles() {
   const limit = Error.stackTraceLimit, prepare = Error.prepareStackTrace;
   try {
     Error.stackTraceLimit = 100;
     Error.prepareStackTrace = (_, sites) => sites;
+    /** @type {{ stack?: unknown }} */
     const holder = {};
     Error.captureStackTrace(holder, callerFiles);
     const sites = holder.stack;
@@ -93,6 +102,7 @@ function callerFiles() {
 // callerFiles), the innermost package around each file: Vite calls rollup()/rolldown() from its own code
 // (dist/node/chunks/*), also when SvelteKit or another tool calls Vite; webpack applies the plugins of a config, Rollup
 // and Rolldown run the hooks of the plugins of theirs. null if none.
+/** @param {string[]} names @param {string[]} [files] @returns {string | null} */
 function packageOnStack(names, files = callerFiles()) {
   for (const f of files) {
     for (const d of ancestors(path.dirname(real(f)))) {
@@ -105,6 +115,6 @@ function packageOnStack(names, files = callerFiles()) {
   return null;
 }
 const VITE_NAMES = ['vite', 'rolldown-vite'];
-const viteOf = (files) => packageOnStack(VITE_NAMES, files);
+const viteOf = (/** @type {string[] | undefined} */ files) => packageOnStack(VITE_NAMES, files);
 
 module.exports = { bundlerPackage, isBundlerPath, callerFiles, packageOnStack, viteOf, VITE_NAMES };

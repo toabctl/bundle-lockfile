@@ -11,14 +11,22 @@
 const config = require('./config.cjs');
 
 const KEY = Symbol.for('bundle-lockfile.problems.v1');
-const state = globalThis[KEY] || (globalThis[KEY] = { pending: [], warned: new Set(), atExit: false });
+/** @typedef {{ pending: string[], warned: Set<unknown>, atExit: boolean, checks?: (() => void)[] }} State */
+/** @type {State} */
+const state = /** @type {any} */ (globalThis)[KEY] || (/** @type {any} */ (globalThis)[KEY] = { pending: [], warned: new Set(), atExit: false });
 const HINT = 'BUNDLE_LOCKFILE_STRICT=0 makes this a warning';
 
+/** @type {(what: string, cause: unknown) => string} */
 const text = (what, cause) => (cause == null ? what : `${what}: ${cause instanceof Error ? cause.message : cause}`);
 
 // Records a problem: what (a sentence naming the output or file it is about), cause (an Error or text, optional).
 // opts.once: a key - without strict mode the warning is printed once per process for it (e.g. a package directory, on
 // every watch rebuild); with strict mode every build fails.
+/**
+ * @param {string} what
+ * @param {unknown} [cause]
+ * @param {{ once?: unknown }} [opts]
+ */
 function problem(what, cause, opts = {}) {
   if (!config.strict) {
     if (opts.once !== undefined) {
@@ -49,6 +57,7 @@ function onExit() {
     if (!process.exitCode) process.exitCode = 1;
   });
 }
+/** @param {() => void} fn */
 function atExit(fn) {
   (state.checks || (state.checks = [])).push(fn);
   onExit();
@@ -56,6 +65,10 @@ function atExit(fn) {
 
 // The recorded problems, removed (so that each fails one build); from: only those recorded after the first `from`
 // (see count).
+/**
+ * @param {number} [from]
+ * @returns {string[]}
+ */
 function take(from = 0) { return state.pending.splice(from); }
 // How many problems are pending: take(count()) later takes those recorded in between.
 const count = () => state.pending.length;
@@ -75,10 +88,15 @@ function failure(list) {
   err.stack = `Error: ${msg}\n`;
   return err;
 }
+/** @type {(e: any) => boolean} */
 const isFailure = (e) => !!(e && Array.isArray(e.problems));
 
 // For the end of an adapter's hook: in strict mode, if problems are pending, fail(failure) with all of them taken.
 // Returns whether it did.
+/**
+ * @param {(err: Error & { problems: string[] }) => unknown} fail
+ * @returns {boolean}
+ */
 function failIfAny(fail) {
   if (!config.strict || !pending()) return false;
   fail(failure(take()));
