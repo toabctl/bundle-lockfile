@@ -4600,7 +4600,8 @@ function fakeSsrBuild({ stats }) {
 test('angular adapter: server-side rendering - a lockfile per side, from per-side or combined metafiles; none for a server Angular does not write', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
-  const root = project({ ...pj('b'), ...pj('s'), ...pj('r'), ...pj('u'), 'src/main.ts': '' });
+  // (esbuild: the one the build ran, whose runtime helpers are in every side's JavaScript - listed with it)
+  const root = project({ ...pj('b'), ...pj('s'), ...pj('r'), ...pj('u'), ...pj('esbuild'), 'src/main.ts': '' });
   const outputOptions = { base: J(root, 'dist'), browser: 'browser', server: 'server' };
   for (const stats of ['split', 'combined']) {
     const r = await angular.wrap(fakeSsrBuild({ stats }))({ workspaceRoot: root, outputOptions });
@@ -4614,8 +4615,8 @@ test('angular adapter: server-side rendering - a lockfile per side, from per-sid
     assert.equal(server.length, 1, stats);
     assert.equal(server[0].type, 4);
     // combined: each output is the side of the output file of its path; one without a file counts for both
-    assert.deepEqual(lockedNames(browser[0].text), stats === 'split' ? ['b'] : ['b', 'u'], stats);
-    assert.deepEqual(lockedNames(server[0].text), ['r', 's', 'u'], stats);
+    assert.deepEqual(lockedNames(browser[0].text), stats === 'split' ? ['b', 'esbuild'] : ['b', 'esbuild', 'u'], stats);
+    assert.deepEqual(lockedNames(server[0].text), ['esbuild', 'r', 's', 'u'], stats);
   }
   // outputMode static (or no SSR entry): Angular skips the server's files (ignoreServer) - no server lockfile
   for (const stats of ['split', 'combined']) {
@@ -4626,7 +4627,8 @@ test('angular adapter: server-side rendering - a lockfile per side, from per-sid
 
 test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, from per-side or combined metafiles; locales without subPath fail', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
-  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/s/package.json': { name: 's', version: '1.0.0' }, 'src/main.ts': '' });
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/s/package.json': { name: 's', version: '1.0.0' },
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: '1.0.0' }, 'src/main.ts': '' });
   const i18nOptions = { shouldInline: true, inlineLocales: new Set(['de', 'en-US']), locales: { de: { subPath: 'de' }, 'en-US': { subPath: 'en-US' } } };
   const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' }, i18nOptions };
   // the result after Angular inlined the translations: each locale's copy of the outputs in <subPath>/; the metafile is
@@ -4643,7 +4645,7 @@ test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, f
     const r = await angular.wrap(build(stats))(options);
     assert.deepEqual(r.errors, [], stats);
     const locks = Object.fromEntries(r.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => [`${f.type} ${f.path}`, lockedNames(f.text)]));
-    assert.deepEqual(locks, { [`0 de/${LOCK}`]: ['a'], [`0 en-US/${LOCK}`]: ['a'], [`4 server/de/${LOCK}`]: ['s'], [`4 server/en-US/${LOCK}`]: ['s'] }, stats);
+    assert.deepEqual(locks, { [`0 de/${LOCK}`]: ['a', 'esbuild'], [`0 en-US/${LOCK}`]: ['a', 'esbuild'], [`4 server/de/${LOCK}`]: ['esbuild', 's'], [`4 server/en-US/${LOCK}`]: ['esbuild', 's'] }, stats);
   }
   // flatOutput (one locale, the dev server's): one copy, no locale directory
   const flat = await angular.wrap(build('split'))({ ...options, i18nOptions: { ...i18nOptions, flatOutput: true } });
@@ -4655,7 +4657,7 @@ test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, f
 
 test('angular adapter: a build of the dev server (ng serve) gets no lockfile and no stats; with NG_BUILD_PARTIAL_SSR set, a build gets its lockfile', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
-  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'src/main.ts': '' });
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/esbuild/package.json': { name: 'esbuild', version: '1.0.0' }, 'src/main.ts': '' });
   const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' }, partialSSRBuild: true };
   let seen = null;
   const inner = fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] });
@@ -4669,6 +4671,7 @@ test('angular adapter: a build of the dev server (ng serve) gets no lockfile and
     // ng build with NG_BUILD_PARTIAL_SSR: partialSSRBuild too, but a build that writes - its lockfile
     process.env.NG_BUILD_PARTIAL_SSR = '1';
     const b = await run(options);
+    assert.deepEqual(b.errors, []);
     assert.deepEqual(b.outputFiles.map(f => f.path), ['main.js', LOCK]);
   } finally { if (saved === undefined) delete process.env.NG_BUILD_PARTIAL_SSR; else process.env.NG_BUILD_PARTIAL_SSR = saved; }
 }));
