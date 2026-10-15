@@ -12,7 +12,9 @@
 /** @import { BuildOptions, BuildResult, OnEndResult, Plugin, PluginBuild } from 'esbuild' */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const config = require('../core/config.cjs');
+const lru = require('../core/lru.cjs');
 const packages = require('../core/packages.cjs');
 const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
@@ -35,6 +37,9 @@ const VITE_CONFIG = ['externalize-deps', 'inject-file-scope-variables'];
 const vitesOwn = (plugins) => plugins.some(p => VITE_OWN.has(p.name)) || VITE_CONFIG.every(n => plugins.some(p => p.name === n));
 const JS = /\.[cm]?js$/i, CSS = /\.css$/i;
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+// esbuild's inner exports object (its "default", a plugin's build.esbuild) -> the wrapped copy of its exports
+/** @type {WeakMap<object, object>} */
+const copies = new WeakMap();
 
 // The file of a metafile input key (relative to the build's absWorkingDir), or null:
 // - (disabled):<file> is the empty module esbuild puts where a browser field maps a module to false: no code of it ships
@@ -122,6 +127,8 @@ function watched() {
   const wrapBuild = (build) => new Proxy(build, {
     get(target, prop, receiver) {
       const v = Reflect.get(target, prop, receiver);
+      // build.esbuild: esbuild's inner exports, whose build() would bypass the wrappers (a plugin's sub-build)
+      if (prop === 'esbuild' && v && typeof v === 'object' && copies.has(v)) return copies.get(v);
       if (prop !== 'onLoad' || typeof v !== 'function') return typeof v === 'function' ? v.bind(target) : v;
       return (opts, cb) => v.call(target, opts, typeof cb !== 'function' ? cb : async (args) => {
         const r = await cb(args);
@@ -136,7 +143,7 @@ function watched() {
   // the plugins of the options, each with its setup given the recording build object (a plugin object of another shape
   // is passed on as it is: esbuild rejects it)
   /** @type {(list: unknown[]) => unknown[]} */
-  const plugins = (list) => list.map(p => (isPlugin(p) ? { ...p, setup(/** @type {PluginBuild} */ build) { return p.setup.call(p, wrapBuild(build)); } } : p));
+  const plugins = (list) => list.map(p => (isPlugin(p) ? { ...p, name: p.name, setup(/** @type {PluginBuild} */ build) { return p.setup.call(p, wrapBuild(build)); } } : p)); // (name: also a getter of its class)
   /** @type {(key: string, file: string | null) => string[]} */
   const inlined = (key, file) => byModule.get(key) || (file && byModule.get(file)) || [];
   return { plugins, inlined };
@@ -238,7 +245,13 @@ async function finish(options, result, state = {}) {
     const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
     // written by esbuild? Not with write: false (nor without outdir and outfile)
     const written = dir && [...byOutput.keys()].some(f => fs.existsSync(f));
+    // written, and none of it there: moved away by another plugin's onEnd (which runs before this one)
+    if (!written && dir && byOutput.size) {
+      problems.problem(`esbuild: none of the files of the build into ${dir} is there after it (moved by another plugin's onEnd?): no lockfile lists their packages`);
+      return;
+    }
     if (!written) {
+      if (options.write === false) unwritten(result.outputFiles);
       for (const of of (result.outputFiles || [])) {
         const pkgs = packages.unique(pkgsOf(byOutput.get(of.path) || []), JS.test(of.path) ? runtime : []);
         if (JS.test(of.path) || CSS.test(of.path)) generated.addChunk(of.text !== undefined ? of.text : of.contents, pkgs);
@@ -312,7 +325,9 @@ function createPlugin(inlined, file) {
           problems.failIfAny((err) => { errors = [{ text: err.message.replace(/\n$/, ''), pluginName: NAME }]; });
           resolve(errors ? { errors } : undefined);
         };
-        if (!result || (result.errors && result.errors.length)) return end(); // a failed build wrote nothing
+        // a failed build wrote nothing; esbuild gives a metafile only for a build without errors (it wrote its output
+        // then): errors with one are other plugins' onEnd errors, after the write
+        if (!result || (result.errors && result.errors.length && !result.metafile)) return end();
         state.version = build.esbuild && build.esbuild.version;
         finish(options, result, state).then(end);
       })));
@@ -343,19 +358,43 @@ function attach(options, file) {
   return { ...options, plugins: [...theirs, createPlugin(w.inlined, file)] };
 }
 
+// The outputs of write: false builds (file -> sha256 of the bytes it was given): one that is on disk with those bytes
+// when the process ends, in no lockfile of the process, was written by the build's caller or a plugin (tsup and other
+// tools write esbuild's outputFiles themselves) - it ships without a lockfile: a problem.
+/** @type {Map<string, string>} */
+const pending = new Map();
+/** @param {unknown} files */
+function unwritten(files) {
+  if (!Array.isArray(files)) return;
+  if (!pending.size) problems.atExit(checkUnwritten);
+  for (const of of files) {
+    if (!of || typeof of.path !== 'string' || !path.isAbsolute(of.path) || !of.contents) continue;
+    lru.set(pending, of.path, crypto.createHash('sha256').update(of.contents).digest('hex'), MAX_PENDING);
+  }
+}
+const MAX_PENDING = 10000;
+function checkUnwritten() {
+  const shipped = [...pending].filter(([file, h]) => {
+    if (outputs.listedFile(file)) return false;
+    try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === h; } catch { return false; }
+  }).map(([file]) => file);
+  if (shipped.length) problems.problem(`esbuild: ${shipped.slice(0, 5).join(', ')}${shipped.length > 5 ? `, and ${shipped.length - 5} more` : ''}, output of a build with write: false, ${shipped.length > 1 ? 'were' : 'was'} written by its caller or a plugin: no lockfile lists ${shipped.length > 1 ? 'their' : 'its'} packages (write the output with esbuild, or a lockfile with bundle-lockfile-from-metafile)`);
+}
+
 // buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs
 // synchronously up to the write, which is queued: a process that exits right away still writes it - see
 // core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
 function wrapSync(fn, version, file) {
-  // (not within a build of its own, core/problems.cjs: its lockfile is written after it returned - a problem then is taken
-  // by the next build, or fails the process)
+  // (within a build of its own, core/problems.cjs: a problem of another build running meanwhile does not fail it; its
+  // lockfile is written after it returned - a problem then fails the process when it ends)
   return /** @this {unknown} */ function (options, ...rest) {
     if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
     const result = fn.call(this, { ...options, metafile: true }, ...rest);
-    finish(options, result, { version, file });
+    const own = {}; // (this call's problems, and those of none: not those of another build running meanwhile)
+    problems.within(own, () => finish(options, result, { version, file }));
     if (!asked) delete result.metafile;
-    problems.failIfAny((err) => { throw err; });
+    problems.within(own, () => problems.failIfAny((err) => { throw err; }));
     return result;
   };
 }
@@ -410,6 +449,7 @@ module.exports = {
       if (typeof exp.buildSync === 'function') copy.buildSync = wrapSync(exp.buildSync, exp.version, file);
     }
     copy.default = copy;
+    if (exp.default && typeof exp.default === 'object') copies.set(exp.default, copy);
     Object.defineProperty(copy, '__esModule', { value: true });
     Object.defineProperty(copy, WRAPPED, { value: true });
     try { Object.defineProperty(exp, WRAPPED, { value: true, configurable: true }); } catch { /* frozen: the module is replaced anyway */ }

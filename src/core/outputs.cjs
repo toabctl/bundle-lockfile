@@ -609,4 +609,8 @@ function listedPaths() {
   return out;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, land, onDisk, filesOf, hasFile, writeDisk, nowhere, listedPaths };
+// Whether any lockfile of this process lists `file` among its writers' files
+/** @param {string} file */
+const listedFile = (file) => [...outputs.files.keys()].some(target => hasFile(target, file));
+
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, land, onDisk, filesOf, hasFile, listedFile, writeDisk, nowhere, listedPaths };

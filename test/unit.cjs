@@ -4588,7 +4588,25 @@ test('esbuild adapter: replaces the getter-only exports with a copy whose build/
   assert.deepEqual(names(seen), ['bundle-lockfile']);
   // other modules, and a lib/main.js of another package
   assert.equal(a.onCjsLoad(fakeEsbuild('0.28.2'), '/p/node_modules/other/lib/main.js', () => ''), undefined);
+  // a plugin's build.esbuild (esbuild's inner exports) is the copy: a sub-build gets the plugin too; a plugin whose name
+  // is a getter of its class keeps it
+  let sub = null;
+  class Named { get name() { return 'named'; } setup(build) { sub = build.esbuild; } }
+  await copy.build({ outdir: 'dist', plugins: [new Named()] });
+  assert.deepEqual(names(seen), ['named', 'bundle-lockfile']);
+  seen.plugins[0].setup({ esbuild: exp.default, initialOptions: {}, onLoad() {} });
+  assert.equal(sub, copy);
 });
+
+test('esbuild adapter: buildSync fails with its own problems (and those of none), not with those of another build running meanwhile', () => withConfig({ strict: true }, () => {
+  const a = esbuildAdapter();
+  const copy = a.onCjsLoad(fakeEsbuild('0.28.2', { buildSync: () => ({ errors: [], metafile: { outputs: {} } }) }), ESBUILD_MAIN, () => ESBUILD_MAIN).exports;
+  problems.take();
+  const other = {};
+  problems.within(other, () => problems.problem('a problem of another build'));
+  copy.buildSync({ entryPoints: ['a.js'], write: false });
+  assert.deepEqual(problems.takeOwn(other), ['a problem of another build']);
+}));
 
 test('esbuild adapter: an esbuild of a shape it does not know, or before 0.17, fails (strict) instead of writing no lockfile', () => withConfig({ strict: true }, async () => {
   const a = esbuildAdapter();
@@ -4657,10 +4675,36 @@ test('esbuild adapter: onEnd lists the packages of the inputs of every output, w
   for (const f of ['main.js', 'f.woff2']) fs.rmSync(J(root, 'dist', f));
   await esbuildEnd({ ...options }, { errors: [], metafile: cssOnly }, esb);
   assert.ok(!lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')).includes('esbuild'));
-  // a failed build wrote nothing: nothing recorded
+  // a failed build wrote nothing: nothing recorded (esbuild gives no metafile then)
   fs.rmSync(J(root, 'dist', LOCK));
-  await esbuildEnd({ ...options }, { errors: [{ text: 'x' }], metafile });
+  await esbuildEnd({ ...options }, { errors: [{ text: 'x' }] });
   assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false);
+  // another plugin's onEnd returned an error (a type check): esbuild wrote the output before - its lockfile too
+  await esbuildEnd({ ...options }, { errors: [{ text: 'TS2307', pluginName: 'tsc' }], metafile: cssOnly });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a']);
+  // written, and none of its files there (another plugin's onEnd moved them): said, no lockfile
+  fs.rmSync(J(root, 'dist'), { recursive: true });
+  const warned = await warningsOf(() => esbuildEnd({ ...options }, { errors: [], metafile }));
+  assert.match(warned.join('\n'), /none of the files of the build into \S*dist is there after it/);
+  assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false);
+});
+
+test('strict: the output of a write: false build that its caller writes, in no lockfile, fails the process when it ends', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const script = (write) => `const a = require(${JSON.stringify(J(SRC, 'adapters/esbuild.cjs'))}); const fs = require('fs');
+    const options = { entryPoints: ['src/main.js'], outdir: 'dist', write: false, absWorkingDir: ${JSON.stringify(root)} };
+    const plugin = a.attach(options, ${JSON.stringify(ESBUILD_MAIN)}).plugins.at(-1);
+    let end; plugin.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
+    const out = { path: ${JSON.stringify(J(root, 'dist/main.js'))}, contents: Buffer.from('bundled a') };
+    end({ errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } }, outputFiles: [out] }).then(() => {
+      ${write ? "fs.mkdirSync(require('path').dirname(out.path), { recursive: true }); fs.writeFileSync(out.path, out.contents);" : ''} console.log('done');
+    });`;
+  const written = nodeWith(strictEnv(undefined), ['-e', script(true)]);
+  assert.equal(written.status, 1, written.stderr);
+  assert.match(written.stderr, /\S*dist\/main\.js, output of a build with write: false, was written by its caller or a plugin: no lockfile lists its packages/);
+  fs.rmSync(J(root, 'dist'), { recursive: true });
+  const kept = nodeWith(strictEnv(undefined), ['-e', script(false)]); // only looked at: nothing ships
+  assert.deepEqual([kept.status, kept.stdout.trim()], [0, 'done'], kept.stderr);
 });
 
 test('esbuild adapter: a problem is an onEnd error (the build rejects); write: false keeps the packages for the build that uses the output', () => withConfig({ strict: true }, async () => {
