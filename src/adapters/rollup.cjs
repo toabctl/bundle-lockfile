@@ -386,8 +386,9 @@ function esmVersion(url) {
 const PATCHED = Symbol.for('bundle-lockfile.rollup.cjs');
 // Rollup's CommonJS build: dist/shared/rollup.js has rollup() and rollupInternal(), which the rollup command line
 // (rollup.rollup), watch() (rollup.rollupInternal) and dist/rollup.js (require('rollup'), which copies rollup when it
-// loads, after this patch) call.
-const CJS_ROLLUP = /[\\/](rollup|@rollup[\\/]wasm-node)[\\/]dist[\\/]shared[\\/]rollup\.js$/;
+// loads, after this patch) call. Rollup 1's is dist/shared/node-entry.js (exports.version 1.x): recognized, to say it
+// cannot be hooked.
+const CJS_ROLLUP = /[\\/](rollup|@rollup[\\/]wasm-node)[\\/]dist[\\/]shared[\\/](?:rollup|node-entry)\.js$/;
 
 module.exports = {
   name: 'rollup',
@@ -424,7 +425,9 @@ module.exports = {
   onCjsLoad(exp, request, resolve) {
     // the path first: reading a missing property of a module in a circular require() makes Node warn. request: the path
     // Rollup's files are recognized by (see hooks.cjs)
-    if (!request.endsWith('rollup.js') || !CJS_ROLLUP.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
+    if (!(request.endsWith('rollup.js') || request.endsWith('node-entry.js')) || !CJS_ROLLUP.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
+    // (Rollup 4 has a dist/shared/node-entry.js of its own, a part of its command line: only Rollup 1's counts)
+    if (request.endsWith('node-entry.js') && !(typeof exp.version === 'string' && Number(exp.version.split('.')[0]) < 2)) return;
     // Rollup's: a version without rollupInternal(), or older than the object hooks the plugin has (2.78), would build
     // without a lockfile - a problem (in strict mode its require() fails, see hooks.cjs)
     // (the version: exports.version in early 4.x releases, exports.package_ in later ones; else the package's package.json)

@@ -2732,10 +2732,14 @@ test('strict: Rollup\'s CommonJS build of a version bundle-lockfile cannot hook 
   const file = J('/x/node_modules/rollup/dist/shared/rollup.js');
   rollupAdapter.onCjsLoad({ version: '2.40.0', rollupInternal() {} }, file, () => file); // no object hooks yet
   rollupAdapter.onCjsLoad({ version: '5.0.0', rollupInternalV2() {} }, file, () => file); // a future one without rollupInternal
+  const one = J('/x/node_modules/rollup/dist/shared/node-entry.js'); // Rollup 1's (require('rollup'), its command line)
+  rollupAdapter.onCjsLoad({ version: '1.32.1', rollup() {}, watch() {} }, one, () => one);
+  rollupAdapter.onCjsLoad({ VERSION: '4.64.7', watch() {} }, one, () => one); // Rollup 4's file of that name: none of its builds
   const taken = problems.take();
-  assert.equal(taken.length, 2);
+  assert.equal(taken.length, 3);
   assert.match(taken[0], /rollup: .*rollup\.js \(Rollup 2\.40\.0\) is no Rollup bundle-lockfile can hook \(2\.78 or later, with rollupInternal\): its builds would write no lockfile/);
   assert.match(taken[1], /\(Rollup 5\.0\.0\) is no Rollup bundle-lockfile can hook/);
+  assert.match(taken[2], /rollup: .*node-entry\.js \(Rollup 1\.32\.1\) is no Rollup bundle-lockfile can hook/);
 }));
 
 test('strict: Rollup\'s ES build of a version bundle-lockfile cannot hook (before 2.78) is a problem (its import fails); with BUNDLE_LOCKFILE_STRICT=0 it builds without the plugin', () => {

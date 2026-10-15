@@ -107,8 +107,8 @@ esbuild its builder runs), Parcel's `@parcel/packager-js`. Its version is its `p
   If it names where its output goes (`dir` or `file`) and a file of it is written there after the build, in no
   lockfile of the process when the process ends - its caller wrote it, as generated or changed (tsup's `treeshake`
   option tree-shakes esbuild's output with `generate()`) - that is a problem: it ships without a lockfile.
-- Rollup 2.0 – 2.77 cannot run the plugin (it has object hooks, `{ order, handler }`): importing or requiring such a
-  Rollup is a problem, with `BUNDLE_LOCKFILE_STRICT=0` a warning, and its builds write no lockfile.
+- Rollup 1 and 2.0 – 2.77 cannot run the plugin (it has object hooks, `{ order, handler }`): importing or requiring
+  such a Rollup is a problem, with `BUNDLE_LOCKFILE_STRICT=0` a warning, and its builds write no lockfile.
 - A Vite 8 build logs `vite: adding the plugin to a rolldown() call` with `BUNDLE_LOCKFILE_DEBUG=1` (Vite 7:
   `rollup()`).
 

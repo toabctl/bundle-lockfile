@@ -226,8 +226,8 @@ const fixtures = {
   'esbuild-wasm': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-wasm': '0.28.2' }),
   'esbuild-features': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-sass-plugin': '3.7.0', sass: '1.105.1', bulma: '1.0.4', 'sanitize.css': '13.0.0' }),
   // tsup (test/apps/tsup): esbuild with write: false, the output written by tsup itself (its esbuild, a dependency of
-  // its own, not pinned here)
-  'tsup': { app: 'tsup', bundler: 'esbuild', installer: { type: 'npm' }, deps: { tsup: '8.5.0', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
+  // its own, not pinned here; typescript: tsup loads it)
+  'tsup': { app: 'tsup', bundler: 'esbuild', installer: { type: 'npm' }, deps: { tsup: '8.5.0', typescript: '5.9.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
     packageJson: { type: 'module', scripts: { build: 'tsup' } } },
   // Parcel 2: the latest, the first release; installers
   'parcel': parcelApp('2.16.4'),
