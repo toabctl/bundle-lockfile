@@ -182,9 +182,9 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   asset's bytes: the main build emits them again without naming the file. Such a build that names where its output
   goes (Rollup's `generate()` with `dir` or `file`, esbuild's `write: false` with `outdir` or `outfile`) leaves that
   path in `core/generated.cjs` (`addDestined`): a file there when the process ends that no lockfile of the process
-  lists, with the build's bytes or written after it, was written by the caller (tsup), and is a problem. A build that
-  only looks at its output, or whose output another build emits (Vite's workers and polyfills, whose files the main
-  build lists), leaves nothing there.
+  lists and that was written after the build (as built, or changed) was written by the caller (tsup), and is a
+  problem. A build that only looks at its output, or whose output another build emits (Vite's workers and polyfills,
+  whose files the main build lists), leaves nothing new there.
 - **files a loader or plugin inlines into a module** (style sheets a style sheet `@import`s, images and fonts it
   inlines as `data:` URLs, a shader's `#include`s, JSON merged in): no modules, recorded only by the loader or plugin
   that read them. A recorded file counts if it is no code and no build tool's settings by its name

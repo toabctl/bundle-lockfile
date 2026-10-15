@@ -15,6 +15,11 @@
 //   rollup-watch, rolldown-watch  watch(): builds, rebuilds without src/main.js's nanoid lines (nanoid must leave the
 //                   lockfile), rebuilds with them (it must come back); the lockfile is deleted before every build;
 //                   prints the package list of every build as JSON last. src/main.js is restored also on failure
+//   rolldown-watch-outputs  the same with two outputs (dist/, dist/cjs/: Rolldown runs a build per output, both with
+//                   the one plugin): both lockfiles must have the same packages after every build
+//   rollup-watch-problem, rolldown-watch-problem  watch(): builds, rebuilds with an import of node_modules/naked (a
+//                   package without package.json, made here): that rebuild must fail with the problem and leave the
+//                   lockfile of the output still in dist/; rebuilds without it (the lockfile must be written again)
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -94,6 +99,49 @@ if (mode === 'rollup' || mode === 'rollup-wasm') {
     }
     fs.rmSync(lockfile);
     const next = builds.length === 1 ? without : source;
+    setTimeout(() => fs.writeFileSync(input, next), 200); // after the watcher has settled
+  });
+} else if (mode === 'rolldown-watch-outputs' || mode === 'rollup-watch-problem' || mode === 'rolldown-watch-problem') {
+  const rollup = mode.startsWith('rollup');
+  const problem = mode.endsWith('-problem');
+  const { watch } = await import(rollup ? 'rollup' : 'rolldown');
+  const options = rollup ? await rollupOptions() : rolldownOptions;
+  const outputs = problem ? output : [output, { dir: path.join(dir, 'cjs'), format: 'cjs' }];
+  const locks = [lockfile, ...(problem ? [] : [path.join(dir, 'cjs/bundle-lockfile/package-lock.json')])];
+  const naked = path.resolve('node_modules/naked');
+  const source = fs.readFileSync(input, 'utf8');
+  process.on('exit', () => { fs.writeFileSync(input, source); fs.rmSync(naked, { recursive: true, force: true }); });
+  const changed = problem ? `import 'naked';\n${source}` : source.split('\n').filter(l => !l.includes('nanoid')).join('\n');
+  if (problem) { fs.mkdirSync(naked, { recursive: true }); fs.writeFileSync(path.join(naked, 'index.js'), "console.log('naked');\n"); }
+  const listOf = (file) => Object.entries(JSON.parse(fs.readFileSync(file, 'utf8')).packages).filter(([k]) => k).map(([, p]) => `${p.name}@${p.version}`).sort();
+  const builds = [];
+  let error = null;
+  setTimeout(() => fail(`${mode}: timed out after ${builds.length} build(s)`), 120000).unref();
+  for (const l of locks) fs.rmSync(l, { force: true });
+  const watcher = watch({ ...options, output: outputs });
+  watcher.on('event', async (event) => {
+    if (event.code === 'BUNDLE_END' && event.result) await event.result.close();
+    if (event.code === 'ERROR') {
+      if (!problem || builds.length !== 1) fail(`${mode}: ${event.error && (event.error.stack || event.error.message)}`);
+      error = String(event.error && event.error.message);
+      if (event.result) await event.result.close();
+    }
+    if (event.code !== 'END') return;
+    // the rebuild with naked: failed with the problem, the lockfile of build 1 still there (Rollup and Rolldown write
+    // nothing of a failed build)
+    if (problem && builds.length === 1 && !/no package\.json with name and version in \S*node_modules\/naked - its bundled files are not listed/.test(error || '')) {
+      fail(`${mode}: the rebuild with naked did not fail with its problem: ${error}`);
+    }
+    const lists = locks.map(l => (fs.existsSync(l) ? listOf(l) : fail(`${mode}: build ${builds.length + 1} did not write ${path.relative(process.cwd(), l)}`)));
+    if (lists.some(l => JSON.stringify(l) !== JSON.stringify(lists[0]))) fail(`${mode}: build ${builds.length + 1}: the outputs' lockfiles differ: ${JSON.stringify(lists)}`);
+    builds.push(lists[0]);
+    if (builds.length === 3) {
+      console.log(JSON.stringify(builds));
+      await Promise.race([watcher.close(), new Promise(resolve => setTimeout(resolve, 5000))]);
+      process.exit(0);
+    }
+    if (!problem || builds.length === 2) for (const l of locks) fs.rmSync(l); // (not before the failing rebuild)
+    const next = builds.length === 1 ? changed : source;
     setTimeout(() => fs.writeFileSync(input, next), 200); // after the watcher has settled
   });
 } else fail(`unknown mode ${mode}`);

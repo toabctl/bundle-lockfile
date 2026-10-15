@@ -104,9 +104,9 @@ esbuild its builder runs), Parcel's `@parcel/packager-js`. Its version is its `p
   build with style sheets ([troubleshooting](troubleshooting.md)).
 - A build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write: false`) writes no lockfile:
   its packages are listed where its output's bytes end up in a written output ([coverage](coverage.md#also-listed)).
-  If it names where its output goes (`dir` or `file`) and a file of it is there when the process ends, in no lockfile
-  of the process - its caller wrote it, as written or changed (tsup's `treeshake` option tree-shakes esbuild's output
-  with `generate()`) - that is a problem: it ships without a lockfile.
+  If it names where its output goes (`dir` or `file`) and a file of it is written there after the build, in no
+  lockfile of the process when the process ends - its caller wrote it, as generated or changed (tsup's `treeshake`
+  option tree-shakes esbuild's output with `generate()`) - that is a problem: it ships without a lockfile.
 - Rollup 2.0 – 2.77 cannot run the plugin (it has object hooks, `{ order, handler }`): importing or requiring such a
   Rollup is a problem, with `BUNDLE_LOCKFILE_STRICT=0` a warning, and its builds write no lockfile.
 - A Vite 8 build logs `vite: adding the plugin to a rolldown() call` with `BUNDLE_LOCKFILE_DEBUG=1` (Vite 7:
@@ -164,10 +164,10 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
 - `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile. Their packages are
   listed where their output's bytes end up in another hooked build's output, or in a file written into an output after
   the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files itself: its
-  lockfile comes from its own adapter ([Angular](#angular)). An output file of such a build that is on disk when the
-  process ends, in no lockfile of the process, with its bytes or written after the build (tsup and other tools write
-  esbuild's `outputFiles` themselves, also after changing them: tsup's `treeshake` and `minify: 'terser'`) is a
-  problem: it ships without a lockfile (`bundle-lockfile-from-metafile` writes one).
+  lockfile comes from its own adapter ([Angular](#angular)). An output file of such a build that is written after
+  the build and on disk when the process ends, in no lockfile of the process (tsup and other tools write esbuild's
+  `outputFiles` themselves, also after changing them: tsup's `treeshake` and `minify: 'terser'`), is a problem: it
+  ships without a lockfile (`bundle-lockfile-from-metafile` writes one).
 - Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
   below `node_modules` are left alone - except below `node_modules/.cache/`, as for Vite (tools build what ships there).
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
