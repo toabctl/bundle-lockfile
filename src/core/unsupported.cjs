@@ -7,7 +7,9 @@
 // - Next.js builds with Turbopack (next build's default from Next.js 16, --turbopack before): known when the process
 //   ends - Next sets TURBOPACK when it builds with Turbopack (next/dist/lib/bundler.js), NEXT_RSPACK with next-rspack
 // - @vercel/ncc, which runs a webpack of its own from a vm script, which no module hook sees: when it loads
-// webpack before 4 and rspack 0.x are reported by their adapters, when a compiler of theirs compiles.
+// webpack before 4 and rspack 0.x are reported by their adapters, when a compiler of theirs compiles. Each follows
+// BUNDLE_LOCKFILE_DISABLE as the adapter of what it stands in for: the rolldown command line `rolldown`, Turbopack and ncc
+// `webpack` (the bundler of Next.js, and ncc's) - a disabled bundler is not expected to write a lockfile.
 /** @import { Adapter } from '../types' */
 const fs = require('fs');
 const config = require('./config.cjs');
@@ -32,7 +34,7 @@ function check(argv = process.argv) {
   if (ROLLDOWN_CLI.test(mainOf(argv)) && !config.isDisabled('rolldown')) {
     problems.problem("the rolldown command line is not hooked: its builds write no lockfile (build with Rolldown's JavaScript API, or with Vite)");
   }
-  if (isNextBuild(argv)) {
+  if (isNextBuild(argv) && !config.isDisabled('webpack')) {
     problems.atExit(() => {
       if (process.env.TURBOPACK && !process.env.NEXT_RSPACK) {
         problems.problem('Next.js built with Turbopack, which bundle-lockfile does not hook: no lockfile (build with next build --webpack, or with next-rspack)');
@@ -47,7 +49,7 @@ let ncc = false;
 const adapter = {
   name: 'unsupported',
   onCjsLoad(exp, request) {
-    if (NCC.test(request)) {
+    if (NCC.test(request) && !config.isDisabled('webpack')) {
       if (ncc) return;
       ncc = true;
       problems.problem('@vercel/ncc builds with a webpack of its own, which bundle-lockfile cannot hook: its builds write no lockfile');

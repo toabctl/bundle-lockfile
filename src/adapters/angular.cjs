@@ -25,7 +25,10 @@ const { stubsOf } = require('../core/tree.cjs');
 const PATCHED = Symbol.for('bundle-lockfile.angular.patched');
 const EXECUTE_BUILD = /[\\/](@angular[\\/]build|@angular-devkit[\\/]build-angular)[\\/]src[\\/]builders[\\/]application[\\/]execute-build\.js$/;
 // Angular's BuildOutputFileType (tools/esbuild/bundler-files): where a file of the result goes
-const TYPE = { Browser: 0, ServerApplication: 2, ServerRoot: 3, Root: 4 };
+const TYPE = { Browser: 0, Media: 1, ServerApplication: 2, ServerRoot: 3, Root: 4 };
+// a file's side: Browser and Media files Angular writes in the browser's directory, ServerApplication and ServerRoot
+// files in the server's (generateFullPath, builders/application/index.js)
+const sideOfType = (t) => (t === TYPE.Browser || t === TYPE.Media ? 'browser' : t === TYPE.ServerApplication || t === TYPE.ServerRoot ? 'server' : null);
 // its metafiles with the stats option: one per side (22 and later), or both sides in one (stats.json: 17 - 21)
 const STATS = { browser: 'browser-stats.json', server: 'server-stats.json', both: 'stats.json' };
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
@@ -39,15 +42,19 @@ let version = null;
 let esbuildFile = null;
 
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
-// that path), and its export copy written (its write added to `writes`); returns the content Angular writes, or null.
-function render(side, target, writer, pkgs, context, files, found, writes) {
+// that path); what lands it (its export copy written) added to `lands`, for once the build is known not to fail.
+// Returns the content Angular writes, or null.
+/** @param {(() => Promise<void> | void)[]} lands */
+function render(side, target, writer, pkgs, context, files, found, lands) {
   const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found,
     bundler: { name: 'angular', ...(version ? { version } : {}) } });
   // Angular writes the lockfile in the output; bundle-lockfile its export copy
-  if (exportPath(target)) writes.push(outputs.land(target, writer, 'angular', { writeFile: null, prune: false }));
+  if (exportPath(target)) lands.push(() => outputs.land(target, writer, 'angular', { writeFile: null, prune: false }));
   else {
-    outputs.emitted(target, writer);
-    if (!config.inline) outputs.nowhere();
+    lands.push(() => {
+      outputs.emitted(target, writer);
+      if (!config.inline) outputs.nowhere();
+    });
   }
   config.debug(`angular: the ${side} lockfile`, target, 'with', pkgs.length, 'packages');
   return content;
@@ -63,10 +70,10 @@ function esbuildOf(wd) {
   return null;
 }
 
-// The result of executeBuild: the lockfiles added to its output files; problems as its errors. writes: the writes of
-// the export copies are added to it.
-/** @param {Promise<void>[]} writes */
-function complete(options, result, forced, writes) {
+// The result of executeBuild: the lockfiles added to its output files; problems as its errors. lands: what lands them
+// (writes the export copies) is added to it.
+/** @param {(() => Promise<void> | void)[]} lands */
+function complete(options, result, forced, lands) {
   const files = Array.isArray(result.outputFiles) ? result.outputFiles : [];
   const stats = {};
   for (const [side, name] of Object.entries(STATS)) {
@@ -95,6 +102,10 @@ function complete(options, result, forced, writes) {
     }
   }
   const unlocalized = (p) => { for (const l of locales) if (l && p.startsWith(`${l}/`)) return p.slice(l.length + 1); return p; };
+  // the side's directory in the output path: its name, '' for the output path itself (browser: '', as the browser-esbuild
+  // builder of @angular-devkit/build-angular always has it; Angular fills in the defaults, browser and server)
+  /** @param {string} side */
+  const dirName = (side) => (typeof out[side] === 'string' ? out[side] : side);
   // the combined metafile of Angular 17 - 21: both sides' outputs, keyed by their paths in their own directory
   // (main.server.mjs, not server/main.server.mjs): each output is the side whose output files have its path - an
   // output of both (the same name) counts for both. One no output file has (none Angular writes) counts for the browser
@@ -103,7 +114,7 @@ function complete(options, result, forced, writes) {
     const sideOf = new Map();
     for (const f of files) {
       if (!f || typeof f.path !== 'string') continue;
-      const side = f.type === TYPE.Browser ? 'browser' : f.type === TYPE.ServerApplication || f.type === TYPE.ServerRoot ? 'server' : null;
+      const side = sideOfType(f.type);
       if (!side) continue;
       const key = unlocalized(f.path); // (with i18n: <subPath>/main.js is main.js of the metafile)
       if (!sideOf.has(key)) sideOf.set(key, new Set());
@@ -129,10 +140,10 @@ function complete(options, result, forced, writes) {
     if (side === 'server' && out.ignoreServer) { config.debug('angular: the server output is not written (ignoreServer): no server lockfile'); continue; }
     // (via, see core/via.cjs: the outputs' inputs are chunks, files they inline style or inlined, Angular's asset copies
     // assets)
-    // the side's files, by their path in its directory: the server's are the application's and its SSR entry bundle's
-    // (ServerRoot: server.mjs and its chunks, which i18n writes once, not per locale)
-    const sideFiles = files.filter(f => f && typeof f.path === 'string'
-      && (side === 'browser' ? f.type === TYPE.Browser : f.type === TYPE.ServerApplication || f.type === TYPE.ServerRoot));
+    // the side's files, by their path in its directory: the browser's also its media (fonts and images of its style
+    // sheets), the server's are the application's and its SSR entry bundle's (ServerRoot: server.mjs and its chunks,
+    // which i18n writes once, not per locale)
+    const sideFiles = files.filter(f => f && typeof f.path === 'string' && sideOfType(f.type) === side);
     // The packages, via and all of the outputs `keys` of the side's metafile (with its asset copies: browser)
     const collect = (keys, withAssets) => {
       const sub = { ...metafile, outputs: Object.fromEntries(Object.entries(metafile.outputs || {}).filter(([k]) => keys.has(k))) };
@@ -149,13 +160,16 @@ function complete(options, result, forced, writes) {
     };
     const file = config.file.split(path.sep).join('/');
     const write = (label, dir, writer, own, { all, found }, locale) => {
-      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found, writes);
+      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found, lands);
       // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server
       // file of the same name are one (the one added last): the server's lockfile is a file of the output path's root,
-      // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
+      // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above). With
+      // the server's files in the output path itself (server: ''), that is <file>, the browser's path in its directory:
+      // the browser's lockfile is then a root file too, at <browser>/<file> (Angular requires the two to differ).
       if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
-        const at = side === 'browser' ? path.posix.join(locale, file) : path.posix.join(out.server || 'server', locale, file);
-        const type = side === 'browser' ? TYPE.Browser : TYPE.Root;
+        const root = side === 'server' || (dirName('server') === '' && !!stats.server && !out.ignoreServer);
+        const at = root ? path.posix.join(dirName(side), locale, file) : path.posix.join(locale, file);
+        const type = root ? TYPE.Root : TYPE.Browser;
         result.addOutputFile(at, content, type);
         // its package.json tree (BUNDLE_LOCKFILE_TREE, core/tree.cjs): Angular writes it with the lockfile
         if (config.tree !== 'off') {
@@ -165,7 +179,7 @@ function complete(options, result, forced, writes) {
         }
       }
     };
-    const sideDir = path.join(out.base, out[side] || side);
+    const sideDir = path.join(out.base, dirName(side));
     const keys = new Set(Object.keys(metafile.outputs || {}));
     if (locales.length === 1 && !locales[0]) {
       write(side, sideDir, ['angular', side, portable(context, out.base)], sideFiles.map(f => path.join(sideDir, f.path)), collect(keys, side === 'browser'), '');
@@ -174,49 +188,65 @@ function complete(options, result, forced, writes) {
     // i18n: the outputs Angular writes once, in the side's own directory (with server-side rendering: the server's
     // entry, server.mjs, and its chunks), get a lockfile there; those it copies per locale one in each locale's. An
     // output of the metafile no file names counts for both: a package listed too many beats a missing one.
-    const atRoot = new Set(sideFiles.filter(f => !locales.some(l => f.path.startsWith(`${l}/`))).map(f => f.path));
+    // A locale whose subPath is '' has its copy in the side's own directory: one lockfile there, for both.
+    const atRoot = new Set(sideFiles.filter(f => !locales.some(l => l && f.path.startsWith(`${l}/`))).map(f => f.path));
     const perLocale = new Set(sideFiles.map(f => unlocalized(f.path)).filter((p, i) => sideFiles[i].path !== p));
     const rootKeys = new Set([...keys].filter(k => atRoot.has(k) || !perLocale.has(k)));
     const localeKeys = new Set([...keys].filter(k => perLocale.has(k) || !atRoot.has(k)));
-    if (atRoot.size && rootKeys.size) {
-      write(side, sideDir, ['angular', side, portable(context, out.base)], [...atRoot].map(p => path.join(sideDir, p)), collect(rootKeys, false), '');
+    const rootLocale = locales.includes('');
+    if (atRoot.size && (rootKeys.size || rootLocale)) {
+      write(rootLocale ? `${side} (and its locale at the root)` : side, sideDir, ['angular', side, portable(context, out.base)], [...atRoot].map(p => path.join(sideDir, p)),
+        rootLocale ? collect(new Set([...rootKeys, ...localeKeys]), side === 'browser') : collect(rootKeys, false), '');
     }
     const ofLocales = collect(localeKeys, side === 'browser');
     for (const locale of locales) {
+      if (!locale) continue; // (its lockfile is the side's, above)
       const own = sideFiles.filter(f => f.path.startsWith(`${locale}/`)).map(f => path.join(sideDir, f.path));
       write(`${side} (${locale})`, path.join(sideDir, locale), ['angular', side, locale, portable(context, out.base)], own, ofLocales, locale);
     }
   }
 }
 
-// A build of Angular's dev server (ng serve): it serves the output from memory and writes nothing, so it gets no
-// lockfile (as vite dev) - nor stats, which the dev server turns off (they would make it reload instead of replacing
-// modules). The dev server sets partialSSRBuild, which ng build sets only with NG_BUILD_PARTIAL_SSR: with that variable
-// set at all, a build is no dev server's.
-const devServer = (options) => !!options && options.partialSSRBuild === true && !process.env.NG_BUILD_PARTIAL_SSR;
+// The builders that run the application build for output nobody ships: the dev server (ng serve) serves it from memory
+// (as vite dev), extract-i18n only reads its messages, karma (ng test) writes it to a temporary directory and removes it,
+// unit-test (Vitest) keeps it in memory. Their builds get no lockfile, nor stats (which the dev server turns off: they
+// would make it reload instead of replacing modules). Known by the name of the builder the build runs for
+// (context.builder.builderName, "<package>:<builder>"; also the same builders of other packages, as
+// @angular-builders/custom-esbuild's dev-server); a build without one (executeBuild called by hand) writes.
+const NOT_SHIPPED = new Set(['dev-server', 'extract-i18n', 'karma', 'unit-test']);
+/** @returns {string | null} */
+function notShipped(context) {
+  const name = context && typeof context === 'object' && context.builder && context.builder.builderName;
+  return typeof name === 'string' && NOT_SHIPPED.has(name.slice(name.lastIndexOf(':') + 1)) ? name : null;
+}
 
 function wrap(executeBuild) {
   const owner = {}; // the builds and rebuilds of this builder (core/problems.cjs within)
-  return /** @this {unknown} */ function bundleLockfileExecuteBuild(options, ...rest) {
-    return problems.within(owner, () => build.call(this, options, ...rest));
+  return /** @this {unknown} */ function bundleLockfileExecuteBuild(options, context, ...rest) {
+    return problems.within(owner, () => build.call(this, options, context, ...rest));
   };
   /** @this {unknown} */
-  async function build(options, ...rest) {
-    if (devServer(options)) {
-      config.debug('angular: a build of the dev server (ng serve), which writes nothing: no lockfile');
-      return executeBuild.call(this, options, ...rest);
+  async function build(options, context, ...rest) {
+    const skip = notShipped(context);
+    if (skip) {
+      config.debug(`angular: a build of ${skip}, whose output nobody ships: no lockfile`);
+      return executeBuild.call(this, options, context, ...rest);
     }
     const forced = !!options && typeof options === 'object' && !options.stats;
-    const result = await executeBuild.call(this, forced ? { ...options, stats: true } : options, ...rest);
+    const result = await executeBuild.call(this, forced ? { ...options, stats: true } : options, context, ...rest);
     if (!result || typeof result !== 'object') return result;
-    /** @type {Promise<void>[]} */
-    const writes = [];
-    try { complete(options, result, forced, writes); } catch (e) { problems.problem('angular: could not collect the bundled packages', e); }
-    await Promise.all(writes); // (never reject) the export copies written: what went wrong there fails the build too
-    problems.failIfAny((err) => {
+    /** @param {Error} err */
+    const fail = (err) => {
       if (typeof result.addError === 'function') result.addError(err.message.replace(/\n$/, ''));
       else throw err;
-    });
+    };
+    /** @type {(() => Promise<void> | void)[]} */
+    const lands = [];
+    try { complete(options, result, forced, lands); } catch (e) { problems.problem('angular: could not collect the bundled packages', e); }
+    // a build that fails writes nothing (Angular writes no output files then): nor the export copies
+    if (problems.failIfAny(fail)) return result;
+    await Promise.all(lands.map(l => l())); // (never reject) the export copies written: what went wrong there fails the build too
+    problems.failIfAny(fail);
     return result;
   }
 }

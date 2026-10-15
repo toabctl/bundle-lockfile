@@ -31,8 +31,11 @@ let version = null;
 // transformer records them as invalidations of the asset's request (asset.invalidateOnFileChange), which Parcel keeps
 // in its request graph, also across builds (.parcel-cache: a cached asset is not transformed again). Each RequestTracker
 // of this process (one per Parcel) is remembered when it runs a request; the reporter reads, for every bundled asset's
-// file, the asset requests that file invalidates and the other files those requests depend on.
+// file, the asset requests that file invalidates and the other files those requests depend on. (Weakly: the tracker of
+// a Parcel that is gone, with its request graph, is no longer read nor kept.)
+/** @type {Set<WeakRef<any>>} */
 const trackers = new Set();
+const tracked = new WeakSet();
 /** @type {{ edge: number, projectPath: any, isAsset: (node: any) => boolean } | null} */
 let trackerApi = null; // of the RequestTracker module, see patchTracker
 function patchTracker(exp, resolve) {
@@ -53,7 +56,10 @@ function patchTracker(exp, resolve) {
   trackerApi = { edge, projectPath, isAsset: (n) => !!n && (assetType != null ? n.requestType === assetType
     : n.type === 'request' && !!n.value && n.value.type === 'asset_request') };
   const run = RT.prototype.runRequest;
-  RT.prototype.runRequest = function () { trackers.add(this); return run.apply(this, arguments); };
+  RT.prototype.runRequest = function () {
+    if (!tracked.has(this)) { tracked.add(this); trackers.add(new WeakRef(this)); }
+    return run.apply(this, arguments);
+  };
   exp[PATCHED] = true;
   config.debug('parcel: patched', resolve());
 }
@@ -64,7 +70,12 @@ function patchTracker(exp, resolve) {
 function inlinedOf(projectRoot, sources) {
   if (!trackerApi) return null;
   const { edge, projectPath, isAsset } = trackerApi;
-  const mine = [...trackers].filter(t => t && t.graph && t.options && t.options.projectRoot === projectRoot);
+  const mine = [];
+  for (const ref of trackers) {
+    const t = ref.deref();
+    if (!t) trackers.delete(ref);
+    else if (t.graph && t.options && t.options.projectRoot === projectRoot) mine.push(t);
+  }
   if (!mine.length) return null;
   const out = new Map();
   for (const { graph } of mine) {
@@ -97,12 +108,13 @@ function withReporter(options) {
   return { ...options, additionalReporters: [...list, { packageName: REPORTER, resolveFrom: from }] };
 }
 
-// The bundle leaves the asset out: the scope-hoisting packager skips an asset without side effects, of which no symbol
-// is used and that the bundle does not reference (ScopeHoistingPackager) - as listed by the public BundleGraph. When in
-// doubt (an API that is not there, or fails), it counts.
+// The bundle leaves the asset out: the scope-hoisting packager of JavaScript bundles skips an asset without side
+// effects, of which no symbol is used and that the bundle does not reference (ScopeHoistingPackager) - as listed by the
+// public BundleGraph. No other packager skips assets (a style sheet of a package without side effects that another one
+// @imports is in the CSS bundle). When in doubt (an API that is not there, or fails), it counts.
 function skipped(graph, bundle, asset) {
   try {
-    if (asset.sideEffects !== false || !bundle.env || !bundle.env.shouldScopeHoist) return false;
+    if (bundle.type !== 'js' || asset.sideEffects !== false || !bundle.env || !bundle.env.shouldScopeHoist) return false;
     const used = graph.getUsedSymbols(asset);
     if (!used || used.size !== 0) return false;
     return graph.isAssetReferenced(bundle, asset) === false;
@@ -209,7 +221,9 @@ async function reportBuild({ event, options }) {
         for (const [f, src] of inlined) if (into.has(src)) own.push(...(byFile.get(f) || []));
         contents[b.filePath] = packages.unique(own, /\.[cm]?js$/i.test(b.filePath) ? runtime : []).map(p => p.path);
       }
-      await write(w, all, context, { outputs: hashes, contents, via: found,
+      // run: the Parcel's plugin options, one object per Parcel (its ReporterRunner's), the same in its rebuilds: another
+      // Parcel of the process that wrote into the directory before is another run of the writer (core/outputs.cjs)
+      await write(w, all, context, { outputs: hashes, contents, via: found, run: options && typeof options === 'object' ? options : undefined,
         bundler: { name: 'parcel', ...(version ? { version } : {}) } });
     } catch (e) { problems.problem(`parcel: could not collect the bundled packages of ${w.dir}`, e); }
   }

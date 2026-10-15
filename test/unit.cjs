@@ -894,6 +894,137 @@ test('webpack adapter: a compiler for the same config that is still running is a
   }
 });
 
+test('webpack adapter: a new compiler for the same config keeps what the one it replaces left in the output (remnants)', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  const outputPath = J(root, 'dist');
+  fs.mkdirSync(outputPath);
+  const options = { entry: { main: { import: ['./src/app.js'] } }, output: { filename: '[name].[contenthash].js' } };
+  // a new compiler (a script that runs webpack(config) again, or `rollup -c`-style config arrays), other hashes, no clean
+  const build = (dep, file) => {
+    const c = compilation({ context: root, outputPath, chunks: [{ files: [file], modules: [{ resource: J(root, 'node_modules', dep, 'i.js') }] }], assets: { [file]: {} } });
+    c.compiler.options = options;
+    fs.writeFileSync(J(outputPath, file), dep);
+    const json = plugin().lockfile(c);
+    outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]);
+    return lockedNames(json);
+  };
+  assert.deepEqual(build('a', 'main.1.js'), ['a']);
+  assert.deepEqual(build('b', 'main.2.js'), ['a', 'b']); // main.1.js is still there, with a in it
+  fs.rmSync(J(outputPath, 'main.1.js'));
+  assert.deepEqual(build('c', 'main.3.js'), ['b', 'c']); // main.2.js is, main.1.js no longer
+});
+
+test('webpack adapter: an output below node_modules is a tool\'s cache: no lockfile (as for every bundler), except below node_modules/.cache/', async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/mylib/package.json': { name: 'mylib', version: '1.0.0' } });
+  for (const [dir, want] of [['node_modules/mylib/dist', false], ['node_modules/.cache/x', true]]) {
+    const outputPath = J(root, dir);
+    fs.mkdirSync(outputPath, { recursive: true });
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
+    compiler.outputFileSystem.gracefulify = () => {}; // the real disk
+    compiler.options = { entry: { main: { import: ['./src/app.js'] } } };
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+    Object.assign(comp, { compiler, errors: [], hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+    taps.thisCompilation(comp);
+    if (comp.stage) comp.stage();
+    fs.writeFileSync(J(outputPath, 'main.js'), '');
+    await new Promise(resolve => taps.afterEmit(comp, resolve));
+    assert.deepEqual(comp.errors, [], dir);
+    assert.equal(fs.existsSync(J(outputPath, LOCK)), want, dir);
+  }
+});
+
+test('webpack adapter: BundleLockfilePlugin writes BUNDLE_LOCKFILE_FILE; naming another file fails each compilation', () => withConfig({ strict: true }, () => {
+  problems.take();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const run = (p) => {
+    const outputPath = J(root, `dist-${++outputDirs}`);
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    p.apply(compiler);
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+    const emitted = {};
+    Object.assign(comp, { compiler, errors: [], emitAsset: (f) => { emitted[f] = true; }, hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+    taps.thisCompilation(comp);
+    comp.stage();
+    return { errors: comp.errors.map(e => e.message), file: p.file };
+  };
+  // left out, or the setting's name (as the README showed it), also spelled otherwise: no problem
+  for (const arg of [undefined, LOCK, `./${LOCK}`]) assert.deepEqual(run(new webpackAdapter.BundleLockfilePlugin(arg)), { errors: [], file: LOCK }, String(arg));
+  // another name: the lockfile is still where the setting says (where other builds and copies look), and the build fails
+  const other = run(new webpackAdapter.BundleLockfilePlugin('sbom/package-lock.json'));
+  assert.equal(other.file, LOCK);
+  assert.equal(other.errors.length, 1);
+  assert.match(other.errors[0], /BundleLockfilePlugin\("sbom\/package-lock\.json"\) names another file than BUNDLE_LOCKFILE_FILE \(bundle-lockfile\/package-lock\.json\)/);
+  // BUNDLE_LOCKFILE_TREE=only: the record goes to record.json, also from a plugin naming the setting's package-lock.json
+  return withConfig({ file: 'bundle-lockfile/record.json', tree: 'only' }, () => {
+    assert.deepEqual(run(new webpackAdapter.BundleLockfilePlugin(LOCK)), { errors: [], file: 'bundle-lockfile/record.json' });
+  });
+}));
+
+test('webpack adapter: webpack 4 with the plugin added by hand records its version (from the patched Compiler, or the copy that applied it)', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const outputPath = J(root, 'dist');
+  const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: false }); // webpack 4: no compiler.webpack
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler); // from the config: no compilerFile
+  const comp = compilation4({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+  const emitted = {};
+  Object.assign(comp, { compiler, emitAsset: undefined, hooks: { afterOptimizeAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+  comp.assets = new Proxy(comp.assets, { set: (t, k, v) => { emitted[k] = v; t[k] = v; return true; } });
+  taps.thisCompilation(comp);
+  comp.stage();
+  const rec = JSON.parse(emitted[LOCK].source())['bundle-lockfile'];
+  assert.deepEqual(rec.writers.map(w => w.bundler), [{ name: 'webpack', version: UNIT }]);
+});
+
+test('webpack adapter: a favicon a plugin reads from a package and emits while the assets are processed is listed (html-webpack-plugin 5, Rsbuild, HtmlRspackPlugin)', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('fav-pkg'), ...pj('other'), 'node_modules/fav-pkg/favicon.ico': 'ICON', 'node_modules/other/o.ico': 'ICON2', 'src/own.ico': 'MINE' });
+  const fav = J(root, 'node_modules/fav-pkg/favicon.ico');
+  const RawSource = class { constructor(s) { this.s = s; } source() { return this.s; } size() { return Buffer.byteLength(this.s); } };
+  // reads: what the plugin reads through the input file system in processAssets (after copiedUnnamed looked); emits:
+  // the assets it adds then (name -> bytes); rspack: rspack's version and its plugins (the config's)
+  const run = ({ reads = [], emits, rspack, plugins = [] }) => {
+    const outputPath = J(root, `dist-${++outputDirs}`);
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    const read = [];
+    compiler.inputFileSystem = { readFile: (f, cb) => { read.push(f); fs.readFile(f, cb); } };
+    compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
+    if (rspack) { compiler.webpack.rspackVersion = rspack; compiler[BUNDLER_FILE] = BUNDLERS.rspack; }
+    compiler.options = { plugins };
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
+    const assets = new Map();
+    const add = (name, bytes, info = {}) => assets.set(name, { name, info, source: new RawSource(bytes) });
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+    const emitted = {};
+    let optimize;
+    Object.assign(comp, {
+      compiler, errors: [], fileDependencies: new Set(), emitAsset: (n, src) => { emitted[n] = src.source(); },
+      getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()],
+      hooks: { processAssets: { tap: (o, fn) => (optimize = fn) }, afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } },
+    });
+    add('main.js', 'main');
+    taps.thisCompilation(comp);
+    optimize();
+    // the plugin: reads (the input file system's readFile, possibly unbound: promisify), then emits
+    for (const f of reads) compiler.inputFileSystem.readFile.call(undefined, f, () => {});
+    for (const [n, b] of Object.entries(emits)) add(n, b);
+    comp.stage();
+    return lockedNames(emitted[LOCK]);
+  };
+  assert.deepEqual(run({ reads: [fav], emits: { 'favicon.ico': 'ICON' } }), ['a', 'fav-pkg']);
+  assert.deepEqual(run({ reads: [fav], emits: { 'static/favicon.ico': 'ICON' } }), ['a', 'fav-pkg']); // Rsbuild: faviconDistPath
+  // read but not emitted as it is (another file's bytes), a first-party file, a package file not read: nothing
+  assert.deepEqual(run({ reads: [fav], emits: { 'favicon.ico': 'ICON-resized' } }), ['a']);
+  assert.deepEqual(run({ reads: [J(root, 'src/own.ico')], emits: { 'own.ico': 'MINE' } }), ['a']);
+  assert.deepEqual(run({ reads: [], emits: { 'o.ico': 'ICON2' } }), ['a']);
+  // rspack's built-in HtmlRspackPlugin reads the favicon in Rust: its option names it (relative to the context)
+  const html = { name: 'HtmlRspackPlugin', _args: [{ favicon: 'node_modules/fav-pkg/favicon.ico' }] };
+  assert.deepEqual(run({ emits: { 'favicon.ico': 'ICON' }, rspack: '2.2.8', plugins: [html] }), ['a', 'fav-pkg']);
+  assert.deepEqual(run({ emits: { 'favicon.ico': 'ICON' }, rspack: '2.2.8' }), ['a']);
+});
+
 test('outputs: prune drops other writers whose files are all gone, once their build has landed', async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), ...pj('e'), 'dist/b.js': '', 'dist/c2.js': '' });
@@ -2732,11 +2863,54 @@ test('strict: Rollup\'s CommonJS build of a version bundle-lockfile cannot hook 
   const file = J('/x/node_modules/rollup/dist/shared/rollup.js');
   rollupAdapter.onCjsLoad({ version: '2.40.0', rollupInternal() {} }, file, () => file); // no object hooks yet
   rollupAdapter.onCjsLoad({ version: '5.0.0', rollupInternalV2() {} }, file, () => file); // a future one without rollupInternal
+  const one = J('/x/node_modules/rollup/dist/shared/node-entry.js'); // Rollup 1's (require('rollup'), its command line)
+  rollupAdapter.onCjsLoad({ version: '1.32.1', rollup() {}, watch() {} }, one, () => one);
+  rollupAdapter.onCjsLoad({ VERSION: '4.64.7', watch() {} }, one, () => one); // Rollup 4's file of that name: none of its builds
   const taken = problems.take();
-  assert.equal(taken.length, 2);
+  assert.equal(taken.length, 3);
   assert.match(taken[0], /rollup: .*rollup\.js \(Rollup 2\.40\.0\) is no Rollup bundle-lockfile can hook \(2\.78 or later, with rollupInternal\): its builds would write no lockfile/);
   assert.match(taken[1], /\(Rollup 5\.0\.0\) is no Rollup bundle-lockfile can hook/);
+  assert.match(taken[2], /rollup: .*node-entry\.js \(Rollup 1\.32\.1\) is no Rollup bundle-lockfile can hook/);
 }));
+
+test('strict: Rollup\'s ES build of a version bundle-lockfile cannot hook (before 2.78) is a problem (its import fails); with BUNDLE_LOCKFILE_STRICT=0 it builds without the plugin', () => {
+  // a fake rollup: as Rollup 2 before 2.78 it rejects a plugin's object hooks ({ order, handler }), which fails the build
+  const at = (version) => project({
+    'node_modules/rollup/package.json': { name: 'rollup', version, type: 'module', exports: { '.': './dist/es/rollup.js' } },
+    'node_modules/rollup/dist/es/rollup.js': `const VERSION = ${JSON.stringify(version)};
+      const old = /^2\\.([0-9]|[1-6][0-9]|7[0-7])\\./.test(VERSION);
+      const names = (o) => [].concat(o.plugins || []).flat().map(p => {
+        if (old && Object.values(p).some(v => v && typeof v === 'object' && typeof v.handler === 'function')) throw new Error('expected a function hook');
+        return p.name;
+      });
+      const rollup = async (o) => names(o);
+      const watch = (o) => [].concat(o).map(names);
+      export { VERSION, rollup, watch };`,
+    'package.json': { name: 'app', version: '1.0.0', type: 'module', dependencies: { rollup: version } },
+    'build.mjs': `import { rollup, watch } from 'rollup';
+      console.log(JSON.stringify([await rollup({ plugins: [{ name: 'x' }] }), watch({ plugins: [{ name: 'x' }] })]));`,
+  });
+  const run = (root, env) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'build.mjs')], { cwd: root, env: { ...strictEnv(undefined), ...env }, encoding: 'utf8' });
+  const old = at('2.77.3'), hookable = at('2.78.0');
+  const msg = /rollup: file:\S*\/node_modules\/rollup\/dist\/es\/rollup\.js \(Rollup 2\.77\.3\) is no Rollup bundle-lockfile can hook \(2\.78 or later\): its builds would write no lockfile/;
+  const modes = ['async'];
+  if (typeof require('module').registerHooks === 'function') modes.push('sync');
+  for (const mode of modes) {
+    const strict = run(old, { BUNDLE_LOCKFILE_ESM_HOOKS: mode });
+    assert.equal(strict.status, 1, `${mode}: ${strict.stderr}`);
+    assert.match(strict.stderr, msg, mode);
+    assert.doesNotMatch(strict.stderr, /expected a function hook/, mode);
+    // BUNDLE_LOCKFILE_STRICT=0: said once, and the build goes on as without bundle-lockfile
+    const off = run(old, { BUNDLE_LOCKFILE_ESM_HOOKS: mode, BUNDLE_LOCKFILE_STRICT: '0' });
+    assert.equal(off.status, 0, `${mode}: ${off.stderr}`);
+    assert.deepEqual(JSON.parse(off.stdout.trim().split('\n').pop()), [['x'], [['x']]], mode);
+    assert.equal((off.stderr.match(new RegExp(`WARNING: ${msg.source}`, 'g')) || []).length, 1, `${mode}: ${off.stderr}`);
+    // 2.78: the plugin
+    const ok = run(hookable, { BUNDLE_LOCKFILE_ESM_HOOKS: mode });
+    assert.equal(ok.status, 0, `${mode}: ${ok.stderr}`);
+    assert.deepEqual(JSON.parse(ok.stdout.trim().split('\n').pop()), [['x', 'bundle-lockfile'], [['x', 'bundle-lockfile']]], mode);
+  }
+});
 
 test('copies: a file copied out of a package (fs.copyFile*, fs.cp*) belongs to it while it has its bytes', async () => {
   const copies = require('../src/core/copies.cjs');
@@ -4408,11 +4582,11 @@ test('esm-wrap: regular expression literals and the code in template literals st
 
 // a compilation of rspack 2: chunks, assets with their bytes (assets: name -> { info, bytes }), file dependencies,
 // all modules, options
-function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, exportsUsed = () => false }) {
+function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, experiments = {}, exportsUsed = () => false, rspackVersion = '2.2.8' }) {
   const c = compilation({ context: root, chunks, assets: Object.fromEntries(Object.entries(assets).map(([n, a]) => [n, a.info || {}])) });
-  c.compiler.webpack = { rspackVersion: '2.2.8' };
+  c.compiler.webpack = { rspackVersion };
   c.compiler[BUNDLER_FILE] = BUNDLERS.rspack;
-  c.compiler.options = { optimization };
+  c.compiler.options = { optimization, experiments };
   c.getAsset = (name) => (name in assets ? { name, info: assets[name].info || {}, source: { source: () => assets[name].bytes, size: () => Buffer.byteLength(assets[name].bytes) } } : undefined);
   c.fileDependencies = fileDependencies;
   c.modules = new Set([...chunks.flatMap(ch => ch.modules), ...modules]);
@@ -4458,6 +4632,9 @@ test('rspack: files CopyRspackPlugin copied are found among the file dependencie
   deps.push(...['public/config/default.js', 'node_modules/yaml/lib/schema/default.js', 'package.json', 'node_modules/yaml/package.json'].map(f => J(root, f)));
   assert.deepEqual(lockOf({ 'app-config.js': copy('default.js', 'window.config = {};') }), []);
   assert.deepEqual(lockOf({ 'package.json': copy('package.json', fs.readFileSync(J(root, 'package.json'), 'utf8')) }), []);
+  // transformed on the way (a library's package.json with a field changed): the file at the name below the context, the
+  // copy pattern's default one, is its source - not every package's package.json the resolver read
+  assert.deepEqual(lockOf({ 'package.json': copy('package.json', '{"name":"app","version":"1.0.0","private":true}') }), []);
 });
 
 test('rspack: style sheets loaders inlined - per module from 1.3.14, from the file dependencies before', () => {
@@ -4500,6 +4677,31 @@ test('rspack: modules whose exports were all inlined are listed (only with inlin
   child.compiler.options = { optimization: { inlineExports: true, usedExports: true } };
   c.children = [child];
   assert.deepEqual(lockedNames(plugin().lockfile(c)), ['consts', 'shipped']);
+});
+
+test('rspack 1.4 - 1.6: modules whose exports were inlined with experiments.inlineConst or inlineEnum are listed', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('shipped'), ...pj('consts'), ...pj('unused') });
+  const mod = (name, id) => ({ resource: J(root, 'node_modules', name, 'i.js'), identifier: () => id });
+  const shipped = mod('shipped', 'a'), consts = mod('consts', 'b'), unused = mod('unused', 'c');
+  const lockOf = (rspackVersion, experiments, optimization = { usedExports: true }, used = new Set([shipped, consts])) => lockedNames(plugin().lockfile(rspackCompilation(root, {
+    chunks: [{ files: ['main.js'], modules: [shipped] }], modules: [consts, unused], optimization, experiments, rspackVersion, exportsUsed: (m) => used.has(m) })));
+  // 1.5 and 1.6 (optimization.inlineExports is 1.7's): the inlined modules count as used
+  assert.deepEqual(lockOf('1.6.8', { inlineConst: true }), ['consts', 'shipped']);
+  assert.deepEqual(lockOf('1.6.8', { inlineEnum: true }), ['consts', 'shipped']);
+  assert.deepEqual(lockOf('1.5.8', { inlineConst: true }), ['consts', 'shipped']);
+  // without the experiment they inline nothing (the parser option fails without it); nor does rspack before 1.4; 1.7
+  // inlines as optimization.inlineExports says (the experiments only set its default)
+  assert.deepEqual(lockOf('1.6.8', {}), ['shipped']);
+  assert.deepEqual(lockOf('1.3.15', { inlineConst: true }), ['shipped']);
+  assert.deepEqual(lockOf('1.7.12', { inlineConst: true }, { usedExports: true, inlineExports: false }), ['shipped']);
+  // without usage analysis every module counts as used, and nothing inlined leaves its chunk
+  assert.deepEqual(lockOf('1.6.8', { inlineConst: true }, { usedExports: false }, new Set([shipped, consts, unused])), ['shipped']);
+  // 1.4 records no use of what it inlined: every module of a package in no chunk counts (also with usedExports: false,
+  // where it inlines too)
+  assert.deepEqual(lockOf('1.4.11', { inlineConst: true }, { usedExports: true }, new Set([shipped])), ['consts', 'shipped', 'unused']);
+  assert.deepEqual(lockOf('1.4.11', { inlineConst: true }, { usedExports: false }, new Set([shipped])), ['consts', 'shipped', 'unused']);
+  assert.deepEqual(lockOf('1.4.11', {}, { usedExports: true }, new Set([shipped])), ['shipped']);
 });
 
 test('strict: modules whose exports were inlined that cannot be looked for fail the build (a package would be missing)', () => withConfig({ strict: true }, () => {
@@ -4902,6 +5104,81 @@ test('strict: the output of a write: false build that its caller writes, in no l
   fs.rmSync(J(root, 'dist'), { recursive: true });
   const kept = nodeWith(strictEnv(undefined), ['-e', script(false)]); // only looked at: nothing ships
   assert.deepEqual([kept.status, kept.stdout.trim()], [0, 'done'], kept.stderr);
+  // said once, also after a write: false build whose output has no path (<stdout>: no outdir, nothing to look at)
+  const first = `const o0 = { entryPoints: ['src/w.js'], write: false, absWorkingDir: ${JSON.stringify(root)} };
+    const p0 = a.attach(o0, ${JSON.stringify(ESBUILD_MAIN)}).plugins.at(-1);
+    let end0; p0.setup({ initialOptions: o0, onStart() {}, onEnd: (fn) => { end0 = fn; } });
+    end0({ errors: [], metafile: { outputs: { 'w.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } }, outputFiles: [{ path: '<stdout>', contents: Buffer.from('w') }] }).then(() => {`;
+  const twice = nodeWith(strictEnv(undefined), ['-e', script(true).replace("const options =", `${first} const options =`) + '});']);
+  assert.equal(twice.status, 1, twice.stderr);
+  assert.equal(twice.stderr.match(/was written by its caller or a plugin/g).length, 1, twice.stderr);
+});
+
+test('strict: the output of a generate() whose caller writes it where the build said, in no lockfile, fails the process when it ends (Rollup, Vite, tsup\'s treeshake)', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'src/main.js': '' });
+  const call = JSON.stringify(J(BUNDLERS.root, 'node_modules/rollup/dist/shared/rollup.js'));
+  // a Rollup build with the plugin (as rollupBuild runs it) that only generates, with `out` as its output options; then
+  // `after` (the caller)
+  const script = (out, after, kind = 'rollup') => `const a = require(${JSON.stringify(J(SRC, 'adapters/rollup.cjs'))}); const call = require(${call});
+    const fs = require('fs'), path = require('path');
+    const plugin = a.bundleLockfile(${JSON.stringify(kind)}, { input: 'src/main.js' });
+    const out = ${JSON.stringify({ format: 'es', ...out })};
+    const chunk = { type: 'chunk', fileName: 'main.js', code: 'bundled a', moduleIds: [${JSON.stringify(J(root, 'node_modules/a/i.js'))}], isEntry: true, facadeModuleId: ${JSON.stringify(J(root, 'src/main.js'))} };
+    const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+    (async () => {
+      call(plugin.buildStart, {}, [{ input: 'src/main.js' }]);
+      plugin.renderStart.call({}, out);
+      await call(plugin.generateBundle.handler, {}, [out, { 'main.js': chunk }, false]);
+      await plugin.closeBundle.handler.call({});
+      ${after}
+      console.log('done');
+    })();`;
+  const run = (env, ...args) => spawnSync(process.execPath, ['-e', script(...args)], { cwd: root, encoding: 'utf8', env });
+  const gen = J(root, 'gen/main.js');
+  const rollupMsg = /rollup: \S*gen\/main\.js, output of Rollup's generate\(\), was written by its caller or a plugin: no lockfile lists its packages \(write it with bundle\.write\(\)\)/;
+  // written as generated, or changed (minified, post-processed) after the build
+  for (const [out, text] of [[{ dir: 'gen' }, 'bundled a'], [{ file: 'gen/main.js' }, 'bundled a'], [{ dir: J(root, 'gen') }, 'bundled a, minified']]) {
+    const r = run(strictEnv(undefined), out, `write(${JSON.stringify(gen)}, ${JSON.stringify(text)});`);
+    assert.equal(r.status, 1, `${JSON.stringify(out)}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`ERROR: ${rollupMsg.source}`));
+    fs.rmSync(J(root, 'gen'), { recursive: true });
+  }
+  // BUNDLE_LOCKFILE_STRICT=0: a warning
+  let r = run(strictEnv('0'), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a');`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, new RegExp(`WARNING: ${rollupMsg.source}`));
+  assert.equal((r.stderr.match(/WARNING/g) || []).length, 1, r.stderr); // (not again as output that reached no output)
+  // a Vite build with build.write: false
+  r = run(strictEnv(undefined), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a');`, 'vite');
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ERROR: vite: \S*gen\/main\.js, output of a Vite build with build\.write: false, was written by its caller or a plugin: no lockfile lists its packages \(let Vite write it\)/);
+  // only looked at (nothing written there), a file there from before the build, or one a build of the process writes
+  // and lists: nothing ships without a lockfile
+  fs.rmSync(J(root, 'gen'), { recursive: true });
+  r = run(strictEnv(undefined), { dir: 'gen' }, '');
+  assert.deepEqual([r.status, r.stdout.trim()], [0, 'done'], r.stderr);
+  fs.mkdirSync(J(root, 'gen'));
+  const old = new Date(Date.now() - 60000);
+  for (const text of ['an older build', 'bundled a']) { // (the same bytes: written by an earlier process, with its lockfile)
+    fs.writeFileSync(gen, text);
+    fs.utimesSync(gen, old, old);
+    r = run(strictEnv(undefined), { dir: 'gen' }, '');
+    assert.deepEqual([r.status, r.stdout.trim()], [0, 'done'], `${text}: ${r.stderr}`);
+  }
+  r = run(strictEnv(undefined), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a'); require(${JSON.stringify(J(SRC, 'core/outputs.cjs'))}).record(${JSON.stringify(J(root, 'gen', LOCK))}, 'w', [], ${JSON.stringify(root)}, [${JSON.stringify(gen)}]);`);
+  assert.deepEqual([r.status, r.stdout.trim()], [0, 'done'], r.stderr);
+  fs.rmSync(J(root, 'gen'), { recursive: true });
+  // tsup's treeshake option: esbuild (write: false) builds dist/main.js, Rollup's generate() with file: dist/main.js
+  // tree-shakes it, tsup writes Rollup's output there - other bytes than esbuild's
+  const dist = J(root, 'dist/main.js');
+  const tsup = `const e = require(${JSON.stringify(J(SRC, 'adapters/esbuild.cjs'))});
+    const options = { entryPoints: ['src/main.js'], outdir: 'dist', write: false, absWorkingDir: ${JSON.stringify(root)} };
+    const p = e.attach(options, ${JSON.stringify(ESBUILD_MAIN)}).plugins.at(-1);
+    let end; p.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
+    await end({ errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } }, outputFiles: [{ path: ${JSON.stringify(dist)}, contents: Buffer.from('bundled a, by esbuild') }] });`;
+  r = spawnSync(process.execPath, ['-e', script({ file: dist }, `write(${JSON.stringify(dist)}, 'bundled a');`).replace('(async () => {', `(async () => { ${tsup}`)], { cwd: root, encoding: 'utf8', env: strictEnv(undefined) });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ERROR: esbuild: \S*dist\/main\.js, output of a build with write: false, was written by its caller or a plugin: no lockfile lists its packages/);
 });
 
 test('esbuild adapter: a problem is an onEnd error (the build rejects); write: false keeps the packages for the build that uses the output', () => withConfig({ strict: true }, async () => {
@@ -4918,6 +5195,137 @@ test('esbuild adapter: a problem is an onEnd error (the build rejects); write: f
   assert.equal(await esbuildEnd({ outdir: 'out', write: false, absWorkingDir: root }, { errors: [], metafile: { outputs: { 'out/w.js': { entryPoint: 'src/w.js', inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 } } } } }, outputFiles: [{ path: J(root, 'out/w.js'), text, contents: Buffer.from(text) }] }), undefined);
   assert.equal(fs.existsSync(J(root, 'out')), false);
   assert.deepEqual(ids(generated.byContent(text)), ['a@1.0.0']);
+}));
+
+// sets up the plugins of one build() or context() call (the caller's and bundle-lockfile's, last) on a fake build
+// object: { loads (the onLoad callbacks, as wrapped), build(result) (one build: every onEnd in order; returns
+// bundle-lockfile's) }. Builds of one call share the plugin, as a context's rebuilds do.
+function esbuildCall(options, file) {
+  const attached = esbuildAdapter().attach(options, file);
+  const loads = [], ends = [];
+  const b = { initialOptions: attached, onLoad: (o, cb) => loads.push(cb), onEnd: (cb) => ends.push(cb), onStart() {}, onResolve() {} };
+  for (const p of attached.plugins) p.setup(b);
+  return { loads, async build(result) { let r; for (const cb of ends) r = await cb(result); return r; } };
+}
+
+test('esbuild adapter: separate builds of one config into one directory (ES modules and CommonJS) keep each other\'s packages; a rebuild of one replaces its own', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'dist/a.mjs': 'esm', 'dist/a.cjs': 'cjs' });
+  const base = { entryPoints: ['src/a.js'], bundle: true, outdir: 'dist', absWorkingDir: root };
+  const result = (out, name) => ({ errors: [], metafile: { outputs: { [`dist/${out}`]: { entryPoint: 'src/a.js', inputs: { [`node_modules/${name}/i.js`]: { bytesInOutput: 1 } } } } } });
+  const esm = esbuildCall({ ...base, format: 'esm', outExtension: { '.js': '.mjs' } });
+  const cjs = esbuildCall({ ...base, format: 'cjs', outExtension: { '.js': '.cjs' }, external: ['a'] });
+  // (one writer: the same entry points and output directory)
+  await esm.build(result('a.mjs', 'a'));
+  await cjs.build(result('a.cjs', 'b'));
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'b']);
+  // a rebuild of the CommonJS build (a context's), with another package: its earlier build is gone, the other one stays
+  await cjs.build(result('a.cjs', 'c'));
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'c']);
+});
+
+test('esbuild adapter: write: false without outdir or outfile - its one output file, which esbuild names <stdout>, is the metafile\'s one output', async () => {
+  const generated = require('../src/core/generated.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  // esbuild 0.17 - 0.28: outputFiles [<stdout>], the metafile's output named after the entry point
+  const text = 'a worker, bundled into a string (write: false, no outdir)';
+  assert.equal(await esbuildEnd({ entryPoints: ['src/w.js'], bundle: true, write: false, absWorkingDir: root },
+    { errors: [], metafile: { outputs: { 'w.js': { entryPoint: 'src/w.js', inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 } } } } }, outputFiles: [{ path: '<stdout>', text, contents: Buffer.from(text) }] }), undefined);
+  assert.deepEqual(ids(generated.byContent(text)), ['a@1.0.0']);
+  assert.deepEqual(ids(generated.byContent(Buffer.from(text))), ['a@1.0.0']); // (the bytes a caller writes)
+});
+
+test('esbuild adapter: the output of a write: false build that a plugin inlines into a module it loads (its entry): listed (esbuild-plugin-inline-worker)', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('dep'), ...pj('wk'), ...pj('lib'), ...pj('earlier'), 'dist/main.js': 'main', 'src/w.worker.js': '', 'src/lib.js': '', 'src/main.js': '' });
+  // write: false builds (no output), each with a package of its own: the worker the plugin bundles in its onLoad; a module
+  // of the main build that esbuild loads itself; the main build's own entry point (an earlier build of it)
+  for (const [entry, name] of [['src/w.worker.js', 'wk'], ['src/lib.js', 'lib'], ['src/main.js', 'earlier']]) {
+    const text = `${entry} bundled`;
+    await esbuildEnd({ entryPoints: [J(root, entry)], bundle: true, write: false, absWorkingDir: root }, { errors: [],
+      metafile: { outputs: { [path.basename(entry)]: { entryPoint: entry, inputs: { [`node_modules/${name}/i.js`]: { bytesInOutput: 1 }, [entry]: { bytesInOutput: 1 } } } } },
+      outputFiles: [{ path: '<stdout>', text, contents: Buffer.from(text) }] });
+  }
+  const inline = { name: 'inline-worker', setup(build) {
+    build.onLoad({ filter: /\.worker\.js$/ }, async (args) => ({ contents: `export default ${JSON.stringify(`${args.path} bundled`)};`, loader: 'js' }));
+  } };
+  const call = esbuildCall({ entryPoints: ['src/main.js'], bundle: true, outdir: 'dist', absWorkingDir: root, plugins: [inline] });
+  // (the fake build calls the callback for the entry too: a plugin that loads every module)
+  for (const cb of call.loads) for (const f of ['src/w.worker.js', 'src/main.js']) await cb({ path: J(root, f), namespace: 'file' });
+  assert.equal(await call.build({ errors: [], metafile: { outputs: { 'dist/main.js': { entryPoint: 'src/main.js',
+    inputs: { 'src/main.js': { bytesInOutput: 1 }, 'src/w.worker.js': { bytesInOutput: 1 }, 'src/lib.js': { bytesInOutput: 1 }, 'node_modules/dep/i.js': { bytesInOutput: 1 } } } } } }), undefined);
+  const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['dep', 'wk']);
+  const [w] = lock['bundle-lockfile'].writers;
+  assert.deepEqual(w.via.generated.map(i => w.packages[i]), ['node_modules/wk']);
+  assert.deepEqual(w.contents['../main.js'].map(i => w.packages[i]).sort(), ['node_modules/dep', 'node_modules/wk']);
+});
+
+test('esbuild adapter: a script that changes its working directory after loading esbuild builds in the one esbuild loaded in', () => {
+  const root = project({
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: '0.28.2', main: 'lib/main.js' },
+    // esbuild's defaultWD: the working directory when lib/main.js loads, for builds without absWorkingDir
+    'node_modules/esbuild/lib/main.js': `"use strict";
+const fs = require('fs'), path = require('path');
+var defaultWD = process.cwd();
+async function build(options) {
+  const wd = options.absWorkingDir || defaultWD;
+  const ends = [];
+  for (const p of options.plugins || []) await p.setup({ initialOptions: options, onStart() {}, onEnd: (cb) => ends.push(cb), onLoad() {}, onResolve() {} });
+  const out = path.resolve(wd, options.outdir, 'main.js');
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, 'bundled a');
+  const result = { errors: [], warnings: [], metafile: options.metafile ? { inputs: {}, outputs: { [path.relative(wd, out)]: { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } } : undefined };
+  for (const cb of ends) { const r = await cb(result); if (r && r.errors) result.errors.push(...r.errors); }
+  if (result.errors.length) throw new Error(result.errors.map(e => e.text).join('\\n'));
+  return result;
+}
+module.exports = { version: '0.28.2', build };`,
+    'sub/x': '',
+    'build.cjs': `const esbuild = require('esbuild'); const path = require('path');
+const abs = process.argv[2] === 'abs';
+process.chdir('sub');
+esbuild.build({ entryPoints: [abs ? path.resolve('../src/main.js') : 'src/main.js'], outdir: abs ? path.resolve('../dist') : 'dist' })
+  .then(() => console.log('built'), (e) => { console.error(e.message); process.exit(1); });`,
+  });
+  const env = { ...strictEnv(undefined), NODE_OPTIONS: `--require ${J(SRC, 'register.cjs')}` };
+  for (const k of Object.keys(env)) if (k.startsWith('BUNDLE_LOCKFILE_') && k !== 'BUNDLE_LOCKFILE_STRICT') delete env[k];
+  for (const mode of ['abs', 'relative']) {
+    const r = spawnSync(process.execPath, ['build.cjs', mode], { cwd: root, env, encoding: 'utf8' });
+    assert.equal(r.status, 0, `${mode}: ${r.stderr}`);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'esbuild'], mode); // (esbuild: its runtime helpers)
+    assert.equal(fs.existsSync(J(root, 'sub/dist')), false, mode);
+    fs.rmSync(J(root, 'dist'), { recursive: true });
+  }
+});
+
+test('esbuild adapter: Vite 5 - 7\'s build of a dependency\'s entry for its exports (extractExportsData) is left alone, told by its caller', async () => {
+  // (Vite 7: parse((await build({ ...optimizeDeps.esbuildOptions, entryPoints: [filePath], write: false, format: 'esm' }))...))
+  const code = `exports.run = (build) => extractExportsData(build, '/p/node_modules/dep/index.svelte');
+async function extractExportsData(build, filePath) { await null; return build({ entryPoints: [filePath], write: false, format: 'esm', plugins: [{ name: 'svelte', setup() {} }] }); }`;
+  const root = project({ 'node_modules/vite/dist/node/chunks/config.js': code, 'node_modules/other/dist/node/chunks/config.js': code });
+  let seen = null;
+  const copy = esbuildAdapter().onCjsLoad(fakeEsbuild('0.28.2', { build: async (o) => { seen = o; return { errors: [] }; } }), ESBUILD_MAIN, () => ESBUILD_MAIN).exports;
+  await require(J(root, 'node_modules/vite/dist/node/chunks/config.js')).run(copy.build);
+  assert.deepEqual(seen.plugins.map(p => p.name), ['svelte']);
+  // the same build from another package's function of that name gets the plugin
+  await require(J(root, 'node_modules/other/dist/node/chunks/config.js')).run(copy.build);
+  assert.deepEqual(seen.plugins.map(p => p.name), ['svelte', 'bundle-lockfile']);
+});
+
+test('strict: a rebuild with a problem fails (an onEnd error); the next one without it writes the lockfile again', () => withConfig({ strict: true }, async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/nopj/i.js': '', 'dist/main.js': 'x' });
+  problems.take();
+  const call = esbuildCall({ entryPoints: ['src/main.js'], outdir: 'dist', absWorkingDir: root });
+  const result = (name) => ({ errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { [`node_modules/${name}/i.js`]: { bytesInOutput: 1 } } } } } });
+  assert.equal(await call.build(result('a')), undefined);
+  const bad = await call.build(result('nopj'));
+  assert.equal(bad.errors.length, 1);
+  assert.match(bad.errors[0].text, /no package\.json with name and version in \S*nopj/);
+  assert.equal(await call.build(result('a')), undefined);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a']);
+  assert.equal(problems.count(), 0);
 }));
 
 test('hooks: a module whose exports are a getter (a new object every time) loads as without bundle-lockfile', () => {
@@ -5022,6 +5430,17 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   const out = run(['meta.json', '--out', 'elsewhere', '--working-dir', root]);
   assert.equal(out.status, 0, out.stderr);
   assert.ok(fs.existsSync(J(root, 'elsewhere', LOCK)));
+  // run in another directory than the build's (the metafile's paths are relative to that): fails, writes nothing
+  fs.mkdirSync(J(root, 'sub'));
+  const inSub = (extra = {}, args = []) => spawnSync(process.execPath, [CLI, '../meta.json', ...args], { cwd: J(root, 'sub'), env: { ...env, ...extra }, encoding: 'utf8' });
+  const elsewhere = inSub();
+  assert.equal(elsewhere.status, 1, elsewhere.stderr);
+  assert.match(elsewhere.stderr, /none of the output files of \S*meta\.json is there \(its paths relative to \S*sub\): run it in the build's working directory, or name that with --working-dir/);
+  const laxElsewhere = inSub({ BUNDLE_LOCKFILE_STRICT: '0' });
+  assert.equal(laxElsewhere.status, 0, laxElsewhere.stderr);
+  assert.match(laxElsewhere.stderr, /WARNING: none of the output files/);
+  assert.equal(fs.existsSync(J(root, 'sub/dist')), false);
+  assert.equal(inSub({}, ['--working-dir', root]).status, 0); // (named: fine)
   // a package without a package.json, a file that is no metafile, none at all, a misspelled setting: exit code 1
   for (const [args, re, extra] of [[['bad.json'], /no package\.json with name and version in \S*nopj/], [['none.json'], /none\.json is no esbuild metafile/],
     [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }],
@@ -5049,16 +5468,25 @@ test('strict: Parcel before 2.13 only prints a reporter\'s error - the process f
   for (const [version, status] of [['2.8.3', 1], ['2.12.0', 1], ['2.13.0', 0], ['2.16.4', 0]]) {
     const root = project({ 'node_modules/@parcel/core/package.json': { name: '@parcel/core', version }, 'node_modules/@parcel/core/lib/Parcel.js': '' });
     const where = J(root, 'node_modules/@parcel/core/lib/Parcel.js');
-    // Parcel's reporter runner: the reporter's error caught (and printed), the build goes on, the CLI exits with 0
+    // Parcel's reporter runner: the reporter's error caught (and printed), the build goes on, the CLI exits with 0.
+    // Parcel's command line sends console's output to its logger (patchConsole), which prints nothing at the exit:
+    // bundle-lockfile's messages are printed all the same
     const script = `const parcel = require(${JSON.stringify(J(SRC, 'adapters/parcel.cjs'))});
       class Parcel { run() {} watch() {} }
       parcel.onCjsLoad({ default: Parcel }, ${JSON.stringify(where)}, () => ${JSON.stringify(where)});
+      const log = console.log;
+      console.log = console.warn = console.error = () => {};
       parcel.report({ event: { type: 'buildSuccess', bundleGraph: null }, options: { projectRoot: ${JSON.stringify(root)} } })
-        .then(() => console.log('no error'), (e) => { console.log('reporter error:', e.message.split('\\n')[0]); process.exit(0); });`;
+        .then(() => log('no error'), (e) => { log('reporter error:', e.message.split('\\n')[0]); process.exit(0); });`;
     const r = nodeWith(strictEnv(undefined), ['-e', script]);
     assert.match(r.stdout, /reporter error: bundle-lockfile: the lockfile would be missing or incomplete/, version);
     assert.equal(r.status, status, `${version}: ${r.stderr}`);
-    if (status) assert.match(r.stderr, /could not collect the bundled packages of the build/, version);
+    if (status) assert.match(r.stderr, /\[bundle-lockfile\] ERROR: parcel: could not collect the bundled packages of the build/, version);
+    // BUNDLE_LOCKFILE_STRICT=0: a warning, no failure
+    const lax = nodeWith(strictEnv('0'), ['-e', script]);
+    assert.equal(lax.stdout.trim(), 'no error', version);
+    assert.equal(lax.status, 0, `${version}: ${lax.stderr}`);
+    assert.match(lax.stderr, /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages of the build/, version);
   }
 });
 
@@ -5092,7 +5520,8 @@ test('parcel adapter: the Parcel class gets the reporter in its options; another
 
 function fakeBundleGraph(bundles) {
   const asset = (filePath, o = {}) => ({ filePath, sideEffects: o.sideEffects !== false, used: o.used || new Set(['default']), ref: !!o.ref });
-  const bs = bundles.map(b => ({ ...b, env: { shouldScopeHoist: b.scope !== false }, assets: b.assets.map(a => (typeof a === 'string' ? asset(a) : asset(a.f, a))),
+  // (a bundle's type: Parcel's, e.g. 'js' or 'css' - the file's extension where the test gives none)
+  const bs = bundles.map(b => ({ type: typeof b.filePath === 'string' ? path.extname(b.filePath).slice(1) : undefined, ...b, env: { shouldScopeHoist: b.scope !== false }, assets: b.assets.map(a => (typeof a === 'string' ? asset(a) : asset(a.f, a))),
     traverseAssets(fn) { for (const a of this.assets) fn(a); }, getMainEntry() { return this.assets[0]; } }));
   return { getBundles: () => bs, getUsedSymbols: (a) => a.used, isAssetReferenced: (b, a) => a.ref };
 }
@@ -5103,6 +5532,8 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   const root = project({ ...pj('a'), ...pj('inl'), ...pj('skip'), ...pj('ref'), ...pj('lib'), 'node_modules/nopj/i.js': '', 'src/i.js': '',
     'node_modules/@parcel/packager-js/package.json': { name: '@parcel/packager-js', version: UNIT } }); // the code Parcel writes around JavaScript
   fakeParcelTracker(root, { 'src/i.js': [] }); // every Parcel build has a request graph (here: nothing inlined)
+  // (one Parcel's plugin options: its builds replace each other's, see the test of two Parcels below)
+  const options = { projectRoot: root };
   for (const f of ['dist/main.js', 'dist/main.css', 'lib/out/index.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
   const target = (d) => ({ name: d, distDir: J(root, d) });
   const graph = fakeBundleGraph([
@@ -5112,7 +5543,7 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
     { filePath: null, bundleBehavior: 'inline', target: target('dist'), assets: [J(root, 'node_modules/inl/i.js')] }, // inlined into another bundle
     { filePath: J(root, 'lib/out/index.js'), target: target('lib/out'), assets: [J(root, 'node_modules/lib/i.js')] }, // another target
   ]);
-  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options: { projectRoot: root } });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options });
   const dist = fs.readFileSync(J(root, 'dist', LOCK), 'utf8');
   assert.deepEqual(lockedNames(dist), ['a', 'inl', 'ref']); // not skip: no side effects, no used symbol, not referenced
   const w0 = JSON.parse(dist)['bundle-lockfile'].writers[0];
@@ -5125,24 +5556,24 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   for (const f of ['node_modules/.cache/x/main.js', 'node_modules/lib/dist/main.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: fakeBundleGraph([
     { filePath: J(root, 'node_modules/.cache/x/main.js'), target: target('node_modules/.cache/x'), assets: [J(root, 'node_modules/a/i.js')] },
-    { filePath: J(root, 'node_modules/lib/dist/main.js'), target: target('node_modules/lib/dist'), assets: [J(root, 'node_modules/a/i.js')] }]) }, options: { projectRoot: root } });
+    { filePath: J(root, 'node_modules/lib/dist/main.js'), target: target('node_modules/lib/dist'), assets: [J(root, 'node_modules/a/i.js')] }]) }, options });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'node_modules/.cache/x', LOCK), 'utf8')), ['a']);
   assert.equal(fs.existsSync(J(root, 'node_modules/lib/dist', LOCK)), false);
   // other events: nothing; a problem: thrown (Parcel fails the build with it)
   await parcel.report({ event: { type: 'buildStart' } });
   const bad = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'node_modules/nopj/i.js')] }]);
-  await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options: { projectRoot: root } }), /no package\.json with name and version in \S*nopj/);
+  await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options }), /no package\.json with name and version in \S*nopj/);
   problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
   // without scope hoisting nothing is skipped
   const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
-  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
   // JavaScript only inlined into the HTML (<script type="module">): Parcel's code is around it too
   fs.mkdirSync(J(root, 'site'), { recursive: true });
   fs.writeFileSync(J(root, 'site/index.html'), '<script type="module">a</script>');
   const html = fakeBundleGraph([{ filePath: J(root, 'site/index.html'), type: 'html', target: target('site'), assets: [J(root, 'src/index.html')] },
     { filePath: null, type: 'js', bundleBehavior: 'inline', target: target('site'), assets: [J(root, 'node_modules/a/i.js')] }]);
-  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: html }, options: { projectRoot: root } });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: html }, options });
   const site = JSON.parse(fs.readFileSync(J(root, 'site', LOCK), 'utf8'));
   assert.deepEqual(Object.values(site.packages).filter(p => p.name).map(p => p.name).sort(), ['@parcel/packager-js', 'a']);
   // a JavaScript bundle of a project that resolves no @parcel/packager-js: a problem (the code Parcel wrote would be
@@ -5155,6 +5586,44 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   const js = fakeBundleGraph([{ filePath: J(bare, 'dist/main.js'), target: { name: 'dist', distDir: J(bare, 'dist') }, assets: [J(bare, 'node_modules/a/i.js')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: js }, options: { projectRoot: bare } }), /resolves no @parcel\/packager-js/);
   problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
+}));
+
+// Only the JavaScript packager skips assets: a style sheet of a package without side effects, of which no symbol is
+// used, that another style sheet @imports is in the CSS bundle (Parcel's CSS packager writes every asset)
+test('parcel adapter: a CSS bundle lists the style sheets of packages without side effects', () => withConfig({ strict: true }, async () => {
+  const parcel = require('../src/adapters/parcel.cjs');
+  const root = project({ 'node_modules/sfx/package.json': { name: 'sfx', version: '1.0.0', sideEffects: false }, 'node_modules/sfx/s.css': '', 'src/s.css': '' });
+  fakeParcelTracker(root, { 'src/s.css': [] });
+  fs.mkdirSync(J(root, 'dist'), { recursive: true }); fs.writeFileSync(J(root, 'dist/main.css'), '.sfx{}');
+  const graph = fakeBundleGraph([{ filePath: J(root, 'dist/main.css'), target: { name: 'dist', distDir: J(root, 'dist') },
+    assets: [J(root, 'src/s.css'), { f: J(root, 'node_modules/sfx/s.css'), sideEffects: false, used: new Set() }] }]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options: { projectRoot: root } });
+  const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['sfx']);
+  const w = lock['bundle-lockfile'].writers[0];
+  assert.deepEqual(w.contents['../main.css'].map(i => w.packages[i]), ['node_modules/sfx']); // (also in the file's contents)
+}));
+
+// Two Parcels of one process (new Parcel().run() twice, as a script that builds several entries) into one distDir, of
+// one target: the second is another run of the same writer, which keeps the files of the first that are still there,
+// with their packages (core/outputs.cjs remnants); a rebuild of the second (the same plugin options: watch mode)
+// replaces its own build
+test('parcel adapter: a second Parcel of the process into the same distDir keeps the first one\'s packages', () => withConfig({ strict: true }, async () => {
+  const parcel = require('../src/adapters/parcel.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'node_modules/@parcel/packager-js/package.json': { name: '@parcel/packager-js', version: UNIT } });
+  fakeParcelTracker(root, {});
+  fs.mkdirSync(J(root, 'dist'), { recursive: true });
+  for (const f of ['a.js', 'b.js']) fs.writeFileSync(J(root, 'dist', f), f);
+  const target = { name: 'default', distDir: J(root, 'dist') };
+  const build = (file, name) => fakeBundleGraph([{ filePath: J(root, 'dist', file), target, assets: [J(root, `node_modules/${name}/i.js`)] }]);
+  const first = { projectRoot: root }, second = { projectRoot: root }; // (each Parcel's plugin options)
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: build('a.js', 'a') }, options: first });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: build('b.js', 'b') }, options: second });
+  const names = () => lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')); // (not the packager, at the version UNIT)
+  assert.deepEqual(names(), ['a', 'b']);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: build('b.js', 'c') }, options: second });
+  assert.deepEqual(names(), ['a', 'c']);
 }));
 
 // A fake @parcel/core lib/RequestTracker.js (and its lib/projectPath.js) at root: a RequestTracker class whose instance,
@@ -5228,9 +5697,9 @@ test('parcel adapter: the files Parcel\'s transformers inline (Sass partials, Le
 }));
 
 // Angular: executeBuild() of a fake application builder, whose result has Angular's shape (ExecutionResult)
-function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors = [] } = {}) {
+function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors = [], more = [] } = {}) {
   return async (options) => {
-    const outputFiles = [{ path: 'main.js', type: 0, text: 'x' }];
+    const outputFiles = [{ path: 'main.js', type: 0, text: 'x' }, ...more];
     const result = { outputFiles, assetFiles: assets.map(source => ({ source, destination: 'a' })), errors: [...errors],
       addOutputFile(p, text, type) { outputFiles.push({ path: p, type, text }); }, addError(e) { this.errors.push(e); } };
     const metafile = { outputs: { 'main.js': { entryPoint: 'src/main.ts', inputs: Object.fromEntries(inputs.map(i => [i, { bytesInOutput: 1 }])) } } };
@@ -5286,6 +5755,64 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
   const wrapped = exp.executeBuild;
   angular.onCjsLoad(exp, where, () => where);
   assert.equal(exp.executeBuild, wrapped); // once
+}));
+
+test('angular adapter: a side whose directory is the output path itself (browser or server \'\') - the lockfile and its record where Angular writes the side\'s files', () => withConfig({ strict: true }, async () => {
+  const angular = require('../src/adapters/angular.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('s'), ...pj('r'), ...pj('u'), ...pj('esbuild'), 'src/main.ts': '' });
+  // browser: '' (the browser-esbuild builder of @angular-devkit/build-angular always has it): Angular writes the browser
+  // files into dist/ - the lockfile there, its record saying so; a media file (a font of a style sheet) is one of its files
+  const r = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'], more: [{ path: 'media/f.woff2', type: 1, text: 'x' }] }))(
+    { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: '', server: 'server' } });
+  assert.deepEqual(r.errors, []);
+  const lock = r.outputFiles.find(f => f.path === LOCK);
+  assert.equal(lock.type, 0);
+  const rec = recordOf(lock.text);
+  assert.deepEqual([rec.context, rec.self], ['../..', 'dist/bundle-lockfile']);
+  assert.deepEqual(rec.writers[0].files.sort(), ['../main.js', '../media/f.woff2']);
+  // server: '' (SSR: Angular requires browser and server to differ): the server's lockfile a root file at <file>, the
+  // browser's then a root file at browser/<file> - Angular 17 - 21 key the files they write by their path in their
+  // side's directory, where both would be <file>
+  for (const stats of ['split', 'combined']) {
+    const ssr = await angular.wrap(fakeSsrBuild({ stats }))({ workspaceRoot: root, outputOptions: { base: J(root, 'ssr'), browser: 'browser', server: '' } });
+    assert.deepEqual(ssr.errors, [], stats);
+    const locks = ssr.outputFiles.filter(f => /bundle-lockfile/.test(f.path));
+    assert.deepEqual(locks.map(f => `${f.type} ${f.path}`).sort(), [`4 browser/${LOCK}`, `4 ${LOCK}`], stats);
+    const server = locks.find(f => f.path === LOCK), browser = locks.find(f => f.path === `browser/${LOCK}`);
+    assert.equal(recordOf(server.text).self, 'ssr/bundle-lockfile', stats);
+    assert.equal(recordOf(browser.text).self, 'ssr/browser/bundle-lockfile', stats);
+    assert.deepEqual(lockedNames(server.text), ['esbuild', 'r', 's', 'u'], stats);
+  }
+}));
+
+test('angular adapter: a build that fails (on a problem, or a compile error) writes nothing - no export copy either', () => withConfig({ strict: true }, async () => {
+  const angular = require('../src/adapters/angular.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/nopj/i.js': '',
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: '1.0.0' }, 'src/main.ts': '' });
+  const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' } };
+  await withConfig({ exportDir: J(root, 'export'), exportBase: root }, async () => {
+    const exported = exportPath(J(root, 'dist/browser', LOCK));
+    const bad = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/nopj/i.js'] }))(options);
+    assert.match(bad.errors.join('\n'), /no package\.json with name and version in \S*nopj/);
+    assert.equal(fs.existsSync(exported), false);
+    // (control: the same build without the problem writes it)
+    const good = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] }))(options);
+    assert.deepEqual(good.errors, []);
+    assert.deepEqual(lockedNames(fs.readFileSync(exported, 'utf8')), ['a', 'esbuild']);
+    // a build that fails for Angular's own reasons (a compile error: Angular writes none of its files, also in watch
+    // mode, where the output of the last good build stays): nothing recorded, the export copy left as it is - the next
+    // good build's lockfile has none of the failed build's packages
+    const before = fs.readFileSync(exported, 'utf8');
+    const ts = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/nopj/i.js', 'node_modules/b/i.js'], errors: ['TS2322'] }))(options);
+    assert.deepEqual(ts.errors, ['TS2322']); // (no problem of bundle-lockfile's: nopj not even looked at)
+    assert.deepEqual(ts.outputFiles.map(f => f.path), ['main.js']);
+    assert.equal(fs.readFileSync(exported, 'utf8'), before);
+    const again = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] }))(options);
+    assert.deepEqual(again.errors, []);
+    assert.deepEqual(recordOf(fs.readFileSync(exported, 'utf8')).writers.length, 1);
+    assert.deepEqual(lockedNames(fs.readFileSync(exported, 'utf8')), ['a', 'esbuild']);
+  });
 }));
 
 // An SSR build's result as Angular's executeBuild returns it: browser and server output files (Angular's types: Browser
@@ -5378,6 +5905,20 @@ test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, f
     const locks = Object.fromEntries(r.outputFiles.filter(f => /bundle-lockfile/.test(f.path) && f.path.startsWith('server/')).map(f => [f.path, lockedNames(f.text)]));
     assert.deepEqual(locks, { [`server/${LOCK}`]: ['esbuild', 'r', 'u'], [`server/de/${LOCK}`]: ['esbuild', 's', 'u'], [`server/en-US/${LOCK}`]: ['esbuild', 's', 'u'] }, stats);
   }
+  // a locale whose subPath is '' (its copy in the side's own directory): one lockfile there with one writer, its files and
+  // the packages of both (here: no server)
+  const atRoot = async (o) => {
+    const r = await build('split')(o);
+    const kept = r.outputFiles.filter(f => f.type !== 2 && !f.path.startsWith('server')).map(f => (f.path.startsWith('en-US/') ? { ...f, path: f.path.slice(6) } : f));
+    r.outputFiles.splice(0, Infinity, ...kept); // (the array addOutputFile adds to)
+    return r;
+  };
+  const root2 = await angular.wrap(atRoot)({ ...options, i18nOptions: { ...i18nOptions, locales: { de: { subPath: 'de' }, 'en-US': { subPath: '' } } } });
+  assert.deepEqual(root2.errors, []);
+  const byPath = Object.fromEntries(root2.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => [f.path, f.text]));
+  assert.deepEqual(Object.keys(byPath).sort(), [LOCK, `de/${LOCK}`]);
+  assert.deepEqual(recordOf(byPath[LOCK]).writers.map(w => w.files), [['../main.js']]);
+  assert.deepEqual(lockedNames(byPath[LOCK]), ['a', 'esbuild']);
   // flatOutput (one locale, the dev server's): one copy, no locale directory
   const flat = await angular.wrap(build('split'))({ ...options, i18nOptions: { ...i18nOptions, flatOutput: true } });
   assert.deepEqual(flat.outputFiles.filter(f => /bundle-lockfile/.test(f.path)).map(f => f.path).sort(), [LOCK, `server/${LOCK}`]);
@@ -5386,25 +5927,39 @@ test('angular adapter: i18n - a lockfile in each locale\'s copy of the output, f
   assert.match(bad.errors.join('\n'), /an i18n build whose locales have no subPath/);
 }));
 
-test('angular adapter: a build of the dev server (ng serve) gets no lockfile and no stats; with NG_BUILD_PARTIAL_SSR set, a build gets its lockfile', () => withConfig({ strict: true }, async () => {
+test('angular adapter: builds of the builders whose output nobody ships (ng serve, extract-i18n, karma, unit-test) get no lockfile and no stats; other builders\' do', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/esbuild/package.json': { name: 'esbuild', version: '1.0.0' }, 'src/main.ts': '' });
-  const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' }, partialSSRBuild: true };
+  const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server' } };
   let seen = null;
   const inner = fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] });
-  const run = angular.wrap(async (o) => { seen = o; return inner(o); });
+  const run = angular.wrap(async (o, context) => { seen = { o, context }; return inner(o); });
+  const context = (builderName) => ({ builder: { builderName, description: '', optionSchema: {} } });
   const saved = process.env.NG_BUILD_PARTIAL_SSR;
-  try {
-    delete process.env.NG_BUILD_PARTIAL_SSR;
-    const r = await run(options);
-    assert.deepEqual(r.outputFiles.map(f => f.path), ['main.js']); // no lockfile, no stats
-    assert.equal(seen.stats, undefined); // the options as the dev server made them
-    // ng build with NG_BUILD_PARTIAL_SSR: partialSSRBuild too, but a build that writes - its lockfile
-    process.env.NG_BUILD_PARTIAL_SSR = '1';
-    const b = await run(options);
-    assert.deepEqual(b.errors, []);
-    assert.deepEqual(b.outputFiles.map(f => f.path), ['main.js', LOCK]);
-  } finally { if (saved === undefined) delete process.env.NG_BUILD_PARTIAL_SSR; else process.env.NG_BUILD_PARTIAL_SSR = saved; }
+  await withConfig({ exportDir: J(root, 'export'), exportBase: root }, async () => {
+    try {
+      for (const name of ['@angular/build:dev-server', '@angular-devkit/build-angular:dev-server', '@angular-builders/custom-esbuild:dev-server',
+        '@angular/build:extract-i18n', '@angular/build:karma', '@angular-devkit/build-angular:karma', '@angular/build:unit-test']) {
+        // (the dev server sets partialSSRBuild)
+        const c = context(name);
+        const r = await run({ ...options, partialSSRBuild: name.endsWith(':dev-server') }, c);
+        assert.deepEqual(r.outputFiles.map(f => f.path), ['main.js'], name); // no lockfile, no stats
+        assert.equal(seen.o.stats, undefined, name); // the options as the builder made them
+        assert.equal(seen.context, c, name);
+        assert.equal(fs.existsSync(J(root, 'export')), false, name); // no export copy
+      }
+      // the application builders write, also with partialSSRBuild (ng build with NG_BUILD_PARTIAL_SSR, whatever its
+      // value) - and a build without a builder's context (executeBuild called by hand)
+      for (const [name, partial] of [['@angular/build:application', undefined], ['@angular/build:application', '0'], ['@angular/build:application', '1'],
+        ['@angular-devkit/build-angular:browser-esbuild', undefined], ['@angular-builders/custom-esbuild:application', undefined], [null, undefined]]) {
+        if (partial === undefined) delete process.env.NG_BUILD_PARTIAL_SSR; else process.env.NG_BUILD_PARTIAL_SSR = partial;
+        const r = await run({ ...options, partialSSRBuild: partial !== undefined }, name === null ? undefined : context(name));
+        assert.deepEqual(r.errors, [], name);
+        assert.deepEqual(r.outputFiles.map(f => f.path), ['main.js', LOCK], `${name} ${partial}`);
+      }
+      assert.ok(fs.existsSync(exportPath(J(root, 'dist/browser', LOCK))));
+    } finally { if (saved === undefined) delete process.env.NG_BUILD_PARTIAL_SSR; else process.env.NG_BUILD_PARTIAL_SSR = saved; }
+  });
 }));
 
 test('config: BUNDLE_LOCKFILE_DISABLE takes exactly the adapters\' names', () => {
@@ -6411,6 +6966,15 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
   assert.deepEqual([r.status, r.stderr], [0, '']);
   r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
   assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+  // BUNDLE_LOCKFILE_DISABLE=webpack: Turbopack and ncc stand in for webpack, whose lockfiles are not expected then
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'webpack', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'webpack' }, [J(root, 'ncc.cjs')]);
+  assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+  // ... not by another name (next: the runtime packages, which a Turbopack build still gets)
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'next,rspack', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, TURBO);
   // Yarn's pnpm linker: the main script in its store (node_modules/.store/<slug>/package) is recognized as well
   for (const [name, bin] of [['rolldown', 'bin/cli.mjs'], ['next', 'dist/bin/next']]) {
     const at = J(root, `node_modules/.store/${name}-npm-1.0.0-0123456789/package`);
@@ -6954,6 +7518,68 @@ test('next adapter: output: standalone - the runtime packages in .next/standalon
   assert.equal(fs.existsSync(J(root, '.next/standalone/.next/server/chunks', LOCK)), true);
   assert.equal(fs.existsSync(J(root, '.next/standalone/.next', LOCK)), true);
   assert.equal(fs.existsSync(J(root, '.next/standalone/runtime')), false);
+}));
+
+test('next adapter: a static export gets the client\'s lockfile in <out>/_next/, its record for where it is (output: export, next export)', () => withConfig({ strict: true }, async () => {
+  require('../src/core/copies.cjs').install();
+  problems.take();
+  const files = (distDir) => ({
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    [`${distDir}/static/chunks/main.js`]: '',
+    'node_modules/next/dist/export/index.js': '',
+  });
+  // a fake Next export: copies <distDir>/static to <outdir>/_next/static, as Next's does (fs.cp of the directory)
+  const fakeExport = (root, distDir) => async (dir, options) => {
+    fs.cpSync(J(root, distDir, 'static'), J(options.outdir, '_next/static'), { recursive: true });
+    return 'exported';
+  };
+  // the client compiler's lockfile in <distDir>, written by bundle-lockfile in another process (Next's build workers):
+  // this one knows nothing of it but its record
+  const clientLock = async (root, distDir) => {
+    const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
+    const dir = J(root, distDir, path.dirname(LOCK));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(J(root, distDir, LOCK), toPackageLock([a], root, { dir, writers: [{ id: 'client', files: [J(root, distDir, 'static/chunks/main.js')], paths: [a.path] }] }));
+  };
+  const exportFile = (root) => J(root, 'node_modules/next/dist/export/index.js');
+  const wrapped = (root, distDir) => nextAdapter().onCjsLoad({ default: fakeExport(root, distDir) }, exportFile(root), () => exportFile(root)).exports.default;
+
+  // output: 'export' (Next.js 13.3 - 15: options.nextConfig, distDir the config's)
+  let root = project(files('.next'));
+  await clientLock(root, '.next');
+  assert.equal(await wrapped(root, '.next')(root, { outdir: J(root, 'out'), nextConfig: { distDir: '.next', output: 'export' } }), 'exported');
+  const copy = JSON.parse(fs.readFileSync(J(root, 'out/_next', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(copy)), ['a']);
+  assert.equal(copy['bundle-lockfile'].context, '../../..'); // anchored where it is: out/_next/bundle-lockfile -> the project
+  // Next's internal export into <distDir>/export (buildExport) is none
+  root = project(files('.next'));
+  await clientLock(root, '.next');
+  await wrapped(root, '.next')(root, { outdir: J(root, '.next/export'), buildExport: true, nextConfig: { distDir: '.next' } });
+  assert.equal(fs.existsSync(J(root, '.next/export/_next', LOCK)), false);
+  // Next.js 16: a custom distDir names the export's destination, the build is in .next (its export/utils.js)
+  root = project({ ...files('.next'), 'node_modules/next/dist/export/utils.js': "exports.getBuildDistDir = (c) => (c.output === 'export' && c.distDir !== '.next' ? '.next' : c.distDir);" });
+  await clientLock(root, '.next');
+  await wrapped(root, '.next')(root, { outdir: J(root, 'site'), nextConfig: { distDir: 'site', output: 'export' } }, {}, { worker: true });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'site/_next', LOCK), 'utf8')), ['a']);
+  // `next export` (Next.js 12, 13): the config as the export loads it (server/config.js), a custom distDir
+  root = project({ ...files('build'), 'node_modules/next/dist/server/config.js': "exports.default = async (phase) => ({ distDir: phase === 'phase-export' ? 'build' : 'wrong' });" });
+  await clientLock(root, 'build');
+  await wrapped(root, 'build')(root, { outdir: J(root, 'out') });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'out/_next', LOCK), 'utf8')), ['a']);
+  // ... Next.js 12 passes the config as the 4th argument
+  root = project(files('dist12'));
+  await clientLock(root, 'dist12');
+  await wrapped(root, 'dist12')(root, { outdir: J(root, 'out') }, {}, { distDir: 'dist12' });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'out/_next', LOCK), 'utf8')), ['a']);
+  // no client lockfile (BUNDLE_LOCKFILE_DISABLE=webpack): nothing, and no problem
+  root = project(files('.next'));
+  await wrapped(root, '.next')(root, { outdir: J(root, 'out'), nextConfig: { distDir: '.next' } });
+  assert.equal(fs.existsSync(J(root, 'out/_next/bundle-lockfile')), false);
+  assert.deepEqual(problems.take(), []);
+  // an export module of another shape: a problem
+  const f = '/p/node_modules/next/dist/export/index.js';
+  assert.equal(nextAdapter().onCjsLoad({ exportApp: () => {} }, f, () => f), undefined);
+  assert.match(problems.take().join('\n'), /exports no export function bundle-lockfile knows/);
 }));
 
 test('next adapter: an unreadable trace, or a traced package without package.json, fails next build (strict); STRICT=0 warns', async () => {

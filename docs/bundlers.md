@@ -11,14 +11,14 @@ What is supported and tested, which processes are hooked, and what is particular
 | Next.js | 12 – 16 | 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | Next 16 only with `next build --webpack`; [details](#nextjs) |
 | Next.js with next-rspack | 15, 16 | 15.5 (rspack 1.4), 16.4 (rspack 2.0) | as rspack | the same lockfiles as with webpack |
 | rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 fails the build, 0.x is not hooked; [details](#rspack-rsbuild) |
-| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
+| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.6, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
 | Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; [details](#vite-rollup-rolldown) |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
 | Nuxt | 4 (Vite 8, Nitro 2) | 4.6 | as Vite | `nuxt build`, `nuxi build`; [details](#nuxt) |
 | Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
-| Parcel | 2 | 2.0 (with the 2.16 plugins its ranges install), 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
+| Parcel | 2 | 2.8, 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
 | Angular | 20 – 22 (application builder) | 20.3, 21.2, 22.2 | CommonJS: its `executeBuild()` | `ng build`; the lockfile in `<outputPath>/browser/` (SSR: also `server/`; i18n: each locale's directory); `ng serve` writes none; [details](#angular) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
@@ -57,7 +57,8 @@ Real builds of seven Chainguard packages with rspack and Rsbuild are compared wi
 Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile of the bundle; a
 Turbopack build still gets [Next.js' runtime lockfile](#nextjs)): Turbopack (Next.js 16's default build; known when
 `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack
-< 4 and rspack 0.x (when a compiler compiles).
+< 4 and rspack 0.x (when a compiler compiles). `BUNDLE_LOCKFILE_DISABLE` with the bundler such a build stands in for
+(`webpack` for Turbopack and ncc, `rolldown` for its command line) turns the failure off.
 
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Bun's own
 runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed).
@@ -93,6 +94,10 @@ Each output with a JavaScript file lists the bundler whose own code is in it, at
 esbuild its builder runs), Parcel's `@parcel/packager-js`. Its version is its `package.json`'s; a copy without one
 (Next.js') has the version the bundler reports. A bundler bundle-lockfile cannot place fails the build (strict mode).
 
+An output directory below `node_modules` is a tool's cache (Vite's dependency pre-bundling in `node_modules/.vite`, a
+library's own build into its package): no lockfile, whatever the bundler - except below `node_modules/.cache/`, where
+tools build what ships (Nuxt's `.nuxt`).
+
 ## Vite, Rollup, Rolldown
 
 - Vite 8's dependency pre-bundling (`vite dev`) is never hooked, wherever its cache directory (`cacheDir`) is.
@@ -102,6 +107,13 @@ esbuild its builder runs), Parcel's `@parcel/packager-js`. Its version is its `p
   `this.addWatchFile` calls, recorded per build and module - also in Rolldown's `build()` and `watch()` (`vite build
   --watch` on Vite 8), which provide no watch files. A Rolldown whose plugin contexts are of another shape fails a
   build with style sheets ([troubleshooting](troubleshooting.md)).
+- A build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write: false`) writes no lockfile:
+  its packages are listed where its output's bytes end up in a written output ([coverage](coverage.md#also-listed)).
+  If it names where its output goes (`dir` or `file`) and a file of it is written there after the build, in no
+  lockfile of the process when the process ends - its caller wrote it, as generated or changed (tsup's `treeshake`
+  option tree-shakes esbuild's output with `generate()`) - that is a problem: it ships without a lockfile.
+- Rollup 1 and 2.0 – 2.77 cannot run the plugin (it has object hooks, `{ order, handler }`): importing or requiring
+  such a Rollup is a problem, with `BUNDLE_LOCKFILE_STRICT=0` a warning, and its builds write no lockfile.
 - A Vite 8 build logs `vite: adding the plugin to a rolldown() call` with `BUNDLE_LOCKFILE_DEBUG=1` (Vite 7:
   `rollup()`).
 
@@ -118,9 +130,11 @@ Rsbuild, Rslib, Next.js with next-rspack).
 - Files `CopyRspackPlugin` copies out of packages are listed, by name and bytes among the files the build depends on.
 - Style sheets loaders inline from packages (Sass partials, Less `@import`s, PostCSS) are listed; before rspack
   1.3.14, rspack does not record them per module, and all such style sheets the build read are listed.
-- rspack 2 inlines small constants in production (`optimization.inlineExports`; rspack 1.7 too, through
-  `experiments.inlineConst`, on by default there): a module whose used exports are all inlined is in no chunk. Its
-  package is listed anyway — its values are in the bundle.
+- rspack inlines small constants: rspack 2 in production (`optimization.inlineExports`), rspack 1.4 – 1.7 with
+  `experiments.inlineConst` (Rsbuild 1.5 and 1.6 set it in production; rspack 1.6 and 1.7 also inline TypeScript enums
+  with `experiments.inlineEnum`). A module whose used exports are all inlined is in no chunk. Its package is listed
+  anyway — its values are in the bundle. rspack 1.4 does not record that such a module is used: there every package
+  module of the build in no chunk is listed, also one that was tree-shaken.
 - Child compilations count for their parent, as webpack's: the workers monaco-editor-webpack-plugin builds are in
   its lockfile.
 - rspack's `ModuleFederationPlugin` (also `@module-federation/enhanced`'s) bundles the federation runtime, which
@@ -153,15 +167,23 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   and files the `file` and `copy` loaders put into the output. Modules that only re-export count; tree-shaken modules,
   externals and modules a browser field maps to `false` do not. Modules of plugins (a namespace) count if their path is
   a file.
-- Several builds into one directory (other entry points) share one lockfile.
+- Paths are relative to `absWorkingDir`, else to the working directory esbuild had when it loaded, as esbuild takes
+  them (a script that changes its working directory after importing esbuild builds in the earlier one); bundle-lockfile
+  names that directory as `absWorkingDir` in the options of the build, which the other plugins see too.
+- Several builds into one directory share one lockfile; separate builds of one configuration there (an ES-module and
+  a CommonJS build of the same entry points) keep each other's packages, while a context's rebuild replaces its own.
 - `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile. Their packages are
   listed where their output's bytes end up in another hooked build's output, or in a file written into an output after
-  the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files itself: its
-  lockfile comes from its own adapter ([Angular](#angular)). An output file of such a build that is on disk with its
-  bytes when the process ends and in no lockfile of the process (tsup and other tools write esbuild's `outputFiles`
-  themselves) is a problem: it ships without a lockfile (`bundle-lockfile-from-metafile` writes one).
-- Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
-  below `node_modules` are left alone - except below `node_modules/.cache/`, as for Vite (tools build what ships there).
+  the build, or where a plugin gives the contents of a module whose file is their entry point (a worker that
+  esbuild-plugin-inline-worker bundles and inlines as a string) ([coverage](coverage.md#also-listed)). Angular's
+  builder builds that way and writes the files itself: its lockfile comes from its own adapter ([Angular](#angular)).
+  An output file of such a build that is written after the build and on disk when the process ends, in no lockfile of
+  the process (tsup and other tools write esbuild's `outputFiles` themselves, also after changing them: tsup's
+  `treeshake` and `minify: 'terser'`), is a problem: it ships without a lockfile (`bundle-lockfile-from-metafile`
+  writes one).
+- Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`, reading the
+  exports of a dependency's entry for `optimizeDeps.extensions`) and outputs below `node_modules` are left alone -
+  except below `node_modules/.cache/`, as for Vite (tools build what ships there).
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
   `buildSync()` throws it, `watch()` prints it and goes on watching. esbuild 0.16 and older (no `context()`) fail a
   build that writes an output.
@@ -172,7 +194,8 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   listed, as files written after a Vite build are ([coverage](coverage.md#also-listed)).
 - The command line and the Go API are not hooked; their metafile (`--metafile=meta.json`) gives the lockfile:
   `node /opt/bundle-lockfile/bin/bundle-lockfile-from-metafile meta.json` writes it into the directory of the outputs
-  (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one). It sees no
+  (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one; a metafile none of
+  whose output files is there, as run in another directory, fails). It sees no
   `watchFiles` and no files copied with fs; it reads the settings and fails as a build would. It lists the esbuild the
   working directory resolves, as the bundler of the JavaScript outputs; `--bundler <package dir>` names another
   (Angular's builder's esbuild), `--bundler none` none (a metafile Bun wrote: Bun is no npm package).
@@ -187,7 +210,8 @@ writes the lockfile too.
 - The lockfile goes into each target's `distDir`, once Parcel wrote the bundles (`buildSuccess`); in watch mode after
   every rebuild. A failed build changes nothing.
 - It lists the packages of the assets of every bundle (also of bundles inlined into others), except those the
-  scope-hoisting packager leaves out (no side effects, no used symbol, not referenced). CSS `@import`s and files a
+  scope-hoisting packager of JavaScript bundles leaves out (no side effects, no used symbol, not referenced; a CSS
+  bundle has all of its style sheets, also those of a package without side effects). CSS `@import`s and files a
   style sheet's `url()` loads (fonts) are assets. So is Parcel's runtime, which loads lazy bundles: Parcel generates it
   as a file of `@parcel/runtime-js`, which is listed. The prelude and module wrappers around the JavaScript bundles'
   assets are written by Parcel's JavaScript packager: `@parcel/packager-js`, as the project resolves it, is listed for
@@ -196,7 +220,11 @@ writes the lockfile too.
   Parcel's request graph, where the transformers record them as files the style sheet's asset depends on (also in a
   build from `.parcel-cache`, which transforms nothing again). A build with style sheets whose request graph cannot be
   read fails (strict).
-- A problem fails the build: the reporter throws, Parcel reports the build as failed.
+- A problem fails the build: the reporter throws, Parcel reports the build as failed. Parcel before 2.13 only prints a
+  reporter's error and goes on: the process fails at its exit.
+- Several Parcels of one process (a script that builds one entry after the other) into the same `distDir` are writers
+  of one lockfile: a later one keeps the packages of the files an earlier one left there.
+
 ## Angular
 
 Angular's application builder (`@angular/build`, `ng build`) bundles with esbuild into memory and writes the files
@@ -205,7 +233,8 @@ bundle-lockfile wraps the function that runs one build (`executeBuild()`) and ta
 one its `stats` option writes, turned on for the build and taken out of its output again unless asked for.
 
 - The lockfile is one of the build's output files: `<outputPath>/browser/bundle-lockfile/package-lock.json`, which
-  Angular writes with the others, after it cleaned the output path.
+  Angular writes with the others, after it cleaned the output path (with `outputPath.browser: ''`, as the
+  `browser-esbuild` builder of `@angular-devkit/build-angular` has it, in `<outputPath>/bundle-lockfile/`).
 - With server-side rendering (`outputMode: 'server'`) the server gets its own,
   `<outputPath>/server/bundle-lockfile/package-lock.json`: the packages bundled into the server (`@angular/ssr`,
   `@angular/platform-server`, the server entry's own dependencies, what the rendered components use). `outputMode:
@@ -214,16 +243,20 @@ one its `stats` option writes, turned on for the build and taken out of its outp
   `<subPath>/` (the locale by default): each copy gets the lockfile, `<outputPath>/browser/<locale>/bundle-lockfile/`
   (and the server's in `<outputPath>/server/<locale>/`), with the same packages. With SSR, the server's entry
   (`server.mjs`) and its chunks are written once, in `<outputPath>/server/`: their packages are in a lockfile there,
-  those of the locales' copies in each locale's.
-- `ng build --watch` writes the lockfile again with every rebuild that changes it. `ng serve` writes none: the dev
-  server serves its builds from memory (bundle-lockfile tells them by the `partialSSRBuild` option the dev server
-  sets; with `NG_BUILD_PARTIAL_SSR` set, `ng build` sets it too, and every build counts as one that writes).
+  those of the locales' copies in each locale's. A locale at `subPath: ''` has its copy in the side's own directory,
+  and one lockfile there.
+- `ng build --watch` writes the lockfile again with every rebuild that changes it. The builders that build the app for
+  output nobody ships write none, nor an export copy: `ng serve` (the dev server serves its builds from memory),
+  `ng extract-i18n` (reads the messages only), `ng test` (karma: a temporary directory; unit-test: memory) — known by
+  the builder's name (also another package's builder of that name, as `@angular-builders/custom-esbuild:dev-server`).
+- A build that fails writes no lockfile: Angular writes none of its files, and bundle-lockfile no export copy.
 - It lists the packages of the inputs of every output (Angular's own packages, rxjs, the app's), and of the assets
   Angular copies from `node_modules` (an `assets` glob there).
 - A problem is an error of the build. `BUNDLE_LOCKFILE_DISABLE=angular` leaves Angular alone (its esbuild builds then
   write nothing: no lockfile).
 - Tested: Angular 20, 21, 22 with npm: browser builds, SSR (`outputMode` server and static); on 20 and 22 also i18n
-  (two locales), SSR with i18n, `ng build --watch`, `ng serve`; Angular 22 also with pnpm 10 and yarn 4 Plug'n'Play
+  (two locales), SSR with i18n, `ng build --watch`, `ng serve`, `ng extract-i18n`; Angular 22 also `outputPath.browser:
+  ''`, a failing adapter (strict and `BUNDLE_LOCKFILE_STRICT=0`), and pnpm 10 and yarn 4 Plug'n'Play
   (where an asset glob from `node_modules/`, as in angular.json's `assets`, copies nothing: there is no
   `node_modules`).
 
@@ -255,10 +288,10 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
   `exports`), which an image scan of `.next/standalone` therefore cannot name. A trace that cannot be read, or a traced
   package without a `package.json` with name and version, fails the build. A file Next does not trace (e.g. a
   `require()` of a computed path) is not listed: Next would not copy it into the standalone output either.
-- A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, but not the lockfiles. Ship
-  `.next/bundle-lockfile/package-lock.json` with it, or use an [export
-  directory](../README.md#outputs-that-do-not-ship-as-files). In this mode a custom `distDir` names the export
-  destination; the lockfiles are in `.next` anyway.
+- A static export (`output: 'export'`, and `next export` before Next.js 14) copies the pages and `.next/static` into
+  `out/_next/static`: the client's lockfile is copied along, to `out/_next/bundle-lockfile/package-lock.json`, its record
+  rewritten for where it is (`BUNDLE_LOCKFILE_DISABLE=next` turns that off). In this mode a custom `distDir` names the
+  export destination; the build's lockfiles are in `.next` anyway.
 - The standalone output (`output: 'standalone'`) gets the runtime packages' lockfile, and copies of the bundles'
   lockfiles where Next copied their outputs (`.next/standalone/.next/server/chunks/` etc.; the client's in
   `.next/standalone/.next/`, for the `.next/static` that is copied there by hand). With Turbopack (not hooked, so with

@@ -11,10 +11,12 @@ const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
+const generated = require('../core/generated.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const rolldownWatch = require('./rolldown-watch.cjs');
 const { portable, inToolCache } = require('../core/paths.cjs');
 const { createRequire } = require('module');
+const { fileURLToPath } = require('url');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
 const { moduleIds, fileOf, watchFilesOf, keepGenerated, collectOutput } = require('./rollup-collect.cjs');
 
@@ -242,6 +244,13 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           if (generateOnly) {
             const pkgs = keepGenerated(this, bundle, { cwd, bundlers, watched });
             config.debug(`${kind}: generate-only output with`, pkgs.length, 'packages, kept for the build that uses it');
+            // generate() with the dir or file its output is for: written there by the caller (tsup's treeshake option, a
+            // tool that writes the chunks itself), it ships without a lockfile - a problem when the process ends
+            if (isWrite === false && !inToolCache(dir) && (out.dir || out.file)) {
+              const [what, hint] = kind === 'vite' ? ['a Vite build with build.write: false', 'let Vite write it']
+                : [`${kind === 'rolldown' ? 'Rolldown' : 'Rollup'}'s generate()`, 'write it with bundle.write()'];
+              for (const f of Object.values(bundle)) generated.addDestined(kind, path.join(dir, f.fileName), f.type === 'chunk' ? f.code : f.source, what, hint);
+            }
             return; // (its problems, such as a package without a package.json: below)
           }
           const { files, pkgs, found, hashes, contents } = collectOutput(this, bundle, { dir, cwd, ids, watched, bundlers });
@@ -348,11 +357,38 @@ function wrapBuild(id, fn, file) {
   };
 }
 
+// Rollup 2.78 and later run the plugin's object hooks ({ order, handler }); older ones reject them, which fails the build
+/** @param {string} version */
+function hookable(version) {
+  const [major, minor] = version.split('.').map(Number);
+  return major > 2 || (major === 2 && minor >= 78);
+}
+// The version of the Rollup whose ES entry module (dist/es/rollup.js) is at url, from its package.json; null if unknown.
+// Its import is wrapped before the module runs (see esm-wrap.cjs): Rollup 2.0 - 2.77 would get a plugin they reject - a
+// problem (in strict mode its import fails, see hooks.cjs wrap), and with BUNDLE_LOCKFILE_STRICT=0 the build goes on
+// without it, as with Rollup's CommonJS build (onCjsLoad).
+/** @type {Map<string, string | null>} */
+const esmVersions = new Map();
+/** @param {string} url */
+function esmVersion(url) {
+  if (!esmVersions.has(url)) {
+    /** @type {string | null} */
+    let version = null;
+    try {
+      const v = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(url.split(/[?#]/)[0])), '../../package.json'), 'utf8')).version;
+      if (typeof v === 'string') version = v;
+    } catch { /* unknown: wrapped */ }
+    esmVersions.set(url, version);
+  }
+  return esmVersions.get(url) || null;
+}
+
 const PATCHED = Symbol.for('bundle-lockfile.rollup.cjs');
 // Rollup's CommonJS build: dist/shared/rollup.js has rollup() and rollupInternal(), which the rollup command line
 // (rollup.rollup), watch() (rollup.rollupInternal) and dist/rollup.js (require('rollup'), which copies rollup when it
-// loads, after this patch) call.
-const CJS_ROLLUP = /[\\/](rollup|@rollup[\\/]wasm-node)[\\/]dist[\\/]shared[\\/]rollup\.js$/;
+// loads, after this patch) call. Rollup 1's is dist/shared/node-entry.js (exports.version 1.x): recognized, to say it
+// cannot be hooked.
+const CJS_ROLLUP = /[\\/](rollup|@rollup[\\/]wasm-node)[\\/]dist[\\/]shared[\\/](?:rollup|node-entry)\.js$/;
 
 module.exports = {
   name: 'rollup',
@@ -373,6 +409,15 @@ module.exports = {
 
   esmWrap(id, name, fn, url) {
     if (typeof fn !== 'function') return null;
+    // Rollup's ES build of a version older than the object hooks the plugin has: left as it is (see esmVersion; the
+    // entry module dist/es/rollup.js is Rollup 2's and later's)
+    if (id === 'rollup') {
+      const version = esmVersion(url);
+      if (version && version.startsWith('2.') && !hookable(version)) {
+        problems.problem(`rollup: ${url} (Rollup ${version}) is no Rollup bundle-lockfile can hook (2.78 or later): its builds would write no lockfile`, null, { once: url });
+        return null;
+      }
+    }
     if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn, url);
     if (name === 'watch' || name === 'build') return /** @this {unknown} */ function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
     return null;
@@ -380,14 +425,15 @@ module.exports = {
   onCjsLoad(exp, request, resolve) {
     // the path first: reading a missing property of a module in a circular require() makes Node warn. request: the path
     // Rollup's files are recognized by (see hooks.cjs)
-    if (!request.endsWith('rollup.js') || !CJS_ROLLUP.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
+    if (!(request.endsWith('rollup.js') || request.endsWith('node-entry.js')) || !CJS_ROLLUP.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
+    // (Rollup 4 has a dist/shared/node-entry.js of its own, a part of its command line: only Rollup 1's counts)
+    if (request.endsWith('node-entry.js') && !(typeof exp.version === 'string' && Number(exp.version.split('.')[0]) < 2)) return;
     // Rollup's: a version without rollupInternal(), or older than the object hooks the plugin has (2.78), would build
     // without a lockfile - a problem (in strict mode its require() fails, see hooks.cjs)
     // (the version: exports.version in early 4.x releases, exports.package_ in later ones; else the package's package.json)
     let version = typeof exp.version === 'string' ? exp.version : exp.package_ && typeof exp.package_.version === 'string' ? exp.package_.version : null;
     if (!version) try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../../package.json'), 'utf8')).version; } catch { /* unknown */ }
-    const [major, minor] = String(version || '').split('.').map(Number);
-    if (typeof exp.rollupInternal !== 'function' || (version && !(major > 2 || (major === 2 && minor >= 78)))) {
+    if (typeof exp.rollupInternal !== 'function' || (version && !hookable(version))) {
       problems.problem(`rollup: ${resolve()} (Rollup ${version || 'of an unknown version'}) is no Rollup bundle-lockfile can hook (2.78 or later, with rollupInternal): its builds would write no lockfile`);
       return;
     }

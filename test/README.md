@@ -110,8 +110,10 @@ A case that expects a lockfile checks every lockfile the build writes:
 - the build printed no Node.js warning (`(node:<pid>) ...Warning: ...`) that the matrix does not expect: each expected
   one is listed with its cause (`warnings` in `matrix.cjs`, or a case's `allowWarnings`). With
   `BUNDLE_LOCKFILE_ESM_HOOKS=async` on Node.js 26 and later, `module.register()`'s deprecation (DEP0205) is required,
-  elsewhere it fails the case. `BLTEST_WARNINGS=collect` records every warning in `<fixtures>/.warnings.jsonl`
-  instead of checking them, to take a census;
+  elsewhere it fails the case. Nor a warning of bundle-lockfile's own (`[bundle-lockfile] WARNING: ...`) the case does
+  not expect (by its `expectOutput`, or `allowOwnWarnings` with the reason): such a warning says that something is not
+  listed, or not as it should be, which the lockfile alone may not show. `BLTEST_WARNINGS=collect` records every
+  warning of both kinds in `<fixtures>/.warnings.jsonl` instead of checking them, to take a census;
 - the ES-module entries the adapters wrap (Rollup's, Rolldown's, rspack 2's), every copy installed in the fixture, agree
   with their wrappers when Node.js loads both without bundle-lockfile
   ([`oracles/esm-entries.cjs`](oracles/esm-entries.cjs), once per fixture): the wrapper links (a `default` the module
@@ -253,11 +255,12 @@ process's `locations` (a second build, then the first one again).
 
 **Parcel** (`apps/parcel`, compared with an oracle that builds again with Parcel's source maps, `oracles/parcel.cjs`;
 the font has none):
-- `parcel build`, the JavaScript API's `run()` and `watch()` (a rebuild without an import, then with it again), a build
+- `parcel build`, the JavaScript API's `run()` (also two Parcels one after the other into one directory) and `watch()`
+  (a rebuild without an import, then with it again), a build
   with a cache from a build without bundle-lockfile, the export directory only, `BUNDLE_LOCKFILE_DISABLE=parcel`, a
   failing adapter
-- Parcel 2.0.0 (its `@parcel/core`; its plugins' ranges install the 2.16 ones) and 2.16.4, npm, pnpm, yarn 4
-  Plug'n'Play; the canary app
+- Parcel 2.8.3 (before 2.13, which fails a build with a reporter's error: the process fails at its exit; the older
+  shape of Parcel's request graph) and 2.16.4, npm, pnpm, yarn 4 Plug'n'Play; the canary app
 **Angular** (`apps/angular`, an application builder app with three lazy chunks, which turn on Angular's chunk
 optimizer, and an asset glob from `node_modules`; compared with an oracle that builds again with source maps of the
 sources, not the packages' own, and without the chunk optimizer, whose maps name no sources, `oracles/angular.cjs`):

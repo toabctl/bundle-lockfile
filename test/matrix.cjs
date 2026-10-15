@@ -225,9 +225,15 @@ const fixtures = {
   'esbuild-yarn4-pnp': esbuildApp('0.28.2', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'esbuild-wasm': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-wasm': '0.28.2' }),
   'esbuild-features': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-sass-plugin': '3.7.0', sass: '1.105.1', bulma: '1.0.4', 'sanitize.css': '13.0.0' }),
+  // tsup (test/apps/tsup): esbuild with write: false, the output written by tsup itself (its esbuild, a dependency of
+  // its own, not pinned here; typescript: tsup loads it)
+  'tsup': { app: 'tsup', bundler: 'esbuild', installer: { type: 'npm' }, deps: { tsup: '8.5.0', typescript: '5.9.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
+    packageJson: { type: 'module', scripts: { build: 'tsup' } } },
   // Parcel 2: the latest, the first release; installers
   'parcel': parcelApp('2.16.4'),
-  'parcel-floor': parcelApp('2.0.0'),
+  // Parcel 2.8 polyfills process for debug's browser build with the process package, which it would install itself
+  // (auto install is off in CI, and the matrix runs offline): a dependency of the fixture
+  'parcel-floor': (({ deps, ...rest }) => ({ ...rest, deps: { ...deps, process: '0.11.10' } }))(parcelApp('2.8.3')),
   'parcel-pnpm10': parcelApp('2.16.4', { type: 'pnpm', version: '10.34.6' }),
   'parcel-yarn4-pnp': parcelApp('2.16.4', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   // Angular 22 (the latest), 21, 20
@@ -404,6 +410,8 @@ const fixtures = {
   'rspack2.2-c#': rspack('2.2.8'),
   'rspack2.2-pnpm10-global-store': rspack('2.2.8', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
   'rspack-features1.2': rspackFeatures('1.2.8'),
+  'rspack-features1.4': rspackFeatures('1.4.11'),
+  'rspack-features1.6': rspackFeatures('1.6.8'),
   'rspack-features1.7': rspackFeatures('1.7.12'),
   'rspack-features2.2': rspackFeatures('2.2.8'),
   // OHIF's shape (test/apps/rspack-copies): the project's rspack 1.7 (the config's CopyRspackPlugin) and @rspack/cli 2
@@ -416,6 +424,7 @@ const fixtures = {
     packageJson: { scripts: { build: 'node node_modules/@rspack/cli/bin/rspack.js build' } } },
   'rsbuild1.1-npm': rsbuild('1.1.10'),
   'rsbuild1.2-npm': rsbuild('1.2.19'),
+  'rsbuild1.6-npm': rsbuild('1.6.15'),
   'rsbuild1.7-npm': rsbuild('1.7.6'),
   // (@rstest/core: Rstest, which bundles the tests with this Rsbuild)
   // @rspack/core pinned: rsbuild dev serves it (DEV_RSBUILD), and @rsbuild/core 2.2.12 takes any ~2.2.8
@@ -482,6 +491,7 @@ const ESBUILD = ['bootstrap-icons@1.13.2', 'debug@2.6.9', 'lodash-es@4.18.1', 'm
 // test/apps/parcel: as ESBUILD (the font through a style sheet's url()), is-number; and Parcel's runtime, which loads
 // the lazy bundle (a file Parcel generates in @parcel/runtime-js)
 const PARCEL = (v) => [...ESBUILD, 'is-number@7.0.0', `@parcel/runtime-js@${v}`].sort();
+const PARCEL_FLOOR = [...PARCEL('2.8.3'), 'process@0.11.10'].sort();
 // test/apps/angular: the framework's packages of the fixture's release, rxjs (the framework imports it), the app's
 const ANGULAR = (fixture) => { const fw = fixtures[fixture].deps['@angular/core'];
   return [...['common', 'core', 'platform-browser'].map(p => `@angular/${p}@${fw}`), 'bootstrap-icons@1.13.2', 'debug@2.6.9', 'is-number@7.0.0', 'lodash-es@4.18.1',
@@ -509,6 +519,8 @@ const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 // container as an installed package (npm links a file: directory; Wolfi's npm 12 does so with install-links too)
 const VENDORED_CMD = 'rm -rf node_modules/container && cp -r pkgs/container node_modules/container && npm run -s build';
 const VENDORED = ['app-lib@1.0.0', 'container@1.0.0', 'inner-vendored@2.0.0', 'is-odd@3.0.1', 'left-pad@1.3.0', 'ms@2.1.3', 'vscode-languageclient@10.1.2'];
+// the warning on its package root without a package.json (lib/esm/node_modules/flat), listed as the package around it
+const VENDORED_FLAT = /^\[bundle-lockfile\] WARNING: no package\.json with name and version in \S*lib\/esm\/node_modules\/flat - its bundled files are listed as container@1\.0\.0, the package around it$/;
 // in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
 // the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
@@ -518,6 +530,11 @@ const FEATURES_EXPECT = ['bootstrap-icons@1.13.2', 'bulma@1.0.4', 'core-js@3.50.
 // not in source maps: style sheets (sanitize.css, bulma, normalize.less), the copy (normalize.css), the worker's font
 // (bootstrap-icons)
 const FEATURES_MISSING = ['bootstrap-icons@1.13.2', 'bulma@1.0.4', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'sanitize.css@13.0.0'];
+// warnings of bundle-lockfile's own that cases expect besides their expectOutput (allowOwnWarnings, run.cjs):
+// - a lockfile path that cannot be written cannot be locked either (its lock file is next to it)
+const UNLOCKABLE = /^\[bundle-lockfile\] WARNING: could not lock \S+ - writing it without the lock/;
+// - a build that writes nothing itself, whose output no build of the process wrote: its packages are in no lockfile
+const UNLANDED = /^\[bundle-lockfile\] WARNING: the output of a build that writes nothing itself \(generate\(\), write: false\) reached no output this process wrote/;
 const W5 = ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'yallist@5.0.0'];
 // webpack 4 also bundles its node polyfills (process) and webpack/buildin/* modules
 const W4 = (v) => ['debug@2.6.9', 'lodash-es@4.18.1', 'ms@2.0.0', 'ms@2.1.3', 'nanoid@3.3.20', 'process@0.11.10', `webpack@${v}`];
@@ -543,6 +560,10 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 // every lockfile below .next and its packages (the files they record differ: Next's build id is new on every build)
 const NEXT_LOCKS = `node ${path.join(__dirname, 'lib/locks.cjs')} .next`;
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+const FAULT_FILES = `--require ${path.join(__dirname, 'lib/fault-for-files.cjs')}`; // ... also those of given files (Next's runtime packages)
+// a favicon from a package, which the HTML plugins read and emit as an asset of their own: uuid's LICENSE.md (uuid is in
+// no bundle: imported, unused). The oracles read the bundlers' modules, which it is none of
+const FAVICON = 'node_modules/uuid/LICENSE.md';
 const ROLLDOWN_SHAPE = `--require ${path.join(__dirname, 'lib/rolldown-shape.cjs')}`; // Rolldown's plugin contexts of a shape bundle-lockfile does not know
 // node_modules/naked: bundled code in node_modules without a package.json (webpack5 app with EDGE_NAKED=1), removed afterwards
 const NAKED = "mkdir -p node_modules/naked && echo \"console.log('naked')\" > node_modules/naked/index.js && npm run -s build; s=$?; rm -rf node_modules/naked; exit $s";
@@ -609,8 +630,10 @@ const RSPACK_CONSTS = 'rm -rf node_modules/consts-only node_modules/consts-defau
 const RSPACK_FEATURES_CMD = `${RSPACK_CONSTS} && npm run -s build && ! cmp -s dist/copied/modern-normalize.css node_modules/modern-normalize/modern-normalize.css`;
 // rspack-features: the font, the style sheets' packages (bulma's partial, normalize.less, normalize.css @imported by
 // app.css and by normalize.less), the worker's is-number, the copies (left-pad's file, sanitize.css' directory), the
-// packages whose exports rspack 1.7 and later inline (consts-only; consts-default only rspack 2), the glob's copy
-// (escape-html), the transformed copy (reset-css), the minimized copy (modern-normalize)
+// packages whose exports rspack inlines (consts-only: 1.4 - 1.6 with experiments.inlineConst, 1.7 and later by default;
+// consts-default only rspack 2), the glob's copy
+// (escape-html), the transformed copy (reset-css), the minimized copy (modern-normalize); the transformed copy of the
+// project's package.json lists nothing
 const RSPACK_FEATURES = ['bootstrap-icons@1.13.1', 'bulma@1.0.4', 'consts-default@1.0.0', 'consts-only@1.0.0', 'escape-html@1.0.3', 'is-number@7.0.0',
   'left-pad@1.3.0', 'lodash-es@4.18.1', 'modern-normalize@3.0.1', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'reset-css@5.0.2', 'sanitize.css@13.0.0'];
 // style sheets loaders inline (no modules, and the stats have no file dependencies), and the transformed copy (the
@@ -688,8 +711,10 @@ function nextCase(fixture, version, react, flags = '') {
 //              config writes it to BLTEST_HEAP_FILE: test/apps/webpack5, test/apps/rspack)
 //   outside    why the lockfiles may list packages outside the project or of unknown location ("outside", "unknown"
 //              in the record: a global store or cache, copies of outputs): without it, any such package fails the case
-//   expectOutput  RegExp the build's stdout+stderr must match
-//   expectError  RegExp: a known failure of the build tool - the build must fail, its output match (nothing else checked)
+//   expectOutput  RegExp the build's stdout+stderr must match; a warning of bundle-lockfile's own it matches (its first
+//              line) is expected
+//   expectError  RegExp: a known failure of the build tool - the build must fail, its output match (nothing else checked,
+//              but that with exportDir no lockfile is in the export dir)
 //   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
 //   expectKeys {lockfile key: name@version} - exactly the keys of the single output
 //   watchBuilds  the cmd prints a JSON list of per-build package lists last; it must be this list of lists
@@ -716,11 +741,18 @@ function nextCase(fixture, version, react, flags = '') {
 //   expectSources  path fragments ("/"-separated, e.g. "node_modules/preact/hooks/"): each must be part of a source file
 //              of the oracle's build (its --sources), so the files the case is about are bundled at all
 //   allowWarnings  [RegExp]: Node.js warnings the build may print (the text after "(node:<pid>) "), besides `warnings`
+//   allowOwnWarnings  [RegExp]: warnings of bundle-lockfile's own the build may print (the line "[bundle-lockfile] WARNING:
+//              ..."), besides those expectOutput matches: any other fails the case (say why at the case)
 const cases = [
   // activation
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
   { name: 'BUNDLE_LOCKFILE_DISABLE=webpack', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'webpack' }, expect: null },
   { name: 'existing NODE_OPTIONS are preserved', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: '--max-old-space-size=3072', heapMB: 3072, expect: W5 },
+  // html-webpack-plugin 5 reads its favicon and emits it while webpack processes the assets: the package is listed
+  { name: 'webpack 5.111.1: html-webpack-plugin 5 favicon from a package', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_FAVICON: FAVICON },
+    expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
+  { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package (emitted in the emit hook)', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
+    nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
     lockfile: 'sbom/package-lock.json', expect: W5 },
   // build modes
@@ -732,6 +764,11 @@ const cases = [
   { name: 'persistent cache with child compilers (worker-loader): warm build = cold build', fixture: 'edge-worker', env: { EDGE_CACHE: '1' }, expect: WORKERS, cmd: WARM },
   // webpack versions
   { name: 'webpack 4.0.0', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.0.0') },
+  // webpack 4's hooks fail a build only with a compilation error (a throw there exits 0): strict mode does that too
+  { name: 'strict: failing adapter fails the build (webpack 4.0.0)', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: `${LEGACY_SSL} ${FAULT}`,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*webpack: could not collect the packages of \S*dist: injected fault/ },
+  { name: 'STRICT=0: failing adapter does not break the build (webpack 4.0.0)', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: `${LEGACY_SSL} ${FAULT}`,
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not collect the packages of \S*dist: Error: injected fault/ },
   { name: 'webpack 4.47.0 (child compiler: html-webpack-plugin 4)', fixture: 'wp4.47-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
   { name: 'webpack 4.47.0, default-if-unset NODE_OPTIONS script via yarn 1', fixture: 'wp4.47-npm', cmd: 'yarn -s webpack-prod', nodeOptions: `${LEGACY_SSL} --max_old_space_size=4096`, expect: W4('4.47.0') },
   { name: 'webpack 5.0.0', fixture: 'wp5.0-npm', cmd: 'npm run -s build', expect: W5 },
@@ -1003,11 +1040,12 @@ const cases = [
       'node_modules/is-odd': 'is-odd@3.0.1', 'node_modules/left-pad': 'left-pad@1.3.0', 'node_modules/ms': 'ms@2.1.3', 'node_modules/ms@2.1.3': 'ms@2.1.3',
       'node_modules/vscode-languageclient': 'vscode-languageclient@10.1.2' },
     // in any order: the note on a vendored copy, the warning on the package root without a package.json
-    expectOutput: /^(?=[\s\S]*note: \S*left-pad is a vendored copy of left-pad@1\.3\.0)(?=[\s\S]*no package\.json with name and version in \S*lib\/esm\/node_modules\/flat - its bundled files are listed as container@1\.0\.0)/ },
+    expectOutput: /^(?=[\s\S]*note: \S*left-pad is a vendored copy of left-pad@1\.3\.0)(?=[\s\S]*no package\.json with name and version in \S*lib\/esm\/node_modules\/flat - its bundled files are listed as container@1\.0\.0)/,
+    allowOwnWarnings: [VENDORED_FLAT] },
   { name: 'edge: vendored copies, BUNDLE_LOCKFILE_FIRST_PARTY=<fixture>/lib/** (an in-repo library)', fixture: 'edge-vendored', cmd: VENDORED_CMD,
-    env: { BUNDLE_LOCKFILE_FIRST_PARTY: '{fixture}/lib/**' }, expect: VENDORED.filter(p => p !== 'app-lib@1.0.0') },
+    env: { BUNDLE_LOCKFILE_FIRST_PARTY: '{fixture}/lib/**' }, expect: VENDORED.filter(p => p !== 'app-lib@1.0.0'), allowOwnWarnings: [VENDORED_FLAT] },
   { name: 'edge: vendored copies, BUNDLE_LOCKFILE_FIRST_PARTY=/** (none outside node_modules)', fixture: 'edge-vendored', cmd: VENDORED_CMD,
-    env: { BUNDLE_LOCKFILE_FIRST_PARTY: '/**' }, expect: ['container@1.0.0', 'inner-vendored@2.0.0', 'ms@2.1.3'],
+    env: { BUNDLE_LOCKFILE_FIRST_PARTY: '/**' }, expect: ['container@1.0.0', 'inner-vendored@2.0.0', 'ms@2.1.3'], allowOwnWarnings: [VENDORED_FLAT],
     expectKeys: { 'node_modules/container': 'container@1.0.0', 'node_modules/container/vendor/inner': 'inner-vendored@2.0.0', 'node_modules/ms': 'ms@2.1.3' } },
   { name: 'edge: externals are not listed', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_EXTERNALS: '1' },
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
@@ -1068,12 +1106,13 @@ const cases = [
         expectError: new RegExp(`bundle-lockfile: the lockfile would be missing or incomplete[\\s\\S]*${kind}: could not write \\S*dist/${file.replace('.', '\\.')}/package-lock\\.json`) },
       { name: `STRICT=0: a lockfile that cannot be written is a warning (${what})`, fixture, cmd: 'npm run -s build',
         env: { BUNDLE_LOCKFILE_FILE: `${file}/package-lock.json`, BUNDLE_LOCKFILE_STRICT: '0' }, lockfile: `${file}/package-lock.json`, expect: null,
-        expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not write`) }]),
+        expectOutput: new RegExp(`\\[bundle-lockfile\\] WARNING: ${kind}: could not write`), allowOwnWarnings: [UNLOCKABLE] }]),
   // an export directory that cannot be written (a file); the inline lockfile is written, the export copy not
   { name: 'strict: an export directory that cannot be written fails the build', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_EXPORT_DIR: '{fixture}/package.json' },
     expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*webpack: could not write \S*bundle-lockfile\/package-lock\.json/ },
   { name: 'STRICT=0: an export directory that cannot be written is a warning', fixture: 'wp5-npm', cmd: 'npm run -s build',
-    env: { BUNDLE_LOCKFILE_EXPORT_DIR: '{fixture}/package.json', BUNDLE_LOCKFILE_STRICT: '0' }, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write/ },
+    env: { BUNDLE_LOCKFILE_EXPORT_DIR: '{fixture}/package.json', BUNDLE_LOCKFILE_STRICT: '0' }, expect: W5, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not write/,
+    allowOwnWarnings: [UNLOCKABLE] },
   // settings that are set but not recognized (a misspelled name, a value bundle-lockfile does not know) or cannot work:
   // the build would not do what was asked of it
   ...[['webpack 5', 'wp5-npm'], ['Vite 8.3.3', 'vite8-npm'], ['rspack 2.2.8', 'rspack2.2-npm']].flatMap(([what, fixture]) => [
@@ -1151,7 +1190,8 @@ const cases = [
   { name: 'Vite 6.4.4: workers, CSS, Sass and Less @imports, plugin-legacy, vite-plugin-pwa, static copy', fixture: 'vite6-features', cmd: 'npm run -s build',
     expect: FEATURES_EXPECT, oracleMissing: FEATURES_MISSING },
   // build modes. build.write false: Vite writes nothing (a tool takes the output from Vite's API), neither does bundle-lockfile
-  { name: 'Vite 8.3.3, build.write false (no lockfile)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { VITE_WRITE_FALSE: '1' }, expect: null },
+  { name: 'Vite 8.3.3, build.write false (no lockfile)', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { VITE_WRITE_FALSE: '1' }, expect: null,
+    allowOwnWarnings: [UNLANDED] },
   // library mode with two formats: two outputs of one build in one directory, one lockfile
   { name: 'Vite 8.3.3, library mode with two formats', fixture: 'vite8-npm', cmd: 'npm run -s build', env: { VITE_LIB: '1' }, expect: VITE_EXPECT,
     oracleMissing: ['normalize.css@8.0.1'] },
@@ -1272,6 +1312,16 @@ const cases = [
   { name: 'Vite 7.3.7 watch mode: every rebuild writes the lockfile, with the packages of that build', fixture: 'vite7-npm', cmd: VITE_WATCH, expect: VITE_EXPECT,
     watchBuilds: VITE_WATCH_BUILDS,
     oracleMissing: ['normalize.css@8.0.1'] },
+  // a plugin copies a package's file into dist/ after every build (its closeBundle): listed after every rebuild too
+  // (copied: in no source map, oracleMissing)
+  ...[['Vite 8.3.3', 'vite8-npm'], ['Vite 7.3.7', 'vite7-npm']].flatMap(([v, fixture]) => [
+    { name: `${v} watch mode: a file a plugin copies into dist/ after every build is listed after every rebuild`, fixture, cmd: VITE_WATCH,
+      env: { BLTEST_VITE_WATCH: 'late' }, expect: [...VITE_EXPECT, 'is-number@7.0.0'].sort(), watchBuilds: VITE_WATCH_BUILDS.map(b => [...b, 'is-number@7.0.0'].sort()),
+      oracleMissing: ['is-number@7.0.0', 'normalize.css@8.0.1'] },
+    // strict mode in watch mode: a rebuild with a package that cannot be listed fails (Vite empties dist/ first: nothing
+    // of it ships, no lockfile), and the next rebuild writes the lockfile again
+    { name: `strict: ${v} watch mode, a rebuild with a package that cannot be listed fails, the next one writes the lockfile`, fixture, cmd: VITE_WATCH,
+      env: { BLTEST_VITE_WATCH: 'problem' }, expect: VITE_EXPECT, watchBuilds: [VITE_EXPECT, [], VITE_EXPECT], oracleMissing: ['normalize.css@8.0.1'] }]),
   // the build script overwrites NODE_OPTIONS: no lockfile, unless the node shim is first in PATH (also on Node 22, whose
   // loader-thread hooks are installed only in a process of a package that uses Vite)
   { name: 'Vite 8.3.3, script overwriting NODE_OPTIONS (no shim)', fixture: 'vite8-npm', cmd: 'npm run -s build-reset', expect: null },
@@ -1309,11 +1359,39 @@ const cases = [
     cmd: 'node build.mjs watch', expect: ESBUILD, watchBuilds: [ESBUILD, ESBUILD.filter(p => p !== 'nanoid@3.3.20'), ESBUILD], oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'esbuild 0.28.2: two build()s into one directory, one lockfile with the packages of both', fixture: 'esbuild', cmd: 'node build.mjs two',
     expect: [...ESBUILD, 'is-number@7.0.0'].sort(), oracleArgs: 'two', oracleMissing: ['bootstrap-icons@1.13.2'] },
-  { name: 'esbuild 0.28.2: write: false writes no lockfile', fixture: 'esbuild', cmd: 'node build.mjs write-false', expect: null },
+  { name: 'esbuild 0.28.2: write: false writes no lockfile', fixture: 'esbuild', cmd: 'node build.mjs write-false', expect: null, allowOwnWarnings: [UNLANDED] },
+  // a worker bundled by a write: false build without outdir (its output file is <stdout>), inlined as a string by a
+  // plugin's onLoad (esbuild-plugin-inline-worker), or written into the output by a plugin's onEnd; the oracle's source
+  // maps see neither (the worker is no module of the build, the written file has no map)
+  ...[['inlined by a plugin\'s onLoad', 'worker-inline'], ['written into the output by a plugin\'s onEnd', 'worker-file']].map(([what, mode]) => (
+    { name: `esbuild 0.28.2: a worker bundled with write: false, ${what}`, fixture: 'esbuild', cmd: `node build.mjs ${mode}`, expect: ['is-number@7.0.0'],
+      oracleArgs: mode, oracleMissing: ['is-number@7.0.0'] })),
+  // separate builds of one configuration into one directory: each keeps the other's packages (is-number: only the ES
+  // modules build has it)
+  { name: 'esbuild 0.28.2: an ES-module and a CommonJS build of the same entry into one directory, one lockfile with both', fixture: 'esbuild',
+    cmd: 'node build.mjs dual', expect: ['is-number@7.0.0', 'ms@2.1.3'], oracleArgs: 'dual' },
+  { name: 'esbuild 0.28.2: a script that changes its working directory after importing esbuild', fixture: 'esbuild', cmd: 'node build.mjs chdir',
+    expect: ESBUILD, oracleArgs: 'chdir', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild 0.28.2: context().serve() writes the output, and the lockfile', fixture: 'esbuild', cmd: 'node build.mjs serve', expect: ESBUILD,
+    oracleArgs: 'build', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild 0.28.2, strict: a rebuild with a problem rejects, the next one without it writes the lockfile', fixture: 'esbuild',
+    cmd: 'node build.mjs rebuild-fail', expect: ESBUILD, oracleArgs: 'build', oracleMissing: ['bootstrap-icons@1.13.2'] },
   // the command line is esbuild's binary: not hooked; its metafile, read by the importer, gives the lockfile
   { name: 'esbuild 0.28.2 command line: not hooked, no lockfile', fixture: 'esbuild', cmd: ESBUILD_CLI, expect: null },
   { name: 'esbuild 0.28.2 command line, its metafile read by bundle-lockfile-from-metafile', fixture: 'esbuild', cmd: `${ESBUILD_CLI} && ${FROM_METAFILE} meta.json`,
     expect: ESBUILD, oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // tsup writes esbuild's output itself (write: false): no lockfile, which fails the process when it ends - also when
+  // tsup changed the output first (treeshake: Rollup's generate() on it). The way out: bundle-lockfile-from-metafile
+  // (no oracle for tsup: the expected list is exact)
+  ...[['', {}], [' (treeshake)', { TSUP_TREESHAKE: '1' }]].map(([what, env]) => (
+    { name: `tsup 8.5.0${what}: the output it writes itself, in no lockfile, fails the process`, fixture: 'tsup', cmd: 'npm run -s build', env,
+      expectError: /esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin: no lockfile lists its packages/ })),
+  { name: 'tsup 8.5.0 (treeshake), BUNDLE_LOCKFILE_STRICT=0: a warning, no lockfile', fixture: 'tsup', cmd: 'npm run -s build',
+    env: { TSUP_TREESHAKE: '1', BUNDLE_LOCKFILE_STRICT: '0' }, expect: null,
+    expectOutput: /\[bundle-lockfile\] WARNING: esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin/ },
+  { name: 'tsup 8.5.0, its metafile read by bundle-lockfile-from-metafile', fixture: 'tsup', cmd: `BUNDLE_LOCKFILE_STRICT=0 npm run -s build && ${FROM_METAFILE} dist/metafile-esm.json`,
+    env: { TSUP_METAFILE: '1' }, expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'], oracle: false,
+    expectOutput: /\[bundle-lockfile\] WARNING: esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin/ },
   // a style sheet a plugin inlines (esbuild-sass-plugin's watchFiles), a file another plugin's onEnd copies out of a
   // package; the oracle's source maps see neither (the partial is inlined, the copy is none of esbuild's outputs)
   { name: 'esbuild 0.28.2: a Sass partial esbuild-sass-plugin inlines, a package file another plugin copies in onEnd', fixture: 'esbuild-features',
@@ -1328,6 +1406,10 @@ const cases = [
   { name: 'Parcel 2.16.4: parcel build', fixture: 'parcel', cmd: 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'],
     expectVia: { chunk: PARCEL('2.16.4').filter(p => p !== 'bootstrap-icons@1.13.2'), asset: ['bootstrap-icons@1.13.2'] } },
   { name: 'Parcel 2.16.4: JavaScript API, run()', fixture: 'parcel', cmd: 'node build.mjs api', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // two Parcels of one process into one directory, of one target (src/other.js has is-number only): the second keeps
+  // the files of the first that are still there, with their packages
+  { name: 'Parcel 2.16.4: JavaScript API, a second Parcel of the process into the same directory keeps the first one\'s packages', fixture: 'parcel',
+    cmd: 'node build.mjs two', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Parcel 2.16.4: JavaScript API, watch(): every rebuild writes the lockfile, with the packages of that build', fixture: 'parcel', cmd: 'node build.mjs watch',
     expect: PARCEL('2.16.4'), watchBuilds: [PARCEL('2.16.4'), PARCEL('2.16.4').filter(p => p !== 'is-number@7.0.0'), PARCEL('2.16.4')],
     oracleMissing: ['bootstrap-icons@1.13.2'] },
@@ -1341,10 +1423,20 @@ const cases = [
     expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of\s+\S+:\s+injected fault/ },
   { name: 'STRICT=0: failing adapter does not break the build (Parcel 2.16.4)', fixture: 'parcel', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages/ },
-  // (Parcel 2.0.0's own dependencies are ranges, ^2.0.0: its runtime, @parcel/runtime-js, is the latest 2.x)
-  ...[['2.0.0 (the first release)', 'parcel-floor', '2.16.4'], ['2.16.4, pnpm 10', 'parcel-pnpm10', '2.16.4'], ['2.16.4, yarn 4 Plug\'n\'Play', 'parcel-yarn4-pnp', '2.16.4']].map(([what, fixture, v]) => (
-    { name: `Parcel ${what}: parcel build`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'npm run -s build', expect: PARCEL(v), oracleMissing: ['bootstrap-icons@1.13.2'],
-      ...(fixture === 'parcel-floor' && { installed: ['@parcel/core@2.0.0'] }) })),
+  ...[['2.16.4, pnpm 10', 'parcel-pnpm10'], ['2.16.4, yarn 4 Plug\'n\'Play', 'parcel-yarn4-pnp']].map(([what, fixture]) => (
+    { name: `Parcel ${what}: parcel build`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  // Parcel before 2.13 (2.8.3, whose packages pin each other's versions: one @parcel/core; the earliest releases do not
+  // run on the Node.js versions tested, their lmdb-store has no build for them): the request graph's older shape, and a
+  // reporter's error that Parcel only prints - the process fails at its exit. Parcel 2.8 adds process for the browser
+  // (debug uses it)
+  { name: 'Parcel 2.8.3: parcel build', fixture: 'parcel-floor', cmd: 'npm run -s build', expect: PARCEL_FLOOR, oracleMissing: ['bootstrap-icons@1.13.2'],
+    installed: ['@parcel/core@2.8.3'] },
+  { name: 'Parcel 2.8.3: JavaScript API, watch(): every rebuild writes the lockfile, with the packages of that build', fixture: 'parcel-floor', cmd: 'node build.mjs watch',
+    expect: PARCEL_FLOOR, watchBuilds: [PARCEL_FLOOR, PARCEL_FLOOR.filter(p => p !== 'is-number@7.0.0'), PARCEL_FLOOR], oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'strict: failing adapter fails the process at its exit (Parcel 2.8.3, which only prints a reporter\'s error)', fixture: 'parcel-floor', cmd: 'npm run -s build', nodeOptions: FAULT,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of\s+\S+:\s+injected fault/ },
+  { name: 'STRICT=0: failing adapter does not break the build (Parcel 2.8.3)', fixture: 'parcel-floor', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages/ },
   // Angular's application builder: the lockfile with its output files (dist/browser/), from its final metafile (after
   // its chunk optimizer, which three lazy chunks turn on) and its asset files (bootstrap-icons' font, copied from
   // node_modules: in no source map, the oracle's); not uuid (unused)
@@ -1364,12 +1456,43 @@ const cases = [
     env: { NG_BUILD_OPTIMIZE_CHUNKS: '0' }, expectIn: { browser: ANGULAR('angular22') }, oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Angular 22.2.2: export directory only', fixture: 'angular22', cmd: 'npm run -s build', exportOnly: true, expectIn: { browser: ANGULAR('angular22') },
     oracleMissing: ['bootstrap-icons@1.13.2'] },
-  { name: 'Angular: BUNDLE_LOCKFILE_DISABLE=angular', fixture: 'angular22', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'angular' }, expect: null },
+  { name: 'Angular: BUNDLE_LOCKFILE_DISABLE=angular', fixture: 'angular22', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'angular' }, expect: null,
+    // Angular's own esbuild and Rolldown builds write nothing, Angular writes their output: in no lockfile
+    allowOwnWarnings: [UNLANDED] },
+  // outputPath.browser '' (as the browser-esbuild builder of @angular-devkit/build-angular always has it): Angular writes
+  // the browser files into dist/ itself - the lockfile there, its record saying so (the oracle's build into
+  // dist-oracle/browser/: its --output-path)
+  { name: 'Angular 22.2.2: ng build with outputPath.browser \'\', the lockfile in dist/', fixture: 'angular22', cmd: 'npm run -s build -- --configuration production,flat',
+    exportDir: true, expect: ANGULAR('angular22'), oracleArgs: '--browser-as-root', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // strict mode: Angular's own adapter failing (the fault only there: in the builds Angular runs with esbuild and
+  // Rolldown it trips first, through their adapters) fails ng build with the reason, and nothing is written - no export
+  // copy either; with BUNDLE_LOCKFILE_STRICT=0 the build succeeds without a lockfile, a warning says why
+  { name: 'strict: failing adapter fails the build (Angular 22.2.2)', fixture: 'angular22', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BLTEST_FAULT_IN: 'angular' },
+    exportDir: true, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*angular: could not collect the bundled packages: injected fault/ },
+  // a problem found after the lockfile was rendered (an asset copied from a package without a version): the build fails,
+  // and the export copy is not written either
+  { name: 'strict: a package without version fails ng build, no export copy (Angular 22.2.2)', fixture: 'angular22',
+    cmd: 'mkdir -p node_modules/bl-nover && echo \'{"name":"bl-nover"}\' > node_modules/bl-nover/package.json && echo x > node_modules/bl-nover/x.txt && npm run -s build -- --configuration production,nover',
+    exportDir: true, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*no package\.json with name and version in \S*bl-nover/ },
+  // a compile error: Angular writes none of its files - no lockfile, no export copy (the source put back after it)
+  { name: 'Angular 22.2.2: ng build with a compile error writes no lockfile, no export copy', fixture: 'angular22',
+    cmd: 'cp src/app/app.ts .app.ts.orig && echo \'const blTs: number = "x";\' >> src/app/app.ts; npm run -s build; s=$?; mv .app.ts.orig src/app/app.ts; exit $s',
+    exportDir: true, expectError: /TS2322/ },
+  { name: 'STRICT=0: failing adapter does not break the build (Angular 22.2.2)', fixture: 'angular22', cmd: 'npm run -s build', nodeOptions: FAULT,
+    env: { BLTEST_FAULT_IN: 'angular', BUNDLE_LOCKFILE_STRICT: '0' }, exportDir: true, expect: null,
+    expectOutput: /\[bundle-lockfile\] WARNING: angular: could not collect the bundled packages: Error: injected fault/,
+    // (no lockfile lists the output of Angular's own esbuild builds then)
+    allowOwnWarnings: [UNLANDED] },
   // i18n (localize: en-US, de): Angular writes a copy of the output per locale, translations inlined - each gets the
   // lockfile, in dist/browser/<locale>/ (the oracle reads each locale's source maps)
   ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
     { name: `Angular ${v}: ng build with i18n, a lockfile in each locale's output`, fixture, cmd: 'npm run -s build', oracleArgs: '--locales de,en-US',
       oracleMissing: ['bootstrap-icons@1.13.2'], expectIncludes: ANGULAR(fixture) })),
+  // ng extract-i18n: builds the app to read its messages, writes no output - no lockfile, not even an export copy
+  ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
+    { name: `Angular ${v}: ng extract-i18n writes no lockfile`, fixture, cmd: 'npx ng extract-i18n --output-path .xi18n', exportDir: true, expect: null,
+      // (Angular's own esbuild builds generate the application, which nothing writes)
+      allowOwnWarnings: [UNLANDED] })),
   // ng serve: the dev server builds into memory and serves it - no lockfile, served or written, not even an export copy
   ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
     { name: `Angular ${v}: ng serve writes no lockfile`, fixture, cmd: ANGULAR_SERVE, env: { BUNDLE_LOCKFILE_EXPORT_DIR: '/tmp/bl-angular-serve-export' }, expect: null })),
@@ -1402,6 +1525,8 @@ const cases = [
     { name: `Angular ${v}: ng build, server-side rendering with outputMode static (no server written, no server lockfile)`, fixture,
       cmd: 'npm run -s build -- --configuration production,static', oracleArgs: '--configuration static', oracleMissingIn: { browser: ['bootstrap-icons@1.13.2'] },
       allowWarnings: [MODULE_REGISTER],
+      // the server's build, which prerenders the pages and is not written
+      allowOwnWarnings: [UNLANDED],
       expectExcludes: ['left-pad@1.3.0', 'bl-canary-used@1.0.0', 'bl-canary-unused@1.0.0', 'bl-canary-dup@1.0.0'] },
   ]),
   { name: 'esbuild-wasm 0.28.2: build()', fixture: 'esbuild-wasm', cmd: 'node build.mjs build', env: { BLTEST_ESBUILD_PKG: 'esbuild-wasm' }, expect: ESBUILD,
@@ -1441,6 +1566,14 @@ const cases = [
     fixture: 'rollup-api', cmd: `node build.mjs ${mode}-plugin`, inject: false, env: { BLTEST_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: ROLLUP_API })),
   { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
+  // two outputs: Rolldown builds each with a bundler of its own, sharing the one plugin. No oracle: it builds one output
+  { name: 'Rolldown 1 JavaScript API: watch() with two outputs, every rebuild writes both lockfiles', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch-outputs',
+    expectIn: { '': ROLLUP_API, cjs: ROLLUP_API }, watchBuilds: ROLLUP_WATCH_BUILDS, oracle: false },
+  // strict mode in watch mode: a rebuild with a package that cannot be listed fails (nothing written: the lockfile of
+  // the output still in dist/ stays), the watcher goes on, and the next rebuild writes the lockfile again
+  ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => (
+    { name: `strict: ${what} JavaScript API watch(), a rebuild with a package that cannot be listed fails, the next one writes the lockfile`, fixture: 'rollup-api',
+      cmd: `node build.mjs ${mode}-watch-problem`, expect: ROLLUP_API, watchBuilds: [ROLLUP_API, ROLLUP_API, ROLLUP_API] })),
   { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
   { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rolldown', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', env: { BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, expect: null },
   // the other kinds stay hooked
@@ -1453,7 +1586,8 @@ const cases = [
   { name: 'Rolldown 1 command line (unsupported: fails)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser',
     expectError: /the rolldown command line is not hooked: its builds write no lockfile/ },
   { name: 'Rolldown 1 command line, BUNDLE_LOCKFILE_STRICT=0 (unsupported: no lockfile)', fixture: 'rollup-api', cmd: './node_modules/.bin/rolldown src/main.js -d dist -p browser',
-    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null },
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null,
+    expectOutput: /\[bundle-lockfile\] WARNING: the rolldown command line is not hooked: its builds write no lockfile/ },
   // nested: webpack's lockfile has the island's packages, found by the island's output hash in its lockfile
   { name: 'nested: Vite 8 island bundled by webpack 5', fixture: 'nested-island-wp5', cmd: 'npm run -s build', expect: NESTED_EXPECT },
   // the island's main.js changed after its build (a post-processing step): its record still names it by path, so its
@@ -1589,13 +1723,35 @@ const cases = [
     cmd: './node_modules/.bin/next build --turbopack', outDir: '.next/standalone',
     env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1', BUNDLE_LOCKFILE_STRICT: '0' }, oracleArgs: '--turbopack',
     expectIncludes: ['bl-canary-rt@1.0.0', 'bl-canary-legacy@1.0.0', 'bl-canary-ext@1.0.0'], canaryUnlisted: ['bl-canary-bundled@1.0.0'],
-    runtimeTrace: { routes: ['/', '/r'] } },
-  // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see
-  // docs/bundlers.md); the export directory has them
-  { name: "Next.js 16.4.0 --webpack, output: 'export': out/ gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
-    outDir: 'out', env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, expect: null },
+    runtimeTrace: { routes: ['/', '/r'] }, expectOutput: /\[bundle-lockfile\] WARNING: Next\.js built with Turbopack, which bundle-lockfile does not hook/ },
+  // a static export copies the pages and .next/static into out/ (out/_next/static): the client's lockfile goes along, to
+  // out/_next/ (adapters/next.cjs) - also where the compilers ran in build workers (Next.js 14 and later without a
+  // webpack() in the config: the export's process knows nothing of them), and from `next export` (Next.js 12)
+  ...[['16.4.0', 'next16', '--webpack', '19.3.0', {}], ['16.4.0', 'next16', '--webpack', '19.3.0', { NEXT_WEBPACK_FN: '1' }],
+    ['14.2.35', 'next14', '', '18.3.1', {}], ['13.5.11', 'next13', '', '18.3.1', {}]].map(([v, fixture, flags, react, env]) => (
+    { name: `Next.js ${v}${flags ? ` ${flags}` : ''}, output: 'export'${env.NEXT_WEBPACK_FN ? ', a webpack() in next.config.js (no build workers)' : ''}: out/_next gets the client's lockfile`,
+      fixture, cmd: `./node_modules/.bin/next build ${flags}`.trim(), outDir: 'out', oracleArgs: flags,
+      env: { ...NEXT_ENV, NEXT_EXPORT: '1', BLTEST_ORACLE_EXPORT: '1', ...env }, expectIncludes: [`react@${react}`] })),
+  { name: 'Next.js 12.3.7, next export: out/_next gets the client\'s lockfile', fixture: 'next12', cmd: './node_modules/.bin/next build && ./node_modules/.bin/next export',
+    outDir: 'out', env: { ...NEXT_ENV, BLTEST_ORACLE_EXPORT: '1' }, expectIncludes: ['react@18.3.1'], maxNode: 24 },
   { name: "Next.js 16.4.0 --webpack, output: 'export', export dir only", ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
     env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, exportOnly: true },
+  // a webpack() in next.config.js (as real apps have) turns Next.js 14 and later's build workers off: the compilers run in
+  // next build's own process - the same lockfiles
+  { name: 'Next.js 16.4.0 --webpack, a webpack() in next.config.js (no build workers)', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
+    env: { ...NEXT_ENV, NEXT_WEBPACK_FN: '1' } },
+  { name: 'Next.js 15.5.27, a webpack() in next.config.js (no build workers)', ...nextCase('next15', '15.5.27', '19.3.0'), env: { ...NEXT_ENV, NEXT_WEBPACK_FN: '1' } },
+  { name: 'Next.js 14.2.35, a webpack() in next.config.js (no build workers)', ...nextCase('next14', '14.2.35', '18.3.1'), env: { ...NEXT_ENV, NEXT_WEBPACK_FN: '1' } },
+  { name: "Next.js 16.4.0 --webpack, a webpack() in next.config.js (no build workers), output: 'standalone'", fixture: 'next16',
+    cmd: './node_modules/.bin/next build --webpack', outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1', NEXT_WEBPACK_FN: '1' },
+    oracleArgs: '--webpack', expectIncludes: ['next@16.4.0', 'react@19.3.0', 'ms@2.1.3'], runtimeTrace: { routes: ['/'] } },
+  // Next's own failure: the runtime packages cannot be collected (webpack disabled: its builds would fail first)
+  { name: "strict: failing adapter fails the build (Next.js 16.4.0, the server's runtime packages)", fixture: 'next16-runtime', cmd: './node_modules/.bin/next build --webpack',
+    outDir: '.next', nodeOptions: FAULT_FILES, env: { ...NEXT_ENV, BUNDLE_LOCKFILE_DISABLE: 'webpack' },
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*Next\.js: could not collect the server's runtime packages: injected fault/ },
+  { name: "STRICT=0: failing adapter does not break the build (Next.js 16.4.0, the server's runtime packages)", fixture: 'next16-runtime',
+    cmd: './node_modules/.bin/next build --webpack', outDir: '.next', nodeOptions: FAULT_FILES, env: { ...NEXT_ENV, BUNDLE_LOCKFILE_DISABLE: 'webpack', BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: Next\.js: could not collect the server's runtime packages: Error: injected fault/ },
   // App Router: the exact per-compiler lists are the oracle's; nanoid (edge route) and is-number (middleware) are in the
   // edge-server output
   { name: 'Next.js 15.5.27 App Router, edge route handler, middleware', ...nextCase('next15-app', '15.5.27', '19.3.0'),
@@ -1684,12 +1840,20 @@ const cases = [
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
   // what reaches the output besides the chunks' JavaScript modules (test/apps/rspack-features); the oracle builds without
   // inlining exports, so the modules of consts-only and consts-default are in its chunks, and matches the copies by bytes
-  ...[['1.2.8', '1.2'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+  ...[['1.2.8', '1.2'], ['1.4.11', '1.4'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
     { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports`, fixture: `rspack-features${line}`,
       cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
-  // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages)
-  { name: 'rspack 2.2.8: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, persistent cache: warm build = cold build',
-    fixture: 'rspack-features2.2', env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING },
+  // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages), and the
+  // modules whose exports were inlined stay listed
+  ...[['1.2.8', '1.2'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, persistent cache: warm build = cold build`,
+      fixture: `rspack-features${line}`, env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
+  // watch mode: rebuilt without the import of consts-only (it leaves the lockfile), then with it; the copies and the style
+  // sheets' packages stay
+  ...[['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, watch mode`, fixture: `rspack-features${line}`,
+      cmd: `${RSPACK_CONSTS} && ${WATCH} src/index.js "from 'consts-only'"`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING,
+      watchBuilds: [RSPACK_FEATURES, RSPACK_FEATURES.filter(p => !p.startsWith('consts-only@')), RSPACK_FEATURES] })),
   // outputs: two compilers writing to dist/ (one process and two), as edge-shared-output's
   { name: 'rspack 2.2.8: two compilers, one output dir', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: '1' }, expect: SHARED },
   { name: 'rspack 2.2.8: two rspack processes, one output dir, in parallel', fixture: 'rspack2.2-npm', cmd: PARALLEL_RSPACK, env: { RSPACK_SHARED: '1' },
@@ -1725,12 +1889,14 @@ const cases = [
   { name: 'rspack 2.2.8, shim: cross-env NODE_OPTIONS=... (no shim)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-crossenv', expect: null },
   { name: 'rspack 2.2.8, shim: cross-env NODE_OPTIONS=...', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-crossenv', shim: true, expect: W5 },
   // strict mode: a lockfile that cannot be written (main.js is a file), a bundled package that cannot be listed
-  { name: 'strict: a lockfile that cannot be written fails the build (rspack 2.2.8)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
-    env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json' },
-    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack: could not write \S*dist\/main\.js\/package-lock\.json/ },
+  // (rspack 1 writes the lockfile with another output file system: graceful-fs before 1.6)
+  ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm'], ['1.1.8', 'rspack1.1-npm']].map(([v, fixture]) => (
+    { name: `strict: a lockfile that cannot be written fails the build (rspack ${v})`, fixture, cmd: 'npm run -s build',
+      env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json' },
+      expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack: could not write \S*dist\/main\.js\/package-lock\.json/ })),
   { name: 'STRICT=0: a lockfile that cannot be written is a warning (rspack 2.2.8)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json', BUNDLE_LOCKFILE_STRICT: '0' }, lockfile: 'main.js/package-lock.json', expect: null,
-    expectOutput: /\[bundle-lockfile\] WARNING: rspack: could not write/ },
+    expectOutput: /\[bundle-lockfile\] WARNING: rspack: could not write/, allowOwnWarnings: [UNLOCKABLE] },
   // no oracle: it names packages by their package.json too, and finds none for naked
   { name: 'strict: a bundled package that cannot be listed fails the build (rspack 2.2.8)', fixture: 'rspack2.2-npm', env: { RSPACK_NAKED: '1' }, cmd: NAKED,
     expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*no package\.json with name and version in \S*node_modules\/naked - its bundled files are not listed/ },
@@ -1742,16 +1908,23 @@ const cases = [
   { name: 'rspack 1.7.12 and 2.2.8 in one process (OHIF: the config\'s CopyRspackPlugin from rspack 1, built by @rspack/cli 2)', fixture: 'rspack-copies',
     cmd: 'npm run -s build', expect: W5_COPY, oracleArgs: '--from node_modules/@rspack/cli' },
   // Rsbuild: its rspack compiler, the file copied by output.copy
-  ...[['1.1.10', 'rsbuild1.1-npm', 'npm run -s build'], ['1.2.19', 'rsbuild1.2-npm', 'npm run -s build'], ['1.7.6', 'rsbuild1.7-npm', 'npm run -s build'],
+  ...[['1.1.10', 'rsbuild1.1-npm', 'npm run -s build'], ['1.2.19', 'rsbuild1.2-npm', 'npm run -s build'], ['1.6.15', 'rsbuild1.6-npm', 'npm run -s build'],
+    ['1.7.6', 'rsbuild1.7-npm', 'npm run -s build'],
     ['2.2.12', 'rsbuild2.2-npm', 'npm run -s build'], ['2.2.12, bun', 'rsbuild2.2-bun', 'bun run build'],
     ['2.2.12, yarn 4.18.1 Plug\'n\'Play', 'rsbuild2.2-yarn4-pnp', 'yarn build']].map(([what, fixture, cmd]) => (
     { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
+  // Rsbuild 1.5 and 1.6 have rspack inline constant exports in production (experiments.inlineConst): consts-only's
+  // module is in no chunk (the oracle builds without inlining)
+  ...[['1.6.15', 'rsbuild1.6-npm'], ['1.7.6', 'rsbuild1.7-npm'], ['2.2.12', 'rsbuild2.2-npm']].map(([v, fixture]) => (
+    { name: `Rsbuild ${v}: a package whose exports rspack inlined`, fixture, env: { RSBUILD_CONSTS: '1' },
+      cmd: 'rm -rf node_modules/consts-only && cp -r pkgs/consts-only node_modules/ && npm run -s build', expect: [...W5_COPY, 'consts-only@1.0.0'].sort() })),
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not hook: recognized, it fails (strict);
   // STRICT=0: no bundle lockfile, but the server's runtime packages (from Turbopack's traces)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: fails)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV,
     expectError: /Next\.js built with Turbopack, which bundle-lockfile does not hook: no lockfile/ },
   { name: 'Next.js 16.4.0 Turbopack, BUNDLE_LOCKFILE_STRICT=0 (unsupported: only the runtime packages)', fixture: 'next16', cmd: './node_modules/.bin/next build',
-    outDir: '.next', env: { ...NEXT_ENV, BUNDLE_LOCKFILE_STRICT: '0' }, expectIn: { runtime: 'oracle' } },
+    outDir: '.next', env: { ...NEXT_ENV, BUNDLE_LOCKFILE_STRICT: '0' }, expectIn: { runtime: 'oracle' },
+    expectOutput: /\[bundle-lockfile\] WARNING: Next\.js built with Turbopack, which bundle-lockfile does not hook/ },
   // frameworks and plugins on rspack
   // Next.js with next-rspack: the same compilers, built by rspack, the same lockfiles as with webpack (exact lists: the
   // oracle's of the webpack cases above). The oracle's stats plugin works on rspack's compilers too
@@ -1800,6 +1973,14 @@ const cases = [
   // more outputs: HtmlRspackPlugin's child compilation adds no packages and no lockfile
   ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm']].map(([v, fixture]) => (
     { name: `rspack ${v}: HtmlRspackPlugin`, fixture, cmd: 'npm run -s build', env: { RSPACK_HTML: '1' }, expect: W5 })),
+  // ... its favicon from a package, which it reads in Rust and emits as an asset: the package is listed; so is Rsbuild's
+  // html.favicon, which Rsbuild reads and emits itself
+  ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm']].map(([v, fixture]) => (
+    { name: `rspack ${v}: HtmlRspackPlugin favicon from a package`, fixture, cmd: 'npm run -s build', env: { RSPACK_FAVICON: FAVICON },
+      expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] })),
+  ...[['1.7.6', 'rsbuild1.7-npm'], ['2.2.12', 'rsbuild2.2-npm']].map(([v, fixture]) => (
+    { name: `Rsbuild ${v}: html.favicon from a package`, fixture, cmd: 'npm run -s build', env: { RSBUILD_FAVICON: FAVICON },
+      expect: [...W5_COPY, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] })),
   { name: 'rspack 2.2.8: two compilers, two output dirs', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: 'apart' },
     expectIn: { a: ['ms@2.1.3'], b: ['debug@2.6.9', 'ms@2.0.0'] } },
   // output.path 'dist/[fullhash]': each compiler's own directory. No oracle: it builds without minimizing, which changes

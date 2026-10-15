@@ -179,7 +179,12 @@ Besides the modules of the written chunks, a lockfile lists the packages of:
   false`). Their chunks' packages are kept in memory, in the process, and listed where the same bytes end up in a
   written output (a chunk or JavaScript asset with that content), or where a module imports the build's entry file
   with a query (`?worker&inline`). So are the package files their assets were emitted from (a worker's font), by the
-  asset's bytes: the main build emits them again without naming the file.
+  asset's bytes: the main build emits them again without naming the file. Such a build that names where its output
+  goes (Rollup's `generate()` with `dir` or `file`, esbuild's `write: false` with `outdir` or `outfile`) leaves that
+  path in `core/generated.cjs` (`addDestined`): a file there when the process ends that no lockfile of the process
+  lists and that was written after the build (as built, or changed) was written by the caller (tsup), and is a
+  problem. A build that only looks at its output, or whose output another build emits (Vite's workers and polyfills,
+  whose files the main build lists), leaves nothing new there.
 - **files a loader or plugin inlines into a module** (style sheets a style sheet `@import`s, images and fonts it
   inlines as `data:` URLs, a shader's `#include`s, JSON merged in): no modules, recorded only by the loader or plugin
   that read them. A recorded file counts if it is no code and no build tool's settings by its name
@@ -349,9 +354,9 @@ Where rspack's compilations differ:
 
 | | webpack | rspack |
 |---|---|---|
-| copies (copy-webpack-plugin / CopyRspackPlugin) | `info.sourceFilename`, relative to the context | relative to the copy pattern's context (a copied file: its name). The file dependencies whose path ends with that name are its candidates (the same file through several paths once); the one with the copy's bytes before the optimize stages (minimizers change copies) is its source, and a first-party source lists nothing; with none, every package file with that name (a copy transformed on the way). A name no file dependency has: the package file with the copy's bytes, as for copy-webpack-plugin 6.0 – 6.2 |
+| copies (copy-webpack-plugin / CopyRspackPlugin) | `info.sourceFilename`, relative to the context | relative to the copy pattern's context (a copied file: its name). The file dependencies whose path ends with that name are its candidates (the same file through several paths once); the one with the copy's bytes before the optimize stages (minimizers change copies) is its source, and a first-party source lists nothing; with none (a copy transformed on the way), the candidate at that name below the compiler's context (the pattern's default context), else every package file with that name. A name no file dependency has: the package file with the copy's bytes, as for copy-webpack-plugin 6.0 – 6.2 |
 | style sheets loaders inline | in the module's `buildInfo` (`fileDependencies`, or its snapshot) | `buildInfo.fileDependencies` from 1.3.14; before, every style sheet below `node_modules` among the compilation's file dependencies |
-| inlined constants (`optimization.inlineExports`) | webpack 5.108+: such a module is in no chunk, not listed | listed: modules in no chunk whose exports info says they are used (`isModuleUsed`), when the options inline exports and analyse their use (else every module counts as used); the options are read after rspack filled in its defaults |
+| inlined constants (`optimization.inlineExports`) | webpack 5.108+: such a module is in no chunk, not listed | listed: modules in no chunk whose exports info says they are used (`isModuleUsed`), when the options inline exports (`optimization.inlineExports`; 1.4 – 1.6: `experiments.inlineConst` or `inlineEnum`, without which the parser option fails) and analyse their use (else every module counts as used); rspack 1.4 marks such modules unused: there every package module in no chunk; the options are read after rspack filled in its defaults |
 | the match resource | `nameForCondition()` | the same from 1.7; before, `matchResource` is taken first |
 | hooks | an unknown hook is `undefined` | rspack 2's hooks objects throw on reading an unknown hook: optional hooks are read with `in` first |
 | `compilation.modules` | cheap | each module becomes a JavaScript object when read (about 45 µs and 20 KB each): read only where needed |
@@ -399,9 +404,17 @@ sequenceDiagram
   `false`: no code of it ships), `?query` and `#hash` suffixes. Every input of an output counts, also one without bytes
   in it (a module that only re-exports); a tree-shaken one is in no output.
 - A build with `write: false` (or without `outdir` and `outfile`) writes nothing itself: its outputs' packages go to
-  `core/generated.cjs`, by content and entry file, as for Rollup's `generate()`.
+  `core/generated.cjs`, by content and entry file, as for Rollup's `generate()`. Without `outdir` and `outfile` its one
+  output file is `<stdout>` in `outputFiles` and named after the entry point in the metafile. The entry files count
+  for a module of a later build whose contents a plugin gave (the recording `onLoad`), not its own entry point: a
+  plugin that inlines a sub-build's output into the module it loads (esbuild-plugin-inline-worker).
+- The default working directory is esbuild's own: `process.cwd()` when its `lib/main.js` ran (`var defaultWD`), taken
+  in `onCjsLoad` and passed into the options as `absWorkingDir`.
 - Vite 5 – 7 build with esbuild too: dependency pre-bundling and its scan (their plugins `vite:dep-pre-bundle`,
-  `vite:dep-scan`) and `vite.config.*` (`externalize-deps` with `inject-file-scope-variables`): left alone.
+  `vite:dep-scan`), `vite.config.*` (`externalize-deps` with `inject-file-scope-variables`) and a dependency's entry for
+  its exports (`extractExportsData`, with `optimizeDeps.extensions`: `write: false`, one entry point, the plugins of
+  `optimizeDeps.esbuildOptions`, so told by its caller in the stack, a function of that name in Vite's `dist/node`):
+  left alone.
 - esbuild before 0.17 has no `context()` (rebuilds were `build({ incremental })`): a call that would write an output
   fails (strict mode) instead of writing no lockfile.
 
@@ -430,7 +443,15 @@ chunk optimizer) as output files, `browser-stats.json` and `server-stats.json` (
 (17 – 21). The wrapper reads them (and takes them out again unless the build asked for stats), maps their outputs'
 inputs and the result's asset files (`assetFiles`, copies Angular makes, also from `node_modules`) to packages, renders
 the lockfile with `core/outputs.cjs` and adds it with `addOutputFile`. Angular writes it; the export copy is written by
-bundle-lockfile.
+bundle-lockfile, only once the build is known not to fail (a problem in strict mode is an error of the result: Angular
+writes none of its files).
+- `executeBuild`'s second argument is the builder's context (Architect's `BuilderContext`): builds of the builders
+  whose output nobody ships (`context.builder.builderName` ending in `:dev-server`, `:extract-i18n`, `:karma`,
+  `:unit-test`) run unchanged, without stats, and get no lockfile.
+- A side's directory is `outputOptions.browser` / `.server` as Angular normalized them (defaults `browser`, `server`);
+  `''` is the output path itself (`browser-esbuild` always has `browser: ''`). With `server: ''` the server's lockfile,
+  a Root file at `<file>`, would be the browser's path in its directory: the browser's lockfile is then a Root file at
+  `<browser>/<file>`. Media files (type Media: what style sheets reference) are the browser's.
 - One `stats.json` (17 – 21) keys both sides' outputs by their path in their own directory (`main.server.mjs`, not
   `server/main.server.mjs`): an output belongs to the side whose output files (type Browser; ServerApplication or
   ServerRoot) have its path, to both if both have it; one no output file has counts for the browser in a build without

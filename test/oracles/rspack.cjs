@@ -3,8 +3,9 @@
 // bundle-lockfile, into dist-oracle/, and derives the packages from rspack's stats (stats.cjs). Shares no code with the
 // adapter, which reads the chunk graph, the files rspack copied and the modules whose exports it inlined. Two settings
 // differ from the build, so that what it ships is seen:
-// - optimization.inlineExports: false (rspack 1.7 and later): rspack inlines a module's constant exports into the
-//   modules using them, and the module is then in no chunk; here it stays in one
+// - no exports inlined (optimization.inlineExports: false from rspack 1.7, experiments.inlineConst and inlineEnum false
+//   in 1.4 - 1.6, see stats.cjs oracleRspackConfig): rspack inlines a module's constant exports into the modules using
+//   them, and the module is then in no chunk; here it stays in one
 // - optimization.minimize: false: copied files (asset info.copied) keep their bytes, which are matched against the files
 //   in packages the compilation depends on (CopyRspackPlugin's sourceFilename is relative to its pattern, not the context)
 // Neither changes which other modules are bundled.
@@ -15,13 +16,12 @@
 // lockfile, so their packages are merged
 const path = require('path');
 const { createRequire } = require('module');
-const { rspackResult } = require('./stats.cjs');
+const { rspackResult, oracleRspackConfig } = require('./stats.cjs');
 
 const args = process.argv.slice(2);
 const from = args.includes('--from') ? args[args.indexOf('--from') + 1] : '.';
 const rspack = createRequire(path.resolve(from, 'package.json'))('@rspack/core');
 const config = createRequire(path.resolve('package.json'))('./rspack.config.js');
-const [major, minor] = rspack.rspackVersion.split('.').map(Number);
 const dist = path.resolve('dist');
 const oracleDist = path.resolve('dist-oracle');
 
@@ -29,7 +29,7 @@ const configs = Array.isArray(config) ? config : [config];
 for (const c of configs) {
   const out = c.output && c.output.path ? path.resolve(c.output.path) : dist;
   c.output = { ...c.output, path: path.join(oracleDist, path.relative(dist, out)) };
-  c.optimization = { ...c.optimization, minimize: false, ...((major > 1 || minor >= 7) && { inlineExports: false }) };
+  oracleRspackConfig(c, rspack.rspackVersion);
 }
 
 rspack(Array.isArray(config) ? configs : configs[0], (err, stats) => {

@@ -34,6 +34,21 @@
               "outputHashing": "all",
               "budgets": []
             },
+            "nover": {
+              "assets": [
+                {
+                  "glob": "x.txt",
+                  "input": "node_modules/bl-nover",
+                  "output": "nover"
+                }
+              ]
+            },
+            "flat": {
+              "outputPath": {
+                "base": "dist",
+                "browser": ""
+              }
+            },
             "oracle": {
               "sourceMap": {
                 "scripts": true,

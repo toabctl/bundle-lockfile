@@ -17,8 +17,10 @@ const app = {
   ...(process.env.RSPACK_CACHE && cache),
   // RSPACK_EXTERNALS=1: lodash-es comes from a global at runtime (e.g. a CDN script), not from the bundle
   ...(process.env.RSPACK_EXTERNALS && { externals: { 'lodash-es': 'lodashEs' } }),
-  // RSPACK_HTML=1: HtmlRspackPlugin writes index.html (rspack loaded only then, see above)
-  ...(process.env.RSPACK_HTML && { plugins: [new (require('@rspack/core').HtmlRspackPlugin)()] }),
+  // RSPACK_HTML=1: HtmlRspackPlugin writes index.html (rspack loaded only then, see above); RSPACK_FAVICON=<file>: also
+  // its favicon (relative to the app), which it reads (in Rust) and emits as an asset
+  ...((process.env.RSPACK_HTML || process.env.RSPACK_FAVICON) && { plugins: [new (require('@rspack/core').HtmlRspackPlugin)(
+    process.env.RSPACK_FAVICON ? { favicon: path.join(__dirname, process.env.RSPACK_FAVICON) } : {})] }),
   // RSPACK_WRITE_TO_DISK=1: rspack serve writes its output to disk too
   ...(process.env.RSPACK_WRITE_TO_DISK && { devServer: { devMiddleware: { writeToDisk: true } } }),
 };
