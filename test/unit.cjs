@@ -3531,6 +3531,16 @@ test('copies of outputs: an output\'s files copied with fs elsewhere without the
   outputs.emitted(target, 'nuxt-client');
   await write();
   for (const d of ['.output/public', 'pub2', 'early']) assert.deepEqual(lockedNames(fs.readFileSync(J(root, d, LOCK), 'utf8')), ['a', 'b'], d);
+  // a destination not cleaned since an earlier run: the copy that run left there is replaced; another build's lockfile not
+  const idOf = (w) => crypto.createHash('sha256').update(w).digest('hex').slice(0, 16);
+  for (const [d, id] of [['old', idOf('nuxt-client')], ['theirs', 'another-build']]) {
+    fs.mkdirSync(J(root, d, 'bundle-lockfile'), { recursive: true });
+    fs.writeFileSync(J(root, d, LOCK), toPackageLock([], root, { dir: J(root, d, 'bundle-lockfile'), writers: [{ id, files: [J(root, d, '_nuxt/e.js')], paths: [] }] }));
+    fs.mkdirSync(J(root, d, '_nuxt'), { recursive: true });
+    fs.copyFileSync(files[0], J(root, d, '_nuxt/e.js'));
+  }
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'old', LOCK), 'utf8')), ['a', 'b']);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'theirs', LOCK), 'utf8')), []);
   // with BUNDLE_LOCKFILE_INLINE=0: no lockfile in outputs, none in copies of them
   await withConfig({ inline: false }, async () => {
     fs.mkdirSync(J(root, 'pub4/_nuxt'), { recursive: true });
@@ -3538,6 +3548,26 @@ test('copies of outputs: an output\'s files copied with fs elsewhere without the
     assert.equal(fs.existsSync(J(root, 'pub4', LOCK)), false);
   });
 });
+
+test('outputs: the export copy is written under its own lock also with the inline lockfile (a write without it locks only that one)', () => withConfig({ exportDir: null, exportBase: null }, async () => {
+  const { lock } = require('../src/core/lock.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  config.exportDir = J(root, 'export');
+  config.exportBase = root;
+  const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
+  const target = J(root, 'dist', LOCK);
+  outputs.record(target, 'export-lock', [a], root, [J(root, 'dist/x.js')], { disk: true });
+  outputs.emitted(target, 'export-lock');
+  // (as Angular's write of the export copy, or one whose output directory is gone, holds it)
+  const release = await lock(exportPath(target));
+  let done = false;
+  const write = outputs.rewrite(target, outputs.writeDisk(target)).then(() => { done = true; });
+  await new Promise(res => setTimeout(res, 200));
+  assert.equal(done, false);
+  release();
+  await write;
+  assert.deepEqual(lockedNames(fs.readFileSync(exportPath(target), 'utf8')), ['a']);
+}));
 
 test('copies of lockfiles: an export copy copied with fs is re-anchored like its lockfile', () => withConfig({ exportDir: null }, async () => {
   const { readMeta } = require('../src/core/lockfile.cjs');

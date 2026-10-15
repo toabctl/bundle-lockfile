@@ -392,7 +392,8 @@ const within = (dir, p) => p === dir || p.startsWith(dir + path.sep);
 // .output/public/_nuxt/, which ships - .nuxt/dist/client/bundle-lockfile/ stays behind. That copy of the output gets a
 // copy of its lockfile, where the copy's output directory is (as many directories up from the copy as the file is
 // below the output directory), followed like a copied lockfile: written again with every write of its lockfile.
-// Not with BUNDLE_LOCKFILE_INLINE=0 (no lockfile in outputs), nor where a lockfile is (another build's, a copy), nor in
+// Not with BUNDLE_LOCKFILE_INLINE=0 (no lockfile in outputs), nor where a lockfile is (another build's, a copy) - but the
+// copy an earlier run left there (a destination not cleaned between builds), which would keep its packages -, nor in
 // node_modules. A copy of only some of the output's files lists all of its packages: more, not fewer.
 /**
  * @param {string} src
@@ -410,7 +411,7 @@ function outputCopy(src, dest, isDirectory) {
     // a place that is (in) an output, or has one in it (a file copied up into the project): no copy there
     if (dirs.some(([, d]) => within(d, root) || within(root, d)) || root.split(path.sep).includes('node_modules')) return;
     const copy = path.join(root, config.file);
-    if (outputs.copies.has(copy) || there(copy)) return;
+    if (outputs.copies.has(copy) || (there(copy) && !earlierCopy(copy, target))) return;
     /** @type {string | null} */
     let content = null;
     try { content = fs.readFileSync(/** @type {string} */ (stateFile(target)), 'utf8'); } catch { /* not written yet: when it is (follow) */ }
@@ -425,6 +426,16 @@ function outputCopy(src, dest, isDirectory) {
     config.debug('a copy of the output', odir, 'in', root, '- its lockfile:', copy);
     return;
   }
+}
+
+// The lockfile at `copy` is one an earlier run copied of `target`: its record has a writer this process has there
+/** @param {string} copy @param {string} target */
+function earlierCopy(copy, target) {
+  const own = new Set([...(outputs.files.get(target) || new Map()).values()].map(w => w.id));
+  try {
+    const meta = readMeta(fs.readFileSync(copy, 'utf8'), path.dirname(copy), contextsOf(target));
+    return !!meta && meta.writers.some(w => own.has(w.id));
+  } catch { return false; }
 }
 
 if (!outputs.listening) { outputs.listening = true; copies.onCopy(copied); } // once per process, also with copies of this module
@@ -502,6 +513,10 @@ function rewrite(target, writeFile) {
       // directory removed after the build) the export copy - a lock in the output directory would recreate it
       const shared = outputs.disk.get(target) && (writeFile ? stateFile(target) : exportPath(target));
       if (shared) release = await lock(shared);
+      // the export copy, which a write without the inline file (above) locks by itself: under its lock too (after the
+      // other one, always in this order)
+      const exp = outputs.disk.get(target) && writeFile && config.inline ? exportPath(target) : null;
+      if (exp) { const first = release, second = await lock(exp); release = () => { second(); first(); }; }
       const content = render(target);
       if (content === null) { config.debug('nothing recorded for', target, '- not written'); return undefined; }
       if (!writeFile && !exportPath(target)) nowhere();
