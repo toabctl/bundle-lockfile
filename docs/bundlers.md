@@ -18,7 +18,7 @@ What is supported and tested, which processes are hooked, and what is particular
 | Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
-| Parcel | 2 | 2.0 (with the 2.16 plugins its ranges install), 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
+| Parcel | 2 | 2.8, 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
 | Angular | 20 – 22 (application builder) | 20.3, 21.2, 22.2 | CommonJS: its `executeBuild()` | `ng build`; the lockfile in `<outputPath>/browser/` (SSR: also `server/`; i18n: each locale's directory); `ng serve` writes none; [details](#angular) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
@@ -187,7 +187,8 @@ writes the lockfile too.
 - The lockfile goes into each target's `distDir`, once Parcel wrote the bundles (`buildSuccess`); in watch mode after
   every rebuild. A failed build changes nothing.
 - It lists the packages of the assets of every bundle (also of bundles inlined into others), except those the
-  scope-hoisting packager leaves out (no side effects, no used symbol, not referenced). CSS `@import`s and files a
+  scope-hoisting packager of JavaScript bundles leaves out (no side effects, no used symbol, not referenced; a CSS
+  bundle has all of its style sheets, also those of a package without side effects). CSS `@import`s and files a
   style sheet's `url()` loads (fonts) are assets. So is Parcel's runtime, which loads lazy bundles: Parcel generates it
   as a file of `@parcel/runtime-js`, which is listed. The prelude and module wrappers around the JavaScript bundles'
   assets are written by Parcel's JavaScript packager: `@parcel/packager-js`, as the project resolves it, is listed for
@@ -196,7 +197,11 @@ writes the lockfile too.
   Parcel's request graph, where the transformers record them as files the style sheet's asset depends on (also in a
   build from `.parcel-cache`, which transforms nothing again). A build with style sheets whose request graph cannot be
   read fails (strict).
-- A problem fails the build: the reporter throws, Parcel reports the build as failed.
+- A problem fails the build: the reporter throws, Parcel reports the build as failed. Parcel before 2.13 only prints a
+  reporter's error and goes on: the process fails at its exit.
+- Several Parcels of one process (a script that builds one entry after the other) into the same `distDir` are writers
+  of one lockfile: a later one keeps the packages of the files an earlier one left there.
+
 ## Angular
 
 Angular's application builder (`@angular/build`, `ng build`) bundles with esbuild into memory and writes the files

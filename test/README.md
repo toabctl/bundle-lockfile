@@ -253,11 +253,12 @@ process's `locations` (a second build, then the first one again).
 
 **Parcel** (`apps/parcel`, compared with an oracle that builds again with Parcel's source maps, `oracles/parcel.cjs`;
 the font has none):
-- `parcel build`, the JavaScript API's `run()` and `watch()` (a rebuild without an import, then with it again), a build
+- `parcel build`, the JavaScript API's `run()` (also two Parcels one after the other into one directory) and `watch()`
+  (a rebuild without an import, then with it again), a build
   with a cache from a build without bundle-lockfile, the export directory only, `BUNDLE_LOCKFILE_DISABLE=parcel`, a
   failing adapter
-- Parcel 2.0.0 (its `@parcel/core`; its plugins' ranges install the 2.16 ones) and 2.16.4, npm, pnpm, yarn 4
-  Plug'n'Play; the canary app
+- Parcel 2.8.3 (before 2.13, which fails a build with a reporter's error: the process fails at its exit; the older
+  shape of Parcel's request graph) and 2.16.4, npm, pnpm, yarn 4 Plug'n'Play; the canary app
 **Angular** (`apps/angular`, an application builder app with three lazy chunks, which turn on Angular's chunk
 optimizer, and an asset glob from `node_modules`; compared with an oracle that builds again with source maps of the
 sources, not the packages' own, and without the chunk optimizer, whose maps name no sources, `oracles/angular.cjs`):

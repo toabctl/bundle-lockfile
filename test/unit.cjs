@@ -5049,16 +5049,25 @@ test('strict: Parcel before 2.13 only prints a reporter\'s error - the process f
   for (const [version, status] of [['2.8.3', 1], ['2.12.0', 1], ['2.13.0', 0], ['2.16.4', 0]]) {
     const root = project({ 'node_modules/@parcel/core/package.json': { name: '@parcel/core', version }, 'node_modules/@parcel/core/lib/Parcel.js': '' });
     const where = J(root, 'node_modules/@parcel/core/lib/Parcel.js');
-    // Parcel's reporter runner: the reporter's error caught (and printed), the build goes on, the CLI exits with 0
+    // Parcel's reporter runner: the reporter's error caught (and printed), the build goes on, the CLI exits with 0.
+    // Parcel's command line sends console's output to its logger (patchConsole), which prints nothing at the exit:
+    // bundle-lockfile's messages are printed all the same
     const script = `const parcel = require(${JSON.stringify(J(SRC, 'adapters/parcel.cjs'))});
       class Parcel { run() {} watch() {} }
       parcel.onCjsLoad({ default: Parcel }, ${JSON.stringify(where)}, () => ${JSON.stringify(where)});
+      const log = console.log;
+      console.log = console.warn = console.error = () => {};
       parcel.report({ event: { type: 'buildSuccess', bundleGraph: null }, options: { projectRoot: ${JSON.stringify(root)} } })
-        .then(() => console.log('no error'), (e) => { console.log('reporter error:', e.message.split('\\n')[0]); process.exit(0); });`;
+        .then(() => log('no error'), (e) => { log('reporter error:', e.message.split('\\n')[0]); process.exit(0); });`;
     const r = nodeWith(strictEnv(undefined), ['-e', script]);
     assert.match(r.stdout, /reporter error: bundle-lockfile: the lockfile would be missing or incomplete/, version);
     assert.equal(r.status, status, `${version}: ${r.stderr}`);
-    if (status) assert.match(r.stderr, /could not collect the bundled packages of the build/, version);
+    if (status) assert.match(r.stderr, /\[bundle-lockfile\] ERROR: parcel: could not collect the bundled packages of the build/, version);
+    // BUNDLE_LOCKFILE_STRICT=0: a warning, no failure
+    const lax = nodeWith(strictEnv('0'), ['-e', script]);
+    assert.equal(lax.stdout.trim(), 'no error', version);
+    assert.equal(lax.status, 0, `${version}: ${lax.stderr}`);
+    assert.match(lax.stderr, /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages of the build/, version);
   }
 });
 
@@ -5092,7 +5101,8 @@ test('parcel adapter: the Parcel class gets the reporter in its options; another
 
 function fakeBundleGraph(bundles) {
   const asset = (filePath, o = {}) => ({ filePath, sideEffects: o.sideEffects !== false, used: o.used || new Set(['default']), ref: !!o.ref });
-  const bs = bundles.map(b => ({ ...b, env: { shouldScopeHoist: b.scope !== false }, assets: b.assets.map(a => (typeof a === 'string' ? asset(a) : asset(a.f, a))),
+  // (a bundle's type: Parcel's, e.g. 'js' or 'css' - the file's extension where the test gives none)
+  const bs = bundles.map(b => ({ type: typeof b.filePath === 'string' ? path.extname(b.filePath).slice(1) : undefined, ...b, env: { shouldScopeHoist: b.scope !== false }, assets: b.assets.map(a => (typeof a === 'string' ? asset(a) : asset(a.f, a))),
     traverseAssets(fn) { for (const a of this.assets) fn(a); }, getMainEntry() { return this.assets[0]; } }));
   return { getBundles: () => bs, getUsedSymbols: (a) => a.used, isAssetReferenced: (b, a) => a.ref };
 }
@@ -5103,6 +5113,8 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   const root = project({ ...pj('a'), ...pj('inl'), ...pj('skip'), ...pj('ref'), ...pj('lib'), 'node_modules/nopj/i.js': '', 'src/i.js': '',
     'node_modules/@parcel/packager-js/package.json': { name: '@parcel/packager-js', version: UNIT } }); // the code Parcel writes around JavaScript
   fakeParcelTracker(root, { 'src/i.js': [] }); // every Parcel build has a request graph (here: nothing inlined)
+  // (one Parcel's plugin options: its builds replace each other's, see the test of two Parcels below)
+  const options = { projectRoot: root };
   for (const f of ['dist/main.js', 'dist/main.css', 'lib/out/index.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
   const target = (d) => ({ name: d, distDir: J(root, d) });
   const graph = fakeBundleGraph([
@@ -5112,7 +5124,7 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
     { filePath: null, bundleBehavior: 'inline', target: target('dist'), assets: [J(root, 'node_modules/inl/i.js')] }, // inlined into another bundle
     { filePath: J(root, 'lib/out/index.js'), target: target('lib/out'), assets: [J(root, 'node_modules/lib/i.js')] }, // another target
   ]);
-  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options: { projectRoot: root } });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options });
   const dist = fs.readFileSync(J(root, 'dist', LOCK), 'utf8');
   assert.deepEqual(lockedNames(dist), ['a', 'inl', 'ref']); // not skip: no side effects, no used symbol, not referenced
   const w0 = JSON.parse(dist)['bundle-lockfile'].writers[0];
@@ -5125,24 +5137,24 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   for (const f of ['node_modules/.cache/x/main.js', 'node_modules/lib/dist/main.js']) { fs.mkdirSync(path.dirname(J(root, f)), { recursive: true }); fs.writeFileSync(J(root, f), f); }
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: fakeBundleGraph([
     { filePath: J(root, 'node_modules/.cache/x/main.js'), target: target('node_modules/.cache/x'), assets: [J(root, 'node_modules/a/i.js')] },
-    { filePath: J(root, 'node_modules/lib/dist/main.js'), target: target('node_modules/lib/dist'), assets: [J(root, 'node_modules/a/i.js')] }]) }, options: { projectRoot: root } });
+    { filePath: J(root, 'node_modules/lib/dist/main.js'), target: target('node_modules/lib/dist'), assets: [J(root, 'node_modules/a/i.js')] }]) }, options });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'node_modules/.cache/x', LOCK), 'utf8')), ['a']);
   assert.equal(fs.existsSync(J(root, 'node_modules/lib/dist', LOCK)), false);
   // other events: nothing; a problem: thrown (Parcel fails the build with it)
   await parcel.report({ event: { type: 'buildStart' } });
   const bad = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'node_modules/nopj/i.js')] }]);
-  await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options: { projectRoot: root } }), /no package\.json with name and version in \S*nopj/);
+  await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options }), /no package\.json with name and version in \S*nopj/);
   problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
   // without scope hoisting nothing is skipped
   const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
-  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
   // JavaScript only inlined into the HTML (<script type="module">): Parcel's code is around it too
   fs.mkdirSync(J(root, 'site'), { recursive: true });
   fs.writeFileSync(J(root, 'site/index.html'), '<script type="module">a</script>');
   const html = fakeBundleGraph([{ filePath: J(root, 'site/index.html'), type: 'html', target: target('site'), assets: [J(root, 'src/index.html')] },
     { filePath: null, type: 'js', bundleBehavior: 'inline', target: target('site'), assets: [J(root, 'node_modules/a/i.js')] }]);
-  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: html }, options: { projectRoot: root } });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: html }, options });
   const site = JSON.parse(fs.readFileSync(J(root, 'site', LOCK), 'utf8'));
   assert.deepEqual(Object.values(site.packages).filter(p => p.name).map(p => p.name).sort(), ['@parcel/packager-js', 'a']);
   // a JavaScript bundle of a project that resolves no @parcel/packager-js: a problem (the code Parcel wrote would be
@@ -5155,6 +5167,44 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   const js = fakeBundleGraph([{ filePath: J(bare, 'dist/main.js'), target: { name: 'dist', distDir: J(bare, 'dist') }, assets: [J(bare, 'node_modules/a/i.js')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: js }, options: { projectRoot: bare } }), /resolves no @parcel\/packager-js/);
   problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
+}));
+
+// Only the JavaScript packager skips assets: a style sheet of a package without side effects, of which no symbol is
+// used, that another style sheet @imports is in the CSS bundle (Parcel's CSS packager writes every asset)
+test('parcel adapter: a CSS bundle lists the style sheets of packages without side effects', () => withConfig({ strict: true }, async () => {
+  const parcel = require('../src/adapters/parcel.cjs');
+  const root = project({ 'node_modules/sfx/package.json': { name: 'sfx', version: '1.0.0', sideEffects: false }, 'node_modules/sfx/s.css': '', 'src/s.css': '' });
+  fakeParcelTracker(root, { 'src/s.css': [] });
+  fs.mkdirSync(J(root, 'dist'), { recursive: true }); fs.writeFileSync(J(root, 'dist/main.css'), '.sfx{}');
+  const graph = fakeBundleGraph([{ filePath: J(root, 'dist/main.css'), target: { name: 'dist', distDir: J(root, 'dist') },
+    assets: [J(root, 'src/s.css'), { f: J(root, 'node_modules/sfx/s.css'), sideEffects: false, used: new Set() }] }]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: graph }, options: { projectRoot: root } });
+  const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['sfx']);
+  const w = lock['bundle-lockfile'].writers[0];
+  assert.deepEqual(w.contents['../main.css'].map(i => w.packages[i]), ['node_modules/sfx']); // (also in the file's contents)
+}));
+
+// Two Parcels of one process (new Parcel().run() twice, as a script that builds several entries) into one distDir, of
+// one target: the second is another run of the same writer, which keeps the files of the first that are still there,
+// with their packages (core/outputs.cjs remnants); a rebuild of the second (the same plugin options: watch mode)
+// replaces its own build
+test('parcel adapter: a second Parcel of the process into the same distDir keeps the first one\'s packages', () => withConfig({ strict: true }, async () => {
+  const parcel = require('../src/adapters/parcel.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'node_modules/@parcel/packager-js/package.json': { name: '@parcel/packager-js', version: UNIT } });
+  fakeParcelTracker(root, {});
+  fs.mkdirSync(J(root, 'dist'), { recursive: true });
+  for (const f of ['a.js', 'b.js']) fs.writeFileSync(J(root, 'dist', f), f);
+  const target = { name: 'default', distDir: J(root, 'dist') };
+  const build = (file, name) => fakeBundleGraph([{ filePath: J(root, 'dist', file), target, assets: [J(root, `node_modules/${name}/i.js`)] }]);
+  const first = { projectRoot: root }, second = { projectRoot: root }; // (each Parcel's plugin options)
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: build('a.js', 'a') }, options: first });
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: build('b.js', 'b') }, options: second });
+  const names = () => lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')); // (not the packager, at the version UNIT)
+  assert.deepEqual(names(), ['a', 'b']);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: build('b.js', 'c') }, options: second });
+  assert.deepEqual(names(), ['a', 'c']);
 }));
 
 // A fake @parcel/core lib/RequestTracker.js (and its lib/projectPath.js) at root: a RequestTracker class whose instance,
