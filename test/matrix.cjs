@@ -231,7 +231,9 @@ const fixtures = {
     packageJson: { type: 'module', scripts: { build: 'tsup' } } },
   // Parcel 2: the latest, the first release; installers
   'parcel': parcelApp('2.16.4'),
-  'parcel-floor': parcelApp('2.8.3'),
+  // Parcel 2.8 polyfills process for debug's browser build with the process package, which it would install itself
+  // (auto install is off in CI, and the matrix runs offline): a dependency of the fixture
+  'parcel-floor': (({ deps, ...rest }) => ({ ...rest, deps: { ...deps, process: '0.11.10' } }))(parcelApp('2.8.3')),
   'parcel-pnpm10': parcelApp('2.16.4', { type: 'pnpm', version: '10.34.6' }),
   'parcel-yarn4-pnp': parcelApp('2.16.4', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   // Angular 22 (the latest), 21, 20
@@ -518,7 +520,7 @@ const NESTED_EXPECT = ['is-number@7.0.0', 'lodash-es@4.18.1', 'nanoid@3.3.20'];
 const VENDORED_CMD = 'rm -rf node_modules/container && cp -r pkgs/container node_modules/container && npm run -s build';
 const VENDORED = ['app-lib@1.0.0', 'container@1.0.0', 'inner-vendored@2.0.0', 'is-odd@3.0.1', 'left-pad@1.3.0', 'ms@2.1.3', 'vscode-languageclient@10.1.2'];
 // the warning on its package root without a package.json (lib/esm/node_modules/flat), listed as the package around it
-const VENDORED_FLAT = /^\[bundle-lockfile\] WARNING: no package\.json with name and version in \S*lib\/esm\/node_modules\/flat - its bundled files are listed as container@1\.0\.0$/;
+const VENDORED_FLAT = /^\[bundle-lockfile\] WARNING: no package\.json with name and version in \S*lib\/esm\/node_modules\/flat - its bundled files are listed as container@1\.0\.0, the package around it$/;
 // in SvelteKit's client output: the page's lodash-es, the service worker's nanoid, the runtime
 const SVELTE_CLIENT = (kit) => [`@sveltejs/kit@${kit}`, 'lodash-es@4.18.1', 'nanoid@3.3.20', 'svelte@5.57.2'];
 // the exact list: core-js, systemjs are the legacy polyfills', workbox-* the service worker's
@@ -1478,7 +1480,9 @@ const cases = [
     exportDir: true, expectError: /TS2322/ },
   { name: 'STRICT=0: failing adapter does not break the build (Angular 22.2.2)', fixture: 'angular22', cmd: 'npm run -s build', nodeOptions: FAULT,
     env: { BLTEST_FAULT_IN: 'angular', BUNDLE_LOCKFILE_STRICT: '0' }, exportDir: true, expect: null,
-    expectOutput: /\[bundle-lockfile\] WARNING: angular: could not collect the bundled packages: Error: injected fault/ },
+    expectOutput: /\[bundle-lockfile\] WARNING: angular: could not collect the bundled packages: Error: injected fault/,
+    // (no lockfile lists the output of Angular's own esbuild builds then)
+    allowOwnWarnings: [UNLANDED] },
   // i18n (localize: en-US, de): Angular writes a copy of the output per locale, translations inlined - each gets the
   // lockfile, in dist/browser/<locale>/ (the oracle reads each locale's source maps)
   ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
@@ -1486,7 +1490,9 @@ const cases = [
       oracleMissing: ['bootstrap-icons@1.13.2'], expectIncludes: ANGULAR(fixture) })),
   // ng extract-i18n: builds the app to read its messages, writes no output - no lockfile, not even an export copy
   ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
-    { name: `Angular ${v}: ng extract-i18n writes no lockfile`, fixture, cmd: 'npx ng extract-i18n --output-path .xi18n', exportDir: true, expect: null })),
+    { name: `Angular ${v}: ng extract-i18n writes no lockfile`, fixture, cmd: 'npx ng extract-i18n --output-path .xi18n', exportDir: true, expect: null,
+      // (Angular's own esbuild builds generate the application, which nothing writes)
+      allowOwnWarnings: [UNLANDED] })),
   // ng serve: the dev server builds into memory and serves it - no lockfile, served or written, not even an export copy
   ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
     { name: `Angular ${v}: ng serve writes no lockfile`, fixture, cmd: ANGULAR_SERVE, env: { BUNDLE_LOCKFILE_EXPORT_DIR: '/tmp/bl-angular-serve-export' }, expect: null })),
