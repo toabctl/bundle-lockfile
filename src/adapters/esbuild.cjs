@@ -8,6 +8,8 @@
 // build() and rebuild() (watch mode prints it and keeps watching). buildSync() takes no plugins: its result's metafile.
 // The command line and the Go API are esbuild's Go binary: not hooked.
 /** @import { Package } from '../types' */
+// esbuild's types (a development dependency, for the type check only): its plugin API is the same from 0.17 on
+/** @import { BuildOptions, BuildResult, OnEndResult, Plugin, PluginBuild } from 'esbuild' */
 const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
@@ -40,6 +42,11 @@ const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } }
 //   there (when in doubt, a file: listing a package too many is safer than missing one); else a virtual module
 // - otherwise a path relative to the working directory; ?query and #hash are esbuild's suffixes, not the file's (a "#"
 //   in a file's name: the file with it, if it is there)
+/**
+ * @param {unknown} key
+ * @param {string} wd
+ * @returns {string | null}
+ */
 function fileOfInput(key, wd) {
   if (typeof key !== 'string' || !key) return null;
   if (key.startsWith('(disabled):')) return null;
@@ -107,8 +114,11 @@ function filesOfOutputs(metafile, wd, pluginInlined = () => [], kinds = null) {
 // names the module: its path relative to the working directory in the file namespace (absolute here, see fileOfInput),
 // "<namespace>:<path>" in another.
 function watched() {
+  /** @type {Map<string, string[]>} */
   const byModule = new Map();
+  /** @type {(args: { namespace?: string, path: string }) => string} */
   const keyOf = (args) => (args.namespace && args.namespace !== 'file' ? `${args.namespace}:${args.path}` : args.path);
+  /** @type {(build: PluginBuild) => PluginBuild} */
   const wrapBuild = (build) => new Proxy(build, {
     get(target, prop, receiver) {
       const v = Reflect.get(target, prop, receiver);
@@ -125,16 +135,25 @@ function watched() {
   });
   // the plugins of the options, each with its setup given the recording build object (a plugin object of another shape
   // is passed on as it is: esbuild rejects it)
-  const plugins = (list) => list.map(p => (p && typeof p === 'object' && typeof p.setup === 'function'
-    ? { ...p, setup(build) { return p.setup.call(p, wrapBuild(build)); } } : p));
+  /** @type {(list: unknown[]) => unknown[]} */
+  const plugins = (list) => list.map(p => (isPlugin(p) ? { ...p, setup(/** @type {PluginBuild} */ build) { return p.setup.call(p, wrapBuild(build)); } } : p));
+  /** @type {(key: string, file: string | null) => string[]} */
   const inlined = (key, file) => byModule.get(key) || (file && byModule.get(file)) || [];
   return { plugins, inlined };
 }
 
+/** @param {unknown} p @returns {p is Plugin} */
+function isPlugin(p) { return !!p && typeof p === 'object' && typeof (/** @type {any} */ (p)).setup === 'function'; }
+
 // The entry points of the options as files relative to the working directory, for the writer id: a list of paths, of
 // { in, out }, or an object { out: in }
+/**
+ * @param {BuildOptions} options
+ * @param {string} wd
+ */
 function entriesOf(options, wd) {
   const e = options.entryPoints;
+  /** @type {(v: string | { in: string, out: string }) => string | null} */
   const rel = (v) => (typeof v === 'string' ? portable(wd, path.resolve(wd, v)) : v && typeof v.in === 'string' ? portable(wd, path.resolve(wd, v.in)) : null);
   if (Array.isArray(e)) return e.map(rel);
   if (e && typeof e === 'object') return Object.fromEntries(Object.entries(e).map(([k, v]) => [k, rel(v)]));
@@ -144,6 +163,10 @@ function entriesOf(options, wd) {
 // Where a build writes, from its options: { dir, wd } (dir: the output directory, null if it writes no files itself:
 // write: false, or neither outdir nor outfile), or null for a build that is not bundle-lockfile's to cover (below
 // node_modules, other than node_modules/.cache: a tool's cache, see core/paths.cjs inToolCache).
+/**
+ * @param {BuildOptions} options
+ * @returns {{ dir: string | null, wd: string } | null}
+ */
 function placeOf(options) {
   const wd = typeof options.absWorkingDir === 'string' ? options.absWorkingDir : process.cwd();
   const dir = options.write === false ? null
@@ -155,6 +178,11 @@ function placeOf(options) {
 
 // The writer of a build's lockfile (see core/outputs.cjs): its entry points and output, without paths of this machine.
 // A context's rebuilds are the same writer; separate builds into one directory (other entry points) are not.
+/**
+ * @param {BuildOptions} options
+ * @param {string} wd
+ * @returns {string}
+ */
 function writerOf(options, wd) {
   const out = typeof options.outfile === 'string' ? ['outfile', portable(wd, path.resolve(wd, options.outfile))]
     : ['outdir', portable(wd, path.resolve(wd, options.outdir || '.'))];
@@ -183,6 +211,13 @@ const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs
 // build started (ms), late: the files written into the output after the last build, version: esbuild's, as it reports
 // itself, file: the esbuild module whose build() ran (its package is listed for the JavaScript it writes: esbuild's
 // runtime helpers, __commonJS, __toESM and the like, are in it; see core/bundler.cjs) }.
+/**
+ * @param {BuildOptions} options
+ * @param {BuildResult} result
+ * @param {{ inlined?: (key: string, file: string | null) => Iterable<string>, since?: number, late?: Set<string>, version?: string,
+ *   file?: string }} [state]
+ * @returns {Promise<void>}
+ */
 async function finish(options, result, state = {}) {
   const place = placeOf(options);
   if (!place) { config.debug('esbuild: output below node_modules, left alone'); return; }
@@ -251,8 +286,13 @@ async function finish(options, result, state = {}) {
 }
 
 // The plugin of one build() / context() call; inlined: see watched.
+/**
+ * @param {(key: string, file: string | null) => string[]} inlined
+ * @param {string} file
+ * @returns {Plugin}
+ */
 function createPlugin(inlined, file) {
-  /** @type {{ inlined: any, since: number | undefined, late: Set<string>, file: string, version?: string }} */
+  /** @type {{ inlined: (key: string, file: string | null) => string[], since: number | undefined, late: Set<string>, file: string, version?: string }} */
   const state = { inlined, since: undefined, late: new Set(), file };
   return {
     name: NAME,
@@ -264,7 +304,7 @@ function createPlugin(inlined, file) {
       options.metafile = true;
       build.onStart(() => { state.since = Date.now() - 2000; }); // (file systems with coarse timestamps)
       // (as part of this build, core/problems.cjs within: the problems of another build do not fail it)
-      build.onEnd((result) => problems.within(state, () => new Promise((resolve) => {
+      build.onEnd((result) => problems.within(state, () => new Promise(/** @param {(r: OnEndResult | undefined) => void} resolve */ (resolve) => {
         const end = () => {
           if (!asked && result) delete result.metafile;
           /** @type {{ text: string, pluginName: string }[] | null} */
@@ -280,11 +320,17 @@ function createPlugin(inlined, file) {
   };
 }
 
+/** @type {(plugins: unknown) => { name?: unknown }[]} */
 const flat = (plugins) => (Array.isArray(plugins) ? plugins.filter(p => p && typeof p === 'object') : []);
 
 // The options of a build() / context() call with the plugin, unless it has it already, is Vite's own, or writes below
 // node_modules; the caller's object is left as it is.
 // file: the esbuild module whose build() / context() was called (see finish)
+/**
+ * @param {BuildOptions} options
+ * @param {string} file
+ * @returns {BuildOptions}
+ */
 function attach(options, file) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) return options;
   const plugins = flat(options.plugins);
@@ -293,7 +339,8 @@ function attach(options, file) {
   if (!placeOf(options)) { config.debug('esbuild: output below node_modules, left alone'); return options; }
   config.debug('esbuild: adding the plugin to a build');
   const w = watched();
-  return { ...options, plugins: [...w.plugins(Array.isArray(options.plugins) ? options.plugins : []), createPlugin(w.inlined, file)] };
+  const theirs = /** @type {Plugin[]} */ (w.plugins(Array.isArray(options.plugins) ? options.plugins : []));
+  return { ...options, plugins: [...theirs, createPlugin(w.inlined, file)] };
 }
 
 // buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs
