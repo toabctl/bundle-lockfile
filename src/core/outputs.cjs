@@ -127,12 +127,13 @@ function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set
   const m = meta;
   /** @type {(f: string) => boolean} */
   const left = (f) => !ownFiles.has(f) && there(f);
+  const out = outputDirOf(target);
   return m.writers.flatMap((w) => {
     let { id, files, count, outputs: outs, outputCount } = w;
     let contents = Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)]));
     if (own.has(w.id)) {
       if (all || !fresh.has(w.id)) return [];
-      const rest = files.filter(left);
+      const rest = files.filter(f => within(out, f) && left(f)); // (files in the output: not traced node_modules files)
       if (!rest.length) return [];
       ({ id, files, outputs: outs, contents } = remnantOf(target, w.id, { files: w.files, outputs: outs, contents }, rest));
       if (own.has(id)) return []; // (this process's remnant of it)
@@ -213,13 +214,15 @@ function render(target, own) {
     // a writer with no landed build here (its first build in this process failed): its record on disk is still the
     // output in the directory
     if (b) { builds.push({ ...b, id: w.id }); ids.add(w.id); }
-    if (!w.wrote) fresh.add(w.id);
+    // (not after a build of it landed here before the current one: the record on disk is this process's then, also one
+    // the bundler wrote with the content it was given - Angular, an in-memory output)
+    if (!w.wrote && (w.landings === 0 || (w.landings === 1 && !w.building))) fresh.add(w.id);
   }
   // the files this process's builds write there; what is left of a writer's earlier builds besides them (see remnantOf)
   const ownFiles = new Set(builds.flatMap(b => b.files));
   for (const w of mine.values()) {
     w.remnants = w.remnants.filter((/** @type {Build} */ r) => {
-      const rest = r.files.filter((/** @type {string} */ f) => !ownFiles.has(f) && there(f));
+      const rest = r.files.filter((/** @type {string} */ f) => within(outputDirOf(target), f) && !ownFiles.has(f) && there(f));
       if (!rest.length) return false;
       const b = remnantOf(target, w.id, r, rest);
       builds.push(b); ids.add(b.id);
@@ -267,7 +270,7 @@ function record(target, writer, pkgs, context, files = [], opts = {}) {
   if (!writers) outputs.files.set(target, (writers = new Map()));
   const id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
   /** @type {Writer} */
-  const w = writers.get(writer) || { id, building: null, landed: null, remnants: [], run: opts.run, wrote: false };
+  const w = writers.get(writer) || { id, building: null, landed: null, remnants: [], run: opts.run, wrote: false, landings: 0 };
   // its landed build of another run (another compiler or build for the same config: the configs of `rollup -c`),
   // replaced by this one: what this one does not write again is still in the output (see render). Not a rebuild of
   // the same run (watch mode), whose late files its own check finds again (core/late.cjs).
@@ -301,7 +304,7 @@ function setFiles(target, writer, files) {
  */
 function emitted(target, writer) {
   const w = (outputs.files.get(target) || new Map()).get(writer);
-  if (w && w.building) { w.landed = w.building; w.building = null; }
+  if (w && w.building) { w.landed = w.building; w.building = null; w.landings++; }
 }
 
 // Another compiler, in this process or another one, writes `target` too - or did: a lockfile on disk that

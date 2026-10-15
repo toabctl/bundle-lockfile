@@ -107,6 +107,8 @@ export interface Writer {
   run: object | undefined;
   /** the lockfile was written with it: the record of its id there is this process's */
   wrote: boolean;
+  /** how many of its builds have landed in this process */
+  landings: number;
 }
 
 /** A writer as a lockfile on disk records it (core/lockfile.cjs readMeta). */
