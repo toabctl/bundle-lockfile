@@ -253,7 +253,11 @@ class BundleLockfilePlugin {
       // may start another compiler (a config array's dependencies)
       this.afterEmit(compilation)
         .catch((e) => { problems.problem(`${kindOf(compiler)}: could not write the lockfile of ${outputDir(compilation)}`, e); })
-        .then(() => setImmediate(() => { failCompilation(compilation); problems.outside(callback); }));
+        .then(() => setImmediate(() => {
+          // (a failure that cannot even be recorded must not lose the callback: webpack would wait forever)
+          try { failCompilation(compilation); } catch (e) { config.error(`${kindOf(compiler)}: could not fail the build of ${outputDir(compilation)}:`, e); process.exitCode = 1; }
+          problems.outside(callback);
+        }));
     });
   }
 

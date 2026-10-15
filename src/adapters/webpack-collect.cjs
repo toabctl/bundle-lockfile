@@ -52,9 +52,14 @@ const JS = /\.[cm]?js$/i;
 // "\u200b#" (a zero-width space): resources and nameForCondition() keep that; the file has a plain "#" (~/c#/app).
 const unescaped = (f) => (typeof f === 'string' ? f.replace(/[\0\u200b]#/g, '#') : f);
 
+// A match resource that is no absolute path names no file (Next.js' barrel optimization: __barrel_optimize__?names=X!=!
+// <the package file>): the resource then.
 function sourceFile(m, issuerOf) {
-  const match = typeof m.matchResource === 'string' && m.matchResource ? unescaped(m.matchResource.split('?')[0]) : null;
-  const own = match || unescaped(typeof m.nameForCondition === 'function' ? m.nameForCondition() || null : m.resource || null);
+  const raw = typeof m.matchResource === 'string' && m.matchResource ? unescaped(m.matchResource.split('?')[0]) : null;
+  const match = raw && path.isAbsolute(raw) ? raw : null;
+  const named = unescaped(typeof m.nameForCondition === 'function' ? m.nameForCondition() || null : m.resource || null);
+  // (rspack before 1.7 and webpack name it by the match resource too: then by its resource, without the query)
+  const own = match || (raw && named === raw && typeof m.resource === 'string' ? unescaped(m.resource.split('?')[0]) : named);
   if (!own || m.resource) return own;
   const issuer = issuerOf(m);
   if (!issuer || typeof issuer.resource !== 'string' || unescaped(issuer.resource.split('?')[0]) !== own || typeof issuer.nameForCondition !== 'function') return own;
@@ -202,7 +207,8 @@ function bundledFiles(compilation) {
     const issuerOf = issuers(c);
     for (const m of seen.modules) if (!shippedModules.has(m)) shippedModules.set(m, issuerOf);
     if (seen.unrecorded) for (const f of styleFallback(c)) { own.add(f); mark(f, 'style'); }
-    if (rspack) for (const f of inlinedModules(c, seen.modules)) { own.add(f); mark(f, 'inlined-exports'); }
+    // (a child compilation none of whose chunks ships - html-webpack-plugin's template - inlines nothing that ships)
+    if (rspack && chunks.length) for (const f of inlinedModules(c, seen.modules)) { own.add(f); mark(f, 'inlined-exports'); }
     for (const f of own) files.add(f);
     return own;
   };

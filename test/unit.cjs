@@ -4326,6 +4326,10 @@ test('rspack: the match resource names a module also where nameForCondition() do
   const m = { resource: '/p/src/a.css.ts', matchResource: '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js?x', nameForCondition: () => '/p/src/a.css.ts' };
   assert.equal(webpackAdapter.sourceFile(m, () => null), '/p/node_modules/@vanilla-extract/webpack-plugin/extracted.js');
   assert.equal(webpackAdapter.sourceFile({ resource: '/p/src/b.js', matchResource: '', nameForCondition: () => '/p/src/b.js' }, () => null), '/p/src/b.js');
+  // a match resource that is no path (Next.js' barrel optimization): the file it reads, the package's
+  const barrel = { resource: '/p/node_modules/lib/index.js?x', matchResource: '__barrel_optimize__?names=Button', nameForCondition: () => '__barrel_optimize__' };
+  assert.equal(webpackAdapter.sourceFile(barrel, () => null), '/p/node_modules/lib/index.js');
+  assert.equal(webpackAdapter.sourceFile({ ...barrel, nameForCondition: () => '/p/node_modules/lib/index.js' }, () => null), '/p/node_modules/lib/index.js'); // (rspack before 1.7)
 });
 
 test('rspack: modules whose exports were all inlined are listed (only with inlining on); tree-shaken ones not', () => {
@@ -4341,6 +4345,15 @@ test('rspack: modules whose exports were all inlined are listed (only with inlin
   // no inlining, or no usage analysis (development: every module counts as used): nothing more
   assert.deepEqual(lockOf({ inlineExports: false, usedExports: true }), ['inner', 'shipped']);
   assert.deepEqual(lockOf({ inlineExports: true, usedExports: false }), ['inner', 'shipped']);
+  // a child compilation none of whose chunks ships (html-webpack-plugin's template): its used modules are not inlined
+  // into the output
+  const template = mod('unused', 'e');
+  const c = rspackCompilation(root, { chunks: [{ files: ['main.js'], modules: [shipped] }], modules: [], optimization: { inlineExports: true, usedExports: true }, exportsUsed: () => true });
+  const child = compilation({ context: root, chunks: [{ files: ['__child-HtmlRspackPlugin_0'], entry: [{ resource: J(root, 'src/index.html') }], modules: [] }] });
+  Object.assign(child, { modules: new Set([template]), moduleGraph: { getIssuer: () => null, getExportsInfo: () => ({ isModuleUsed: () => true }) } });
+  child.compiler.options = { optimization: { inlineExports: true, usedExports: true } };
+  c.children = [child];
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['shipped']);
 });
 
 test('strict: modules whose exports were inlined that cannot be looked for fail the build (a package would be missing)', () => withConfig({ strict: true }, () => {
