@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
+const { isNextBuild } = require('./unsupported.cjs');
 
 const S = Symbol.for('bundle-lockfile.children.v1');
 /** @typedef {{ [S]?: { warned: boolean } }} Global */
@@ -43,7 +44,7 @@ const quoted = (f) => (/\s/.test(f) ? `"${f}"` : f);
 let isNext;
 /** @type {() => boolean} */
 const nextBuild = () => (isNext === undefined
-  ? (isNext = /[\\/]next[\\/]dist[\\/]bin[\\/]next$/.test(real(process.argv[1] || '')) && process.argv[2] === 'build') : isNext);
+  ? (isNext = isNextBuild()) : isNext);
 
 // env (an options.env) as the child gets it: unchanged, or with our --require put back (shim mode). what: for the
 // warning.

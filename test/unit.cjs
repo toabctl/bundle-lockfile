@@ -5614,6 +5614,18 @@ test('strict: an ES-module bundler in a thread without ESM hooks fails when it l
     const r = run(undefined, file, 'require');
     assert.deepEqual([r.stdout.trim(), r.stderr, r.status], ['loaded', '', 0], file);
   }
+  // Yarn's pnpm linker: Rollup in its store (node_modules/.store/<slug>/package) is recognized as node_modules/rollup
+  const store = project({ ...Object.fromEntries(Object.entries(tools).filter(([k]) => k.startsWith('node_modules/rollup/'))
+    .map(([k, v]) => [k.replace('node_modules/rollup/', 'node_modules/.store/rollup-npm-4.64.6-0123456789/package/'), v])), 'app/package.json': { name: 'app', version: '1.0.0' } });
+  const yarn = run(undefined, J(store, 'node_modules/.store/rollup-npm-4.64.6-0123456789/package/dist/es/rollup.js'));
+  assert.match(yarn.stdout, /^failed: [\s\S]*rollup is loaded as an ES module in a process without bundle-lockfile's ESM hooks/, yarn.stdout + yarn.stderr);
+  // the ESM hooks could not be installed (in a process not taken for a bundler's: a warning): the check is on, too
+  const broken = spawnSync(process.execPath, ['-e', `const M = require('module'); M.register = () => { throw new Error('no loader thread'); };
+    require(${JSON.stringify(J(SRC, 'register.cjs'))});
+    import(${JSON.stringify(pathToFileURLHref(T('rollup/dist/es/rollup.js')))}).then(() => console.log('loaded'), (e) => { console.log('failed:', e.message); process.exitCode = 3; });`],
+  { encoding: 'utf8', cwd: J(root, 'app'), env: { ...strictEnv(undefined), BUNDLE_LOCKFILE_ESM_HOOKS: 'async' } });
+  assert.match(broken.stderr, /WARNING: could not install the ESM hooks: .*no loader thread/, broken.stderr);
+  assert.match(broken.stdout, /^failed: [\s\S]*rollup is loaded as an ES module in a process without bundle-lockfile's ESM hooks/, broken.stdout + broken.stderr);
 });
 
 test('hooks: an entry module the in-thread hook cannot wrap fails when it is imported (BUNDLE_LOCKFILE_STRICT=0: a warning)', { skip: !(typeof require('module').registerHooks === 'function' && require('../src/hooks.cjs').syncHooksSafe(process.versions.node)) }, () => {
@@ -6101,6 +6113,19 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
   assert.deepEqual([r.status, r.stderr], [0, '']);
   r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
   assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+  // Yarn's pnpm linker: the main script in its store (node_modules/.store/<slug>/package) is recognized as well
+  for (const [name, bin] of [['rolldown', 'bin/cli.mjs'], ['next', 'dist/bin/next']]) {
+    const at = J(root, `node_modules/.store/${name}-npm-1.0.0-0123456789/package`);
+    fs.mkdirSync(path.dirname(J(at, bin)), { recursive: true });
+    fs.copyFileSync(J(root, 'node_modules', name, 'package.json'), J(at, 'package.json'));
+    fs.copyFileSync(J(root, 'node_modules', name, bin), J(at, bin));
+  }
+  r = spawnNode({}, [J(root, 'node_modules/.store/rolldown-npm-1.0.0-0123456789/package/bin/cli.mjs')]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, ROLLDOWN);
+  r = spawnNode({ FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/.store/next-npm-1.0.0-0123456789/package/dist/bin/next'), 'build']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, TURBO);
 });
 
 test('strict: webpack before 4 (a Compiler without hooks) fails the process when it compiles; STRICT=0: a warning', () => {
