@@ -1556,6 +1556,7 @@ test('esm-wrap: finds the entry, its exports, and wraps its functions; an entry 
   assert.deepEqual([...esmWrap.exportedNames(commented)], ['rollup']);
   assert.equal(esmWrap.source('file:///r.js', commented, { id: 'rollup', wrap: ['rollup'] }).includes('default'), false);
   assert.deepEqual([...esmWrap.exportedNames("const s = '// x';\nexport { a as default };")], ['default']);
+  assert.deepEqual([...esmWrap.exportedNames('export { a as "default", b as "module.exports" };')], ['default']); // (string names, ES2022)
   const src = esmWrap.source('file:///p/rollup.js', "export { VERSION, rollup } from './x.js';", rollupEntry);
   assert.match(src, /export \* from "file:\/\/\/p\/rollup\.js\?bundle-lockfile-real";/);
   assert.match(src, /export const rollup = api \? api\.wrap\("rollup", "rollup", real\.rollup, "file:\/\/\/p\/rollup\.js"\) : real\.rollup;/);
@@ -4262,6 +4263,16 @@ test('esm-wrap: only ES modules are wrapped (rspack 1\'s CommonJS file at rspack
   assert.doesNotMatch(esm.source, /module\.exports/);
 });
 
+test('strict: problems fail the process also when a listener of the build\'s code calls process.exit() in its exit listener', () => {
+  // (the build's listener is added before the first problem; bundle-lockfile's is there from the preload on)
+  const script = `const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+    process.on('exit', () => process.exit(0));
+    problems.problem('a lockfile would be missing');`;
+  const r = nodeWith(strictEnv(undefined), ['-e', script]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ERROR: a lockfile would be missing/);
+});
+
 test('esm-wrap: withoutComments gives what the character-by-character version gave', () => {
   const { withoutComments } = require('../src/esm-wrap.cjs');
   const reference = (src) => { // the implementation before (one character at a time)
@@ -4929,6 +4940,7 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   const w = lock['bundle-lockfile'].writers[0];
   assert.deepEqual([...w.files].sort(), ['../assets/f.woff2', '../main.js']);
   assert.deepEqual(w.via.runtime.map(i => w.packages[i]), ['node_modules/esbuild']);
+  assert.deepEqual(w.bundler, { name: 'esbuild', version: '0.28.2' }); // (the bundler that wrote it)
   // --bundler: another package (its directory); none: none
   assert.equal(run(['meta.json', '--bundler', 'tools/bun']).status, 0);
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'b', 'bun']);
@@ -4957,6 +4969,11 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   }
   assert.equal(run([]).status, 2);
   assert.equal(run(['meta.json', '--out']).status, 2);
+  // outputs in no directory but the root (/a/x.js, /b/y.js): not written there - fails, --out names the directory
+  fs.writeFileSync(J(root, 'apart.json'), JSON.stringify({ outputs: { '/bl-nowhere-a/x.js': { inputs: {} }, '/bl-nowhere-b/y.js': { inputs: {} } } }));
+  const apart = run(['apart.json', '--bundler', 'none']);
+  assert.equal(apart.status, 1, apart.stderr);
+  assert.match(apart.stderr, /the outputs of \S*apart\.json are in no directory but the root: name the output directory with --out/);
 });
 
 test('strict: Parcel before 2.13 only prints a reporter\'s error - the process fails at its exit; from 2.13 on Parcel fails the build', () => {

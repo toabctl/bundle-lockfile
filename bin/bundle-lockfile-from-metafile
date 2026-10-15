@@ -65,7 +65,9 @@ else {
   const byOutput = filesOfOutputs(metafile, wd, undefined, kinds);
   const files = [...byOutput.keys()];
   const dir = outArg ? path.resolve(outArg) : commonDir(files);
-  if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else {
+  if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else if (path.dirname(dir) === dir) {
+    problems.problem(`the outputs of ${metaFile} are in no directory but the root: name the output directory with --out`); done();
+  } else {
     const entries = Object.values(metafile.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
     const result = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });
     const { byFile } = result;
@@ -93,7 +95,9 @@ else {
     }
     const target = path.join(dir, config.file);
     const writer = JSON.stringify(['metafile', portable(wd, metaFile)]);
-    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents, via: found });
+    // the bundler that wrote it: the package of its runtime (esbuild, or --bundler's), if known
+    const bundler = runtime[0] ? { name: runtime[0].name, ...(runtime[0].version ? { version: runtime[0].version } : {}) } : null;
+    outputs.record(target, writer, all, wd, files, { disk: true, outputs: hashes, contents, via: found, bundler });
     outputs.land(target, writer, '').then(done);
   }
 }
