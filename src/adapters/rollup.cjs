@@ -120,6 +120,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   // (as given, see attach), else - a plugin configured by hand - from the options Rollup and Rolldown pass to buildStart
   let input = inputOptions && inputOptions.input;
   let since = 0;
+  let outCwd = cwd; // what the output's dir and file are relative to
   // writes the lockfile of an output; in strict mode rejects with what went wrong (core/problems.cjs), which fails the
   // build: a hook's rejection is the build's error
   const write = async (w) => {
@@ -157,12 +158,17 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     buildStart(options) {
       // a plugin configured by hand: the bundler that runs this hook (see bundlersOf)
       if (!from.file && !from.runner) from.runner = { rollup: packageOnStack(ROLLUP_NAMES), rolldown: packageOnStack(['rolldown']) };
-      if (closed || !(this && this.meta && this.meta.rolldownVersion)) { written.clear(); modulesOf.clear(); ordinals.clear(); }
+      // (Rolldown runs it for every write() of a build: the state, and the time the build started, from its first)
+      if (closed || !(this && this.meta && this.meta.rolldownVersion)) {
+        written.clear(); modulesOf.clear(); ordinals.clear();
+        since = Date.now() - 2000; // file systems with coarse timestamps
+      }
       closed = false;
       transformed = new Set();
       if (isRolldown(this)) unreadable = rolldownWatch.start(this);
       if (!inputOptions || inputOptions.input === undefined) input = options && options.input;
-      since = Date.now() - 2000; // file systems with coarse timestamps
+      // Rolldown resolves the output's dir and file against its cwd option
+      outCwd = isRolldown(this) && options && typeof options.cwd === 'string' && path.isAbsolute(options.cwd) ? options.cwd : cwd;
     },
     // Rolldown: the load and transform hooks' plugin contexts, whose addWatchFile records the files plugins inline (see
     // rolldown-watch.cjs); before every other plugin's normal hooks (Vite's CSS plugin: a transform). Rollup: the
@@ -208,15 +214,10 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           // node_modules/.cache/, where tools build what ships: `nuxi build` builds into node_modules/.cache/nuxt/.nuxt
           // when .nuxt is there, and Nitro copies the client's files from there into .output/public (see core/outputs.cjs
           // outputCopy). Without dir and file, Rolldown writes to dist/ (Rollup does not write at all); the hooks get neither
-          const dir = path.resolve(cwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
+          const dir = path.resolve(outCwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
           // the bundler's code is in every chunk
           const bundlers = Object.values(bundle).some(f => f.type === 'chunk') ? bundlersOf(kind, from, this, cwd) : [];
-          if (isWrite === false || inToolCache(dir)) {
-            const pkgs = keepGenerated(this, bundle, { cwd, bundlers });
-            config.debug(`${kind}: generate-only output with`, pkgs.length, 'packages, kept for the build that uses it');
-            problems.failIfAny((err) => this.error(err)); // (this build's problems, such as a package without a package.json)
-            return;
-          }
+          const generateOnly = isWrite === false || inToolCache(dir);
           // the output's modules: those its chunks had when they were rendered (also of chunks a plugin removed since),
           // and those they have now
           const ids = new Set(modulesOf.get(out) || []);
@@ -230,7 +231,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             if (recorded) watched.push(...recorded);
             const style = [...ids].some(id => STYLE.test(fileOf(id) || '')) || Object.values(bundle).some(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
             if (!recorded && !build && style) {
-              problems.problem(`${kind}: Rolldown ${this.meta.rolldownVersion}: could not read the files its plugins inlined (${unreadable || 'the build was not seen starting'}): style sheets @imported from packages would be missing from ${path.join(dir, config.file)}`);
+              problems.problem(`${kind}: Rolldown ${this.meta.rolldownVersion}: could not read the files its plugins inlined (${unreadable || 'the build was not seen starting'}): style sheets @imported from packages would be missing from ${generateOnly ? 'the output of a build that writes nothing itself' : path.join(dir, config.file)}`);
             }
           }
           if (!isRolldown(this) && cachedDependencies.size) {
@@ -238,15 +239,23 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             try { all = [...this.getModuleIds()]; } catch { /* none */ }
             for (const id of all) if (!transformed.has(id) && cachedDependencies.has(id)) watched.push(...cachedDependencies.get(id));
           }
+          if (generateOnly) {
+            const pkgs = keepGenerated(this, bundle, { cwd, bundlers, watched });
+            config.debug(`${kind}: generate-only output with`, pkgs.length, 'packages, kept for the build that uses it');
+            return; // (its problems, such as a package without a package.json: below)
+          }
           const { files, pkgs, found, hashes, contents } = collectOutput(this, bundle, { dir, cwd, ids, watched, bundlers });
           const target = path.join(dir, config.file);
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           const bundler = bundlerOf(kind, this && this.meta);
           written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, bundler, via: found, landed: false });
           outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents, bundler, via: found, run });
-        } catch (e) { problems.problem(`${kind}: could not collect the bundled packages of ${out.dir || out.file || 'a build that writes nothing itself'}`, e); }
-        // what went wrong fails the build (strict mode, see core/problems.cjs): this.error throws the build's error
-        problems.failIfAny((err) => this.error(err));
+        } catch (e) {
+          problems.problem(`${kind}: could not collect the bundled packages of ${out.dir || out.file || 'a build that writes nothing itself'}`, e);
+        } finally {
+          // what went wrong fails the build (strict mode, see core/problems.cjs): this.error throws the build's error
+          problems.failIfAny((err) => this.error(err));
+        }
       },
     },
     writeBundle: {

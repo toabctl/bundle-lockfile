@@ -1861,7 +1861,8 @@ async function rollupBuild(rollupPlugin, { outDir, chunks = [], assets = [], isW
   BUNDLERS[ctx.meta && ctx.meta.rolldownVersion ? 'rolldown' : 'rollup'](rollupPlugin.buildStart, ctx, [{ input }]); // the (normalized) input options
   rollupPlugin.renderStart.call(ctx, out);
   for (const c of chunks) rollupPlugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
-  const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
+  // (a chunk `removed`: rendered, then taken out of the bundle by a plugin - Vite's chunks of style only)
+  const bundle = Object.fromEntries([...chunks.filter(c => !c.removed).map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
     isEntry: !!c.entry, facadeModuleId: c.entry || null, ...(c.css && { viteMetadata: { importedCss: new Set(c.css) } }) }]), ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
   await rollupPlugin.generateBundle.handler.call(ctx, out, bundle, isWrite);
   if (isWrite) {
@@ -2334,6 +2335,43 @@ test('nested: each JavaScript and CSS file another build produced brings the pac
     delete json['bundle-lockfile'].writers[0].contents;
     fs.writeFileSync(lock, JSON.stringify(json));
     assert.deepEqual(idsOf('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', `rollup@${UNIT}`, 'sheet@1.0.0', `vite@${UNIT}`, 'worker@1.0.0']);
+  } finally { process.chdir(cwd); }
+});
+
+test('nested: a CSS file has the style sheets of a chunk of style only that Vite removed, and the style blocks of single-file components', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('js'), ...pj('bootstrap'), ...pj('ui') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dir = J(root, 'island/dist'), m = (name, f = 'i.js') => J(root, 'node_modules', name, f);
+    // manualChunks: { 'vendor-styles': ['bootstrap/dist/css/bootstrap.css'] } - Vite removes that chunk in its
+    // generateBundle and gives its CSS file to main.js, not its modules; a component library's .vue style block
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: dir,
+      chunks: [{ fileName: 'main.js', code: 'main code', modules: [J(root, 'island/src/main.js'), m('js'), `${m('ui', 'Button.vue')}?vue&type=style&index=0&lang.css`], css: ['main.css', 'vendor-styles.css'] },
+        { fileName: 'vendor-styles.js', code: '', modules: [m('bootstrap', 'dist/css/bootstrap.css')], removed: true }],
+      assets: [{ fileName: 'main.css', source: 'main css' }, { fileName: 'vendor-styles.css', source: 'bootstrap css' }] });
+    const idsOf = (f) => ids(packages.packagesOfFiles([J(dir, f)]).all);
+    assert.ok(idsOf('vendor-styles.css').includes('bootstrap@1.0.0'), idsOf('vendor-styles.css').join(' '));
+    assert.ok(idsOf('main.css').includes('ui@1.0.0'), idsOf('main.css').join(' '));
+    assert.deepEqual(idsOf('main.js'), ['js@1.0.0']); // (the style block went into the CSS file)
+  } finally { process.chdir(cwd); }
+});
+
+test('generated: a build that writes nothing itself keeps the packages of the files its plugins inlined (a worker\'s font as a data: URL)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('font'), ...pj('w'), ...pj('app') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const m = (name, f = 'i.js') => J(root, 'node_modules', name, f);
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'gen'), isWrite: false, ctx: { getWatchFiles: () => [m('font', 'f.woff2')] },
+      chunks: [{ fileName: 'worker.js', code: 'worker with an inlined font', modules: [m('w')] }] });
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'),
+      chunks: [{ fileName: 'main.js', code: 'main', modules: [m('app')] }], assets: [{ fileName: 'worker.js', source: 'worker with an inlined font' }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['app', 'font', 'w']);
   } finally { process.chdir(cwd); }
 });
 
