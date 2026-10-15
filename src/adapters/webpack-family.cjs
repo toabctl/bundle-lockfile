@@ -14,14 +14,15 @@ const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const via = require('../core/via.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
-const { portable, exportPath } = require('../core/paths.cjs');
+const { portable, exportPath, inToolCache, ancestors } = require('../core/paths.cjs');
 const { bundlerPackage, packageOnStack } = require('../core/bundler.cjs');
+const { readManifest } = require('../core/manifest.cjs');
 const {
   hook, kindOf, isRspack, versionOf, outputDir, hasAsset, assetNames, readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn,
 } = require('./webpack-compat.cjs');
 const {
-  KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, generatedAssets,
-  lateGenerated,
+  KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, copiedLate,
+  generatedAssets, lateGenerated,
 } = require('./webpack-collect.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -33,6 +34,10 @@ const BUNDLED = Symbol('bundle-lockfile.webpack.bundled');     // compilation: i
 const COPIED = Symbol('bundle-lockfile.webpack.copied');       // compiler: files its latest build copied in the emit hook
 const STARTED = Symbol('bundle-lockfile.webpack.started');     // compilation: when it started (ms; see filesWrittenAfter)
 const GENERATED = Symbol('bundle-lockfile.webpack.generated'); // compilation: its generatedAssets() (before emit: sources)
+const READS = Symbol('bundle-lockfile.webpack.reads');         // compiler: the files read while its compilation's assets are processed (readsOf)
+const LATE = Symbol('bundle-lockfile.webpack.late');           // compilation: its copiedLate()
+const SKIP = Symbol('bundle-lockfile.webpack.skip');           // compilation: writes into a tool's cache, no lockfile
+const READING = Symbol.for('bundle-lockfile.webpack.reading.v1'); // input file system: the sets readsOf notes its reads in
 const BUNDLER_FILE = Symbol.for('bundle-lockfile.webpack.bundler-file'); // Compiler.prototype: the file it was patched in
 const JS = /\.[cm]?js$/i;
 
@@ -138,9 +143,73 @@ function bundlerOf(compiler, applier) {
 // The compilation writes JavaScript chunks (not only style sheets or assets).
 const writesJs = (compilation) => [...(compilation.chunks || [])].some(c => [...(c.files || [])].some(f => JS.test(f.split('?')[0])));
 
+// Notes the files in node_modules read through the compiler's input file system from now until stop(): the files
+// plugins read to emit them as assets while the assets are processed (see copiedLate). readFile is wrapped once per
+// file system (compilers can share one); it notes into the sets of the compilations that are looking.
+/** @returns {{ files: Set<string>, stop: () => void }} */
+function readsOf(compiler) {
+  /** @type {Set<string>} */
+  const files = new Set();
+  const fsys = compiler.inputFileSystem;
+  if (!fsys || typeof fsys.readFile !== 'function') return { files, stop: () => {} };
+  /** @type {Set<Set<string>>} */
+  let sets = fsys[READING];
+  if (!sets) {
+    const all = new Set(), orig = fsys.readFile, inPackages = `${path.sep}node_modules${path.sep}`;
+    try {
+      fsys.readFile = function (/** @type {unknown} */ file, /** @type {unknown[]} */ ...rest) {
+        if (all.size && typeof file === 'string' && file.includes(inPackages)) for (const s of all) s.add(file);
+        return orig.call(this, file, ...rest);
+      };
+      Object.defineProperty(fsys, READING, { value: all });
+      sets = all;
+    } catch { return { files, stop: () => {} }; } // (a file system whose readFile cannot be replaced)
+  }
+  sets.add(files);
+  return { files, stop: () => { sets.delete(files); } };
+}
+
+// The files rspack's built-in HtmlRspackPlugin reads in Rust (no input file system sees it): its favicon, relative to
+// the context
+function builtinFavicons(compiler) {
+  const out = [];
+  for (const p of (compiler.options && compiler.options.plugins) || []) {
+    const o = p && p.name === 'HtmlRspackPlugin' && Array.isArray(p._args) && p._args[0];
+    if (o && typeof o.favicon === 'string') out.push(path.resolve(compiler.context, o.favicon));
+  }
+  return out;
+}
+
+// The version of the webpack package a file of it is in (lib/Compiler.js, its package.json), or null
+/** @param {string | null | undefined} file @returns {string | null} */
+function webpackVersionOf(file) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return null;
+  for (const d of ancestors(path.dirname(file))) {
+    const j = readManifest(d);
+    if (j && typeof j.name === 'string') return j.name === 'webpack' && typeof j.version === 'string' ? j.version : null;
+  }
+  return null;
+}
+
+// The lockfile is BUNDLE_LOCKFILE_FILE in the output directory: bundle-lockfile finds an output's lockfile by that name
+// (a build that bundles the output, copies of it). A plugin added to a config by hand may name the file too: another
+// name than the setting's is a problem - the lockfile would not be where the build was asked to write it. Returns the
+// problem, or null.
+/** @param {unknown} file @returns {string | null} */
+function misnamed(file) {
+  if (file === undefined || file === null) return null;
+  const norm = (/** @type {string} */ f) => path.posix.normalize(f.trim().split(path.sep).join('/'));
+  // (with BUNDLE_LOCKFILE_TREE=only the setting names the package-lock.json whose record.json is written instead)
+  const named = [config.file, config.tree === 'only' ? config.file.replace(/record\.json$/, 'package-lock.json') : config.file].map(norm);
+  if (typeof file === 'string' && named.includes(norm(file))) return null;
+  return `BundleLockfilePlugin(${JSON.stringify(file)}) names another file than BUNDLE_LOCKFILE_FILE (${named[1]}), where the lockfile is written: set BUNDLE_LOCKFILE_FILE instead (or leave the argument out)`;
+}
+
 class BundleLockfilePlugin {
-  // compilerFile: path of the Compiler module, used to find webpack-sources for webpack < 5.1
-  constructor(file, compilerFile) { this.file = file; this.compilerFile = compilerFile; }
+  // file: BUNDLE_LOCKFILE_FILE's, or left out (see misnamed); compilerFile: path of the Compiler module, used to find
+  // webpack-sources and the version of webpack < 5.1 (else that of the patched Compiler or the copy that applied the
+  // plugin)
+  constructor(file, compilerFile) { this.file = config.file; this.misnamed = misnamed(file); this.compilerFile = compilerFile; }
 
   // Content of the lockfile this compilation emits: its packages, plus those of other compilers that write
   // the same lockfile (see core/outputs.cjs). copied: files copied into the output in the emit hook (see copiedInEmit);
@@ -156,10 +225,16 @@ class BundleLockfilePlugin {
     const compiler = compilation.compiler, dir = outputDir(compilation);
     const bundled = compilation[BUNDLED] || (compilation[BUNDLED] = bundledFiles(compilation));
     const kinds = new Map(compilation[KINDS] || []);
-    for (const [name, f] of copied) kinds.set(f, new Set([...(kinds.get(f) || []), copied.bytes && copied.bytes.has(name) ? 'copy-bytes' : 'copy-source']));
+    // the files copied while the assets were processed (copiedLate; still assets: not deleted in the emit hook), and in
+    // the emit hook
+    /** @type {CopiedInEmit} */
+    const lateCopies = compilation[LATE] || new Map();
+    const all = new Map([...[...lateCopies].filter(([name]) => hasAsset(compilation, name)), ...copied]);
+    const bytes = new Set([...(lateCopies.bytes || []), ...(copied.bytes || [])]);
+    for (const [name, f] of all) kinds.set(f, new Set([...(kinds.get(f) || []), bytes.has(name) ? 'copy-bytes' : 'copy-source']));
     const build = { context: compiler.context, entries: entryFiles(compilation) }; // for vendored copies
     const gen = compilation[GENERATED] || (compilation[GENERATED] = generatedAssets(compilation));
-    const result = packages.packagesOfFiles([...bundled, ...copied.values()], build);
+    const result = packages.packagesOfFiles([...bundled, ...all.values()], build);
     const found = via.ofFiles(result, kinds);
     found.add('generated', gen); found.add('generated', late.generated); found.add('late', late.late);
     // the bundler, whose runtime and chunk wrappers are in the JavaScript it writes (see bundlerOf)
@@ -180,8 +255,7 @@ class BundleLockfilePlugin {
     if (isRspack(compiler)) return { name: 'rspack', version: compiler.webpack.rspackVersion };
     if (compiler.webpack && typeof compiler.webpack.version === 'string') return { name: 'webpack', version: compiler.webpack.version };
     if (this.bundlerVersion === undefined) {
-      this.bundlerVersion = null;
-      try { this.bundlerVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(this.compilerFile), '..', 'package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+      this.bundlerVersion = webpackVersionOf(this.compilerFile || compiler[BUNDLER_FILE]) || webpackVersionOf(this.applier);
     }
     return { name: 'webpack', ...(this.bundlerVersion ? { version: this.bundlerVersion } : {}) };
   }
@@ -203,10 +277,18 @@ class BundleLockfilePlugin {
     }
     const RawSource = rawSourceOf(compiler, this.compilerFile);
     own(compiler.hooks.thisCompilation).tap(NAME, (compilation) => {
+      if (this.misnamed) problems.problem(this.misnamed, null, { once: this.misnamed });
+      // an output below node_modules is a tool's cache (core/paths.cjs inToolCache): no lockfile, as for every bundler
+      if (inToolCache(outputDir(compilation))) {
+        compilation[SKIP] = true;
+        config.debug(`${kindOf(compiler)}: ${outputDir(compilation)} is below node_modules (a tool's cache): no lockfile`);
+        failCompilation(compilation);
+        return;
+      }
       compilation[STARTED] = Date.now() - 2000; // (file systems with coarse timestamps)
       // a plugin that makes webpack seal the compilation again (needAdditionalSeal): new chunks and assets
       const unseal = hook(compilation.hooks, 'unseal');
-      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, KINDS, HELPERS, UNNAMED, SOURCE, GENERATED]) delete compilation[k]; });
+      if (unseal) unseal.tap(NAME, () => { for (const k of [BUNDLED, KINDS, HELPERS, UNNAMED, SOURCE, GENERATED, LATE]) delete compilation[k]; });
       // webpack 5 and rspack: copied files, before the optimize stages change their bytes (copiedUnnamed, copiedRspack)
       const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');
@@ -215,6 +297,10 @@ class BundleLockfilePlugin {
           try { compilation[UNNAMED] = isRspack(compiler) ? copiedRspack(compilation) : copiedUnnamed(compilation); } catch (e) {
             problems.problem(`${kindOf(compiler)}: could not check the files copied into ${outputDir(compilation)}`, e);
           }
+          // the files plugins read from now on, to emit them as assets (copiedLate); the previous compilation's reads
+          // end here if it never got to afterProcessAssets (it failed)
+          if (compiler[READS]) compiler[READS].stop();
+          compiler[READS] = readsOf(compiler);
         });
       }
       // After processAssets: its taps with additionalAssets: true also get the assets added in any later stage,
@@ -222,6 +308,12 @@ class BundleLockfilePlugin {
       // tool reads. webpack 4's afterOptimizeAssets (in webpack 5 the same hook) runs after every plugin's
       // additionalAssets, whatever the plugin order (copy-webpack-plugin 6 adds its files there).
       own(hook(compilation.hooks, 'afterProcessAssets') || hook(compilation.hooks, 'afterOptimizeAssets')).tap(NAME, () => {
+        const reads = compiler[READS];
+        if (reads) { reads.stop(); compiler[READS] = null; }
+        try {
+          const read = [...(reads ? reads.files : []), ...(isRspack(compiler) ? builtinFavicons(compiler) : [])];
+          if (read.length) compilation[LATE] = copiedLate(compilation, read, compilation[UNNAMED]);
+        } catch (e) { problems.problem(`${kindOf(compiler)}: could not check the files copied into ${outputDir(compilation)}`, e); }
         try {
           const json = this.lockfile(compilation);
           const src = sourceOf(RawSource, json);
@@ -248,6 +340,7 @@ class BundleLockfilePlugin {
     // is shared with other compilers - without the compilers whose files are gone (deleted by this one's
     // output.clean, which ran before its emit).
     own(compiler.hooks.afterEmit).tapAsync({ name: NAME, stage: 1000 }, (compilation, callback) => {
+      if (compilation[SKIP]) { problems.outside(callback); return; }
       // the end of this hook: what went wrong fails the build (a compilation error, see failCompilation) - outside the
       // promise and outside this compiler's builds (core/problems.cjs outside): callback() continues webpack's work, which
       // may start another compiler (a config array's dependencies)

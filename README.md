@@ -206,9 +206,12 @@ module.exports = {
   mode: 'production',
   entry: './src/index.js',
   output: { path: path.join(__dirname, 'dist') },
-  plugins: [new BundleLockfilePlugin('bundle-lockfile/package-lock.json')],
+  plugins: [new BundleLockfilePlugin()],
 };
 ```
+
+It writes `BUNDLE_LOCKFILE_FILE` ([settings](docs/configuration.md#settings)); naming another file as its argument
+fails the build.
 
 Vite (also Rollup and Rolldown, with `'rollup'` / `'rolldown'`):
 

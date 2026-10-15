@@ -415,6 +415,44 @@ async function copiedInEmit(compilation, early, previous, readAsset) {
   return files;
 }
 
+// Files plugins read and emitted as assets of their own during the processing of the assets, after copiedUnnamed and
+// copiedRspack looked: the favicon of html-webpack-plugin 5 (emitted at PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE), of
+// Rsbuild's html.favicon and of rspack's HtmlRspackPlugin, which name no source (no info.sourceFilename). `read`: the
+// files read meanwhile (see webpack-family.cjs readsOf) and those such plugins name in their options; an asset that is
+// no chunk's file and has the bytes of one of them in a package is a copy of it. Assets emitted after the optimize
+// stages are not minimized: a copy has the file's bytes. done: the assets copiedUnnamed or copiedRspack matched.
+// Returns Map(asset name -> package file), each matched by its bytes.
+/**
+ * @param {any} compilation
+ * @param {Iterable<string>} read
+ * @param {Map<string, unknown>} [done]
+ * @returns {CopiedInEmit & { bytes: Set<string> }}
+ */
+function copiedLate(compilation, read, done = new Map()) {
+  /** @type {CopiedInEmit & { bytes: Set<string> }} */
+  const files = Object.assign(new Map(), { bytes: new Set() });
+  /** @type {Map<number, string[]>} */
+  const bySize = new Map();
+  for (const f of new Set(read)) {
+    let size;
+    try { size = packageRoot(f) && fs.statSync(f).size; } catch { continue; }
+    if (size) bySize.set(size, [...(bySize.get(size) || []), f]);
+  }
+  if (!bySize.size) return files;
+  const own = new Set();
+  for (const chunk of compilation.chunks || []) for (const f of [...(chunk.files || []), ...(chunk.auxiliaryFiles || [])]) own.add(f);
+  for (const name of assetNames(compilation)) {
+    if (own.has(name) || done.has(name)) continue;
+    const a = assetOf(compilation, name);
+    if (!a || (a.info && typeof a.info.sourceFilename === 'string')) continue;
+    let buf;
+    try { const s = a.source.source(); buf = Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { continue; }
+    const copy = (bySize.get(buf.length) || []).find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
+    if (copy) { files.set(name, copy); files.bytes.add(name); config.debug(`${kindOf(compilation.compiler)}: asset`, name, 'is a copy of', copy); }
+  }
+  return files;
+}
+
 // Packages of JavaScript assets that are no chunk's file and have the content of a generate-only build's chunk (see
 // core/generated.cjs): workbox-webpack-plugin's GenerateSW generates sw.js and workbox-<hash>.js with workbox-build
 // (Rollup's generate()) and emits them as assets. Looked at once, when the lockfile is first rendered: after the emit,
@@ -455,6 +493,6 @@ async function lateGenerated(compilation, early, readAsset) {
 }
 
 module.exports = {
-  KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, generatedAssets,
-  lateGenerated,
+  KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, copiedLate,
+  generatedAssets, lateGenerated,
 };

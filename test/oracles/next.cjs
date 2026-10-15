@@ -8,6 +8,8 @@
 // BLTEST_ORACLE_STANDALONE=1 (output: 'standalone', the case's output .next/standalone): the outputs as they are below
 // .next/standalone instead - "" the runtime packages (its node_modules), and each compiler output whose directory Next
 // copied there, at its path there (the oracle's distDir named .next, as the case's)
+// BLTEST_ORACLE_EXPORT=1 (a static export, the case's output out/): the client's output as it is there, at _next/ (Next
+// copies .next/static to out/_next/static)
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -54,4 +56,5 @@ if (process.env.BLTEST_ORACLE_STANDALONE) {
     if (fs.existsSync(path.join(standalone, path.basename(distDir), k))) there[path.posix.join('.next', k).replace(/\/$/, '')] = list;
   }
   console.log(JSON.stringify(there));
-} else console.log(JSON.stringify(result));
+} else if (process.env.BLTEST_ORACLE_EXPORT) console.log(JSON.stringify(result[''] ? { _next: result[''] } : {}));
+else console.log(JSON.stringify(result));
