@@ -161,4 +161,13 @@ function failIfAny(fail) {
   return true;
 }
 
-module.exports = { problem, take, takeOwn, count, pending, failure, failIfAny, isFailure, atExit, within, outside, current };
+// Problems a build failed with that its bundler only printed (Parcel before 2.13 goes on after a reporter's error): kept
+// for the exit, which fails the process with them - no build takes them (their owner is none of the builds').
+const AT_EXIT = Object.freeze({});
+/** @param {string[]} list */
+function failAtExit(list) {
+  for (const text of list) state.pending.push({ text, owner: AT_EXIT });
+  if (list.length) onExit();
+}
+
+module.exports = { problem, take, takeOwn, count, pending, failure, failIfAny, failAtExit, isFailure, atExit, within, outside, current };

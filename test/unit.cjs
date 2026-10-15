@@ -4784,6 +4784,23 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   assert.equal(run(['meta.json', '--out']).status, 2);
 });
 
+test('strict: Parcel before 2.13 only prints a reporter\'s error - the process fails at its exit; from 2.13 on Parcel fails the build', () => {
+  for (const [version, status] of [['2.8.3', 1], ['2.12.0', 1], ['2.13.0', 0], ['2.16.4', 0]]) {
+    const root = project({ 'node_modules/@parcel/core/package.json': { name: '@parcel/core', version }, 'node_modules/@parcel/core/lib/Parcel.js': '' });
+    const where = J(root, 'node_modules/@parcel/core/lib/Parcel.js');
+    // Parcel's reporter runner: the reporter's error caught (and printed), the build goes on, the CLI exits with 0
+    const script = `const parcel = require(${JSON.stringify(J(SRC, 'adapters/parcel.cjs'))});
+      class Parcel { run() {} watch() {} }
+      parcel.onCjsLoad({ default: Parcel }, ${JSON.stringify(where)}, () => ${JSON.stringify(where)});
+      parcel.report({ event: { type: 'buildSuccess', bundleGraph: null }, options: { projectRoot: ${JSON.stringify(root)} } })
+        .then(() => console.log('no error'), (e) => { console.log('reporter error:', e.message.split('\\n')[0]); process.exit(0); });`;
+    const r = nodeWith(strictEnv(undefined), ['-e', script]);
+    assert.match(r.stdout, /reporter error: bundle-lockfile: the lockfile would be missing or incomplete/, version);
+    assert.equal(r.status, status, `${version}: ${r.stderr}`);
+    if (status) assert.match(r.stderr, /could not collect the bundled packages of the build/, version);
+  }
+});
+
 // Parcel: a fake @parcel/core lib/Parcel.js and bundle graph of the public API's shape (BundleGraph, Bundle, Asset)
 test('parcel adapter: the Parcel class gets the reporter in its options; another shape fails (strict)', () => withConfig({ strict: true }, () => {
   const parcel = require('../src/adapters/parcel.cjs');
@@ -4854,6 +4871,7 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   await parcel.report({ event: { type: 'buildStart' } });
   const bad = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'node_modules/nopj/i.js')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options: { projectRoot: root } }), /no package\.json with name and version in \S*nopj/);
+  problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
   // without scope hoisting nothing is skipped
   const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
@@ -4867,6 +4885,7 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: css }, options: { projectRoot: bare } });
   const js = fakeBundleGraph([{ filePath: J(bare, 'dist/main.js'), target: { name: 'dist', distDir: J(bare, 'dist') }, assets: [J(bare, 'node_modules/a/i.js')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: js }, options: { projectRoot: bare } }), /resolves no @parcel\/packager-js/);
+  problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
 }));
 
 // A fake @parcel/core lib/RequestTracker.js (and its lib/projectPath.js) at root: a RequestTracker class whose instance,
@@ -4931,6 +4950,7 @@ test('parcel adapter: the files Parcel\'s transformers inline (Sass partials, Le
   fs.mkdirSync(J(none, 'dist'), { recursive: true }); fs.writeFileSync(J(none, 'dist/main.css'), 'x');
   const css = fakeBundleGraph([{ filePath: J(none, 'dist/main.css'), target: { name: 'dist', distDir: J(none, 'dist') }, assets: [J(none, 'node_modules/a/s.scss')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: css }, options: { projectRoot: none } }), /no request graph of \S+: the style sheets Parcel's transformers inlined/);
+  problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
   // a RequestTracker of another shape: a problem when it loads
   problems.take();
   const where = '/p/node_modules/@parcel/core/lib/RequestTracker.js';

@@ -211,7 +211,17 @@ async function reportBuild({ event, options }) {
         bundler: { name: 'parcel', ...(version ? { version } : {}) } });
     } catch (e) { problems.problem(`parcel: could not collect the bundled packages of ${w.dir}`, e); }
   }
-  problems.failIfAny((err) => { throw err; });
+  problems.failIfAny((err) => {
+    // Parcel before 2.13 prints a reporter's error and goes on, the build succeeds (parcel#9735): the process fails at
+    // its exit then
+    if (!failsWithReporters()) problems.failAtExit(err.problems);
+    throw err;
+  });
+}
+// Parcel fails the build with a reporter's error from 2.13 on (an unknown version: as before)
+function failsWithReporters() {
+  const m = /^(\d+)\.(\d+)\./.exec(version || '');
+  return !!m && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 13));
 }
 
 // for the reporter (parcel-reporter/index.cjs)
