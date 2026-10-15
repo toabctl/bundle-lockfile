@@ -6086,6 +6086,28 @@ test('strict: the files copied into the output that cannot be checked fail the c
   assert.match(comp.errors.map(e => e.message).join(), /webpack: could not check the files copied into .*out-copies: assets gone/);
 }));
 
+test('strict: a build that cannot even be failed (its compilation gone) still lets webpack go on: afterEmit calls back, the process fails', () => withConfig({ strict: true }, async () => {
+  problems.take();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'out-gone') });
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
+  const comp = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+  Object.assign(comp, { compiler, errors: [], emitAsset: () => {}, hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+  taps.thisCompilation(comp);
+  comp.stage();
+  problems.problem('a problem when the build ends');
+  comp.errors = Object.freeze([]); // (pushing an error throws)
+  const saved = process.exitCode;
+  const errors = [], error = config.error;
+  config.error = (...a) => errors.push(a.join(' '));
+  try {
+    const called = await Promise.race([new Promise(resolve => taps.afterEmit(comp, () => resolve(true))), new Promise(resolve => setTimeout(() => resolve(false), 5000))]);
+    assert.equal(called, true);
+    assert.equal(process.exitCode, 1);
+    assert.match(errors.join('\n'), /could not fail the build of \S*out-gone/);
+  } finally { config.error = error; process.exitCode = saved; }
+}));
+
 test('rspack: BundleLockfilePlugin in an rspack 1.0 config fails each compilation (it cannot collect every package there)', () => withConfig({ strict: true }, () => {
   problems.take();
   const { c, taps } = rspackCompiler(fakeRspack('1.0.14'), '/p/hand');
