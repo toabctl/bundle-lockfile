@@ -12,9 +12,7 @@
 /** @import { BuildOptions, BuildResult, OnEndResult, Plugin, PluginBuild } from 'esbuild' */
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const config = require('../core/config.cjs');
-const lru = require('../core/lru.cjs');
 const packages = require('../core/packages.cjs');
 const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
@@ -360,27 +358,16 @@ function attach(options, file) {
   return { ...options, plugins: [...theirs, createPlugin(w.inlined, file)] };
 }
 
-// The outputs of write: false builds (file -> sha256 of the bytes it was given): one that is on disk with those bytes
-// when the process ends, in no lockfile of the process, was written by the build's caller or a plugin (tsup and other
-// tools write esbuild's outputFiles themselves) - it ships without a lockfile: a problem.
-/** @type {Map<string, string>} */
-const pending = new Map();
+// The outputs of a write: false build: one its caller or a plugin writes to disk (tsup and other tools write esbuild's
+// outputFiles themselves) and no lockfile lists ships without one - a problem when the process ends (core/generated.cjs
+// addDestined). Outputs without outdir and outfile have no path ("<stdout>").
 /** @param {unknown} files */
 function unwritten(files) {
   if (!Array.isArray(files)) return;
-  if (!pending.size) problems.atExit(checkUnwritten);
   for (const of of files) {
     if (!of || typeof of.path !== 'string' || !path.isAbsolute(of.path) || !of.contents) continue;
-    lru.set(pending, of.path, crypto.createHash('sha256').update(of.contents).digest('hex'), MAX_PENDING);
+    generated.addDestined('esbuild', of.path, of.contents, 'a build with write: false', 'write the output with esbuild, or a lockfile with bundle-lockfile-from-metafile');
   }
-}
-const MAX_PENDING = 10000;
-function checkUnwritten() {
-  const shipped = [...pending].filter(([file, h]) => {
-    if (outputs.listedFile(file)) return false;
-    try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === h; } catch { return false; }
-  }).map(([file]) => file);
-  if (shipped.length) problems.problem(`esbuild: ${shipped.slice(0, 5).join(', ')}${shipped.length > 5 ? `, and ${shipped.length - 5} more` : ''}, output of a build with write: false, ${shipped.length > 1 ? 'were' : 'was'} written by its caller or a plugin: no lockfile lists ${shipped.length > 1 ? 'their' : 'its'} packages (write the output with esbuild, or a lockfile with bundle-lockfile-from-metafile)`);
 }
 
 // buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs

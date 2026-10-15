@@ -6,9 +6,12 @@
 // (vite-plugin-pwa's generateSW) generates sw.js and workbox-<hash>.js and writes them into dist/ with fs after the
 // build. In-process only: these builds run in the process of the build that uses their output.
 /** @import { Package } from '../types' */
+const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
 const lru = require('./lru.cjs');
+const problems = require('./problems.cjs');
 
 const S = Symbol.for('bundle-lockfile.generated.v1');
 const MAX = 10000; // entries of each map; a long dev or watch session must not grow them forever
@@ -20,15 +23,20 @@ const MAX = 10000; // entries of each map; a long dev or watch session must not 
  * @property {Map<string, Package[]>} entries
  * @property {Map<string, Package[]>} assets
  * @property {Map<string, Package[]>} unmatched
+ * @property {Map<string, Destined[]>} destined
  * @property {boolean} [warned]
  * @property {boolean} [exit]
+ * @property {boolean} [checking]
  */
+/** @typedef {{ hash: string | null, at: number, kind: string, what: string, hint: string }} Destined */
 /** @type {State} */
 const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { content: new Map(), entries: new Map() });
 if (!state.assets) state.assets = new Map();
 // content hash -> packages of the generate-only chunks no written output had the bytes of (yet): looked at when the
 // process ends (see unlanded)
 if (!state.unmatched) state.unmatched = new Map();
+// file -> what generate-only builds made for that path (see addDestined)
+if (!state.destined) state.destined = new Map();
 
 // Every bounded map that drops its oldest entries warns once per process: their packages are no longer listed where
 // their bytes end up
@@ -56,6 +64,48 @@ function unlanded() {
   if (!missing.size) return;
   const names = [...missing.values()].map(p => `${p.name}@${p.version}`).sort();
   config.warn(`the output of a build that writes nothing itself (generate(), write: false) reached no output this process wrote, so no lockfile lists ${names.slice(0, 10).join(', ')}${names.length > 10 ? `, and ${names.length - 10} more` : ''} (if that output ships, it ships without them)`);
+}
+
+// The file a generate-only build names as an output of its own (Rollup's generate() with dir or file, esbuild's
+// write: false with outdir or outfile), with what the build made for it: kind (the adapter, for the message), what (the
+// build, e.g. "a build with write: false"), hint (what to do instead). One that is written after the build and is on
+// disk when the process ends, in no lockfile of the process, was written by the build's caller or a plugin: tsup
+// writes esbuild's outputFiles itself, also after its plugins changed them (treeshake: Rollup's generate() on the
+// output; minify: terser). That output ships without a lockfile: a problem. The path is the evidence: a build that only
+// looks at its output (or another build that uses it: Vite's workers, @vitejs/plugin-legacy's polyfills, emitted as
+// assets of a build that writes and lists them) leaves nothing new there that no lockfile lists - a file of an earlier
+// build there is older.
+/** @param {string} kind @param {string} file @param {unknown} code @param {string} what @param {string} hint */
+function addDestined(kind, file, code, what, hint) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return;
+  const list = /** @type {Destined[]} */ (state.destined.get(file) || []).concat({ hash: hash(code), at: Date.now(), kind, what, hint });
+  lru.set(state.destined, file, list.slice(-10), MAX); // (a watch session: the latest builds of that file)
+  if (!state.checking) { state.checking = true; problems.atExit(checkDestined); }
+}
+
+// When the process ends: the files of addDestined that their caller wrote, in no lockfile of the process (a problem
+// for each adapter whose builds made them)
+function checkDestined() {
+  const { listedFile } = require('./outputs.cjs');
+  /** @type {Map<string, { first: Destined, files: string[] }>} */
+  const shipped = new Map(); // kind -> its files
+  for (const [file, list] of state.destined) {
+    if (listedFile(file)) continue;
+    let st, h;
+    try { st = fs.statSync(file); h = hash(fs.readFileSync(file)); } catch { continue; } // (not there: never written)
+    // written after the build: a file system's clock lags the process's by up to a scheduler tick; one with coarse
+    // timestamps (seconds) keeps a file with the build's bytes up to 2 s older. The first build that made it: tsup's
+    // esbuild build, before Rollup's generate() that tree-shakes its output.
+    const by = list.find(d => st.mtimeMs >= d.at - (d.hash === h ? 2000 : 50));
+    if (!by) continue; // (another file, from before the build)
+    const s = shipped.get(by.kind) || { first: by, files: [] };
+    s.files.push(file);
+    shipped.set(by.kind, s);
+  }
+  for (const [kind, { first, files }] of shipped) {
+    const many = files.length > 1;
+    problems.problem(`${kind}: ${files.slice(0, 5).join(', ')}${files.length > 5 ? `, and ${files.length - 5} more` : ''}, output of ${first.what}, ${many ? 'were' : 'was'} written by its caller or a plugin: no lockfile lists ${many ? 'their' : 'its'} packages (${first.hint})`);
+  }
 }
 
 // workbox-build appends "//# sourceMappingURL=<file>.map" to the code it writes when it generates source maps
@@ -132,4 +182,4 @@ function byEntry(file) {
   return pkgs;
 }
 
-module.exports = { addChunk, addAsset, addEntry, any, byContent, byAsset, byEntry, hash };
+module.exports = { addChunk, addAsset, addEntry, addDestined, any, byContent, byAsset, byEntry, hash };
