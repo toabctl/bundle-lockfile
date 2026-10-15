@@ -3174,6 +3174,42 @@ test('lock: a stale lock is taken over only if it is still the stale one', () =>
   assert.equal(fs.existsSync(l), false);
   assert.deepEqual(fs.readdirSync(root), [], 'nothing left behind');
   takeStale(l, st); // already gone: nothing to do
+  // another process is taking over (its .takeover): left to it; a takeover of a process that died during it is removed
+  fs.writeFileSync(l, ''); fs.utimesSync(l, old, old);
+  fs.writeFileSync(`${l}.takeover`, '');
+  assert.equal(takeStale(l, fs.statSync(l)), false);
+  assert.ok(fs.existsSync(l));
+  fs.utimesSync(`${l}.takeover`, old, old);
+  assert.equal(takeStale(l, fs.statSync(l)), false); // (the old takeover removed)
+  assert.equal(takeStale(l, fs.statSync(l)), true);
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test('lock: a lock of a process of this machine that is gone is taken at once; one of a live process is waited for', async () => {
+  const { lock } = require('../src/core/lock.cjs');
+  const os = require('os');
+  const root = project({});
+  const file = J(root, 'package-lock.json'), l = `${file}.lock`;
+  const ns = (() => { try { return fs.readlinkSync('/proc/self/ns/pid'); } catch { return ''; } })();
+  const gone = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+  // a build killed while it wrote: its fresh lock names it
+  fs.writeFileSync(l, JSON.stringify({ host: os.hostname(), ns, pid: Number(gone) }));
+  problems.take();
+  const t0 = Date.now();
+  const release = await lock(file, { wait: 5000 });
+  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  assert.equal(JSON.parse(fs.readFileSync(l, 'utf8')).pid, process.pid);
+  release();
+  assert.equal(fs.existsSync(l), false);
+  // a live process's (this machine's, or another machine's that looks gone here): waited for, until the wait is over
+  const parent = process.ppid;
+  for (const holder of [{ host: os.hostname(), ns, pid: parent }, { host: `not-${os.hostname()}`, ns, pid: Number(gone) }]) {
+    fs.writeFileSync(l, JSON.stringify(holder));
+    const warned = await warningsOf(async () => { (await lock(file, { wait: 300 }))(); });
+    assert.match(warned.join('\n'), /could not lock .* writing it without the lock/, JSON.stringify(holder));
+    assert.ok(fs.existsSync(l));
+    fs.unlinkSync(l);
+  }
 });
 
 test('hashes: one cache entry per file, recomputed when the file changes', () => {
