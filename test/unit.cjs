@@ -5317,7 +5317,7 @@ test('angular adapter: a side whose directory is the output path itself (browser
   }
 }));
 
-test('angular adapter: a build that fails on a problem writes nothing - no export copy either', () => withConfig({ strict: true }, async () => {
+test('angular adapter: a build that fails (on a problem, or a compile error) writes nothing - no export copy either', () => withConfig({ strict: true }, async () => {
   const angular = require('../src/adapters/angular.cjs');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/nopj/i.js': '',
     'node_modules/esbuild/package.json': { name: 'esbuild', version: '1.0.0' }, 'src/main.ts': '' });
@@ -5330,6 +5330,18 @@ test('angular adapter: a build that fails on a problem writes nothing - no expor
     // (control: the same build without the problem writes it)
     const good = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] }))(options);
     assert.deepEqual(good.errors, []);
+    assert.deepEqual(lockedNames(fs.readFileSync(exported, 'utf8')), ['a', 'esbuild']);
+    // a build that fails for Angular's own reasons (a compile error: Angular writes none of its files, also in watch
+    // mode, where the output of the last good build stays): nothing recorded, the export copy left as it is - the next
+    // good build's lockfile has none of the failed build's packages
+    const before = fs.readFileSync(exported, 'utf8');
+    const ts = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/nopj/i.js', 'node_modules/b/i.js'], errors: ['TS2322'] }))(options);
+    assert.deepEqual(ts.errors, ['TS2322']); // (no problem of bundle-lockfile's: nopj not even looked at)
+    assert.deepEqual(ts.outputFiles.map(f => f.path), ['main.js']);
+    assert.equal(fs.readFileSync(exported, 'utf8'), before);
+    const again = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] }))(options);
+    assert.deepEqual(again.errors, []);
+    assert.deepEqual(recordOf(fs.readFileSync(exported, 'utf8')).writers.length, 1);
     assert.deepEqual(lockedNames(fs.readFileSync(exported, 'utf8')), ['a', 'esbuild']);
   });
 }));

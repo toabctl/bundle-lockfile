@@ -1381,6 +1381,10 @@ const cases = [
   { name: 'strict: a package without version fails ng build, no export copy (Angular 22.2.2)', fixture: 'angular22',
     cmd: 'mkdir -p node_modules/bl-nover && echo \'{"name":"bl-nover"}\' > node_modules/bl-nover/package.json && echo x > node_modules/bl-nover/x.txt && npm run -s build -- --configuration production,nover',
     exportDir: true, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*no package\.json with name and version in \S*bl-nover/ },
+  // a compile error: Angular writes none of its files - no lockfile, no export copy (the source put back after it)
+  { name: 'Angular 22.2.2: ng build with a compile error writes no lockfile, no export copy', fixture: 'angular22',
+    cmd: 'cp src/app/app.ts .app.ts.orig && echo \'const blTs: number = "x";\' >> src/app/app.ts; npm run -s build; s=$?; mv .app.ts.orig src/app/app.ts; exit $s',
+    exportDir: true, expectError: /TS2322/ },
   { name: 'STRICT=0: failing adapter does not break the build (Angular 22.2.2)', fixture: 'angular22', cmd: 'npm run -s build', nodeOptions: FAULT,
     env: { BLTEST_FAULT_IN: 'angular', BUNDLE_LOCKFILE_STRICT: '0' }, exportDir: true, expect: null,
     expectOutput: /\[bundle-lockfile\] WARNING: angular: could not collect the bundled packages: Error: injected fault/ },
