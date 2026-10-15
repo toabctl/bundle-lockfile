@@ -2095,6 +2095,58 @@ test('rollup adapter: Rolldown write() without dir and file: the lockfile in dis
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: Rolldown - the outputs of a build resolved against its cwd option; files written after its first write() of several are found', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/late/package.json': { name: 'late', version: '1.0.0' },
+    'node_modules/late/l.js': 'late code' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const rollupPlugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
+    const ctx = { meta: { rolldownVersion: '1.2.13', rollupVersion: '4.23.0' } };
+    const pkgDir = J(root, 'packages/a');
+    const modules = [J(pkgDir, 'src/main.js'), J(root, 'node_modules/a/i.js')];
+    // one build, two write()s (Rolldown runs buildStart for each): rolldown({ cwd: 'packages/a' }), dirs relative to it
+    const write = async (dir) => {
+      const out = { dir, format: 'es' };
+      rollupPlugin.buildStart.call(ctx, { input: ['src/main.js'], cwd: pkgDir });
+      rollupPlugin.renderStart.call(ctx, out);
+      rollupPlugin.renderChunk.call(ctx, '', { moduleIds: modules }, out);
+      await rollupPlugin.generateBundle.handler.call(ctx, out, { 'main.js': { type: 'chunk', fileName: 'main.js', code: `main ${dir}`, moduleIds: modules } }, true);
+      fs.mkdirSync(J(pkgDir, dir), { recursive: true });
+      fs.writeFileSync(J(pkgDir, dir, 'main.js'), `main ${dir}`);
+      await rollupPlugin.writeBundle.handler.call(ctx, out);
+    };
+    await write('dist');
+    // another plugin copies a package file into the first output (in its writeBundle), well before the second write()
+    fs.mkdirSync(J(pkgDir, 'dist/vendor/node_modules/late'), { recursive: true });
+    fs.writeFileSync(J(pkgDir, 'dist/vendor/node_modules/late/l.js'), 'late code');
+    await new Promise(res => setTimeout(res, 2100));
+    await write('dist-legacy');
+    await rollupPlugin.closeBundle.handler.call(ctx);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(pkgDir, 'dist', LOCK), 'utf8')), ['a', 'late']);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(pkgDir, 'dist-legacy', LOCK), 'utf8')), ['a']);
+    assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false); // (not relative to the process's working directory)
+  } finally { process.chdir(cwd); }
+});
+
+test('strict: a problem of a build that writes nothing itself fails it with that problem (not wrapped in another)', () => withConfig({ strict: true }, async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/nopj/i.js': '' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    problems.take();
+    const ctx = { error: (e) => { throw e; } };
+    await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'gen'), isWrite: false, ctx,
+      chunks: [{ fileName: 'w.js', code: 'worker without a package.json', modules: [J(root, 'node_modules/nopj/i.js')] }] }), (e) => {
+      assert.match(e.message, /no package\.json with name and version in \S*nopj/);
+      assert.doesNotMatch(e.message, /could not collect the bundled packages/);
+      return true;
+    });
+  } finally { process.chdir(cwd); }
+}));
+
 test('rollup adapter: a plugin from the Vite config adds itself to worker.plugins, and its worker builds count', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
