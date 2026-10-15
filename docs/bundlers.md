@@ -57,7 +57,8 @@ Real builds of seven Chainguard packages with rspack and Rsbuild are compared wi
 Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile of the bundle; a
 Turbopack build still gets [Next.js' runtime lockfile](#nextjs)): Turbopack (Next.js 16's default build; known when
 `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack
-< 4 and rspack 0.x (when a compiler compiles).
+< 4 and rspack 0.x (when a compiler compiles). `BUNDLE_LOCKFILE_DISABLE` with the bundler such a build stands in for
+(`webpack` for Turbopack and ncc, `rolldown` for its command line) turns the failure off.
 
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Bun's own
 runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed).
@@ -92,6 +93,10 @@ Each output with a JavaScript file lists the bundler whose own code is in it, at
 `@rspack/core`, Rollup or Rolldown, and for a Vite build also `vite` (or `rolldown-vite`), esbuild (for Angular, the
 esbuild its builder runs), Parcel's `@parcel/packager-js`. Its version is its `package.json`'s; a copy without one
 (Next.js') has the version the bundler reports. A bundler bundle-lockfile cannot place fails the build (strict mode).
+
+An output directory below `node_modules` is a tool's cache (Vite's dependency pre-bundling in `node_modules/.vite`, a
+library's own build into its package): no lockfile, whatever the bundler - except below `node_modules/.cache/`, where
+tools build what ships (Nuxt's `.nuxt`).
 
 ## Vite, Rollup, Rolldown
 
@@ -275,10 +280,10 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
   `exports`), which an image scan of `.next/standalone` therefore cannot name. A trace that cannot be read, or a traced
   package without a `package.json` with name and version, fails the build. A file Next does not trace (e.g. a
   `require()` of a computed path) is not listed: Next would not copy it into the standalone output either.
-- A static export (`output: 'export'`) copies the pages and `.next/static` into `out/`, but not the lockfiles. Ship
-  `.next/bundle-lockfile/package-lock.json` with it, or use an [export
-  directory](../README.md#outputs-that-do-not-ship-as-files). In this mode a custom `distDir` names the export
-  destination; the lockfiles are in `.next` anyway.
+- A static export (`output: 'export'`, and `next export` before Next.js 14) copies the pages and `.next/static` into
+  `out/_next/static`: the client's lockfile is copied along, to `out/_next/bundle-lockfile/package-lock.json`, its record
+  rewritten for where it is (`BUNDLE_LOCKFILE_DISABLE=next` turns that off). In this mode a custom `distDir` names the
+  export destination; the build's lockfiles are in `.next` anyway.
 - The standalone output (`output: 'standalone'`) gets the runtime packages' lockfile, and copies of the bundles'
   lockfiles where Next copied their outputs (`.next/standalone/.next/server/chunks/` etc.; the client's in
   `.next/standalone/.next/`, for the `.next/static` that is copied there by hand). With Turbopack (not hooked, so with

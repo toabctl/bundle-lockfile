@@ -8,6 +8,8 @@
 // The build's distDir comes from Next's build context (next/dist/build/build-context.js, NextBuildContext: distDir from
 // Next.js 15, dir and config before); Next.js 12 has none: there, from the config its build loads
 // (next/dist/server/config.js, whose default export is a plain property).
+// A static export (next/dist/export/index.js, the default export: `output: 'export'`, `next export` before Next.js 14)
+// copies .next/static into <out>/_next/static: the client's lockfile goes along, to <out>/_next/ (see exported).
 const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
@@ -20,7 +22,9 @@ const { readPackage } = require('../core/manifest.cjs');
 
 const BUILD = /[\\/]next[\\/]dist[\\/]build[\\/]index\.js$/;
 const CONFIG = /[\\/]next[\\/]dist[\\/]server[\\/]config\.js$/;
+const EXPORT = /[\\/]next[\\/]dist[\\/]export[\\/]index\.js$/;
 const PHASE_PRODUCTION_BUILD = 'phase-production-build';
+const PHASE_EXPORT = 'phase-export';
 const loaded = new Map(); // project directory -> the config its production build loaded (Next.js 12)
 const WRAPPED = Symbol.for('bundle-lockfile.next.wrapped');
 const WRITER = JSON.stringify(['next', 'runtime']);
@@ -110,6 +114,44 @@ function copyLockfiles(distDir, inStandalone) {
   }
 }
 
+// A static export has run (exportApp(dir, options), exportFile: the module): it copied <distDir>/static into
+// <outdir>/_next/static, the client's output without its lockfile - <distDir>/<BUNDLE_LOCKFILE_FILE>, the client
+// compiler's output directory being distDir. The lockfile is copied to <outdir>/_next/ with fs, so the copy's record is
+// rewritten for where it is (core/outputs.cjs copied). Where the client compiler ran in this process (Next.js 12, 13;
+// later ones with a webpack() in the config, which turns the build workers off), core/outputs.cjs outputCopy has
+// already written it there when Next copied the files, which this writes again - the same. Next's internal export into
+// <distDir>/export (buildExport, Next.js 12 - 14) is no export. distDir as Next's export takes it: its getBuildDistDir
+// (Next.js 16: '.next' when a custom distDir names the export's destination), else the config's; the config is the
+// export's (options.nextConfig; Next.js 12: the 4th argument), else loaded as `next export` loads it.
+async function exported(exportFile, dir, options, configuration) {
+  const projectDir = path.resolve(typeof dir === 'string' ? dir : '.');
+  let conf = options.nextConfig || configuration;
+  if (!conf) conf = await require(path.join(path.dirname(exportFile), '..', 'server', 'config.js')).default(PHASE_EXPORT, projectDir);
+  const utils = path.join(path.dirname(exportFile), 'utils.js');
+  const getBuildDistDir = fs.existsSync(utils) ? require(utils).getBuildDistDir : null;
+  const distDir = path.join(projectDir, typeof getBuildDistDir === 'function' ? getBuildDistDir(conf) : conf.distDir);
+  const src = path.join(distDir, config.file);
+  const out = path.join(path.resolve(projectDir, options.outdir), '_next');
+  if (!fs.existsSync(path.join(out, 'static'))) { config.debug('Next.js: the export into', options.outdir, 'has no _next/static: no client lockfile to copy'); return; }
+  if (!fs.existsSync(src)) { config.debug('Next.js: no client lockfile', src, 'to copy into the export', out); return; }
+  const dest = path.join(out, config.file);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  config.debug('Next.js: copied', src, 'to', dest, '(static export)');
+}
+
+function wrapExport(exportApp, exportFile) {
+  return /** @this {unknown} */ async function (dir, options, ...rest) {
+    const result = await exportApp.call(this, dir, options, ...rest);
+    if (options && typeof options === 'object' && !options.buildExport && typeof options.outdir === 'string') {
+      // (Next.js 12: exportApp(dir, options, span, configuration); Next.js 16: a worker there)
+      const conf = rest[1] && typeof rest[1] === 'object' && typeof rest[1].distDir === 'string' ? rest[1] : undefined;
+      try { await exported(exportFile, dir, options, conf); } catch (e) { problems.problem(`Next.js: could not copy the client's lockfile into the static export ${options.outdir}`, e); }
+    }
+    return result;
+  };
+}
+
 function wrap(build, buildFile) {
   const owner = {}; // the builds of this copy of Next.js (core/problems.cjs within)
   return /** @this {unknown} */ function (dir, ...rest) {
@@ -137,28 +179,41 @@ function patchConfig(exp) {
   Object.defineProperty(exp, WRAPPED, { value: true });
 }
 
+// A copy of a module's exports: every export as it is now (Next's are getters, which cannot be replaced), the default
+// export `fn`
+function copyWith(exp, fn) {
+  const copy = {};
+  for (const k of Object.keys(exp)) copy[k] = exp[k];
+  copy.default = fn;
+  Object.defineProperty(copy, '__esModule', { value: true });
+  Object.defineProperty(copy, WRAPPED, { value: true });
+  return copy;
+}
+
 module.exports = {
   name: 'next',
-  cjsFiles: [BUILD, CONFIG],
+  cjsFiles: [BUILD, CONFIG, EXPORT],
   cjsPackages: ['next'], // processes that build with it (see hooks.cjs installCjs)
   onCjsLoad(exp, request, resolve) {
     if (request.endsWith('config.js') && CONFIG.test(request) && exp && typeof exp === 'object') { patchConfig(exp); return undefined; }
+    if (request.endsWith('index.js') && EXPORT.test(request) && exp && typeof exp === 'object' && !exp[WRAPPED]) {
+      if (typeof exp.default !== 'function') {
+        problems.problem(`Next.js: ${resolve()} exports no export function bundle-lockfile knows: a static export would get no lockfile`);
+        return undefined;
+      }
+      return { exports: copyWith(exp, wrapExport(exp.default, resolve())) };
+    }
     if (!request.endsWith('index.js') || !BUILD.test(request) || !exp || typeof exp !== 'object' || exp[WRAPPED]) return undefined;
     if (typeof exp.default !== 'function') {
       problems.problem(`Next.js: ${resolve()} exports no build function bundle-lockfile knows: the server's runtime packages would be missing`);
       return undefined;
     }
-    // a copy: every export as it is now (Next's are getters, which cannot be replaced), the build function wrapped
     const file = resolve();
-    const copy = {};
-    for (const k of Object.keys(exp)) copy[k] = exp[k];
-    copy.default = wrap(exp.default, file);
-    Object.defineProperty(copy, '__esModule', { value: true });
-    Object.defineProperty(copy, WRAPPED, { value: true });
     config.debug('Next.js: wrapped the build function of', file);
-    return { exports: copy };
+    return { exports: copyWith(exp, wrap(exp.default, file)) };
   },
   // for tests
   placeOf,
   runtime,
+  exported,
 };

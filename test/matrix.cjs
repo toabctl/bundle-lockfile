@@ -554,6 +554,10 @@ const NEXT_ENV = { NEXT_TELEMETRY_DISABLED: '1' };
 // every lockfile below .next and its packages (the files they record differ: Next's build id is new on every build)
 const NEXT_LOCKS = `node ${path.join(__dirname, 'lib/locks.cjs')} .next`;
 const FAULT = `--require ${path.join(__dirname, 'lib/fault.cjs')}`; // makes collecting the packages throw
+const FAULT_FILES = `--require ${path.join(__dirname, 'lib/fault-for-files.cjs')}`; // ... also those of given files (Next's runtime packages)
+// a favicon from a package, which the HTML plugins read and emit as an asset of their own: uuid's LICENSE.md (uuid is in
+// no bundle: imported, unused). The oracles read the bundlers' modules, which it is none of
+const FAVICON = 'node_modules/uuid/LICENSE.md';
 const ROLLDOWN_SHAPE = `--require ${path.join(__dirname, 'lib/rolldown-shape.cjs')}`; // Rolldown's plugin contexts of a shape bundle-lockfile does not know
 // node_modules/naked: bundled code in node_modules without a package.json (webpack5 app with EDGE_NAKED=1), removed afterwards
 const NAKED = "mkdir -p node_modules/naked && echo \"console.log('naked')\" > node_modules/naked/index.js && npm run -s build; s=$?; rm -rf node_modules/naked; exit $s";
@@ -738,6 +742,11 @@ const cases = [
   { name: 'not active without NODE_OPTIONS', fixture: 'wp5-npm', cmd: 'npm run -s build', inject: false, expect: null },
   { name: 'BUNDLE_LOCKFILE_DISABLE=webpack', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'webpack' }, expect: null },
   { name: 'existing NODE_OPTIONS are preserved', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: '--max-old-space-size=3072', heapMB: 3072, expect: W5 },
+  // html-webpack-plugin 5 reads its favicon and emits it while webpack processes the assets: the package is listed
+  { name: 'webpack 5.111.1: html-webpack-plugin 5 favicon from a package', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_FAVICON: FAVICON },
+    expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
+  { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package (emitted in the emit hook)', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
+    nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
     lockfile: 'sbom/package-lock.json', expect: W5 },
   // build modes
@@ -749,6 +758,11 @@ const cases = [
   { name: 'persistent cache with child compilers (worker-loader): warm build = cold build', fixture: 'edge-worker', env: { EDGE_CACHE: '1' }, expect: WORKERS, cmd: WARM },
   // webpack versions
   { name: 'webpack 4.0.0', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.0.0') },
+  // webpack 4's hooks fail a build only with a compilation error (a throw there exits 0): strict mode does that too
+  { name: 'strict: failing adapter fails the build (webpack 4.0.0)', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: `${LEGACY_SSL} ${FAULT}`,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*webpack: could not collect the packages of \S*dist: injected fault/ },
+  { name: 'STRICT=0: failing adapter does not break the build (webpack 4.0.0)', fixture: 'wp4.0-npm', cmd: 'npm run -s build', nodeOptions: `${LEGACY_SSL} ${FAULT}`,
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: null, expectOutput: /\[bundle-lockfile\] WARNING: webpack: could not collect the packages of \S*dist: Error: injected fault/ },
   { name: 'webpack 4.47.0 (child compiler: html-webpack-plugin 4)', fixture: 'wp4.47-npm', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
   { name: 'webpack 4.47.0, default-if-unset NODE_OPTIONS script via yarn 1', fixture: 'wp4.47-npm', cmd: 'yarn -s webpack-prod', nodeOptions: `${LEGACY_SSL} --max_old_space_size=4096`, expect: W4('4.47.0') },
   { name: 'webpack 5.0.0', fixture: 'wp5.0-npm', cmd: 'npm run -s build', expect: W5 },
@@ -1670,12 +1684,34 @@ const cases = [
     env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1', BUNDLE_LOCKFILE_STRICT: '0' }, oracleArgs: '--turbopack',
     expectIncludes: ['bl-canary-rt@1.0.0', 'bl-canary-legacy@1.0.0', 'bl-canary-ext@1.0.0'], canaryUnlisted: ['bl-canary-bundled@1.0.0'],
     runtimeTrace: { routes: ['/', '/r'] }, expectOutput: /\[bundle-lockfile\] WARNING: Next\.js built with Turbopack, which bundle-lockfile does not hook/ },
-  // output: 'export' copies the pages and .next/static into out/, not .next's lockfiles: out/ has none (see
-  // docs/bundlers.md); the export directory has them
-  { name: "Next.js 16.4.0 --webpack, output: 'export': out/ gets no lockfile", fixture: 'next16', cmd: './node_modules/.bin/next build --webpack',
-    outDir: 'out', env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, expect: null },
+  // a static export copies the pages and .next/static into out/ (out/_next/static): the client's lockfile goes along, to
+  // out/_next/ (adapters/next.cjs) - also where the compilers ran in build workers (Next.js 14 and later without a
+  // webpack() in the config: the export's process knows nothing of them), and from `next export` (Next.js 12)
+  ...[['16.4.0', 'next16', '--webpack', '19.3.0', {}], ['16.4.0', 'next16', '--webpack', '19.3.0', { NEXT_WEBPACK_FN: '1' }],
+    ['14.2.35', 'next14', '', '18.3.1', {}], ['13.5.11', 'next13', '', '18.3.1', {}]].map(([v, fixture, flags, react, env]) => (
+    { name: `Next.js ${v}${flags ? ` ${flags}` : ''}, output: 'export'${env.NEXT_WEBPACK_FN ? ', a webpack() in next.config.js (no build workers)' : ''}: out/_next gets the client's lockfile`,
+      fixture, cmd: `./node_modules/.bin/next build ${flags}`.trim(), outDir: 'out', oracleArgs: flags,
+      env: { ...NEXT_ENV, NEXT_EXPORT: '1', BLTEST_ORACLE_EXPORT: '1', ...env }, expectIncludes: [`react@${react}`] })),
+  { name: 'Next.js 12.3.7, next export: out/_next gets the client\'s lockfile', fixture: 'next12', cmd: './node_modules/.bin/next build && ./node_modules/.bin/next export',
+    outDir: 'out', env: { ...NEXT_ENV, BLTEST_ORACLE_EXPORT: '1' }, expectIncludes: ['react@18.3.1'], maxNode: 24 },
   { name: "Next.js 16.4.0 --webpack, output: 'export', export dir only", ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
     env: { ...NEXT_ENV, NEXT_EXPORT: '1' }, exportOnly: true },
+  // a webpack() in next.config.js (as real apps have) turns Next.js 14 and later's build workers off: the compilers run in
+  // next build's own process - the same lockfiles
+  { name: 'Next.js 16.4.0 --webpack, a webpack() in next.config.js (no build workers)', ...nextCase('next16', '16.4.0', '19.3.0', '--webpack'),
+    env: { ...NEXT_ENV, NEXT_WEBPACK_FN: '1' } },
+  { name: 'Next.js 15.5.27, a webpack() in next.config.js (no build workers)', ...nextCase('next15', '15.5.27', '19.3.0'), env: { ...NEXT_ENV, NEXT_WEBPACK_FN: '1' } },
+  { name: 'Next.js 14.2.35, a webpack() in next.config.js (no build workers)', ...nextCase('next14', '14.2.35', '18.3.1'), env: { ...NEXT_ENV, NEXT_WEBPACK_FN: '1' } },
+  { name: "Next.js 16.4.0 --webpack, a webpack() in next.config.js (no build workers), output: 'standalone'", fixture: 'next16',
+    cmd: './node_modules/.bin/next build --webpack', outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: '1', BLTEST_ORACLE_STANDALONE: '1', NEXT_WEBPACK_FN: '1' },
+    oracleArgs: '--webpack', expectIncludes: ['next@16.4.0', 'react@19.3.0', 'ms@2.1.3'], runtimeTrace: { routes: ['/'] } },
+  // Next's own failure: the runtime packages cannot be collected (webpack disabled: its builds would fail first)
+  { name: "strict: failing adapter fails the build (Next.js 16.4.0, the server's runtime packages)", fixture: 'next16-runtime', cmd: './node_modules/.bin/next build --webpack',
+    outDir: '.next', nodeOptions: FAULT_FILES, env: { ...NEXT_ENV, BUNDLE_LOCKFILE_DISABLE: 'webpack' },
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*Next\.js: could not collect the server's runtime packages: injected fault/ },
+  { name: "STRICT=0: failing adapter does not break the build (Next.js 16.4.0, the server's runtime packages)", fixture: 'next16-runtime',
+    cmd: './node_modules/.bin/next build --webpack', outDir: '.next', nodeOptions: FAULT_FILES, env: { ...NEXT_ENV, BUNDLE_LOCKFILE_DISABLE: 'webpack', BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: Next\.js: could not collect the server's runtime packages: Error: injected fault/ },
   // App Router: the exact per-compiler lists are the oracle's; nanoid (edge route) and is-number (middleware) are in the
   // edge-server output
   { name: 'Next.js 15.5.27 App Router, edge route handler, middleware', ...nextCase('next15-app', '15.5.27', '19.3.0'),
@@ -1897,6 +1933,14 @@ const cases = [
   // more outputs: HtmlRspackPlugin's child compilation adds no packages and no lockfile
   ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm']].map(([v, fixture]) => (
     { name: `rspack ${v}: HtmlRspackPlugin`, fixture, cmd: 'npm run -s build', env: { RSPACK_HTML: '1' }, expect: W5 })),
+  // ... its favicon from a package, which it reads in Rust and emits as an asset: the package is listed; so is Rsbuild's
+  // html.favicon, which Rsbuild reads and emits itself
+  ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm']].map(([v, fixture]) => (
+    { name: `rspack ${v}: HtmlRspackPlugin favicon from a package`, fixture, cmd: 'npm run -s build', env: { RSPACK_FAVICON: FAVICON },
+      expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] })),
+  ...[['1.7.6', 'rsbuild1.7-npm'], ['2.2.12', 'rsbuild2.2-npm']].map(([v, fixture]) => (
+    { name: `Rsbuild ${v}: html.favicon from a package`, fixture, cmd: 'npm run -s build', env: { RSBUILD_FAVICON: FAVICON },
+      expect: [...W5_COPY, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] })),
   { name: 'rspack 2.2.8: two compilers, two output dirs', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: 'apart' },
     expectIn: { a: ['ms@2.1.3'], b: ['debug@2.6.9', 'ms@2.0.0'] } },
   // output.path 'dist/[fullhash]': each compiler's own directory. No oracle: it builds without minimizing, which changes

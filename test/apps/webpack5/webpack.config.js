@@ -2,7 +2,8 @@ const path = require('path');
 // BLTEST_HEAP_FILE=<file>: the build's own heap limit (MB) written there (run.cjs checks the NODE_OPTIONS it ran with)
 if (process.env.BLTEST_HEAP_FILE) require('fs').writeFileSync(process.env.BLTEST_HEAP_FILE, String(Math.round(require('v8').getHeapStatistics().heap_size_limit / 1048576)));
 const plugins = [];
-try { const H = require('html-webpack-plugin'); plugins.push(new H()); } catch {} // child compiler, where installed
+// EDGE_FAVICON=<file>: html-webpack-plugin's favicon (relative to the app), which it reads and emits as an asset
+try { const H = require('html-webpack-plugin'); plugins.push(new H(process.env.EDGE_FAVICON ? { favicon: path.join(__dirname, process.env.EDGE_FAVICON) } : {})); } catch {} // child compiler, where installed
 module.exports = {
   // EDGE_MODE=development: a development build (no unused-export analysis or scope hoisting; sideEffects flags still
   // drop the unused uuid)

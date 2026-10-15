@@ -894,6 +894,137 @@ test('webpack adapter: a compiler for the same config that is still running is a
   }
 });
 
+test('webpack adapter: a new compiler for the same config keeps what the one it replaces left in the output (remnants)', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  const outputPath = J(root, 'dist');
+  fs.mkdirSync(outputPath);
+  const options = { entry: { main: { import: ['./src/app.js'] } }, output: { filename: '[name].[contenthash].js' } };
+  // a new compiler (a script that runs webpack(config) again, or `rollup -c`-style config arrays), other hashes, no clean
+  const build = (dep, file) => {
+    const c = compilation({ context: root, outputPath, chunks: [{ files: [file], modules: [{ resource: J(root, 'node_modules', dep, 'i.js') }] }], assets: { [file]: {} } });
+    c.compiler.options = options;
+    fs.writeFileSync(J(outputPath, file), dep);
+    const json = plugin().lockfile(c);
+    outputs.emitted(J(outputPath, LOCK), c.compiler[WRITER]);
+    return lockedNames(json);
+  };
+  assert.deepEqual(build('a', 'main.1.js'), ['a']);
+  assert.deepEqual(build('b', 'main.2.js'), ['a', 'b']); // main.1.js is still there, with a in it
+  fs.rmSync(J(outputPath, 'main.1.js'));
+  assert.deepEqual(build('c', 'main.3.js'), ['b', 'c']); // main.2.js is, main.1.js no longer
+});
+
+test('webpack adapter: an output below node_modules is a tool\'s cache: no lockfile (as for every bundler), except below node_modules/.cache/', async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/mylib/package.json': { name: 'mylib', version: '1.0.0' } });
+  for (const [dir, want] of [['node_modules/mylib/dist', false], ['node_modules/.cache/x', true]]) {
+    const outputPath = J(root, dir);
+    fs.mkdirSync(outputPath, { recursive: true });
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    Object.assign(compiler.outputFileSystem, { stat: fs.stat, lstat: fs.lstat });
+    compiler.outputFileSystem.gracefulify = () => {}; // the real disk
+    compiler.options = { entry: { main: { import: ['./src/app.js'] } } };
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+    Object.assign(comp, { compiler, errors: [], hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+    taps.thisCompilation(comp);
+    if (comp.stage) comp.stage();
+    fs.writeFileSync(J(outputPath, 'main.js'), '');
+    await new Promise(resolve => taps.afterEmit(comp, resolve));
+    assert.deepEqual(comp.errors, [], dir);
+    assert.equal(fs.existsSync(J(outputPath, LOCK)), want, dir);
+  }
+});
+
+test('webpack adapter: BundleLockfilePlugin writes BUNDLE_LOCKFILE_FILE; naming another file fails each compilation', () => withConfig({ strict: true }, () => {
+  problems.take();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const run = (p) => {
+    const outputPath = J(root, `dist-${++outputDirs}`);
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    p.apply(compiler);
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+    const emitted = {};
+    Object.assign(comp, { compiler, errors: [], emitAsset: (f) => { emitted[f] = true; }, hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+    taps.thisCompilation(comp);
+    comp.stage();
+    return { errors: comp.errors.map(e => e.message), file: p.file };
+  };
+  // left out, or the setting's name (as the README showed it), also spelled otherwise: no problem
+  for (const arg of [undefined, LOCK, `./${LOCK}`]) assert.deepEqual(run(new webpackAdapter.BundleLockfilePlugin(arg)), { errors: [], file: LOCK }, String(arg));
+  // another name: the lockfile is still where the setting says (where other builds and copies look), and the build fails
+  const other = run(new webpackAdapter.BundleLockfilePlugin('sbom/package-lock.json'));
+  assert.equal(other.file, LOCK);
+  assert.equal(other.errors.length, 1);
+  assert.match(other.errors[0], /BundleLockfilePlugin\("sbom\/package-lock\.json"\) names another file than BUNDLE_LOCKFILE_FILE \(bundle-lockfile\/package-lock\.json\)/);
+  // BUNDLE_LOCKFILE_TREE=only: the record goes to record.json, also from a plugin naming the setting's package-lock.json
+  return withConfig({ file: 'bundle-lockfile/record.json', tree: 'only' }, () => {
+    assert.deepEqual(run(new webpackAdapter.BundleLockfilePlugin(LOCK)), { errors: [], file: 'bundle-lockfile/record.json' });
+  });
+}));
+
+test('webpack adapter: webpack 4 with the plugin added by hand records its version (from the patched Compiler, or the copy that applied it)', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const outputPath = J(root, 'dist');
+  const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: false }); // webpack 4: no compiler.webpack
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler); // from the config: no compilerFile
+  const comp = compilation4({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+  const emitted = {};
+  Object.assign(comp, { compiler, emitAsset: undefined, hooks: { afterOptimizeAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+  comp.assets = new Proxy(comp.assets, { set: (t, k, v) => { emitted[k] = v; t[k] = v; return true; } });
+  taps.thisCompilation(comp);
+  comp.stage();
+  const rec = JSON.parse(emitted[LOCK].source())['bundle-lockfile'];
+  assert.deepEqual(rec.writers.map(w => w.bundler), [{ name: 'webpack', version: UNIT }]);
+});
+
+test('webpack adapter: a favicon a plugin reads from a package and emits while the assets are processed is listed (html-webpack-plugin 5, Rsbuild, HtmlRspackPlugin)', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('fav-pkg'), ...pj('other'), 'node_modules/fav-pkg/favicon.ico': 'ICON', 'node_modules/other/o.ico': 'ICON2', 'src/own.ico': 'MINE' });
+  const fav = J(root, 'node_modules/fav-pkg/favicon.ico');
+  const RawSource = class { constructor(s) { this.s = s; } source() { return this.s; } size() { return Buffer.byteLength(this.s); } };
+  // reads: what the plugin reads through the input file system in processAssets (after copiedUnnamed looked); emits:
+  // the assets it adds then (name -> bytes); rspack: rspack's version and its plugins (the config's)
+  const run = ({ reads = [], emits, rspack, plugins = [] }) => {
+    const outputPath = J(root, `dist-${++outputDirs}`);
+    const { compiler, taps } = fakeCompiler5({ outputPath });
+    const read = [];
+    compiler.inputFileSystem = { readFile: (f, cb) => { read.push(f); fs.readFile(f, cb); } };
+    compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
+    if (rspack) { compiler.webpack.rspackVersion = rspack; compiler[BUNDLER_FILE] = BUNDLERS.rspack; }
+    compiler.options = { plugins };
+    new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
+    const assets = new Map();
+    const add = (name, bytes, info = {}) => assets.set(name, { name, info, source: new RawSource(bytes) });
+    const comp = compilation({ context: root, outputPath, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+    const emitted = {};
+    let optimize;
+    Object.assign(comp, {
+      compiler, errors: [], fileDependencies: new Set(), emitAsset: (n, src) => { emitted[n] = src.source(); },
+      getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()],
+      hooks: { processAssets: { tap: (o, fn) => (optimize = fn) }, afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } },
+    });
+    add('main.js', 'main');
+    taps.thisCompilation(comp);
+    optimize();
+    // the plugin: reads (the input file system's readFile, possibly unbound: promisify), then emits
+    for (const f of reads) compiler.inputFileSystem.readFile.call(undefined, f, () => {});
+    for (const [n, b] of Object.entries(emits)) add(n, b);
+    comp.stage();
+    return lockedNames(emitted[LOCK]);
+  };
+  assert.deepEqual(run({ reads: [fav], emits: { 'favicon.ico': 'ICON' } }), ['a', 'fav-pkg']);
+  assert.deepEqual(run({ reads: [fav], emits: { 'static/favicon.ico': 'ICON' } }), ['a', 'fav-pkg']); // Rsbuild: faviconDistPath
+  // read but not emitted as it is (another file's bytes), a first-party file, a package file not read: nothing
+  assert.deepEqual(run({ reads: [fav], emits: { 'favicon.ico': 'ICON-resized' } }), ['a']);
+  assert.deepEqual(run({ reads: [J(root, 'src/own.ico')], emits: { 'own.ico': 'MINE' } }), ['a']);
+  assert.deepEqual(run({ reads: [], emits: { 'o.ico': 'ICON2' } }), ['a']);
+  // rspack's built-in HtmlRspackPlugin reads the favicon in Rust: its option names it (relative to the context)
+  const html = { name: 'HtmlRspackPlugin', _args: [{ favicon: 'node_modules/fav-pkg/favicon.ico' }] };
+  assert.deepEqual(run({ emits: { 'favicon.ico': 'ICON' }, rspack: '2.2.8', plugins: [html] }), ['a', 'fav-pkg']);
+  assert.deepEqual(run({ emits: { 'favicon.ico': 'ICON' }, rspack: '2.2.8' }), ['a']);
+});
+
 test('outputs: prune drops other writers whose files are all gone, once their build has landed', async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), ...pj('d'), ...pj('e'), 'dist/b.js': '', 'dist/c2.js': '' });
@@ -6725,6 +6856,15 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
   assert.deepEqual([r.status, r.stderr], [0, '']);
   r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
   assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+  // BUNDLE_LOCKFILE_DISABLE=webpack: Turbopack and ncc stand in for webpack, whose lockfiles are not expected then
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'webpack', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  assert.deepEqual([r.status, r.stderr], [0, '']);
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'webpack' }, [J(root, 'ncc.cjs')]);
+  assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+  // ... not by another name (next: the runtime packages, which a Turbopack build still gets)
+  r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'next,rspack', FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/next/dist/bin/next'), 'build']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, TURBO);
   // Yarn's pnpm linker: the main script in its store (node_modules/.store/<slug>/package) is recognized as well
   for (const [name, bin] of [['rolldown', 'bin/cli.mjs'], ['next', 'dist/bin/next']]) {
     const at = J(root, `node_modules/.store/${name}-npm-1.0.0-0123456789/package`);
@@ -7268,6 +7408,68 @@ test('next adapter: output: standalone - the runtime packages in .next/standalon
   assert.equal(fs.existsSync(J(root, '.next/standalone/.next/server/chunks', LOCK)), true);
   assert.equal(fs.existsSync(J(root, '.next/standalone/.next', LOCK)), true);
   assert.equal(fs.existsSync(J(root, '.next/standalone/runtime')), false);
+}));
+
+test('next adapter: a static export gets the client\'s lockfile in <out>/_next/, its record for where it is (output: export, next export)', () => withConfig({ strict: true }, async () => {
+  require('../src/core/copies.cjs').install();
+  problems.take();
+  const files = (distDir) => ({
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    [`${distDir}/static/chunks/main.js`]: '',
+    'node_modules/next/dist/export/index.js': '',
+  });
+  // a fake Next export: copies <distDir>/static to <outdir>/_next/static, as Next's does (fs.cp of the directory)
+  const fakeExport = (root, distDir) => async (dir, options) => {
+    fs.cpSync(J(root, distDir, 'static'), J(options.outdir, '_next/static'), { recursive: true });
+    return 'exported';
+  };
+  // the client compiler's lockfile in <distDir>, written by bundle-lockfile in another process (Next's build workers):
+  // this one knows nothing of it but its record
+  const clientLock = async (root, distDir) => {
+    const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
+    const dir = J(root, distDir, path.dirname(LOCK));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(J(root, distDir, LOCK), toPackageLock([a], root, { dir, writers: [{ id: 'client', files: [J(root, distDir, 'static/chunks/main.js')], paths: [a.path] }] }));
+  };
+  const exportFile = (root) => J(root, 'node_modules/next/dist/export/index.js');
+  const wrapped = (root, distDir) => nextAdapter().onCjsLoad({ default: fakeExport(root, distDir) }, exportFile(root), () => exportFile(root)).exports.default;
+
+  // output: 'export' (Next.js 13.3 - 15: options.nextConfig, distDir the config's)
+  let root = project(files('.next'));
+  await clientLock(root, '.next');
+  assert.equal(await wrapped(root, '.next')(root, { outdir: J(root, 'out'), nextConfig: { distDir: '.next', output: 'export' } }), 'exported');
+  const copy = JSON.parse(fs.readFileSync(J(root, 'out/_next', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(copy)), ['a']);
+  assert.equal(copy['bundle-lockfile'].context, '../../..'); // anchored where it is: out/_next/bundle-lockfile -> the project
+  // Next's internal export into <distDir>/export (buildExport) is none
+  root = project(files('.next'));
+  await clientLock(root, '.next');
+  await wrapped(root, '.next')(root, { outdir: J(root, '.next/export'), buildExport: true, nextConfig: { distDir: '.next' } });
+  assert.equal(fs.existsSync(J(root, '.next/export/_next', LOCK)), false);
+  // Next.js 16: a custom distDir names the export's destination, the build is in .next (its export/utils.js)
+  root = project({ ...files('.next'), 'node_modules/next/dist/export/utils.js': "exports.getBuildDistDir = (c) => (c.output === 'export' && c.distDir !== '.next' ? '.next' : c.distDir);" });
+  await clientLock(root, '.next');
+  await wrapped(root, '.next')(root, { outdir: J(root, 'site'), nextConfig: { distDir: 'site', output: 'export' } }, {}, { worker: true });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'site/_next', LOCK), 'utf8')), ['a']);
+  // `next export` (Next.js 12, 13): the config as the export loads it (server/config.js), a custom distDir
+  root = project({ ...files('build'), 'node_modules/next/dist/server/config.js': "exports.default = async (phase) => ({ distDir: phase === 'phase-export' ? 'build' : 'wrong' });" });
+  await clientLock(root, 'build');
+  await wrapped(root, 'build')(root, { outdir: J(root, 'out') });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'out/_next', LOCK), 'utf8')), ['a']);
+  // ... Next.js 12 passes the config as the 4th argument
+  root = project(files('dist12'));
+  await clientLock(root, 'dist12');
+  await wrapped(root, 'dist12')(root, { outdir: J(root, 'out') }, {}, { distDir: 'dist12' });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'out/_next', LOCK), 'utf8')), ['a']);
+  // no client lockfile (BUNDLE_LOCKFILE_DISABLE=webpack): nothing, and no problem
+  root = project(files('.next'));
+  await wrapped(root, '.next')(root, { outdir: J(root, 'out'), nextConfig: { distDir: '.next' } });
+  assert.equal(fs.existsSync(J(root, 'out/_next/bundle-lockfile')), false);
+  assert.deepEqual(problems.take(), []);
+  // an export module of another shape: a problem
+  const f = '/p/node_modules/next/dist/export/index.js';
+  assert.equal(nextAdapter().onCjsLoad({ exportApp: () => {} }, f, () => f), undefined);
+  assert.match(problems.take().join('\n'), /exports no export function bundle-lockfile knows/);
 }));
 
 test('next adapter: an unreadable trace, or a traced package without package.json, fails next build (strict); STRICT=0 warns', async () => {

@@ -26,7 +26,10 @@ the source maps show none of its code.
   build time (html-webpack-plugin's template, mini-css-extract-plugin's loader, vanilla-extract's compiler) are not.
 - **files copied verbatim into a webpack output**, e.g. by copy-webpack-plugin, whose assets record their source from
   6.3 on. Copies that record none (copy-webpack-plugin 5 and 6.0 – 6.2) count if they have the bytes of a package file
-  the compilation depends on: a file dependency, or a file in a copied directory.
+  the compilation depends on: a file dependency, or a file in a copied directory. So do files a plugin reads and emits
+  as an asset of its own while webpack or rspack processes the assets: the favicon of html-webpack-plugin 5, of
+  Rsbuild's `html.favicon` and of rspack's `HtmlRspackPlugin` (html-webpack-plugin 4's, emitted in the emit hook, is a
+  file dependency).
 - **output of builds that write nothing themselves**: Vite's workers (also the package files they emit, e.g. a font),
   @vitejs/plugin-legacy's polyfills, workbox-build's service worker (vite-plugin-pwa, workbox-webpack-plugin's
   `GenerateSW`), and any `generate()` or `build.write: false` build, also esbuild's `write: false`. Their packages are
