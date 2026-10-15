@@ -4408,11 +4408,11 @@ test('esm-wrap: regular expression literals and the code in template literals st
 
 // a compilation of rspack 2: chunks, assets with their bytes (assets: name -> { info, bytes }), file dependencies,
 // all modules, options
-function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, exportsUsed = () => false }) {
+function rspackCompilation(root, { chunks, assets = {}, fileDependencies = [], modules = [], optimization = {}, experiments = {}, exportsUsed = () => false, rspackVersion = '2.2.8' }) {
   const c = compilation({ context: root, chunks, assets: Object.fromEntries(Object.entries(assets).map(([n, a]) => [n, a.info || {}])) });
-  c.compiler.webpack = { rspackVersion: '2.2.8' };
+  c.compiler.webpack = { rspackVersion };
   c.compiler[BUNDLER_FILE] = BUNDLERS.rspack;
-  c.compiler.options = { optimization };
+  c.compiler.options = { optimization, experiments };
   c.getAsset = (name) => (name in assets ? { name, info: assets[name].info || {}, source: { source: () => assets[name].bytes, size: () => Buffer.byteLength(assets[name].bytes) } } : undefined);
   c.fileDependencies = fileDependencies;
   c.modules = new Set([...chunks.flatMap(ch => ch.modules), ...modules]);
@@ -4458,6 +4458,9 @@ test('rspack: files CopyRspackPlugin copied are found among the file dependencie
   deps.push(...['public/config/default.js', 'node_modules/yaml/lib/schema/default.js', 'package.json', 'node_modules/yaml/package.json'].map(f => J(root, f)));
   assert.deepEqual(lockOf({ 'app-config.js': copy('default.js', 'window.config = {};') }), []);
   assert.deepEqual(lockOf({ 'package.json': copy('package.json', fs.readFileSync(J(root, 'package.json'), 'utf8')) }), []);
+  // transformed on the way (a library's package.json with a field changed): the file at the name below the context, the
+  // copy pattern's default one, is its source - not every package's package.json the resolver read
+  assert.deepEqual(lockOf({ 'package.json': copy('package.json', '{"name":"app","version":"1.0.0","private":true}') }), []);
 });
 
 test('rspack: style sheets loaders inlined - per module from 1.3.14, from the file dependencies before', () => {
@@ -4500,6 +4503,31 @@ test('rspack: modules whose exports were all inlined are listed (only with inlin
   child.compiler.options = { optimization: { inlineExports: true, usedExports: true } };
   c.children = [child];
   assert.deepEqual(lockedNames(plugin().lockfile(c)), ['consts', 'shipped']);
+});
+
+test('rspack 1.4 - 1.6: modules whose exports were inlined with experiments.inlineConst or inlineEnum are listed', () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('shipped'), ...pj('consts'), ...pj('unused') });
+  const mod = (name, id) => ({ resource: J(root, 'node_modules', name, 'i.js'), identifier: () => id });
+  const shipped = mod('shipped', 'a'), consts = mod('consts', 'b'), unused = mod('unused', 'c');
+  const lockOf = (rspackVersion, experiments, optimization = { usedExports: true }, used = new Set([shipped, consts])) => lockedNames(plugin().lockfile(rspackCompilation(root, {
+    chunks: [{ files: ['main.js'], modules: [shipped] }], modules: [consts, unused], optimization, experiments, rspackVersion, exportsUsed: (m) => used.has(m) })));
+  // 1.5 and 1.6 (optimization.inlineExports is 1.7's): the inlined modules count as used
+  assert.deepEqual(lockOf('1.6.8', { inlineConst: true }), ['consts', 'shipped']);
+  assert.deepEqual(lockOf('1.6.8', { inlineEnum: true }), ['consts', 'shipped']);
+  assert.deepEqual(lockOf('1.5.8', { inlineConst: true }), ['consts', 'shipped']);
+  // without the experiment they inline nothing (the parser option fails without it); nor does rspack before 1.4; 1.7
+  // inlines as optimization.inlineExports says (the experiments only set its default)
+  assert.deepEqual(lockOf('1.6.8', {}), ['shipped']);
+  assert.deepEqual(lockOf('1.3.15', { inlineConst: true }), ['shipped']);
+  assert.deepEqual(lockOf('1.7.12', { inlineConst: true }, { usedExports: true, inlineExports: false }), ['shipped']);
+  // without usage analysis every module counts as used, and nothing inlined leaves its chunk
+  assert.deepEqual(lockOf('1.6.8', { inlineConst: true }, { usedExports: false }, new Set([shipped, consts, unused])), ['shipped']);
+  // 1.4 records no use of what it inlined: every module of a package in no chunk counts (also with usedExports: false,
+  // where it inlines too)
+  assert.deepEqual(lockOf('1.4.11', { inlineConst: true }, { usedExports: true }, new Set([shipped])), ['consts', 'shipped', 'unused']);
+  assert.deepEqual(lockOf('1.4.11', { inlineConst: true }, { usedExports: false }, new Set([shipped])), ['consts', 'shipped', 'unused']);
+  assert.deepEqual(lockOf('1.4.11', {}, { usedExports: true }, new Set([shipped])), ['shipped']);
 });
 
 test('strict: modules whose exports were inlined that cannot be looked for fail the build (a package would be missing)', () => withConfig({ strict: true }, () => {

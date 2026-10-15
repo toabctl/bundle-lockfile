@@ -404,6 +404,8 @@ const fixtures = {
   'rspack2.2-c#': rspack('2.2.8'),
   'rspack2.2-pnpm10-global-store': rspack('2.2.8', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
   'rspack-features1.2': rspackFeatures('1.2.8'),
+  'rspack-features1.4': rspackFeatures('1.4.11'),
+  'rspack-features1.6': rspackFeatures('1.6.8'),
   'rspack-features1.7': rspackFeatures('1.7.12'),
   'rspack-features2.2': rspackFeatures('2.2.8'),
   // OHIF's shape (test/apps/rspack-copies): the project's rspack 1.7 (the config's CopyRspackPlugin) and @rspack/cli 2
@@ -416,6 +418,7 @@ const fixtures = {
     packageJson: { scripts: { build: 'node node_modules/@rspack/cli/bin/rspack.js build' } } },
   'rsbuild1.1-npm': rsbuild('1.1.10'),
   'rsbuild1.2-npm': rsbuild('1.2.19'),
+  'rsbuild1.6-npm': rsbuild('1.6.15'),
   'rsbuild1.7-npm': rsbuild('1.7.6'),
   // (@rstest/core: Rstest, which bundles the tests with this Rsbuild)
   // @rspack/core pinned: rsbuild dev serves it (DEV_RSBUILD), and @rsbuild/core 2.2.12 takes any ~2.2.8
@@ -610,8 +613,10 @@ const RSPACK_CONSTS = 'rm -rf node_modules/consts-only node_modules/consts-defau
 const RSPACK_FEATURES_CMD = `${RSPACK_CONSTS} && npm run -s build && ! cmp -s dist/copied/modern-normalize.css node_modules/modern-normalize/modern-normalize.css`;
 // rspack-features: the font, the style sheets' packages (bulma's partial, normalize.less, normalize.css @imported by
 // app.css and by normalize.less), the worker's is-number, the copies (left-pad's file, sanitize.css' directory), the
-// packages whose exports rspack 1.7 and later inline (consts-only; consts-default only rspack 2), the glob's copy
-// (escape-html), the transformed copy (reset-css), the minimized copy (modern-normalize)
+// packages whose exports rspack inlines (consts-only: 1.4 - 1.6 with experiments.inlineConst, 1.7 and later by default;
+// consts-default only rspack 2), the glob's copy
+// (escape-html), the transformed copy (reset-css), the minimized copy (modern-normalize); the transformed copy of the
+// project's package.json lists nothing
 const RSPACK_FEATURES = ['bootstrap-icons@1.13.1', 'bulma@1.0.4', 'consts-default@1.0.0', 'consts-only@1.0.0', 'escape-html@1.0.3', 'is-number@7.0.0',
   'left-pad@1.3.0', 'lodash-es@4.18.1', 'modern-normalize@3.0.1', 'normalize.css@8.0.1', 'normalize.less@1.0.0', 'reset-css@5.0.2', 'sanitize.css@13.0.0'];
 // style sheets loaders inline (no modules, and the stats have no file dependencies), and the transformed copy (the
@@ -1737,12 +1742,20 @@ const cases = [
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
   // what reaches the output besides the chunks' JavaScript modules (test/apps/rspack-features); the oracle builds without
   // inlining exports, so the modules of consts-only and consts-default are in its chunks, and matches the copies by bytes
-  ...[['1.2.8', '1.2'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+  ...[['1.2.8', '1.2'], ['1.4.11', '1.4'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
     { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports`, fixture: `rspack-features${line}`,
       cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
-  // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages)
-  { name: 'rspack 2.2.8: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, persistent cache: warm build = cold build',
-    fixture: 'rspack-features2.2', env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING },
+  // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages), and the
+  // modules whose exports were inlined stay listed
+  ...[['1.2.8', '1.2'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, persistent cache: warm build = cold build`,
+      fixture: `rspack-features${line}`, env: { RSPACK_CACHE: '1' }, cmd: `${RSPACK_CONSTS} && ${WARM}`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
+  // watch mode: rebuilt without the import of consts-only (it leaves the lockfile), then with it; the copies and the style
+  // sheets' packages stay
+  ...[['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, watch mode`, fixture: `rspack-features${line}`,
+      cmd: `${RSPACK_CONSTS} && ${WATCH} src/index.js "from 'consts-only'"`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING,
+      watchBuilds: [RSPACK_FEATURES, RSPACK_FEATURES.filter(p => !p.startsWith('consts-only@')), RSPACK_FEATURES] })),
   // outputs: two compilers writing to dist/ (one process and two), as edge-shared-output's
   { name: 'rspack 2.2.8: two compilers, one output dir', fixture: 'rspack2.2-npm', cmd: 'npm run -s build', env: { RSPACK_SHARED: '1' }, expect: SHARED },
   { name: 'rspack 2.2.8: two rspack processes, one output dir, in parallel', fixture: 'rspack2.2-npm', cmd: PARALLEL_RSPACK, env: { RSPACK_SHARED: '1' },
@@ -1778,9 +1791,11 @@ const cases = [
   { name: 'rspack 2.2.8, shim: cross-env NODE_OPTIONS=... (no shim)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-crossenv', expect: null },
   { name: 'rspack 2.2.8, shim: cross-env NODE_OPTIONS=...', fixture: 'rspack2.2-npm', cmd: 'npm run -s build-crossenv', shim: true, expect: W5 },
   // strict mode: a lockfile that cannot be written (main.js is a file), a bundled package that cannot be listed
-  { name: 'strict: a lockfile that cannot be written fails the build (rspack 2.2.8)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
-    env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json' },
-    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack: could not write \S*dist\/main\.js\/package-lock\.json/ },
+  // (rspack 1 writes the lockfile with another output file system: graceful-fs before 1.6)
+  ...[['2.2.8', 'rspack2.2-npm'], ['1.7.12', 'rspack1.7-npm'], ['1.1.8', 'rspack1.1-npm']].map(([v, fixture]) => (
+    { name: `strict: a lockfile that cannot be written fails the build (rspack ${v})`, fixture, cmd: 'npm run -s build',
+      env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json' },
+      expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*rspack: could not write \S*dist\/main\.js\/package-lock\.json/ })),
   { name: 'STRICT=0: a lockfile that cannot be written is a warning (rspack 2.2.8)', fixture: 'rspack2.2-npm', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_FILE: 'main.js/package-lock.json', BUNDLE_LOCKFILE_STRICT: '0' }, lockfile: 'main.js/package-lock.json', expect: null,
     expectOutput: /\[bundle-lockfile\] WARNING: rspack: could not write/ },
@@ -1795,10 +1810,16 @@ const cases = [
   { name: 'rspack 1.7.12 and 2.2.8 in one process (OHIF: the config\'s CopyRspackPlugin from rspack 1, built by @rspack/cli 2)', fixture: 'rspack-copies',
     cmd: 'npm run -s build', expect: W5_COPY, oracleArgs: '--from node_modules/@rspack/cli' },
   // Rsbuild: its rspack compiler, the file copied by output.copy
-  ...[['1.1.10', 'rsbuild1.1-npm', 'npm run -s build'], ['1.2.19', 'rsbuild1.2-npm', 'npm run -s build'], ['1.7.6', 'rsbuild1.7-npm', 'npm run -s build'],
+  ...[['1.1.10', 'rsbuild1.1-npm', 'npm run -s build'], ['1.2.19', 'rsbuild1.2-npm', 'npm run -s build'], ['1.6.15', 'rsbuild1.6-npm', 'npm run -s build'],
+    ['1.7.6', 'rsbuild1.7-npm', 'npm run -s build'],
     ['2.2.12', 'rsbuild2.2-npm', 'npm run -s build'], ['2.2.12, bun', 'rsbuild2.2-bun', 'bun run build'],
     ['2.2.12, yarn 4.18.1 Plug\'n\'Play', 'rsbuild2.2-yarn4-pnp', 'yarn build']].map(([what, fixture, cmd]) => (
     { name: `Rsbuild ${what}`, fixture, cmd, expect: W5_COPY })),
+  // Rsbuild 1.5 and 1.6 have rspack inline constant exports in production (experiments.inlineConst): consts-only's
+  // module is in no chunk (the oracle builds without inlining)
+  ...[['1.6.15', 'rsbuild1.6-npm'], ['1.7.6', 'rsbuild1.7-npm'], ['2.2.12', 'rsbuild2.2-npm']].map(([v, fixture]) => (
+    { name: `Rsbuild ${v}: a package whose exports rspack inlined`, fixture, env: { RSBUILD_CONSTS: '1' },
+      cmd: 'rm -rf node_modules/consts-only && cp -r pkgs/consts-only node_modules/ && npm run -s build', expect: [...W5_COPY, 'consts-only@1.0.0'].sort() })),
   // Next 16 builds with Turbopack by default, which bundle-lockfile does not hook: recognized, it fails (strict);
   // STRICT=0: no bundle lockfile, but the server's runtime packages (from Turbopack's traces)
   { name: 'Next.js 16.4.0 Turbopack (unsupported: fails)', fixture: 'next16', cmd: './node_modules/.bin/next build', outDir: '.next', env: NEXT_ENV,

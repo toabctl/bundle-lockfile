@@ -8,7 +8,7 @@
 const path = require('path');
 const { createRequire } = require('module');
 const { pathToFileURL } = require('url');
-const { rspackResult } = require('./stats.cjs');
+const { rspackResult, oracleRspackConfig } = require('./stats.cjs');
 
 const oracleDist = path.resolve('dist-oracle');
 // dist/<dir> -> dist-oracle/<dir>, relative to the fixture as Rsbuild takes it
@@ -17,15 +17,12 @@ const redirect = (output = {}, root = 'dist') => ({ ...output, distPath: { ...ou
 
 (async () => {
   const { createRsbuild, loadConfig, rspack } = await import(pathToFileURL(createRequire(path.resolve('package.json')).resolve('@rsbuild/core')).href);
-  const [major, minor] = rspack.rspackVersion.split('.').map(Number);
   const { content } = await loadConfig({ cwd: process.cwd() });
   const tools = content.tools || {};
   const environments = content.environments && Object.fromEntries(Object.entries(content.environments)
     .map(([name, env]) => [name, env.output && env.output.distPath && env.output.distPath.root ? { ...env, output: redirect(env.output) } : env]));
   const rsbuildConfig = { ...content, output: redirect(content.output), ...(environments && { environments }),
-    tools: { ...tools, rspack: [].concat(tools.rspack || [], (config) => {
-      config.optimization = { ...config.optimization, minimize: false, ...((major > 1 || minor >= 7) && { inlineExports: false }) };
-    }) } };
+    tools: { ...tools, rspack: [].concat(tools.rspack || [], (config) => { oracleRspackConfig(config, rspack.rspackVersion); }) } };
   const rsbuild = await createRsbuild({ cwd: process.cwd(), rsbuildConfig });
   let all;
   rsbuild.onAfterBuild(({ stats }) => { all = stats; });
