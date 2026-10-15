@@ -98,6 +98,7 @@ function checkDestined() {
     // esbuild build, before Rollup's generate() that tree-shakes its output.
     const by = list.find(d => st.mtimeMs >= d.at - (d.hash === h ? 2000 : 50));
     if (!by) continue; // (another file, from before the build)
+    for (const d of list) if (d.hash) state.unmatched.delete(d.hash); // (said here: not again by unlanded)
     const s = shipped.get(by.kind) || { first: by, files: [] };
     s.files.push(file);
     shipped.set(by.kind, s);

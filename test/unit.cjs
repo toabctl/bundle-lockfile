@@ -4980,6 +4980,7 @@ test('strict: the output of a generate() whose caller writes it where the build 
   let r = run(strictEnv('0'), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a');`);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, new RegExp(`WARNING: ${rollupMsg.source}`));
+  assert.equal((r.stderr.match(/WARNING/g) || []).length, 1, r.stderr); // (not again as output that reached no output)
   // a Vite build with build.write: false
   r = run(strictEnv(undefined), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a');`, 'vite');
   assert.equal(r.status, 1, r.stderr);

@@ -1338,7 +1338,8 @@ const cases = [
     env: { TSUP_TREESHAKE: '1', BUNDLE_LOCKFILE_STRICT: '0' }, expect: null,
     expectOutput: /\[bundle-lockfile\] WARNING: esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin/ },
   { name: 'tsup 8.5.0, its metafile read by bundle-lockfile-from-metafile', fixture: 'tsup', cmd: `BUNDLE_LOCKFILE_STRICT=0 npm run -s build && ${FROM_METAFILE} dist/metafile-esm.json`,
-    env: { TSUP_METAFILE: '1' }, expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'], oracle: false },
+    env: { TSUP_METAFILE: '1' }, expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'], oracle: false,
+    expectOutput: /\[bundle-lockfile\] WARNING: esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin/ },
   // a style sheet a plugin inlines (esbuild-sass-plugin's watchFiles), a file another plugin's onEnd copies out of a
   // package; the oracle's source maps see neither (the partial is inlined, the copy is none of esbuild's outputs)
   { name: 'esbuild 0.28.2: a Sass partial esbuild-sass-plugin inlines, a package file another plugin copies in onEnd', fixture: 'esbuild-features',
