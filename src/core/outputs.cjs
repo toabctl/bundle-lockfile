@@ -218,8 +218,8 @@ function render(target, own) {
   // the files this process's builds write there; what is left of a writer's earlier builds besides them (see remnantOf)
   const ownFiles = new Set(builds.flatMap(b => b.files));
   for (const w of mine.values()) {
-    w.remnants = w.remnants.filter((r) => {
-      const rest = r.files.filter(f => !ownFiles.has(f) && there(f));
+    w.remnants = w.remnants.filter((/** @type {Build} */ r) => {
+      const rest = r.files.filter((/** @type {string} */ f) => !ownFiles.has(f) && there(f));
       if (!rest.length) return false;
       const b = remnantOf(target, w.id, r, rest);
       builds.push(b); ids.add(b.id);

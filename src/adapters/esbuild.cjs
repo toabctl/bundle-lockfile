@@ -143,7 +143,9 @@ function watched() {
   // the plugins of the options, each with its setup given the recording build object (a plugin object of another shape
   // is passed on as it is: esbuild rejects it)
   /** @type {(list: unknown[]) => unknown[]} */
-  const plugins = (list) => list.map(p => (isPlugin(p) ? { ...p, name: p.name, setup(/** @type {PluginBuild} */ build) { return p.setup.call(p, wrapBuild(build)); } } : p)); // (name: also a getter of its class)
+  // (name: also one a getter of the plugin's class gives, which a spread leaves out)
+  const plugins = (list) => list.map(p => (isPlugin(p)
+    ? { ...p, name: p.name, setup(/** @type {PluginBuild} */ build) { return p.setup.call(p, wrapBuild(build)); } } : p));
   /** @type {(key: string, file: string | null) => string[]} */
   const inlined = (key, file) => byModule.get(key) || (file && byModule.get(file)) || [];
   return { plugins, inlined };

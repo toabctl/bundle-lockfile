@@ -2038,20 +2038,20 @@ test('outputs: runs of one config into one directory that write other files (oth
   process.chdir(root);
   try {
     const dist = J(root, 'dist');
-    const run = (file, name, plugin = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' })) =>
-      rollupBuild(plugin, { outDir: dist, chunks: [{ fileName: file, code: file, modules: [J(root, `node_modules/${name}/i.js`)] }] });
+    const run = (file, name, own = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' })) =>
+      rollupBuild(own, { outDir: dist, chunks: [{ fileName: file, code: file, modules: [J(root, `node_modules/${name}/i.js`)] }] });
     const locked = () => lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8'));
     // the same config twice in one process (rollup -c with two configs, other plugins), with hashed file names
     await run('sel-1.js', 'a');
     await run('sel-2.js', 'b');
     assert.deepEqual(locked(), ['a', 'b']);
     // its rebuild writing the same file again replaces it
-    const plugin = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' });
-    await run('sel-2.js', 'c', plugin);
+    const same = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' });
+    await run('sel-2.js', 'c', same);
     assert.deepEqual(locked(), ['a', 'c']);
     // gone: no longer
     fs.rmSync(J(dist, 'sel-1.js'));
-    await run('sel-2.js', 'c', plugin);
+    await run('sel-2.js', 'c', same);
     assert.deepEqual(locked(), ['c']);
     // another process ran the same config before, into other files: the lockfile on disk has them, this run keeps them
     const before = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
@@ -2582,8 +2582,8 @@ test('rollup adapter: files written after the build that are older: copies keepi
   process.chdir(root);
   try {
     const dist = J(root, 'dist');
-    const plugin = rollupAdapter.bundleLockfile('vite');
-    const build = (n, late) => rollupBuild(plugin, { outDir: dist, chunks: [{ fileName: 'index.js', code: `index ${n}`, modules: [J(root, 'node_modules/app/i.js')] }], late });
+    const watching = rollupAdapter.bundleLockfile('vite');
+    const build = (n, late) => rollupBuild(watching, { outDir: dist, chunks: [{ fileName: 'index.js', code: `index ${n}`, modules: [J(root, 'node_modules/app/i.js')] }], late });
     // fs.cp with preserveTimestamps: the copy has npm's time of its source, long before the build
     await build(1, () => {
       fs.cpSync(J(root, 'node_modules/kept/k.js'), J(dist, 'vendor/k.js'), { preserveTimestamps: true });
@@ -3188,7 +3188,6 @@ test('lock: a stale lock is taken over only if it is still the stale one', () =>
 
 test('lock: a lock of a process of this machine that is gone is taken at once; one of a live process is waited for', async () => {
   const { lock } = require('../src/core/lock.cjs');
-  const os = require('os');
   const root = project({});
   const file = J(root, 'package-lock.json'), l = `${file}.lock`;
   const ns = (() => { try { return fs.readlinkSync('/proc/self/ns/pid'); } catch { return ''; } })();

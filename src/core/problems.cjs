@@ -169,7 +169,7 @@ function failIfAny(fail) {
 const AT_EXIT = Object.freeze({});
 /** @param {string[]} list */
 function failAtExit(list) {
-  for (const text of list) state.pending.push({ text, owner: AT_EXIT });
+  for (const t of list) state.pending.push({ text: t, owner: AT_EXIT });
   if (list.length) onExit();
 }
 
