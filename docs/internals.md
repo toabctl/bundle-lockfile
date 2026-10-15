@@ -13,6 +13,9 @@ deprecation warnings and, depending on the
 Node.js version (see [Vite, Rollup, Rolldown](#vite-rollup-rolldown)), an ESM load hook. Each recognizes a bundler's
 module when it is loaded and patches it so that every build gets bundle-lockfile's plugin — without a config change.
 Modules that ran before the hook was installed (loaded by an earlier preload) are looked at when it is.
+`module.registerHooks`' load hook alone would not do: it sees `require()` too (with the source, and `format`
+undefined for a required module), but not a module that a `Module._extensions` handler reads and compiles itself, as
+tsx's does - tried with such a handler on Node.js 22.23, 24.22 and 26.12 (2026-10-15).
 
 ```mermaid
 flowchart LR
