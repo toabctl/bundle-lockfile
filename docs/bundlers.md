@@ -153,15 +153,22 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   and files the `file` and `copy` loaders put into the output. Modules that only re-export count; tree-shaken modules,
   externals and modules a browser field maps to `false` do not. Modules of plugins (a namespace) count if their path is
   a file.
-- Several builds into one directory (other entry points) share one lockfile.
+- Paths are relative to `absWorkingDir`, else to the working directory esbuild had when it loaded, as esbuild takes
+  them (a script that changes its working directory after importing esbuild builds in the earlier one); bundle-lockfile
+  names that directory as `absWorkingDir` in the options of the build, which the other plugins see too.
+- Several builds into one directory share one lockfile; separate builds of one configuration there (an ES-module and
+  a CommonJS build of the same entry points) keep each other's packages, while a context's rebuild replaces its own.
 - `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile. Their packages are
   listed where their output's bytes end up in another hooked build's output, or in a file written into an output after
-  the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files itself: its
-  lockfile comes from its own adapter ([Angular](#angular)). An output file of such a build that is on disk with its
-  bytes when the process ends and in no lockfile of the process (tsup and other tools write esbuild's `outputFiles`
-  themselves) is a problem: it ships without a lockfile (`bundle-lockfile-from-metafile` writes one).
-- Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
-  below `node_modules` are left alone - except below `node_modules/.cache/`, as for Vite (tools build what ships there).
+  the build, or where a plugin gives the contents of a module whose file is their entry point (a worker that
+  esbuild-plugin-inline-worker bundles and inlines as a string) ([coverage](coverage.md#also-listed)). Angular's
+  builder builds that way and writes the files itself: its lockfile comes from its own adapter ([Angular](#angular)).
+  An output file of such a build that is on disk with its bytes when the process ends and in no lockfile of the process
+  (tsup and other tools write esbuild's `outputFiles` themselves) is a problem: it ships without a lockfile
+  (`bundle-lockfile-from-metafile` writes one).
+- Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`, reading the
+  exports of a dependency's entry for `optimizeDeps.extensions`) and outputs below `node_modules` are left alone -
+  except below `node_modules/.cache/`, as for Vite (tools build what ships there).
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),
   `buildSync()` throws it, `watch()` prints it and goes on watching. esbuild 0.16 and older (no `context()`) fail a
   build that writes an output.
@@ -172,7 +179,8 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
   listed, as files written after a Vite build are ([coverage](coverage.md#also-listed)).
 - The command line and the Go API are not hooked; their metafile (`--metafile=meta.json`) gives the lockfile:
   `node /opt/bundle-lockfile/bin/bundle-lockfile-from-metafile meta.json` writes it into the directory of the outputs
-  (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one). It sees no
+  (`--out <dir>`: elsewhere; `--working-dir <dir>`: the build's, if it was not the current one; a metafile none of
+  whose output files is there, as run in another directory, fails). It sees no
   `watchFiles` and no files copied with fs; it reads the settings and fails as a build would. It lists the esbuild the
   working directory resolves, as the bundler of the JavaScript outputs; `--bundler <package dir>` names another
   (Angular's builder's esbuild), `--bundler none` none (a metafile Bun wrote: Bun is no npm package).

@@ -67,6 +67,10 @@ else {
   const dir = outArg ? path.resolve(outArg) : commonDir(files);
   if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else if (path.dirname(dir) === dir) {
     problems.problem(`the outputs of ${metaFile} are in no directory but the root: name the output directory with --out`); done();
+  } else if (!files.some(f => fs.existsSync(f))) {
+    // (the metafile's paths are relative to the build's working directory: run in another, it names files that are
+    // not there, and the packages of none)
+    problems.problem(`none of the output files of ${metaFile} is there (its paths relative to ${wd}): run it in the build's working directory, or name that with --working-dir`); done();
   } else {
     const entries = Object.values(metafile.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
     const result = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });

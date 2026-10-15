@@ -4902,6 +4902,14 @@ test('strict: the output of a write: false build that its caller writes, in no l
   fs.rmSync(J(root, 'dist'), { recursive: true });
   const kept = nodeWith(strictEnv(undefined), ['-e', script(false)]); // only looked at: nothing ships
   assert.deepEqual([kept.status, kept.stdout.trim()], [0, 'done'], kept.stderr);
+  // said once, also after a write: false build whose output has no path (<stdout>: no outdir, nothing to look at)
+  const first = `const o0 = { entryPoints: ['src/w.js'], write: false, absWorkingDir: ${JSON.stringify(root)} };
+    const p0 = a.attach(o0, ${JSON.stringify(ESBUILD_MAIN)}).plugins.at(-1);
+    let end0; p0.setup({ initialOptions: o0, onStart() {}, onEnd: (fn) => { end0 = fn; } });
+    end0({ errors: [], metafile: { outputs: { 'w.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } }, outputFiles: [{ path: '<stdout>', contents: Buffer.from('w') }] }).then(() => {`;
+  const twice = nodeWith(strictEnv(undefined), ['-e', script(true).replace("const options =", `${first} const options =`) + '});']);
+  assert.equal(twice.status, 1, twice.stderr);
+  assert.equal(twice.stderr.match(/was written by its caller or a plugin/g).length, 1, twice.stderr);
 });
 
 test('esbuild adapter: a problem is an onEnd error (the build rejects); write: false keeps the packages for the build that uses the output', () => withConfig({ strict: true }, async () => {
@@ -4918,6 +4926,137 @@ test('esbuild adapter: a problem is an onEnd error (the build rejects); write: f
   assert.equal(await esbuildEnd({ outdir: 'out', write: false, absWorkingDir: root }, { errors: [], metafile: { outputs: { 'out/w.js': { entryPoint: 'src/w.js', inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 } } } } }, outputFiles: [{ path: J(root, 'out/w.js'), text, contents: Buffer.from(text) }] }), undefined);
   assert.equal(fs.existsSync(J(root, 'out')), false);
   assert.deepEqual(ids(generated.byContent(text)), ['a@1.0.0']);
+}));
+
+// sets up the plugins of one build() or context() call (the caller's and bundle-lockfile's, last) on a fake build
+// object: { loads (the onLoad callbacks, as wrapped), build(result) (one build: every onEnd in order; returns
+// bundle-lockfile's) }. Builds of one call share the plugin, as a context's rebuilds do.
+function esbuildCall(options, file) {
+  const attached = esbuildAdapter().attach(options, file);
+  const loads = [], ends = [];
+  const b = { initialOptions: attached, onLoad: (o, cb) => loads.push(cb), onEnd: (cb) => ends.push(cb), onStart() {}, onResolve() {} };
+  for (const p of attached.plugins) p.setup(b);
+  return { loads, async build(result) { let r; for (const cb of ends) r = await cb(result); return r; } };
+}
+
+test('esbuild adapter: separate builds of one config into one directory (ES modules and CommonJS) keep each other\'s packages; a rebuild of one replaces its own', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c'), 'dist/a.mjs': 'esm', 'dist/a.cjs': 'cjs' });
+  const base = { entryPoints: ['src/a.js'], bundle: true, outdir: 'dist', absWorkingDir: root };
+  const result = (out, name) => ({ errors: [], metafile: { outputs: { [`dist/${out}`]: { entryPoint: 'src/a.js', inputs: { [`node_modules/${name}/i.js`]: { bytesInOutput: 1 } } } } } });
+  const esm = esbuildCall({ ...base, format: 'esm', outExtension: { '.js': '.mjs' } });
+  const cjs = esbuildCall({ ...base, format: 'cjs', outExtension: { '.js': '.cjs' }, external: ['a'] });
+  // (one writer: the same entry points and output directory)
+  await esm.build(result('a.mjs', 'a'));
+  await cjs.build(result('a.cjs', 'b'));
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'b']);
+  // a rebuild of the CommonJS build (a context's), with another package: its earlier build is gone, the other one stays
+  await cjs.build(result('a.cjs', 'c'));
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'c']);
+});
+
+test('esbuild adapter: write: false without outdir or outfile - its one output file, which esbuild names <stdout>, is the metafile\'s one output', async () => {
+  const generated = require('../src/core/generated.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  // esbuild 0.17 - 0.28: outputFiles [<stdout>], the metafile's output named after the entry point
+  const text = 'a worker, bundled into a string (write: false, no outdir)';
+  assert.equal(await esbuildEnd({ entryPoints: ['src/w.js'], bundle: true, write: false, absWorkingDir: root },
+    { errors: [], metafile: { outputs: { 'w.js': { entryPoint: 'src/w.js', inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 } } } } }, outputFiles: [{ path: '<stdout>', text, contents: Buffer.from(text) }] }), undefined);
+  assert.deepEqual(ids(generated.byContent(text)), ['a@1.0.0']);
+  assert.deepEqual(ids(generated.byContent(Buffer.from(text))), ['a@1.0.0']); // (the bytes a caller writes)
+});
+
+test('esbuild adapter: the output of a write: false build that a plugin inlines into a module it loads (its entry): listed (esbuild-plugin-inline-worker)', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('dep'), ...pj('wk'), ...pj('lib'), ...pj('earlier'), 'dist/main.js': 'main', 'src/w.worker.js': '', 'src/lib.js': '', 'src/main.js': '' });
+  // write: false builds (no output), each with a package of its own: the worker the plugin bundles in its onLoad; a module
+  // of the main build that esbuild loads itself; the main build's own entry point (an earlier build of it)
+  for (const [entry, name] of [['src/w.worker.js', 'wk'], ['src/lib.js', 'lib'], ['src/main.js', 'earlier']]) {
+    const text = `${entry} bundled`;
+    await esbuildEnd({ entryPoints: [J(root, entry)], bundle: true, write: false, absWorkingDir: root }, { errors: [],
+      metafile: { outputs: { [path.basename(entry)]: { entryPoint: entry, inputs: { [`node_modules/${name}/i.js`]: { bytesInOutput: 1 }, [entry]: { bytesInOutput: 1 } } } } },
+      outputFiles: [{ path: '<stdout>', text, contents: Buffer.from(text) }] });
+  }
+  const inline = { name: 'inline-worker', setup(build) {
+    build.onLoad({ filter: /\.worker\.js$/ }, async (args) => ({ contents: `export default ${JSON.stringify(`${args.path} bundled`)};`, loader: 'js' }));
+  } };
+  const call = esbuildCall({ entryPoints: ['src/main.js'], bundle: true, outdir: 'dist', absWorkingDir: root, plugins: [inline] });
+  // (the fake build calls the callback for the entry too: a plugin that loads every module)
+  for (const cb of call.loads) for (const f of ['src/w.worker.js', 'src/main.js']) await cb({ path: J(root, f), namespace: 'file' });
+  assert.equal(await call.build({ errors: [], metafile: { outputs: { 'dist/main.js': { entryPoint: 'src/main.js',
+    inputs: { 'src/main.js': { bytesInOutput: 1 }, 'src/w.worker.js': { bytesInOutput: 1 }, 'src/lib.js': { bytesInOutput: 1 }, 'node_modules/dep/i.js': { bytesInOutput: 1 } } } } } }), undefined);
+  const lock = JSON.parse(fs.readFileSync(J(root, 'dist', LOCK), 'utf8'));
+  assert.deepEqual(lockedNames(JSON.stringify(lock)), ['dep', 'wk']);
+  const [w] = lock['bundle-lockfile'].writers;
+  assert.deepEqual(w.via.generated.map(i => w.packages[i]), ['node_modules/wk']);
+  assert.deepEqual(w.contents['../main.js'].map(i => w.packages[i]).sort(), ['node_modules/dep', 'node_modules/wk']);
+});
+
+test('esbuild adapter: a script that changes its working directory after loading esbuild builds in the one esbuild loaded in', () => {
+  const root = project({
+    'node_modules/a/package.json': { name: 'a', version: '1.0.0' },
+    'node_modules/esbuild/package.json': { name: 'esbuild', version: '0.28.2', main: 'lib/main.js' },
+    // esbuild's defaultWD: the working directory when lib/main.js loads, for builds without absWorkingDir
+    'node_modules/esbuild/lib/main.js': `"use strict";
+const fs = require('fs'), path = require('path');
+var defaultWD = process.cwd();
+async function build(options) {
+  const wd = options.absWorkingDir || defaultWD;
+  const ends = [];
+  for (const p of options.plugins || []) await p.setup({ initialOptions: options, onStart() {}, onEnd: (cb) => ends.push(cb), onLoad() {}, onResolve() {} });
+  const out = path.resolve(wd, options.outdir, 'main.js');
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, 'bundled a');
+  const result = { errors: [], warnings: [], metafile: options.metafile ? { inputs: {}, outputs: { [path.relative(wd, out)]: { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } } : undefined };
+  for (const cb of ends) { const r = await cb(result); if (r && r.errors) result.errors.push(...r.errors); }
+  if (result.errors.length) throw new Error(result.errors.map(e => e.text).join('\\n'));
+  return result;
+}
+module.exports = { version: '0.28.2', build };`,
+    'sub/x': '',
+    'build.cjs': `const esbuild = require('esbuild'); const path = require('path');
+const abs = process.argv[2] === 'abs';
+process.chdir('sub');
+esbuild.build({ entryPoints: [abs ? path.resolve('../src/main.js') : 'src/main.js'], outdir: abs ? path.resolve('../dist') : 'dist' })
+  .then(() => console.log('built'), (e) => { console.error(e.message); process.exit(1); });`,
+  });
+  const env = { ...strictEnv(undefined), NODE_OPTIONS: `--require ${J(SRC, 'register.cjs')}` };
+  for (const k of Object.keys(env)) if (k.startsWith('BUNDLE_LOCKFILE_') && k !== 'BUNDLE_LOCKFILE_STRICT') delete env[k];
+  for (const mode of ['abs', 'relative']) {
+    const r = spawnSync(process.execPath, ['build.cjs', mode], { cwd: root, env, encoding: 'utf8' });
+    assert.equal(r.status, 0, `${mode}: ${r.stderr}`);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'esbuild'], mode); // (esbuild: its runtime helpers)
+    assert.equal(fs.existsSync(J(root, 'sub/dist')), false, mode);
+    fs.rmSync(J(root, 'dist'), { recursive: true });
+  }
+});
+
+test('esbuild adapter: Vite 5 - 7\'s build of a dependency\'s entry for its exports (extractExportsData) is left alone, told by its caller', async () => {
+  // (Vite 7: parse((await build({ ...optimizeDeps.esbuildOptions, entryPoints: [filePath], write: false, format: 'esm' }))...))
+  const code = `exports.run = (build) => extractExportsData(build, '/p/node_modules/dep/index.svelte');
+async function extractExportsData(build, filePath) { await null; return build({ entryPoints: [filePath], write: false, format: 'esm', plugins: [{ name: 'svelte', setup() {} }] }); }`;
+  const root = project({ 'node_modules/vite/dist/node/chunks/config.js': code, 'node_modules/other/dist/node/chunks/config.js': code });
+  let seen = null;
+  const copy = esbuildAdapter().onCjsLoad(fakeEsbuild('0.28.2', { build: async (o) => { seen = o; return { errors: [] }; } }), ESBUILD_MAIN, () => ESBUILD_MAIN).exports;
+  await require(J(root, 'node_modules/vite/dist/node/chunks/config.js')).run(copy.build);
+  assert.deepEqual(seen.plugins.map(p => p.name), ['svelte']);
+  // the same build from another package's function of that name gets the plugin
+  await require(J(root, 'node_modules/other/dist/node/chunks/config.js')).run(copy.build);
+  assert.deepEqual(seen.plugins.map(p => p.name), ['svelte', 'bundle-lockfile']);
+});
+
+test('strict: a rebuild with a problem fails (an onEnd error); the next one without it writes the lockfile again', () => withConfig({ strict: true }, async () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/nopj/i.js': '', 'dist/main.js': 'x' });
+  problems.take();
+  const call = esbuildCall({ entryPoints: ['src/main.js'], outdir: 'dist', absWorkingDir: root });
+  const result = (name) => ({ errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { [`node_modules/${name}/i.js`]: { bytesInOutput: 1 } } } } } });
+  assert.equal(await call.build(result('a')), undefined);
+  const bad = await call.build(result('nopj'));
+  assert.equal(bad.errors.length, 1);
+  assert.match(bad.errors[0].text, /no package\.json with name and version in \S*nopj/);
+  assert.equal(await call.build(result('a')), undefined);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a']);
+  assert.equal(problems.count(), 0);
 }));
 
 test('hooks: a module whose exports are a getter (a new object every time) loads as without bundle-lockfile', () => {
@@ -5022,6 +5161,17 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   const out = run(['meta.json', '--out', 'elsewhere', '--working-dir', root]);
   assert.equal(out.status, 0, out.stderr);
   assert.ok(fs.existsSync(J(root, 'elsewhere', LOCK)));
+  // run in another directory than the build's (the metafile's paths are relative to that): fails, writes nothing
+  fs.mkdirSync(J(root, 'sub'));
+  const inSub = (extra = {}, args = []) => spawnSync(process.execPath, [CLI, '../meta.json', ...args], { cwd: J(root, 'sub'), env: { ...env, ...extra }, encoding: 'utf8' });
+  const elsewhere = inSub();
+  assert.equal(elsewhere.status, 1, elsewhere.stderr);
+  assert.match(elsewhere.stderr, /none of the output files of \S*meta\.json is there \(its paths relative to \S*sub\): run it in the build's working directory, or name that with --working-dir/);
+  const laxElsewhere = inSub({ BUNDLE_LOCKFILE_STRICT: '0' });
+  assert.equal(laxElsewhere.status, 0, laxElsewhere.stderr);
+  assert.match(laxElsewhere.stderr, /WARNING: none of the output files/);
+  assert.equal(fs.existsSync(J(root, 'sub/dist')), false);
+  assert.equal(inSub({}, ['--working-dir', root]).status, 0); // (named: fine)
   // a package without a package.json, a file that is no metafile, none at all, a misspelled setting: exit code 1
   for (const [args, re, extra] of [[['bad.json'], /no package\.json with name and version in \S*nopj/], [['none.json'], /none\.json is no esbuild metafile/],
     [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }],

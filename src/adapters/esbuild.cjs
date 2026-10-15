@@ -35,6 +35,13 @@ const MAIN = /[\\/](esbuild|esbuild-wasm)[\\/]lib[\\/]main\.js$/;
 const VITE_OWN = new Set(['vite:dep-pre-bundle', 'vite:dep-scan']);
 const VITE_CONFIG = ['externalize-deps', 'inject-file-scope-variables'];
 const vitesOwn = (plugins) => plugins.some(p => VITE_OWN.has(p.name)) || VITE_CONFIG.every(n => plugins.some(p => p.name === n));
+// ... and the one that reads the exports of a dependency's entry (extractExportsData, for optimizeDeps.extensions, e.g.
+// vite-plugin-svelte's .svelte): write: false, one entry point, no output, with the plugins of optimizeDeps.esbuildOptions
+// (none of Vite's) - told by its caller, a function of that name in Vite's dist/node
+const VITE_EXPORTS = /^\s*at (?:async )?extractExportsData \(.*[\\/]vite[\\/]dist[\\/]node[\\/]/m;
+/** @param {BuildOptions} options */
+const vitesExports = (options) => options.write === false && Array.isArray(options.entryPoints) && options.entryPoints.length === 1
+  && typeof options.outdir !== 'string' && typeof options.outfile !== 'string' && VITE_EXPORTS.test(String(new Error().stack));
 const JS = /\.[cm]?js$/i, CSS = /\.css$/i;
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 // esbuild's inner exports object (its "default", a plugin's build.esbuild) -> the wrapped copy of its exports
@@ -111,7 +118,7 @@ function filesOfOutputs(metafile, wd, pluginInlined = () => [], kinds = null) {
   return out;
 }
 
-// The files plugins' onLoad callbacks report as watchFiles, per module they loaded: what they read to make it, e.g.
+// The files plugins' onLoad callbacks report as watchFiles, per module they loaded (and which modules they loaded): what they read to make it, e.g.
 // esbuild-sass-plugin's Sass partials, which it inlines into the CSS it returns - no modules, so not in the metafile
 // (esbuild #1268). Of those, the files a plugin inlines (core/packages.cjs inlinedFile: no code, no build tool's
 // settings) count for a module that reaches an output, as Rollup's watch files do (adapters/rollup.cjs). Every plugin
@@ -121,6 +128,9 @@ function filesOfOutputs(metafile, wd, pluginInlined = () => [], kinds = null) {
 function watched() {
   /** @type {Map<string, string[]>} */
   const byModule = new Map();
+  // the modules a plugin gave the contents of (see generatedIn)
+  /** @type {Set<string>} */
+  const loaded = new Set();
   /** @type {(args: { namespace?: string, path: string }) => string} */
   const keyOf = (args) => (args.namespace && args.namespace !== 'file' ? `${args.namespace}:${args.path}` : args.path);
   /** @type {(build: PluginBuild) => PluginBuild} */
@@ -132,9 +142,12 @@ function watched() {
       if (prop !== 'onLoad' || typeof v !== 'function') return typeof v === 'function' ? v.bind(target) : v;
       return (opts, cb) => v.call(target, opts, typeof cb !== 'function' ? cb : async (args) => {
         const r = await cb(args);
-        if (r && Array.isArray(r.watchFiles) && args && typeof args.path === 'string') {
-          const style = r.watchFiles.filter(f => typeof f === 'string' && path.isAbsolute(f) && f !== args.path && packages.inlinedFile(f));
-          if (style.length) byModule.set(keyOf(args), style); else byModule.delete(keyOf(args));
+        if (r && args && typeof args.path === 'string') {
+          if (r.contents !== undefined) loaded.add(keyOf(args));
+          if (Array.isArray(r.watchFiles)) {
+            const style = r.watchFiles.filter(f => typeof f === 'string' && path.isAbsolute(f) && f !== args.path && packages.inlinedFile(f));
+            if (style.length) byModule.set(keyOf(args), style); else byModule.delete(keyOf(args));
+          }
         }
         return r;
       });
@@ -148,7 +161,9 @@ function watched() {
     ? { ...p, name: p.name, setup(/** @type {PluginBuild} */ build) { return p.setup.call(p, wrapBuild(build)); } } : p));
   /** @type {(key: string, file: string | null) => string[]} */
   const inlined = (key, file) => byModule.get(key) || (file && byModule.get(file)) || [];
-  return { plugins, inlined };
+  /** @type {(key: string, file: string | null) => boolean} */
+  const pluginLoaded = (key, file) => loaded.has(key) || (!!file && loaded.has(file));
+  return { plugins, inlined, pluginLoaded };
 }
 
 /** @param {unknown} p @returns {p is Plugin} */
@@ -171,13 +186,15 @@ function entriesOf(options, wd) {
 
 // Where a build writes, from its options: { dir, wd } (dir: the output directory, null if it writes no files itself:
 // write: false, or neither outdir nor outfile), or null for a build that is not bundle-lockfile's to cover (below
-// node_modules, other than node_modules/.cache: a tool's cache, see core/paths.cjs inToolCache).
+// node_modules, other than node_modules/.cache: a tool's cache, see core/paths.cjs inToolCache). wd: absWorkingDir, else
+// the working directory of the esbuild that builds (defaultWd: see onCjsLoad), else the current one.
 /**
  * @param {BuildOptions} options
+ * @param {string | null} [defaultWd]
  * @returns {{ dir: string | null, wd: string } | null}
  */
-function placeOf(options) {
-  const wd = typeof options.absWorkingDir === 'string' ? options.absWorkingDir : process.cwd();
+function placeOf(options, defaultWd) {
+  const wd = typeof options.absWorkingDir === 'string' && options.absWorkingDir ? options.absWorkingDir : defaultWd || process.cwd();
   const dir = options.write === false ? null
     : typeof options.outdir === 'string' ? path.resolve(wd, options.outdir)
       : typeof options.outfile === 'string' ? path.dirname(path.resolve(wd, options.outfile)) : null;
@@ -215,16 +232,47 @@ function collect(metafile, wd, entries, inlined) {
 const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs) || {})
   .map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
 
+// The packages of write: false builds whose output a plugin inlined into a module it loaded, per output (absolute):
+// a module whose contents a plugin gave (pluginLoaded, see watched), whose file is the entry of such a build - the
+// pattern of esbuild-plugin-inline-worker, whose onLoad bundles the worker file it loads and returns its text as a
+// string (see core/generated.cjs). Not the build's own entry points: a context with write: false would find its own
+// earlier build.
+/**
+ * @param {any} metafile
+ * @param {string} wd
+ * @param {string[]} entries
+ * @param {((key: string, file: string | null) => boolean) | undefined} pluginLoaded
+ * @returns {Map<string, Package[]>}
+ */
+function generatedIn(metafile, wd, entries, pluginLoaded) {
+  const out = new Map();
+  if (!pluginLoaded) return out;
+  const own = new Set(entries);
+  for (const [o, info] of Object.entries((metafile && metafile.outputs) || {})) {
+    /** @type {Package[][]} */
+    const found = [];
+    for (const key of Object.keys((info && info.inputs) || {})) {
+      const f = fileOfInput(key, wd);
+      if (!f || own.has(f) || !pluginLoaded(key, f)) continue;
+      const pkgs = generated.byEntry(f);
+      if (pkgs) found.push(pkgs);
+    }
+    if (found.length) out.set(path.resolve(wd, o), packages.unique(...found));
+  }
+  return out;
+}
+
 // A build that has run (no errors): writes its lockfile, or keeps the packages of what it generated in memory.
-// Resolves once the lockfile has landed; never rejects. state (the plugin's, optional): { inlined (see watched), since: when the
+// Resolves once the lockfile has landed; never rejects. state (the plugin's, optional): { inlined, pluginLoaded (see
+// watched), since: when the
 // build started (ms), late: the files written into the output after the last build, version: esbuild's, as it reports
 // itself, file: the esbuild module whose build() ran (its package is listed for the JavaScript it writes: esbuild's
 // runtime helpers, __commonJS, __toESM and the like, are in it; see core/bundler.cjs) }.
 /**
  * @param {BuildOptions} options
  * @param {BuildResult} result
- * @param {{ inlined?: (key: string, file: string | null) => Iterable<string>, since?: number, late?: Set<string>, version?: string,
- *   file?: string }} [state]
+ * @param {{ inlined?: (key: string, file: string | null) => Iterable<string>, pluginLoaded?: (key: string, file: string | null) => boolean,
+ *   since?: number, late?: Set<string>, version?: string, file?: string }} [state]
  * @returns {Promise<void>}
  */
 async function finish(options, result, state = {}) {
@@ -243,7 +291,9 @@ async function finish(options, result, state = {}) {
     const js = [...byOutput.keys()].some(f => JS.test(f));
     const runtime = js && state.file ? [bundlerPackage('esbuild', state.file, ['esbuild', 'esbuild-wasm'], state.version)].filter(p => p !== null) : [];
     found.add('runtime', runtime);
-    const all = packages.unique(own, runtime);
+    const inlinedBuilds = generatedIn(metafile, wd, entries, state.pluginLoaded);
+    for (const g of inlinedBuilds.values()) found.add('generated', g);
+    const all = packages.unique(own, runtime, ...inlinedBuilds.values());
     const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
     // written by esbuild? Not with write: false (nor without outdir and outfile)
     const written = dir && [...byOutput.keys()].some(f => fs.existsSync(f));
@@ -254,9 +304,14 @@ async function finish(options, result, state = {}) {
     }
     if (!written) {
       if (options.write === false) unwritten(result.outputFiles);
+      // (without outdir and outfile, esbuild names its one output file <stdout>, the metafile after the entry point)
+      const outs = [...byOutput.keys()];
+      /** @type {(p: string) => string} */
+      const named = (p) => (p === '<stdout>' && outs.length === 1 ? outs[0] : p);
       for (const of of (result.outputFiles || [])) {
-        const pkgs = packages.unique(pkgsOf(byOutput.get(of.path) || []), JS.test(of.path) ? runtime : []);
-        if (JS.test(of.path) || CSS.test(of.path)) generated.addChunk(of.text !== undefined ? of.text : of.contents, pkgs);
+        const at = named(of.path);
+        const pkgs = packages.unique(pkgsOf(byOutput.get(at) || []), inlinedBuilds.get(at) || [], JS.test(at) ? runtime : []);
+        if (JS.test(at) || CSS.test(at)) generated.addChunk(of.text !== undefined ? of.text : of.contents, pkgs);
         else generated.addAsset(of.contents, pkgs);
       }
       for (const e of entries) generated.addEntry(e, all);
@@ -268,7 +323,7 @@ async function finish(options, result, state = {}) {
     let pkgs = all;
     for (const [file, inputs] of byOutput) {
       if (!JS.test(file) && !CSS.test(file)) continue;
-      const inFile = packages.unique(pkgsOf(inputs), JS.test(file) ? runtime : []);
+      const inFile = packages.unique(pkgsOf(inputs), inlinedBuilds.get(file) || [], JS.test(file) ? runtime : []);
       // a JavaScript file with the bytes of a generate-only build's chunk (core/generated.cjs)
       /** @type {Package[] | null} */
       let gen = null;
@@ -300,15 +355,16 @@ async function finish(options, result, state = {}) {
   }
 }
 
-// The plugin of one build() / context() call; inlined: see watched.
+// The plugin of one build() / context() call; inlined, pluginLoaded: see watched.
 /**
- * @param {(key: string, file: string | null) => string[]} inlined
+ * @param {{ inlined: (key: string, file: string | null) => string[], pluginLoaded: (key: string, file: string | null) => boolean }} w
  * @param {string} file
  * @returns {Plugin}
  */
-function createPlugin(inlined, file) {
-  /** @type {{ inlined: (key: string, file: string | null) => string[], since: number | undefined, late: Set<string>, file: string, version?: string }} */
-  const state = { inlined, since: undefined, late: new Set(), file };
+function createPlugin({ inlined, pluginLoaded }, file) {
+  /** @type {{ inlined: (key: string, file: string | null) => string[], pluginLoaded: (key: string, file: string | null) => boolean,
+   *   since: number | undefined, late: Set<string>, file: string, version?: string }} */
+  const state = { inlined, pluginLoaded, since: undefined, late: new Set(), file };
   return {
     name: NAME,
     setup(build) {
@@ -342,22 +398,25 @@ const flat = (plugins) => (Array.isArray(plugins) ? plugins.filter(p => p && typ
 
 // The options of a build() / context() call with the plugin, unless it has it already, is Vite's own, or writes below
 // node_modules; the caller's object is left as it is.
-// file: the esbuild module whose build() / context() was called (see finish)
+// file: the esbuild module whose build() / context() was called (see finish); defaultWd: its working directory (see
+// onCjsLoad), which the options then name as absWorkingDir: the directory esbuild builds in, for every plugin to see
 /**
  * @param {BuildOptions} options
  * @param {string} file
+ * @param {string | null} [defaultWd]
  * @returns {BuildOptions}
  */
-function attach(options, file) {
+function attach(options, file, defaultWd) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) return options;
   const plugins = flat(options.plugins);
   if (plugins.some(p => p.name === NAME)) return options;
-  if (vitesOwn(plugins)) { config.debug("esbuild: Vite's own build (dependency pre-bundling or scan, its config), left alone"); return options; }
-  if (!placeOf(options)) { config.debug('esbuild: output below node_modules, left alone'); return options; }
+  if (vitesOwn(plugins) || vitesExports(options)) { config.debug("esbuild: Vite's own build (dependency pre-bundling or scan, its config, a dependency's exports), left alone"); return options; }
+  const place = placeOf(options, defaultWd);
+  if (!place) { config.debug('esbuild: output below node_modules, left alone'); return options; }
   config.debug('esbuild: adding the plugin to a build');
   const w = watched();
   const theirs = /** @type {Plugin[]} */ (w.plugins(Array.isArray(options.plugins) ? options.plugins : []));
-  return { ...options, plugins: [...theirs, createPlugin(w.inlined, file)] };
+  return { ...options, absWorkingDir: place.wd, plugins: [...theirs, createPlugin(w, file)] };
 }
 
 // The outputs of write: false builds (file -> sha256 of the bytes it was given): one that is on disk with those bytes
@@ -365,10 +424,11 @@ function attach(options, file) {
 // tools write esbuild's outputFiles themselves) - it ships without a lockfile: a problem.
 /** @type {Map<string, string>} */
 const pending = new Map();
+let checking = false;
 /** @param {unknown} files */
 function unwritten(files) {
   if (!Array.isArray(files)) return;
-  if (!pending.size) problems.atExit(checkUnwritten);
+  if (!checking) { checking = true; problems.atExit(checkUnwritten); }
   for (const of of files) {
     if (!of || typeof of.path !== 'string' || !path.isAbsolute(of.path) || !of.contents) continue;
     lru.set(pending, of.path, crypto.createHash('sha256').update(of.contents).digest('hex'), MAX_PENDING);
@@ -386,15 +446,17 @@ function checkUnwritten() {
 // buildSync(): no plugins in synchronous calls - the result's metafile, processed as onEnd would (finish() runs
 // synchronously up to the write, which is queued: a process that exits right away still writes it - see
 // core/outputs.cjs rewrite - unless it exits before the event loop runs again). A problem throws.
-function wrapSync(fn, version, file) {
+function wrapSync(fn, version, file, defaultWd) {
   // (within a build of its own, core/problems.cjs: a problem of another build running meanwhile does not fail it; its
   // lockfile is written after it returned - a problem then fails the process when it ends)
   return /** @this {unknown} */ function (options, ...rest) {
-    if (!options || typeof options !== 'object' || !placeOf(options) || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
+    const place = options && typeof options === 'object' ? placeOf(options, defaultWd) : null;
+    if (!place || vitesOwn(flat(options.plugins))) return fn.call(this, options, ...rest);
     const asked = options.metafile === true;
-    const result = fn.call(this, { ...options, metafile: true }, ...rest);
+    const opts = { ...options, absWorkingDir: place.wd, metafile: true }; // (absWorkingDir: see attach)
+    const result = fn.call(this, opts, ...rest);
     const own = {}; // (this call's problems, and those of none: not those of another build running meanwhile)
-    problems.within(own, () => finish(options, result, { version, file }));
+    problems.within(own, () => finish(opts, result, { version, file }));
     if (!asked) delete result.metafile;
     problems.within(own, () => problems.failIfAny((err) => { throw err; }));
     return result;
@@ -404,13 +466,13 @@ function wrapSync(fn, version, file) {
 // esbuild before 0.17 (build() with incremental / watch, no context()): not supported. A call that writes an output
 // bundle-lockfile would cover fails (strict mode) instead of writing no lockfile; others (Vite 3 / 4's own builds,
 // write: false) go on.
-function wrapOld(fn, version, sync) {
+function wrapOld(fn, version, sync, defaultWd) {
   return /** @this {unknown} */ function (options, ...rest) {
     return problems.within({}, () => oldBuild.call(this, options, ...rest)); // (this call's problems)
   };
   /** @this {unknown} */
   function oldBuild(options, ...rest) {
-    const place = options && typeof options === 'object' ? placeOf(options) : null;
+    const place = options && typeof options === 'object' ? placeOf(options, defaultWd) : null;
     if (place && place.dir && !vitesOwn(flat(options.plugins))) {
       problems.problem(`esbuild ${version}: bundle-lockfile needs esbuild 0.17 or later; this build of ${place.dir} would write no lockfile`);
       /** @type {Error | null} */
@@ -435,20 +497,25 @@ module.exports = {
     }
     const [major, minor] = exp.version.split('.').map(Number);
     const old = major === 0 && minor < 17;
+    // esbuild builds in the working directory it had when it loaded, unless absWorkingDir names another (lib/main.js:
+    // var defaultWD = process.cwd()): one a script changes afterwards (process.chdir after the import) is not its
+    /** @type {string | null} */
+    let wd = null;
+    try { wd = process.cwd(); } catch { /* removed: the current one when it builds */ }
     // a copy: every export as it is now (esbuild's getters return the same functions every time), with build(),
     // context() and buildSync() wrapped; "default" is the copy itself, for code compiled with ES-module interop
     // (esbuild's own default is its inner exports object, which would bypass the wrappers)
     const copy = {};
     for (const k of Object.keys(exp)) copy[k] = exp[k];
     if (old) {
-      copy.build = wrapOld(exp.build, exp.version, false);
-      if (typeof exp.buildSync === 'function') copy.buildSync = wrapOld(exp.buildSync, exp.version, true);
+      copy.build = wrapOld(exp.build, exp.version, false, wd);
+      if (typeof exp.buildSync === 'function') copy.buildSync = wrapOld(exp.buildSync, exp.version, true, wd);
     } else {
       const build = exp.build, context = exp.context;
       const file = resolve();
-      copy.build = function (options, ...rest) { return build.call(this, attach(options, file), ...rest); };
-      if (typeof context === 'function') copy.context = function (options, ...rest) { return context.call(this, attach(options, file), ...rest); };
-      if (typeof exp.buildSync === 'function') copy.buildSync = wrapSync(exp.buildSync, exp.version, file);
+      copy.build = function (options, ...rest) { return build.call(this, attach(options, file, wd), ...rest); };
+      if (typeof context === 'function') copy.context = function (options, ...rest) { return context.call(this, attach(options, file, wd), ...rest); };
+      if (typeof exp.buildSync === 'function') copy.buildSync = wrapSync(exp.buildSync, exp.version, file, wd);
     }
     copy.default = copy;
     if (exp.default && typeof exp.default === 'object') copies.set(exp.default, copy);

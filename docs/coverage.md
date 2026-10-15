@@ -29,8 +29,10 @@ the source maps show none of its code.
   the compilation depends on: a file dependency, or a file in a copied directory.
 - **output of builds that write nothing themselves**: Vite's workers (also the package files they emit, e.g. a font),
   @vitejs/plugin-legacy's polyfills, workbox-build's service worker (vite-plugin-pwa, workbox-webpack-plugin's
-  `GenerateSW`), and any `generate()` or `build.write: false` build. Their packages are listed where their bytes end up
-  in a written output, or where a module imports their entry with `?worker&inline`.
+  `GenerateSW`), and any `generate()` or `build.write: false` build, also esbuild's `write: false`. Their packages are
+  listed where their bytes end up in a written output, or where a module imports their entry with `?worker&inline` -
+  or, in an esbuild build, where a plugin gives the contents of a module whose file is their entry (as
+  esbuild-plugin-inline-worker inlines a worker it bundles).
 - **files a loader or plugin inlines into a module**, which are no modules of their own, as the build records them (a
   loader's `this.addDependency`, a plugin's `this.addWatchFile`):
   - style sheets `@import`ed from packages: CSS, Sass, Less and Stylus in Vite, Rollup and Rolldown; Sass, Less,

@@ -399,9 +399,17 @@ sequenceDiagram
   `false`: no code of it ships), `?query` and `#hash` suffixes. Every input of an output counts, also one without bytes
   in it (a module that only re-exports); a tree-shaken one is in no output.
 - A build with `write: false` (or without `outdir` and `outfile`) writes nothing itself: its outputs' packages go to
-  `core/generated.cjs`, by content and entry file, as for Rollup's `generate()`.
+  `core/generated.cjs`, by content and entry file, as for Rollup's `generate()`. Without `outdir` and `outfile` its one
+  output file is `<stdout>` in `outputFiles` and named after the entry point in the metafile. The entry files count
+  for a module of a later build whose contents a plugin gave (the recording `onLoad`), not its own entry point: a
+  plugin that inlines a sub-build's output into the module it loads (esbuild-plugin-inline-worker).
+- The default working directory is esbuild's own: `process.cwd()` when its `lib/main.js` ran (`var defaultWD`), taken
+  in `onCjsLoad` and passed into the options as `absWorkingDir`.
 - Vite 5 – 7 build with esbuild too: dependency pre-bundling and its scan (their plugins `vite:dep-pre-bundle`,
-  `vite:dep-scan`) and `vite.config.*` (`externalize-deps` with `inject-file-scope-variables`): left alone.
+  `vite:dep-scan`), `vite.config.*` (`externalize-deps` with `inject-file-scope-variables`) and a dependency's entry for
+  its exports (`extractExportsData`, with `optimizeDeps.extensions`: `write: false`, one entry point, the plugins of
+  `optimizeDeps.esbuildOptions`, so told by its caller in the stack, a function of that name in Vite's `dist/node`):
+  left alone.
 - esbuild before 0.17 has no `context()` (rebuilds were `build({ incremental })`): a call that would write an output
   fails (strict mode) instead of writing no lockfile.
 
