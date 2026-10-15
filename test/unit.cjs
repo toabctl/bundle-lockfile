@@ -2863,11 +2863,54 @@ test('strict: Rollup\'s CommonJS build of a version bundle-lockfile cannot hook 
   const file = J('/x/node_modules/rollup/dist/shared/rollup.js');
   rollupAdapter.onCjsLoad({ version: '2.40.0', rollupInternal() {} }, file, () => file); // no object hooks yet
   rollupAdapter.onCjsLoad({ version: '5.0.0', rollupInternalV2() {} }, file, () => file); // a future one without rollupInternal
+  const one = J('/x/node_modules/rollup/dist/shared/node-entry.js'); // Rollup 1's (require('rollup'), its command line)
+  rollupAdapter.onCjsLoad({ version: '1.32.1', rollup() {}, watch() {} }, one, () => one);
+  rollupAdapter.onCjsLoad({ VERSION: '4.64.7', watch() {} }, one, () => one); // Rollup 4's file of that name: none of its builds
   const taken = problems.take();
-  assert.equal(taken.length, 2);
+  assert.equal(taken.length, 3);
   assert.match(taken[0], /rollup: .*rollup\.js \(Rollup 2\.40\.0\) is no Rollup bundle-lockfile can hook \(2\.78 or later, with rollupInternal\): its builds would write no lockfile/);
   assert.match(taken[1], /\(Rollup 5\.0\.0\) is no Rollup bundle-lockfile can hook/);
+  assert.match(taken[2], /rollup: .*node-entry\.js \(Rollup 1\.32\.1\) is no Rollup bundle-lockfile can hook/);
 }));
+
+test('strict: Rollup\'s ES build of a version bundle-lockfile cannot hook (before 2.78) is a problem (its import fails); with BUNDLE_LOCKFILE_STRICT=0 it builds without the plugin', () => {
+  // a fake rollup: as Rollup 2 before 2.78 it rejects a plugin's object hooks ({ order, handler }), which fails the build
+  const at = (version) => project({
+    'node_modules/rollup/package.json': { name: 'rollup', version, type: 'module', exports: { '.': './dist/es/rollup.js' } },
+    'node_modules/rollup/dist/es/rollup.js': `const VERSION = ${JSON.stringify(version)};
+      const old = /^2\\.([0-9]|[1-6][0-9]|7[0-7])\\./.test(VERSION);
+      const names = (o) => [].concat(o.plugins || []).flat().map(p => {
+        if (old && Object.values(p).some(v => v && typeof v === 'object' && typeof v.handler === 'function')) throw new Error('expected a function hook');
+        return p.name;
+      });
+      const rollup = async (o) => names(o);
+      const watch = (o) => [].concat(o).map(names);
+      export { VERSION, rollup, watch };`,
+    'package.json': { name: 'app', version: '1.0.0', type: 'module', dependencies: { rollup: version } },
+    'build.mjs': `import { rollup, watch } from 'rollup';
+      console.log(JSON.stringify([await rollup({ plugins: [{ name: 'x' }] }), watch({ plugins: [{ name: 'x' }] })]));`,
+  });
+  const run = (root, env) => spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'build.mjs')], { cwd: root, env: { ...strictEnv(undefined), ...env }, encoding: 'utf8' });
+  const old = at('2.77.3'), hookable = at('2.78.0');
+  const msg = /rollup: file:\S*\/node_modules\/rollup\/dist\/es\/rollup\.js \(Rollup 2\.77\.3\) is no Rollup bundle-lockfile can hook \(2\.78 or later\): its builds would write no lockfile/;
+  const modes = ['async'];
+  if (typeof require('module').registerHooks === 'function') modes.push('sync');
+  for (const mode of modes) {
+    const strict = run(old, { BUNDLE_LOCKFILE_ESM_HOOKS: mode });
+    assert.equal(strict.status, 1, `${mode}: ${strict.stderr}`);
+    assert.match(strict.stderr, msg, mode);
+    assert.doesNotMatch(strict.stderr, /expected a function hook/, mode);
+    // BUNDLE_LOCKFILE_STRICT=0: said once, and the build goes on as without bundle-lockfile
+    const off = run(old, { BUNDLE_LOCKFILE_ESM_HOOKS: mode, BUNDLE_LOCKFILE_STRICT: '0' });
+    assert.equal(off.status, 0, `${mode}: ${off.stderr}`);
+    assert.deepEqual(JSON.parse(off.stdout.trim().split('\n').pop()), [['x'], [['x']]], mode);
+    assert.equal((off.stderr.match(new RegExp(`WARNING: ${msg.source}`, 'g')) || []).length, 1, `${mode}: ${off.stderr}`);
+    // 2.78: the plugin
+    const ok = run(hookable, { BUNDLE_LOCKFILE_ESM_HOOKS: mode });
+    assert.equal(ok.status, 0, `${mode}: ${ok.stderr}`);
+    assert.deepEqual(JSON.parse(ok.stdout.trim().split('\n').pop()), [['x', 'bundle-lockfile'], [['x', 'bundle-lockfile']]], mode);
+  }
+});
 
 test('copies: a file copied out of a package (fs.copyFile*, fs.cp*) belongs to it while it has its bytes', async () => {
   const copies = require('../src/core/copies.cjs');
@@ -5069,6 +5112,73 @@ test('strict: the output of a write: false build that its caller writes, in no l
   const twice = nodeWith(strictEnv(undefined), ['-e', script(true).replace("const options =", `${first} const options =`) + '});']);
   assert.equal(twice.status, 1, twice.stderr);
   assert.equal(twice.stderr.match(/was written by its caller or a plugin/g).length, 1, twice.stderr);
+});
+
+test('strict: the output of a generate() whose caller writes it where the build said, in no lockfile, fails the process when it ends (Rollup, Vite, tsup\'s treeshake)', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'src/main.js': '' });
+  const call = JSON.stringify(J(BUNDLERS.root, 'node_modules/rollup/dist/shared/rollup.js'));
+  // a Rollup build with the plugin (as rollupBuild runs it) that only generates, with `out` as its output options; then
+  // `after` (the caller)
+  const script = (out, after, kind = 'rollup') => `const a = require(${JSON.stringify(J(SRC, 'adapters/rollup.cjs'))}); const call = require(${call});
+    const fs = require('fs'), path = require('path');
+    const plugin = a.bundleLockfile(${JSON.stringify(kind)}, { input: 'src/main.js' });
+    const out = ${JSON.stringify({ format: 'es', ...out })};
+    const chunk = { type: 'chunk', fileName: 'main.js', code: 'bundled a', moduleIds: [${JSON.stringify(J(root, 'node_modules/a/i.js'))}], isEntry: true, facadeModuleId: ${JSON.stringify(J(root, 'src/main.js'))} };
+    const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+    (async () => {
+      call(plugin.buildStart, {}, [{ input: 'src/main.js' }]);
+      plugin.renderStart.call({}, out);
+      await call(plugin.generateBundle.handler, {}, [out, { 'main.js': chunk }, false]);
+      await plugin.closeBundle.handler.call({});
+      ${after}
+      console.log('done');
+    })();`;
+  const run = (env, ...args) => spawnSync(process.execPath, ['-e', script(...args)], { cwd: root, encoding: 'utf8', env });
+  const gen = J(root, 'gen/main.js');
+  const rollupMsg = /rollup: \S*gen\/main\.js, output of Rollup's generate\(\), was written by its caller or a plugin: no lockfile lists its packages \(write it with bundle\.write\(\)\)/;
+  // written as generated, or changed (minified, post-processed) after the build
+  for (const [out, text] of [[{ dir: 'gen' }, 'bundled a'], [{ file: 'gen/main.js' }, 'bundled a'], [{ dir: J(root, 'gen') }, 'bundled a, minified']]) {
+    const r = run(strictEnv(undefined), out, `write(${JSON.stringify(gen)}, ${JSON.stringify(text)});`);
+    assert.equal(r.status, 1, `${JSON.stringify(out)}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`ERROR: ${rollupMsg.source}`));
+    fs.rmSync(J(root, 'gen'), { recursive: true });
+  }
+  // BUNDLE_LOCKFILE_STRICT=0: a warning
+  let r = run(strictEnv('0'), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a');`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, new RegExp(`WARNING: ${rollupMsg.source}`));
+  assert.equal((r.stderr.match(/WARNING/g) || []).length, 1, r.stderr); // (not again as output that reached no output)
+  // a Vite build with build.write: false
+  r = run(strictEnv(undefined), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a');`, 'vite');
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ERROR: vite: \S*gen\/main\.js, output of a Vite build with build\.write: false, was written by its caller or a plugin: no lockfile lists its packages \(let Vite write it\)/);
+  // only looked at (nothing written there), a file there from before the build, or one a build of the process writes
+  // and lists: nothing ships without a lockfile
+  fs.rmSync(J(root, 'gen'), { recursive: true });
+  r = run(strictEnv(undefined), { dir: 'gen' }, '');
+  assert.deepEqual([r.status, r.stdout.trim()], [0, 'done'], r.stderr);
+  fs.mkdirSync(J(root, 'gen'));
+  const old = new Date(Date.now() - 60000);
+  for (const text of ['an older build', 'bundled a']) { // (the same bytes: written by an earlier process, with its lockfile)
+    fs.writeFileSync(gen, text);
+    fs.utimesSync(gen, old, old);
+    r = run(strictEnv(undefined), { dir: 'gen' }, '');
+    assert.deepEqual([r.status, r.stdout.trim()], [0, 'done'], `${text}: ${r.stderr}`);
+  }
+  r = run(strictEnv(undefined), { dir: 'gen' }, `write(${JSON.stringify(gen)}, 'bundled a'); require(${JSON.stringify(J(SRC, 'core/outputs.cjs'))}).record(${JSON.stringify(J(root, 'gen', LOCK))}, 'w', [], ${JSON.stringify(root)}, [${JSON.stringify(gen)}]);`);
+  assert.deepEqual([r.status, r.stdout.trim()], [0, 'done'], r.stderr);
+  fs.rmSync(J(root, 'gen'), { recursive: true });
+  // tsup's treeshake option: esbuild (write: false) builds dist/main.js, Rollup's generate() with file: dist/main.js
+  // tree-shakes it, tsup writes Rollup's output there - other bytes than esbuild's
+  const dist = J(root, 'dist/main.js');
+  const tsup = `const e = require(${JSON.stringify(J(SRC, 'adapters/esbuild.cjs'))});
+    const options = { entryPoints: ['src/main.js'], outdir: 'dist', write: false, absWorkingDir: ${JSON.stringify(root)} };
+    const p = e.attach(options, ${JSON.stringify(ESBUILD_MAIN)}).plugins.at(-1);
+    let end; p.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
+    await end({ errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } }, outputFiles: [{ path: ${JSON.stringify(dist)}, contents: Buffer.from('bundled a, by esbuild') }] });`;
+  r = spawnSync(process.execPath, ['-e', script({ file: dist }, `write(${JSON.stringify(dist)}, 'bundled a');`).replace('(async () => {', `(async () => { ${tsup}`)], { cwd: root, encoding: 'utf8', env: strictEnv(undefined) });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ERROR: esbuild: \S*dist\/main\.js, output of a build with write: false, was written by its caller or a plugin: no lockfile lists its packages/);
 });
 
 test('esbuild adapter: a problem is an onEnd error (the build rejects); write: false keeps the packages for the build that uses the output', () => withConfig({ strict: true }, async () => {

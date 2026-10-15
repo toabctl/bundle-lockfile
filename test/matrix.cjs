@@ -225,6 +225,10 @@ const fixtures = {
   'esbuild-yarn4-pnp': esbuildApp('0.28.2', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   'esbuild-wasm': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-wasm': '0.28.2' }),
   'esbuild-features': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-sass-plugin': '3.7.0', sass: '1.105.1', bulma: '1.0.4', 'sanitize.css': '13.0.0' }),
+  // tsup (test/apps/tsup): esbuild with write: false, the output written by tsup itself (its esbuild, a dependency of
+  // its own, not pinned here; typescript: tsup loads it)
+  'tsup': { app: 'tsup', bundler: 'esbuild', installer: { type: 'npm' }, deps: { tsup: '8.5.0', typescript: '5.9.3', 'lodash-es': '4.18.1', nanoid: '3.3.20' },
+    packageJson: { type: 'module', scripts: { build: 'tsup' } } },
   // Parcel 2: the latest, the first release; installers
   'parcel': parcelApp('2.16.4'),
   'parcel-floor': parcelApp('2.8.3'),
@@ -1306,6 +1310,16 @@ const cases = [
   { name: 'Vite 7.3.7 watch mode: every rebuild writes the lockfile, with the packages of that build', fixture: 'vite7-npm', cmd: VITE_WATCH, expect: VITE_EXPECT,
     watchBuilds: VITE_WATCH_BUILDS,
     oracleMissing: ['normalize.css@8.0.1'] },
+  // a plugin copies a package's file into dist/ after every build (its closeBundle): listed after every rebuild too
+  // (copied: in no source map, oracleMissing)
+  ...[['Vite 8.3.3', 'vite8-npm'], ['Vite 7.3.7', 'vite7-npm']].flatMap(([v, fixture]) => [
+    { name: `${v} watch mode: a file a plugin copies into dist/ after every build is listed after every rebuild`, fixture, cmd: VITE_WATCH,
+      env: { BLTEST_VITE_WATCH: 'late' }, expect: [...VITE_EXPECT, 'is-number@7.0.0'].sort(), watchBuilds: VITE_WATCH_BUILDS.map(b => [...b, 'is-number@7.0.0'].sort()),
+      oracleMissing: ['is-number@7.0.0', 'normalize.css@8.0.1'] },
+    // strict mode in watch mode: a rebuild with a package that cannot be listed fails (Vite empties dist/ first: nothing
+    // of it ships, no lockfile), and the next rebuild writes the lockfile again
+    { name: `strict: ${v} watch mode, a rebuild with a package that cannot be listed fails, the next one writes the lockfile`, fixture, cmd: VITE_WATCH,
+      env: { BLTEST_VITE_WATCH: 'problem' }, expect: VITE_EXPECT, watchBuilds: [VITE_EXPECT, [], VITE_EXPECT], oracleMissing: ['normalize.css@8.0.1'] }]),
   // the build script overwrites NODE_OPTIONS: no lockfile, unless the node shim is first in PATH (also on Node 22, whose
   // loader-thread hooks are installed only in a process of a package that uses Vite)
   { name: 'Vite 8.3.3, script overwriting NODE_OPTIONS (no shim)', fixture: 'vite8-npm', cmd: 'npm run -s build-reset', expect: null },
@@ -1364,6 +1378,18 @@ const cases = [
   { name: 'esbuild 0.28.2 command line: not hooked, no lockfile', fixture: 'esbuild', cmd: ESBUILD_CLI, expect: null },
   { name: 'esbuild 0.28.2 command line, its metafile read by bundle-lockfile-from-metafile', fixture: 'esbuild', cmd: `${ESBUILD_CLI} && ${FROM_METAFILE} meta.json`,
     expect: ESBUILD, oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // tsup writes esbuild's output itself (write: false): no lockfile, which fails the process when it ends - also when
+  // tsup changed the output first (treeshake: Rollup's generate() on it). The way out: bundle-lockfile-from-metafile
+  // (no oracle for tsup: the expected list is exact)
+  ...[['', {}], [' (treeshake)', { TSUP_TREESHAKE: '1' }]].map(([what, env]) => (
+    { name: `tsup 8.5.0${what}: the output it writes itself, in no lockfile, fails the process`, fixture: 'tsup', cmd: 'npm run -s build', env,
+      expectError: /esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin: no lockfile lists its packages/ })),
+  { name: 'tsup 8.5.0 (treeshake), BUNDLE_LOCKFILE_STRICT=0: a warning, no lockfile', fixture: 'tsup', cmd: 'npm run -s build',
+    env: { TSUP_TREESHAKE: '1', BUNDLE_LOCKFILE_STRICT: '0' }, expect: null,
+    expectOutput: /\[bundle-lockfile\] WARNING: esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin/ },
+  { name: 'tsup 8.5.0, its metafile read by bundle-lockfile-from-metafile', fixture: 'tsup', cmd: `BUNDLE_LOCKFILE_STRICT=0 npm run -s build && ${FROM_METAFILE} dist/metafile-esm.json`,
+    env: { TSUP_METAFILE: '1' }, expect: ['lodash-es@4.18.1', 'nanoid@3.3.20'], oracle: false,
+    expectOutput: /\[bundle-lockfile\] WARNING: esbuild: \S*dist\/index\.js, output of a build with write: false, was written by its caller or a plugin/ },
   // a style sheet a plugin inlines (esbuild-sass-plugin's watchFiles), a file another plugin's onEnd copies out of a
   // package; the oracle's source maps see neither (the partial is inlined, the copy is none of esbuild's outputs)
   { name: 'esbuild 0.28.2: a Sass partial esbuild-sass-plugin inlines, a package file another plugin copies in onEnd', fixture: 'esbuild-features',
@@ -1534,6 +1560,14 @@ const cases = [
     fixture: 'rollup-api', cmd: `node build.mjs ${mode}-plugin`, inject: false, env: { BLTEST_PLUGIN: path.join(__dirname, '../src/adapters/rollup.cjs') }, expect: ROLLUP_API })),
   { name: 'Rolldown 1 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
+  // two outputs: Rolldown builds each with a bundler of its own, sharing the one plugin. No oracle: it builds one output
+  { name: 'Rolldown 1 JavaScript API: watch() with two outputs, every rebuild writes both lockfiles', fixture: 'rollup-api', cmd: 'node build.mjs rolldown-watch-outputs',
+    expectIn: { '': ROLLUP_API, cjs: ROLLUP_API }, watchBuilds: ROLLUP_WATCH_BUILDS, oracle: false },
+  // strict mode in watch mode: a rebuild with a package that cannot be listed fails (nothing written: the lockfile of
+  // the output still in dist/ stays), the watcher goes on, and the next rebuild writes the lockfile again
+  ...[['Rollup 4', 'rollup'], ['Rolldown 1', 'rolldown']].map(([what, mode]) => (
+    { name: `strict: ${what} JavaScript API watch(), a rebuild with a package that cannot be listed fails, the next one writes the lockfile`, fixture: 'rollup-api',
+      cmd: `node build.mjs ${mode}-watch-problem`, expect: ROLLUP_API, watchBuilds: [ROLLUP_API, ROLLUP_API, ROLLUP_API] })),
   { name: 'Rollup 4 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rollup', fixture: 'rollup-api', cmd: 'node build.mjs rollup', env: { BUNDLE_LOCKFILE_DISABLE: 'rollup' }, expect: null },
   { name: 'Rolldown 1 JavaScript API, BUNDLE_LOCKFILE_DISABLE=rolldown', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', env: { BUNDLE_LOCKFILE_DISABLE: 'rolldown' }, expect: null },
   // the other kinds stay hooked
