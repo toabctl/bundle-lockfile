@@ -130,4 +130,18 @@ const bundlerOf = (json, id) => ((json.chunks || []).some(c => (c.files || []).s
 const compilerBundler = (compiler, fallback) => (compiler.webpack && compiler.webpack.rspackVersion ? `@rspack/core@${compiler.webpack.rspackVersion}`
   : compiler.webpack && compiler.webpack.version ? `webpack@${compiler.webpack.version}` : fallback);
 
-module.exports = { bundlerOf, compilerBundler, STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles, rspackCopies, rspackResult };
+// The rspack config c with what the oracles change (see oracles/rspack.cjs): minimize off, and no exports inlined -
+// optimization.inlineExports from rspack 1.7; in 1.4 - 1.6 experiments.inlineConst and inlineEnum, and the parser
+// option, which fails without the experiment (Rsbuild 1.5 and 1.6 set both in production)
+function oracleRspackConfig(c, rspackVersion) {
+  const [major, minor] = rspackVersion.split('.').map(Number);
+  c.optimization = { ...c.optimization, minimize: false, ...((major > 1 || minor >= 7) && { inlineExports: false }) };
+  if (major === 1 && minor >= 4 && minor <= 6) {
+    c.experiments = { ...c.experiments, inlineConst: false, inlineEnum: false };
+    const parser = (c.module && c.module.parser) || {};
+    c.module = { ...c.module, parser: { ...parser, javascript: { ...parser.javascript, inlineConst: false } } };
+  }
+  return c;
+}
+
+module.exports = { bundlerOf, compilerBundler, STATS_OPTIONS, filesFromStats, packagesFromStats, copiedFiles, rspackCopies, rspackResult, oracleRspackConfig };

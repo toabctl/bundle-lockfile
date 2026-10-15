@@ -14,7 +14,7 @@ const generated = require('../core/generated.cjs');
 const helpers = require('../core/helpers.cjs');
 const { posix, packageRoot } = require('../core/paths.cjs');
 const {
-  kindOf, isRspack, chunkModules, entryModules, issuers, outputDir, hasAsset, assetNames, assetOf,
+  kindOf, isRspack, versionOf, chunkModules, entryModules, issuers, outputDir, hasAsset, assetNames, assetOf,
 } = require('./webpack-compat.cjs');
 
 /**
@@ -148,17 +148,19 @@ function styleFallback(compilation) {
   return out;
 }
 
-// rspack inlines constant exports (optimization.inlineExports: production in rspack 2, with experiments.inlineConst in
-// 1.7): `export const A = 1` used elsewhere becomes the value 1 there, and a module whose used exports are all inlined is
-// in no chunk - its values are in the bundle, its file no module of it. Such a module of a package is listed: not in a
-// chunk, but used (its exports info says so, unlike one that was tree-shaken). Only when exports were inlined at all: in
-// a build without usage analysis (development, usedExports: false) every module counts as used. The options are read
+// rspack inlines constant exports: `export const A = 1` used elsewhere becomes the value 1 there, and a module whose used
+// exports are all inlined is in no chunk - its values are in the bundle, its file no module of it. Such a module of a
+// package is listed: not in a chunk, but used (its exports info says so, unlike one that was tree-shaken). Only when
+// exports may have been inlined at all (inlining): in a build without usage analysis (development, usedExports: false)
+// every module counts as used. rspack 1.4 records no use of the exports it inlined: there every module of a package in
+// no chunk is listed, also one that was tree-shaken (one package too many rather than one missing). The options are read
 // here, after rspack filled in the defaults (not yet when plugins are applied). shipped: the modules in its chunks.
 // Failing to look is a problem (core/problems.cjs): such a package would be missing from the lockfile.
 function inlinedModules(compilation, shipped) {
-  const o = (compilation.compiler && compilation.compiler.options && compilation.compiler.options.optimization) || {};
+  const options = (compilation.compiler && compilation.compiler.options) || {}, o = options.optimization || {};
   const out = [];
-  if (o.inlineExports !== true || !o.usedExports) return out;
+  const mode = inlining(compilation.compiler, options);
+  if (!mode || (mode === 'used' && !o.usedExports)) return out;
   try {
     const ids = new Set([...shipped].map(m => m.identifier()));
     const issuerOf = issuers(compilation);
@@ -166,10 +168,24 @@ function inlinedModules(compilation, shipped) {
       if (ids.has(m.identifier())) continue;
       const f = sourceFile(m, issuerOf);
       if (!f || !path.isAbsolute(f) || !packageRoot(f.split('?')[0])) continue;
-      if (compilation.moduleGraph.getExportsInfo(m).isModuleUsed(undefined) === true) out.push(f);
+      if (mode === 'all' || compilation.moduleGraph.getExportsInfo(m).isModuleUsed(undefined) === true) out.push(f);
     }
   } catch (e) { problems.problem(`rspack: could not collect the modules whose exports were inlined into ${outputDir(compilation)}`, e); }
   return out;
+}
+
+// How rspack may have inlined exports in a compiler's builds: null (not at all), 'used' (the modules it inlined count as
+// used) or 'all' (rspack 1.4: they count as unused). From 1.7: optimization.inlineExports (production in rspack 2; in
+// 1.7 experiments.inlineConst and inlineEnum switch it on), which applies InlineExportsPlugin. 1.4 - 1.6 inline only
+// with experiments.inlineConst (a JavaScript parser option, inlineConst - of a single rule too - fails without it; 1.5
+// and 1.6 set the parser option by default with usage analysis, Rsbuild 1.5 and 1.6 the experiment in production) or,
+// in 1.6, experiments.inlineEnum (InlineExportsPlugin, for both). Before 1.4 rspack inlines nothing.
+function inlining(compiler, options) {
+  if ((options.optimization || {}).inlineExports === true) return 'used';
+  const [major, minor] = versionOf(compiler && compiler.webpack && compiler.webpack.rspackVersion);
+  const e = options.experiments || {};
+  if (major !== 1 || !(minor >= 4 && minor <= 6) || !(e.inlineConst === true || e.inlineEnum === true)) return null;
+  return minor === 4 ? 'all' : 'used';
 }
 
 // Source files of everything this compilation emits:
@@ -317,10 +333,13 @@ function copiedUnnamed(compilation) {
 // a symbolic link, not its real path): those whose path ends with the name are the candidates, the same file reached
 // by several paths once (the one below the context first). The candidate with the asset's bytes - before the optimize
 // stages, which minimize copies (the plugin looks at them then) - is its source: a package file, or a first-party
-// file (public/config.js copied as app-config.js), which lists nothing. Without one (a copy transformed on the way),
-// every package file with that name: one package too many rather than one missing. A copy whose name no file ends
-// with is matched by its bytes alone, as copiedUnnamed does. The candidates are looked up by their file name, so the
-// cost is that of one pass over the dependencies (OHIF copies hundreds of files, and depends on thousands).
+// file (public/config.js copied as app-config.js), which lists nothing. Without one (a copy transformed on the way), the
+// candidate at the name below the compiler's context, the copy pattern's default context, is its source (a library's
+// package.json, with a field changed: a first-party file - the resolver reads every package's package.json, so the
+// name alone would list them all); else every package file with that name: one package too many rather than one
+// missing. A copy whose name no file ends with is matched by its bytes alone, as copiedUnnamed does. The candidates are
+// looked up by their file name, so the cost is that of one pass over the dependencies (OHIF copies hundreds of files,
+// and depends on thousands).
 // Returns Map(asset name -> [package files]), with .bytes: the names of the copies matched by their bytes alone.
 function copiedRspack(compilation) {
   /** @type {CopiedAssets} */
@@ -354,8 +373,8 @@ function copiedRspack(compilation) {
     const candidates = [...byReal.values()];
     const buf = bytesOf(a);
     const same = (f) => { try { return buf && fs.statSync(f).size === buf.length && buf.equals(fs.readFileSync(f)); } catch { return false; } };
-    const sources = candidates.filter(same);
-    let list = (sources.length ? sources : candidates).filter(f => packageRoot(f));
+    const sources = candidates.filter(same), at = byReal.get(realOf(path.join(context, rel)));
+    let list = (sources.length ? sources : at ? [at] : candidates).filter(f => packageRoot(f));
     if (!candidates.length && buf && buf.length) {
       if (!bySize) bySize = packageFilesBySize(compilation);
       const copy = (bySize.get(buf.length) || []).find(f => same(f));

@@ -11,7 +11,7 @@ What is supported and tested, which processes are hooked, and what is particular
 | Next.js | 12 – 16 | 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | Next 16 only with `next build --webpack`; [details](#nextjs) |
 | Next.js with next-rspack | 15, 16 | 15.5 (rspack 1.4), 16.4 (rspack 2.0) | as rspack | the same lockfiles as with webpack |
 | rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 fails the build, 0.x is not hooked; [details](#rspack-rsbuild) |
-| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
+| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.6, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
 | Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; [details](#vite-rollup-rolldown) |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
 | Nuxt | 4 (Vite 8, Nitro 2) | 4.6 | as Vite | `nuxt build`, `nuxi build`; [details](#nuxt) |
@@ -118,9 +118,11 @@ Rsbuild, Rslib, Next.js with next-rspack).
 - Files `CopyRspackPlugin` copies out of packages are listed, by name and bytes among the files the build depends on.
 - Style sheets loaders inline from packages (Sass partials, Less `@import`s, PostCSS) are listed; before rspack
   1.3.14, rspack does not record them per module, and all such style sheets the build read are listed.
-- rspack 2 inlines small constants in production (`optimization.inlineExports`; rspack 1.7 too, through
-  `experiments.inlineConst`, on by default there): a module whose used exports are all inlined is in no chunk. Its
-  package is listed anyway — its values are in the bundle.
+- rspack inlines small constants: rspack 2 in production (`optimization.inlineExports`), rspack 1.4 – 1.7 with
+  `experiments.inlineConst` (Rsbuild 1.5 and 1.6 set it in production; rspack 1.6 and 1.7 also inline TypeScript enums
+  with `experiments.inlineEnum`). A module whose used exports are all inlined is in no chunk. Its package is listed
+  anyway — its values are in the bundle. rspack 1.4 does not record that such a module is used: there every package
+  module of the build in no chunk is listed, also one that was tree-shaken.
 - Child compilations count for their parent, as webpack's: the workers monaco-editor-webpack-plugin builds are in
   its lockfile.
 - rspack's `ModuleFederationPlugin` (also `@module-federation/enhanced`'s) bundles the federation runtime, which
