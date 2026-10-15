@@ -94,6 +94,11 @@ test('packageRoot: directory below the last node_modules', () => {
   assert.equal(r('/p/node_modules/index.js'), null);   // a file directly in node_modules
   assert.equal(r('/p/node_modules/@s/b'), null);       // the package directory itself, not a file in it
   assert.equal(r('/p/node_modules/@s'), null);
+  // a tool's directory below node_modules is no package (no package name starts with a dot)
+  assert.equal(r('/p/node_modules/.cache/nuxt/.nuxt/dist/server/server.mjs'), null);
+  assert.equal(r('/p/node_modules/.vite/deps/react.js'), null);
+  assert.equal(r('/p/node_modules/.cache/x/node_modules/a/i.js'), '/p/node_modules/.cache/x/node_modules/a'.split('/').join(path.sep));
+  assert.equal(r('/p/node_modules/.store/a-npm-1.0.0-x/package/i.js'), '/p/node_modules/.store/a-npm-1.0.0-x/package'.split('/').join(path.sep));
 });
 
 test('packagesForFiles: one entry per package, nested manifests and first-party files ignored', () => {
@@ -156,6 +161,16 @@ test('packagesForFiles: symlinked packages are resolved; ones that resolve out o
   const pkgs = packagesForFiles([J(root, 'node_modules/@acme/ui/index.js'), J(root, 'node_modules/d/i.js'),
     J(root, 'node_modules/.pnpm/d@1.0.0/node_modules/d/j.js')]);
   assert.deepEqual(pkgs.map(p => [p.name, p.path]), [['d', J(root, 'node_modules/.pnpm/d@1.0.0/node_modules/d')]]);
+});
+
+test('packagesForFiles: a node_modules that is a symbolic link (node_modules -> deps/): its packages are listed, bundled by their real path', { skip: process.platform === 'win32' }, () => {
+  const root = project({ 'package.json': { name: 'app', version: '1.0.0' }, 'deps/react/package.json': { name: 'react', version: '19.0.0' },
+    'deps/@s/b/package.json': { name: '@s/b', version: '2.0.0' }, 'packages/ui/package.json': { name: '@acme/ui', version: '1.0.0' } });
+  fs.symlinkSync(J(root, 'deps'), J(root, 'node_modules'), 'dir');
+  fs.mkdirSync(J(root, 'deps/@acme'));
+  fs.symlinkSync(J(root, 'packages/ui'), J(root, 'deps/@acme/ui'), 'dir'); // a workspace package: still first-party
+  const pkgs = packagesForFiles([J(root, 'deps/react/index.js'), J(root, 'deps/@s/b/i.js'), J(root, 'packages/ui/i.js'), J(root, 'src/app.js')], { context: root });
+  assert.deepEqual(ids(pkgs), ['@s/b@2.0.0', 'react@19.0.0']);
 });
 
 test('licenses: string, legacy object, legacy array - always one string; nothing usable means no license field', () => {
@@ -1027,6 +1042,26 @@ test('outputs: a lockfile on disk keeps the packages other processes put there, 
   assert.equal(outputs.isShared(target), false);
 });
 
+test('strict: a lockfile on disk whose record this bundle-lockfile cannot read (another version, another shape) fails the build that would replace it', () => withConfig({ strict: true }, async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), 'dist/other.js': 'x' });
+  const target = J(root, 'dist', LOCK);
+  const a = packagesForFiles([J(root, 'node_modules/a/i.js')])[0];
+  for (const [record, why] of [
+    [{ v: 1, writers: [{ id: 'w', files: ['../other.js'], packages: [1] }] }, /has a record of version 1, which this bundle-lockfile does not read/],
+    [{ v: 2, writers: 'x' }, /has a bundle-lockfile record of a shape it does not read/],
+  ]) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, 'node_modules/left-pad': { name: 'left-pad', version: '1.3.0' } }, 'bundle-lockfile': record }));
+    const writer = `unreadable-${JSON.stringify(record)}`;
+    outputs.record(target, writer, [a], root, [J(root, 'dist/main.js')], { disk: true });
+    await outputs.land(target, writer, 'test');
+    const taken = problems.take();
+    assert.ok(taken.some(t => why.test(t) && t.includes(target) && /the packages of the other builds it lists would be missing/.test(t)), taken.join('\n'));
+  }
+  // npm's own lockfile (no record): not replaced, which is a problem of its own (see ours)
+}));
+
 test('outputs: another process\'s file that is a symbolic link to nothing is there, as for this process\'s writers', { skip: process.platform === 'win32' }, async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
   const root = project({ ...pj('a'), ...pj('b') });
@@ -1521,6 +1556,7 @@ test('esm-wrap: finds the entry, its exports, and wraps its functions; an entry 
   assert.deepEqual([...esmWrap.exportedNames(commented)], ['rollup']);
   assert.equal(esmWrap.source('file:///r.js', commented, { id: 'rollup', wrap: ['rollup'] }).includes('default'), false);
   assert.deepEqual([...esmWrap.exportedNames("const s = '// x';\nexport { a as default };")], ['default']);
+  assert.deepEqual([...esmWrap.exportedNames('export { a as "default", b as "module.exports" };')], ['default']); // (string names, ES2022)
   const src = esmWrap.source('file:///p/rollup.js', "export { VERSION, rollup } from './x.js';", rollupEntry);
   assert.match(src, /export \* from "file:\/\/\/p\/rollup\.js\?bundle-lockfile-real";/);
   assert.match(src, /export const rollup = api \? api\.wrap\("rollup", "rollup", real\.rollup, "file:\/\/\/p\/rollup\.js"\) : real\.rollup;/);
@@ -1826,7 +1862,8 @@ async function rollupBuild(rollupPlugin, { outDir, chunks = [], assets = [], isW
   BUNDLERS[ctx.meta && ctx.meta.rolldownVersion ? 'rolldown' : 'rollup'](rollupPlugin.buildStart, ctx, [{ input }]); // the (normalized) input options
   rollupPlugin.renderStart.call(ctx, out);
   for (const c of chunks) rollupPlugin.renderChunk.call(ctx, c.code, { moduleIds: c.modules }, out);
-  const bundle = Object.fromEntries([...chunks.map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
+  // (a chunk `removed`: rendered, then taken out of the bundle by a plugin - Vite's chunks of style only)
+  const bundle = Object.fromEntries([...chunks.filter(c => !c.removed).map(c => [c.fileName, { type: 'chunk', fileName: c.fileName, code: c.code, moduleIds: c.modules,
     isEntry: !!c.entry, facadeModuleId: c.entry || null, ...(c.css && { viteMetadata: { importedCss: new Set(c.css) } }) }]), ...assets.map(a => [a.fileName, { type: 'asset', fileName: a.fileName, ...a }])]);
   await rollupPlugin.generateBundle.handler.call(ctx, out, bundle, isWrite);
   if (isWrite) {
@@ -1993,6 +2030,67 @@ test('rollup adapter: outputs of one build written at the same time into one dir
   } finally { process.chdir(cwd); }
 });
 
+test('outputs: runs of one config into one directory that write other files (other plugins, hashes, no clean) keep each other\'s packages while those files are there', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    const run = (file, name, own = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' })) =>
+      rollupBuild(own, { outDir: dist, chunks: [{ fileName: file, code: file, modules: [J(root, `node_modules/${name}/i.js`)] }] });
+    const locked = () => lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    // the same config twice in one process (rollup -c with two configs, other plugins), with hashed file names
+    await run('sel-1.js', 'a');
+    await run('sel-2.js', 'b');
+    assert.deepEqual(locked(), ['a', 'b']);
+    // its rebuild writing the same file again replaces it
+    const same = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' });
+    await run('sel-2.js', 'c', same);
+    assert.deepEqual(locked(), ['a', 'c']);
+    // gone: no longer
+    fs.rmSync(J(dist, 'sel-1.js'));
+    await run('sel-2.js', 'c', same);
+    assert.deepEqual(locked(), ['c']);
+    // another process ran the same config before, into other files: the lockfile on disk has them, this run keeps them
+    const before = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    const state = globalThis[Symbol.for('bundle-lockfile.outputs.v4')];
+    state.files.delete(J(dist, LOCK)); // (as a new process)
+    fs.writeFileSync(J(dist, LOCK), JSON.stringify(before));
+    await run('sel-3.js', 'a');
+    assert.deepEqual(locked(), ['a', 'c']);
+    const lock = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    assert.deepEqual(lock['bundle-lockfile'].writers.map(w => w.files.join(' ')).sort(), ['../sel-2.js', '../sel-3.js']);
+    assert.equal(new Set(lock['bundle-lockfile'].writers.map(w => w.id)).size, 2);
+    // and the next run of it again (the earlier run's writer, an id of its own now, is another process's)
+    state.files.delete(J(dist, LOCK));
+    await run('sel-3.js', 'b');
+    assert.deepEqual(locked(), ['b', 'c']);
+    // a writer whose files are outside the output (Next.js' runtime packages: the traced files in node_modules), another
+    // process's run before: replaced
+    const traced = J(root, 'node_modules/a/i.js');
+    fs.writeFileSync(traced, 'a');
+    const target = J(root, 'runtime', LOCK);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const [pa, pb] = ['a', 'b'].map(n => packagesForFiles([J(root, 'node_modules', n, 'i.js')])[0]);
+    const runtimeId = crypto.createHash('sha256').update('runtime').digest('hex').slice(0, 16);
+    fs.writeFileSync(target, toPackageLock([pa], root, { dir: path.dirname(target), writers: [{ id: runtimeId, files: [traced], paths: [pa.path] }] }));
+    outputs.record(target, 'runtime', [pb], root, [J(root, 'node_modules/b/i.js')], { disk: true });
+    await outputs.land(target, 'runtime', 'test');
+    assert.deepEqual(lockedNames(fs.readFileSync(target, 'utf8')), ['b']);
+    // a writer whose lockfile the bundler writes with the content it is given (Angular, an in-memory output): its own
+    // record of the build before, with files still there, is replaced by the next build
+    const ng = J(root, 'ng', LOCK);
+    for (const f of ['old.js', 'new.js']) { fs.mkdirSync(J(root, 'ng'), { recursive: true }); fs.writeFileSync(J(root, 'ng', f), f); }
+    const first = outputs.record(ng, 'ng', [pa], root, [J(root, 'ng/old.js')], { disk: true });
+    fs.mkdirSync(path.dirname(ng), { recursive: true });
+    fs.writeFileSync(ng, first);
+    outputs.emitted(ng, 'ng');
+    assert.deepEqual(lockedNames(outputs.record(ng, 'ng', [pb], root, [J(root, 'ng/new.js')], { disk: true })), ['b']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: Rolldown write() without dir and file: the lockfile in dist/, where Rolldown writes', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
@@ -2017,6 +2115,58 @@ test('rollup adapter: Rolldown write() without dir and file: the lockfile in dis
     assert.equal(fs.existsSync(J(root, LOCK)), false);
   } finally { process.chdir(cwd); }
 });
+
+test('rollup adapter: Rolldown - the outputs of a build resolved against its cwd option; files written after its first write() of several are found', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/late/package.json': { name: 'late', version: '1.0.0' },
+    'node_modules/late/l.js': 'late code' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const rollupPlugin = rollupAdapter.bundleLockfile('rolldown', { input: 'src/main.js' });
+    const ctx = { meta: { rolldownVersion: '1.2.13', rollupVersion: '4.23.0' } };
+    const pkgDir = J(root, 'packages/a');
+    const modules = [J(pkgDir, 'src/main.js'), J(root, 'node_modules/a/i.js')];
+    // one build, two write()s (Rolldown runs buildStart for each): rolldown({ cwd: 'packages/a' }), dirs relative to it
+    const write = async (dir) => {
+      const out = { dir, format: 'es' };
+      rollupPlugin.buildStart.call(ctx, { input: ['src/main.js'], cwd: pkgDir });
+      rollupPlugin.renderStart.call(ctx, out);
+      rollupPlugin.renderChunk.call(ctx, '', { moduleIds: modules }, out);
+      await rollupPlugin.generateBundle.handler.call(ctx, out, { 'main.js': { type: 'chunk', fileName: 'main.js', code: `main ${dir}`, moduleIds: modules } }, true);
+      fs.mkdirSync(J(pkgDir, dir), { recursive: true });
+      fs.writeFileSync(J(pkgDir, dir, 'main.js'), `main ${dir}`);
+      await rollupPlugin.writeBundle.handler.call(ctx, out);
+    };
+    await write('dist');
+    // another plugin copies a package file into the first output (in its writeBundle), well before the second write()
+    fs.mkdirSync(J(pkgDir, 'dist/vendor/node_modules/late'), { recursive: true });
+    fs.writeFileSync(J(pkgDir, 'dist/vendor/node_modules/late/l.js'), 'late code');
+    await new Promise(res => setTimeout(res, 2100));
+    await write('dist-legacy');
+    await rollupPlugin.closeBundle.handler.call(ctx);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(pkgDir, 'dist', LOCK), 'utf8')), ['a', 'late']);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(pkgDir, 'dist-legacy', LOCK), 'utf8')), ['a']);
+    assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false); // (not relative to the process's working directory)
+  } finally { process.chdir(cwd); }
+});
+
+test('strict: a problem of a build that writes nothing itself fails it with that problem (not wrapped in another)', () => withConfig({ strict: true }, async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const root = project({ 'node_modules/nopj/i.js': '' });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    problems.take();
+    const ctx = { error: (e) => { throw e; } };
+    await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'gen'), isWrite: false, ctx,
+      chunks: [{ fileName: 'w.js', code: 'worker without a package.json', modules: [J(root, 'node_modules/nopj/i.js')] }] }), (e) => {
+      assert.match(e.message, /no package\.json with name and version in \S*nopj/);
+      assert.doesNotMatch(e.message, /could not collect the bundled packages/);
+      return true;
+    });
+  } finally { process.chdir(cwd); }
+}));
 
 test('rollup adapter: a plugin from the Vite config adds itself to worker.plugins, and its worker builds count', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
@@ -2116,6 +2266,43 @@ test('nested: a bundled file another build produced brings its packages, also wh
     fs.writeFileSync(J(root, 'island/dist/other.js'), 'x');
     assert.deepEqual(idsOf([J(root, 'island/dist/other.js')]), []);
   } finally { process.chdir(cwd); }
+});
+
+test('nested: a build into node_modules/.cache (nuxi build\'s .nuxt there) brings its packages to the build that bundles its output', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), ...pj('outer'), ...pj('copied') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const out = J(root, 'node_modules/.cache/nuxt/.nuxt/dist/server');
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: out, chunks: [{ fileName: 'server.mjs', code: 'server code', modules: [J(root, 'node_modules/inner/i.js')] }] });
+    assert.ok(fs.existsSync(J(out, LOCK)));
+    const idsOf = (files) => ids(packages.packagesOfFiles(files).all);
+    assert.deepEqual(idsOf([J(out, 'server.mjs'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
+    // a file copied out of a package into node_modules/.cache is that package's
+    fs.writeFileSync(J(root, 'node_modules/copied/c.js'), 'copied code');
+    fs.mkdirSync(J(root, 'node_modules/.cache/gen'), { recursive: true });
+    fs.copyFileSync(J(root, 'node_modules/copied/c.js'), J(root, 'node_modules/.cache/gen/c.js'));
+    assert.equal(copies.sourceOf(J(root, 'node_modules/.cache/gen/c.js')), J(root, 'node_modules/copied/c.js'));
+    assert.deepEqual(idsOf([J(root, 'node_modules/.cache/gen/c.js')]), ['copied@1.0.0']);
+  } finally { process.chdir(cwd); }
+});
+
+test('nested: a JavaScript or CSS file a webpack build wrote (no hashes recorded) brings all its packages', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), ...pj('other'), 'lib/dist/widget.js': 'widget', 'lib/dist/widget.css': 'css', 'lib/dist/logo.svg': '<svg/>', 'lib/dist/stale.js': 'x' });
+  const target = J(root, 'lib/dist', LOCK);
+  const inner = packagesForFiles([J(root, 'node_modules/inner/i.js')]);
+  outputs.record(target, 'webpack-lib', inner, root, ['widget.js', 'widget.css', 'logo.svg'].map(f => J(root, 'lib/dist', f)), { disk: true });
+  await outputs.land(target, 'webpack-lib', 'test');
+  const idsOf = (files) => ids(packages.packagesOfFiles(files).all);
+  assert.deepEqual(idsOf([J(root, 'lib/dist/widget.js'), J(root, 'node_modules/other/i.js')]), ['inner@1.0.0', 'other@1.0.0']);
+  assert.deepEqual(idsOf([J(root, 'lib/dist/widget.css')]), ['inner@1.0.0']);
+  assert.deepEqual(idsOf([J(root, 'lib/dist/logo.svg')]), []);  // no JavaScript or CSS file
+  assert.deepEqual(idsOf([J(root, 'lib/dist/stale.js')]), []);  // none of its files
 });
 
 test('nested: the inner build\'s record is found whether it ran with BUNDLE_LOCKFILE_TREE=only (record.json) or not', async () => {
@@ -2222,6 +2409,43 @@ test('nested: each JavaScript and CSS file another build produced brings the pac
     delete json['bundle-lockfile'].writers[0].contents;
     fs.writeFileSync(lock, JSON.stringify(json));
     assert.deepEqual(idsOf('lazy.js'), ['imported@1.0.0', 'inline@1.0.0', 'js@1.0.0', 'lazy@1.0.0', 'logo@1.0.0', `rollup@${UNIT}`, 'sheet@1.0.0', `vite@${UNIT}`, 'worker@1.0.0']);
+  } finally { process.chdir(cwd); }
+});
+
+test('nested: a CSS file has the style sheets of a chunk of style only that Vite removed, and the style blocks of single-file components', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('js'), ...pj('bootstrap'), ...pj('ui') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dir = J(root, 'island/dist'), m = (name, f = 'i.js') => J(root, 'node_modules', name, f);
+    // manualChunks: { 'vendor-styles': ['bootstrap/dist/css/bootstrap.css'] } - Vite removes that chunk in its
+    // generateBundle and gives its CSS file to main.js, not its modules; a component library's .vue style block
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: dir,
+      chunks: [{ fileName: 'main.js', code: 'main code', modules: [J(root, 'island/src/main.js'), m('js'), `${m('ui', 'Button.vue')}?vue&type=style&index=0&lang.css`], css: ['main.css', 'vendor-styles.css'] },
+        { fileName: 'vendor-styles.js', code: '', modules: [m('bootstrap', 'dist/css/bootstrap.css')], removed: true }],
+      assets: [{ fileName: 'main.css', source: 'main css' }, { fileName: 'vendor-styles.css', source: 'bootstrap css' }] });
+    const idsOf = (f) => ids(packages.packagesOfFiles([J(dir, f)]).all);
+    assert.ok(idsOf('vendor-styles.css').includes('bootstrap@1.0.0'), idsOf('vendor-styles.css').join(' '));
+    assert.ok(idsOf('main.css').includes('ui@1.0.0'), idsOf('main.css').join(' '));
+    assert.deepEqual(idsOf('main.js'), ['js@1.0.0']); // (the style block went into the CSS file)
+  } finally { process.chdir(cwd); }
+});
+
+test('generated: a build that writes nothing itself keeps the packages of the files its plugins inlined (a worker\'s font as a data: URL)', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('font'), ...pj('w'), ...pj('app') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const m = (name, f = 'i.js') => J(root, 'node_modules', name, f);
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'gen'), isWrite: false, ctx: { getWatchFiles: () => [m('font', 'f.woff2')] },
+      chunks: [{ fileName: 'worker.js', code: 'worker with an inlined font', modules: [m('w')] }] });
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'dist'),
+      chunks: [{ fileName: 'main.js', code: 'main', modules: [m('app')] }], assets: [{ fileName: 'worker.js', source: 'worker with an inlined font' }] });
+    assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['app', 'font', 'w']);
   } finally { process.chdir(cwd); }
 });
 
@@ -2418,6 +2642,42 @@ test('rollup adapter: files written after the build: over 20 MiB only this proce
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: files written after the build that are older: copies keeping their source\'s time, files a watch rebuild did not write again', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('app'), ...pj('kept'), ...pj('once'), 'node_modules/kept/k.js': 'kept code', 'node_modules/once/o.js': 'once code' });
+  const old = new Date('1985-10-26T08:15:00Z');
+  fs.utimesSync(J(root, 'node_modules/kept/k.js'), old, old);
+  fs.utimesSync(J(root, 'node_modules/once/o.js'), old, old);
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    const watching = rollupAdapter.bundleLockfile('vite');
+    const build = (n, late) => rollupBuild(watching, { outDir: dist, chunks: [{ fileName: 'index.js', code: `index ${n}`, modules: [J(root, 'node_modules/app/i.js')] }], late });
+    // fs.cp with preserveTimestamps: the copy has npm's time of its source, long before the build
+    await build(1, () => {
+      fs.cpSync(J(root, 'node_modules/kept/k.js'), J(dist, 'vendor/k.js'), { preserveTimestamps: true });
+      fs.mkdirSync(J(dist, 'vendor/node_modules/once'), { recursive: true }); // (another process's copy: found by path and bytes)
+      fs.writeFileSync(J(dist, 'vendor/node_modules/once/o.js'), 'once code');
+    });
+    assert.ok(fs.statSync(J(dist, 'vendor/k.js')).mtimeMs < Date.now() - 1e9);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app', 'kept', 'once']);
+    // the watch rebuild: the copy plugin copies only once; its files still ship
+    await new Promise(res => setTimeout(res, 2100)); // (older than the rebuild by more than the coarse-timestamp margin)
+    await build(2, () => {});
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app', 'kept', 'once']);
+    // gone, or changed since: no longer
+    fs.rmSync(J(dist, 'vendor/node_modules'), { recursive: true });
+    fs.writeFileSync(J(dist, 'vendor/k.js'), 'own code');
+    fs.utimesSync(J(dist, 'vendor/k.js'), old, old);
+    await build(3, () => {});
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: the late files of one output are not those another output of the process writes there', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
@@ -2513,6 +2773,25 @@ test('copies: a file copied out of a package (fs.copyFile*, fs.cp*) belongs to i
   assert.throws(() => fs.copyFileSync(J(root, 'missing.js'), out('x.js')), { code: 'ENOENT' });
   await assert.rejects(fs.promises.copyFile(J(root, 'missing.js'), out('x.js')), { code: 'ENOENT' });
   assert.equal(fs.copyFileSync.name, 'copyFileSync');
+});
+
+test('copies: a file copied, then overwritten by a directory copy, is the later copy\'s; a destination through a symbolic link by its real path', { skip: process.platform === 'win32' }, () => {
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/a/x.js': 'a code',
+    'node_modules/b/package.json': { name: 'b', version: '1.0.0' }, 'node_modules/b/lib/x.js': 'b code', 'node_modules/b/lib/y.js': 'b y' });
+  fs.mkdirSync(J(root, 'out'));
+  fs.copyFileSync(J(root, 'node_modules/a/x.js'), J(root, 'out/x.js'));
+  fs.cpSync(J(root, 'node_modules/b/lib'), J(root, 'out'), { recursive: true });
+  assert.equal(copies.sourceOf(J(root, 'out/x.js')), J(root, 'node_modules/b/lib/x.js'));
+  // copied to a path through a symbolic link, bundled by its real path
+  fs.mkdirSync(J(root, 'real'));
+  fs.symlinkSync(J(root, 'real'), J(root, 'link'));
+  fs.copyFileSync(J(root, 'node_modules/b/lib/y.js'), J(root, 'link/y.js'));
+  fs.cpSync(J(root, 'node_modules/a'), J(root, 'link/a-copy'), { recursive: true });
+  assert.equal(copies.sourceOf(J(root, 'real/y.js')), J(root, 'node_modules/b/lib/y.js'));
+  assert.equal(copies.sourceOf(J(root, 'link/y.js')), J(root, 'node_modules/b/lib/y.js'));
+  assert.equal(copies.sourceOf(J(root, 'real/a-copy/x.js')), J(root, 'node_modules/a/x.js'));
 });
 
 test('copies: a file copied out of a package into the output after the build (static copy under another name)', async () => {
@@ -2969,6 +3248,41 @@ test('lock: a stale lock is taken over only if it is still the stale one', () =>
   assert.equal(fs.existsSync(l), false);
   assert.deepEqual(fs.readdirSync(root), [], 'nothing left behind');
   takeStale(l, st); // already gone: nothing to do
+  // another process is taking over (its .takeover): left to it; a takeover of a process that died during it is removed
+  fs.writeFileSync(l, ''); fs.utimesSync(l, old, old);
+  fs.writeFileSync(`${l}.takeover`, '');
+  assert.equal(takeStale(l, fs.statSync(l)), false);
+  assert.ok(fs.existsSync(l));
+  fs.utimesSync(`${l}.takeover`, old, old);
+  assert.equal(takeStale(l, fs.statSync(l)), false); // (the old takeover removed)
+  assert.equal(takeStale(l, fs.statSync(l)), true);
+  assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test('lock: a lock of a process of this machine that is gone is taken at once; one of a live process is waited for', async () => {
+  const { lock } = require('../src/core/lock.cjs');
+  const root = project({});
+  const file = J(root, 'package-lock.json'), l = `${file}.lock`;
+  const ns = (() => { try { return fs.readlinkSync('/proc/self/ns/pid'); } catch { return ''; } })();
+  const gone = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+  // a build killed while it wrote: its fresh lock names it
+  fs.writeFileSync(l, JSON.stringify({ host: os.hostname(), ns, pid: Number(gone) }));
+  problems.take();
+  const t0 = Date.now();
+  const release = await lock(file, { wait: 5000 });
+  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  assert.equal(JSON.parse(fs.readFileSync(l, 'utf8')).pid, process.pid);
+  release();
+  assert.equal(fs.existsSync(l), false);
+  // a live process's (this machine's, or another machine's that looks gone here): waited for, until the wait is over
+  const parent = process.ppid;
+  for (const holder of [{ host: os.hostname(), ns, pid: parent }, { host: `not-${os.hostname()}`, ns, pid: Number(gone) }]) {
+    fs.writeFileSync(l, JSON.stringify(holder));
+    const warned = await warningsOf(async () => { (await lock(file, { wait: 300 }))(); });
+    assert.match(warned.join('\n'), /could not lock .* writing it without the lock/, JSON.stringify(holder));
+    assert.ok(fs.existsSync(l));
+    fs.unlinkSync(l);
+  }
 });
 
 test('hashes: one cache entry per file, recomputed when the file changes', () => {
@@ -3290,6 +3604,16 @@ test('copies of outputs: an output\'s files copied with fs elsewhere without the
   outputs.emitted(target, 'nuxt-client');
   await write();
   for (const d of ['.output/public', 'pub2', 'early']) assert.deepEqual(lockedNames(fs.readFileSync(J(root, d, LOCK), 'utf8')), ['a', 'b'], d);
+  // a destination not cleaned since an earlier run: the copy that run left there is replaced; another build's lockfile not
+  const idOf = (w) => crypto.createHash('sha256').update(w).digest('hex').slice(0, 16);
+  for (const [d, id] of [['old', idOf('nuxt-client')], ['theirs', 'another-build']]) {
+    fs.mkdirSync(J(root, d, 'bundle-lockfile'), { recursive: true });
+    fs.writeFileSync(J(root, d, LOCK), toPackageLock([], root, { dir: J(root, d, 'bundle-lockfile'), writers: [{ id, files: [J(root, d, '_nuxt/e.js')], paths: [] }] }));
+    fs.mkdirSync(J(root, d, '_nuxt'), { recursive: true });
+    fs.copyFileSync(files[0], J(root, d, '_nuxt/e.js'));
+  }
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'old', LOCK), 'utf8')), ['a', 'b']);
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'theirs', LOCK), 'utf8')), []);
   // with BUNDLE_LOCKFILE_INLINE=0: no lockfile in outputs, none in copies of them
   await withConfig({ inline: false }, async () => {
     fs.mkdirSync(J(root, 'pub4/_nuxt'), { recursive: true });
@@ -3297,6 +3621,26 @@ test('copies of outputs: an output\'s files copied with fs elsewhere without the
     assert.equal(fs.existsSync(J(root, 'pub4', LOCK)), false);
   });
 });
+
+test('outputs: the export copy is written under its own lock also with the inline lockfile (a write without it locks only that one)', () => withConfig({ exportDir: null, exportBase: null }, async () => {
+  const { lock } = require('../src/core/lock.cjs');
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  config.exportDir = J(root, 'export');
+  config.exportBase = root;
+  const [a] = packagesForFiles([J(root, 'node_modules/a/i.js')]);
+  const target = J(root, 'dist', LOCK);
+  outputs.record(target, 'export-lock', [a], root, [J(root, 'dist/x.js')], { disk: true });
+  outputs.emitted(target, 'export-lock');
+  // (as Angular's write of the export copy, or one whose output directory is gone, holds it)
+  const release = await lock(exportPath(target));
+  let done = false;
+  const write = outputs.rewrite(target, outputs.writeDisk(target)).then(() => { done = true; });
+  await new Promise(res => setTimeout(res, 200));
+  assert.equal(done, false);
+  release();
+  await write;
+  assert.deepEqual(lockedNames(fs.readFileSync(exportPath(target), 'utf8')), ['a']);
+}));
 
 test('copies of lockfiles: an export copy copied with fs is re-anchored like its lockfile', () => withConfig({ exportDir: null }, async () => {
   const { readMeta } = require('../src/core/lockfile.cjs');
@@ -3991,6 +4335,16 @@ test('esm-wrap: only ES modules are wrapped (rspack 1\'s CommonJS file at rspack
   assert.doesNotMatch(esm.source, /module\.exports/);
 });
 
+test('strict: problems fail the process also when a listener of the build\'s code calls process.exit() in its exit listener', () => {
+  // (the build's listener is added before the first problem; bundle-lockfile's is there from the preload on)
+  const script = `const problems = require(${JSON.stringify(J(SRC, 'core/problems.cjs'))});
+    process.on('exit', () => process.exit(0));
+    problems.problem('a lockfile would be missing');`;
+  const r = nodeWith(strictEnv(undefined), ['-e', script]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /ERROR: a lockfile would be missing/);
+});
+
 test('esm-wrap: withoutComments gives what the character-by-character version gave', () => {
   const { withoutComments } = require('../src/esm-wrap.cjs');
   const reference = (src) => { // the implementation before (one character at a time)
@@ -4136,6 +4490,16 @@ test('rspack: modules whose exports were all inlined are listed (only with inlin
   // no inlining, or no usage analysis (development: every module counts as used): nothing more
   assert.deepEqual(lockOf({ inlineExports: false, usedExports: true }), ['inner', 'shipped']);
   assert.deepEqual(lockOf({ inlineExports: true, usedExports: false }), ['inner', 'shipped']);
+  // a child compilation none of whose chunks ships (html-webpack-plugin's template): its used modules are not inlined
+  // into the output
+  const template = mod('unused', 'e');
+  const c = rspackCompilation(root, { chunks: [{ files: ['main.js'], modules: [shipped] }], modules: [consts], optimization: { inlineExports: true, usedExports: true }, exportsUsed: (m) => m !== unused });
+  c.chunks = new Set(c.chunks); // (as webpack and rspack have it)
+  const child = compilation({ context: root, chunks: [{ files: ['__child-HtmlRspackPlugin_0'], entry: [{ resource: J(root, 'src/index.html') }], modules: [] }] });
+  Object.assign(child, { modules: new Set([template]), moduleGraph: { getIssuer: () => null, getExportsInfo: () => ({ isModuleUsed: () => true }) } });
+  child.compiler.options = { optimization: { inlineExports: true, usedExports: true } };
+  c.children = [child];
+  assert.deepEqual(lockedNames(plugin().lockfile(c)), ['consts', 'shipped']);
 });
 
 test('strict: modules whose exports were inlined that cannot be looked for fail the build (a package would be missing)', () => withConfig({ strict: true }, () => {
@@ -4219,6 +4583,8 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
+  // a name in another case: case-sensitive, it would not be read (Windows: it is)
+  if (process.platform !== 'win32') assert.equal(one({ bundle_lockfile_strict: '0' }), 'bundle_lockfile_strict is set, but the settings of bundle-lockfile are named in upper case (BUNDLE_LOCKFILE_STRICT)');
   assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular, next or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
   assert.equal(one({ BUNDLE_LOCKFILE_TREE: 'both' }), 'BUNDLE_LOCKFILE_TREE=both is none of off, on, only');
@@ -4299,6 +4665,28 @@ test('tree: a package name that is no path of a package (.., an extra /, \\) wri
   // valid names, also with dots and a scope
   assert.equal(stubsOf(lock('@s/.b.c')).length, 1);
   assert.equal(stubsOf(lock('a..b')).length, 1);
+});
+
+test('tree: a packages directory bundle-lockfile did not write is never replaced (BUNDLE_LOCKFILE_FILE=package-lock.json: the output\'s own)', () => {
+  const { writeTree } = require('../src/core/tree.cjs');
+  const lock = (pkgs) => JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, ...pkgs } });
+  const a = lock({ 'node_modules/a': { name: 'a', version: '1.0.0' } });
+  const b = lock({ 'node_modules/b': { name: 'b', version: '1.0.0' } });
+  // the output's (or the project's) own packages/: its files stay, the tree is not written
+  for (const own of ['packages/keep.html', 'packages/docs/index.html', 'packages/0123456789abcdef/x.js', 'packages/0123456789abcdef/node_modules/a/index.js']) {
+    const dir = project({ [own]: 'mine' });
+    assert.throws(() => writeTree(dir, a), /is no tree bundle-lockfile wrote/, own);
+    assert.equal(fs.readFileSync(J(dir, own), 'utf8'), 'mine', own);
+    assert.deepEqual(fs.readdirSync(dir), ['packages'], own); // (nothing left aside)
+  }
+  const file = project({ packages: 'a file' });
+  assert.throws(() => writeTree(file, a), /is no tree bundle-lockfile wrote/);
+  // its own tree, and an empty directory, are replaced
+  const dir = project({});
+  fs.mkdirSync(J(dir, 'packages'));
+  writeTree(dir, a);
+  writeTree(dir, b);
+  assert.deepEqual(fs.readdirSync(J(dir, 'packages')).flatMap(id => fs.readdirSync(J(dir, 'packages', id, 'node_modules'))), ['b']);
 });
 
 test('tree: a copy of a stub made with fs is no copy of a package file', () => {
@@ -4397,7 +4785,25 @@ test('esbuild adapter: replaces the getter-only exports with a copy whose build/
   assert.deepEqual(names(seen), ['bundle-lockfile']);
   // other modules, and a lib/main.js of another package
   assert.equal(a.onCjsLoad(fakeEsbuild('0.28.2'), '/p/node_modules/other/lib/main.js', () => ''), undefined);
+  // a plugin's build.esbuild (esbuild's inner exports) is the copy: a sub-build gets the plugin too; a plugin whose name
+  // is a getter of its class keeps it
+  let sub = null;
+  class Named { get name() { return 'named'; } setup(build) { sub = build.esbuild; } }
+  await copy.build({ outdir: 'dist', plugins: [new Named()] });
+  assert.deepEqual(names(seen), ['named', 'bundle-lockfile']);
+  seen.plugins[0].setup({ esbuild: exp.default, initialOptions: {}, onLoad() {} });
+  assert.equal(sub, copy);
 });
+
+test('esbuild adapter: buildSync fails with its own problems (and those of none), not with those of another build running meanwhile', () => withConfig({ strict: true }, () => {
+  const a = esbuildAdapter();
+  const copy = a.onCjsLoad(fakeEsbuild('0.28.2', { buildSync: () => ({ errors: [], metafile: { outputs: {} } }) }), ESBUILD_MAIN, () => ESBUILD_MAIN).exports;
+  problems.take();
+  const other = {};
+  problems.within(other, () => problems.problem('a problem of another build'));
+  copy.buildSync({ entryPoints: ['a.js'], write: false });
+  assert.deepEqual(problems.takeOwn(other), ['a problem of another build']);
+}));
 
 test('esbuild adapter: an esbuild of a shape it does not know, or before 0.17, fails (strict) instead of writing no lockfile', () => withConfig({ strict: true }, async () => {
   const a = esbuildAdapter();
@@ -4462,12 +4868,40 @@ test('esbuild adapter: onEnd lists the packages of the inputs of every output, w
   assert.ok(at('../main.js').includes('node_modules/esbuild'));
   assert.ok(!at('../main.css').includes('node_modules/esbuild'));
   const cssOnly = { outputs: { 'dist/main.css': metafile.outputs['dist/main.css'] } };
+  // (the files of the earlier builds that are still there ship, with their packages: an output of main.css alone)
+  for (const f of ['main.js', 'f.woff2']) fs.rmSync(J(root, 'dist', f));
   await esbuildEnd({ ...options }, { errors: [], metafile: cssOnly }, esb);
   assert.ok(!lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')).includes('esbuild'));
-  // a failed build wrote nothing: nothing recorded
+  // a failed build wrote nothing: nothing recorded (esbuild gives no metafile then)
   fs.rmSync(J(root, 'dist', LOCK));
-  await esbuildEnd({ ...options }, { errors: [{ text: 'x' }], metafile });
+  await esbuildEnd({ ...options }, { errors: [{ text: 'x' }] });
   assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false);
+  // another plugin's onEnd returned an error (a type check): esbuild wrote the output before - its lockfile too
+  await esbuildEnd({ ...options }, { errors: [{ text: 'TS2307', pluginName: 'tsc' }], metafile: cssOnly });
+  assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a']);
+  // written, and none of its files there (another plugin's onEnd moved them): said, no lockfile
+  fs.rmSync(J(root, 'dist'), { recursive: true });
+  const warned = await warningsOf(() => esbuildEnd({ ...options }, { errors: [], metafile }));
+  assert.match(warned.join('\n'), /none of the files of the build into \S*dist is there after it/);
+  assert.equal(fs.existsSync(J(root, 'dist', LOCK)), false);
+});
+
+test('strict: the output of a write: false build that its caller writes, in no lockfile, fails the process when it ends', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const script = (write) => `const a = require(${JSON.stringify(J(SRC, 'adapters/esbuild.cjs'))}); const fs = require('fs');
+    const options = { entryPoints: ['src/main.js'], outdir: 'dist', write: false, absWorkingDir: ${JSON.stringify(root)} };
+    const plugin = a.attach(options, ${JSON.stringify(ESBUILD_MAIN)}).plugins.at(-1);
+    let end; plugin.setup({ initialOptions: options, onStart() {}, onEnd: (fn) => { end = fn; } });
+    const out = { path: ${JSON.stringify(J(root, 'dist/main.js'))}, contents: Buffer.from('bundled a') };
+    end({ errors: [], metafile: { outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 9 } } } } }, outputFiles: [out] }).then(() => {
+      ${write ? "fs.mkdirSync(require('path').dirname(out.path), { recursive: true }); fs.writeFileSync(out.path, out.contents);" : ''} console.log('done');
+    });`;
+  const written = nodeWith(strictEnv(undefined), ['-e', script(true)]);
+  assert.equal(written.status, 1, written.stderr);
+  assert.match(written.stderr, /\S*dist\/main\.js, output of a build with write: false, was written by its caller or a plugin: no lockfile lists its packages/);
+  fs.rmSync(J(root, 'dist'), { recursive: true });
+  const kept = nodeWith(strictEnv(undefined), ['-e', script(false)]); // only looked at: nothing ships
+  assert.deepEqual([kept.status, kept.stdout.trim()], [0, 'done'], kept.stderr);
 });
 
 test('esbuild adapter: a problem is an onEnd error (the build rejects); write: false keeps the packages for the build that uses the output', () => withConfig({ strict: true }, async () => {
@@ -4562,7 +4996,7 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
     'meta.json': { inputs: {}, outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 }, '(disabled):node_modules/b/i.js': { bytesInOutput: 9 } } },
       'dist/assets/f.woff2': { inputs: { 'node_modules/b/f.woff2': { bytesInOutput: 1 } } } } },
     'bad.json': { outputs: { 'dist/main.js': { inputs: { 'node_modules/nopj/i.js': { bytesInOutput: 1 } } } } },
-    'none.json': { inputs: {} },
+    'none.json': { inputs: {} }, 'broken.json': '{"BUNDLE_LOCKFILE_EXPORT_DIR": ',
   });
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_') && k !== 'NODE_OPTIONS'));
   const run = (args, extra = {}) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8' });
@@ -4575,6 +5009,7 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   const w = lock['bundle-lockfile'].writers[0];
   assert.deepEqual([...w.files].sort(), ['../assets/f.woff2', '../main.js']);
   assert.deepEqual(w.via.runtime.map(i => w.packages[i]), ['node_modules/esbuild']);
+  assert.deepEqual(w.bundler, { name: 'esbuild', version: '0.28.2' }); // (the bundler that wrote it)
   // --bundler: another package (its directory); none: none
   assert.equal(run(['meta.json', '--bundler', 'tools/bun']).status, 0);
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['a', 'b', 'bun']);
@@ -4589,7 +5024,10 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   assert.ok(fs.existsSync(J(root, 'elsewhere', LOCK)));
   // a package without a package.json, a file that is no metafile, none at all, a misspelled setting: exit code 1
   for (const [args, re, extra] of [[['bad.json'], /no package\.json with name and version in \S*nopj/], [['none.json'], /none\.json is no esbuild metafile/],
-    [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }]]) {
+    [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }],
+    // a settings file that is missing or broken: its settings would not apply
+    [['meta.json'], /could not read the settings file \S*nonexistent\.json/, { BUNDLE_LOCKFILE_CONFIG: J(root, 'nonexistent.json') }],
+    [['meta.json'], /could not read the settings file \S*broken\.json/, { BUNDLE_LOCKFILE_CONFIG: J(root, 'broken.json') }]]) {
     const r = run(args, extra);
     assert.equal(r.status, 1, `${args}: ${r.stderr}`);
     assert.match(r.stderr, /\[bundle-lockfile\] ERROR: bundle-lockfile: the lockfile would be missing or incomplete/);
@@ -4600,6 +5038,28 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   }
   assert.equal(run([]).status, 2);
   assert.equal(run(['meta.json', '--out']).status, 2);
+  // outputs in no directory but the root (/a/x.js, /b/y.js): not written there - fails, --out names the directory
+  fs.writeFileSync(J(root, 'apart.json'), JSON.stringify({ outputs: { '/bl-nowhere-a/x.js': { inputs: {} }, '/bl-nowhere-b/y.js': { inputs: {} } } }));
+  const apart = run(['apart.json', '--bundler', 'none']);
+  assert.equal(apart.status, 1, apart.stderr);
+  assert.match(apart.stderr, /the outputs of \S*apart\.json are in no directory but the root: name the output directory with --out/);
+});
+
+test('strict: Parcel before 2.13 only prints a reporter\'s error - the process fails at its exit; from 2.13 on Parcel fails the build', () => {
+  for (const [version, status] of [['2.8.3', 1], ['2.12.0', 1], ['2.13.0', 0], ['2.16.4', 0]]) {
+    const root = project({ 'node_modules/@parcel/core/package.json': { name: '@parcel/core', version }, 'node_modules/@parcel/core/lib/Parcel.js': '' });
+    const where = J(root, 'node_modules/@parcel/core/lib/Parcel.js');
+    // Parcel's reporter runner: the reporter's error caught (and printed), the build goes on, the CLI exits with 0
+    const script = `const parcel = require(${JSON.stringify(J(SRC, 'adapters/parcel.cjs'))});
+      class Parcel { run() {} watch() {} }
+      parcel.onCjsLoad({ default: Parcel }, ${JSON.stringify(where)}, () => ${JSON.stringify(where)});
+      parcel.report({ event: { type: 'buildSuccess', bundleGraph: null }, options: { projectRoot: ${JSON.stringify(root)} } })
+        .then(() => console.log('no error'), (e) => { console.log('reporter error:', e.message.split('\\n')[0]); process.exit(0); });`;
+    const r = nodeWith(strictEnv(undefined), ['-e', script]);
+    assert.match(r.stdout, /reporter error: bundle-lockfile: the lockfile would be missing or incomplete/, version);
+    assert.equal(r.status, status, `${version}: ${r.stderr}`);
+    if (status) assert.match(r.stderr, /could not collect the bundled packages of the build/, version);
+  }
 });
 
 // Parcel: a fake @parcel/core lib/Parcel.js and bundle graph of the public API's shape (BundleGraph, Bundle, Asset)
@@ -4672,10 +5132,19 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   await parcel.report({ event: { type: 'buildStart' } });
   const bad = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), assets: [J(root, 'node_modules/nopj/i.js')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: bad }, options: { projectRoot: root } }), /no package\.json with name and version in \S*nopj/);
+  problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
   // without scope hoisting nothing is skipped
   const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
+  // JavaScript only inlined into the HTML (<script type="module">): Parcel's code is around it too
+  fs.mkdirSync(J(root, 'site'), { recursive: true });
+  fs.writeFileSync(J(root, 'site/index.html'), '<script type="module">a</script>');
+  const html = fakeBundleGraph([{ filePath: J(root, 'site/index.html'), type: 'html', target: target('site'), assets: [J(root, 'src/index.html')] },
+    { filePath: null, type: 'js', bundleBehavior: 'inline', target: target('site'), assets: [J(root, 'node_modules/a/i.js')] }]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: html }, options: { projectRoot: root } });
+  const site = JSON.parse(fs.readFileSync(J(root, 'site', LOCK), 'utf8'));
+  assert.deepEqual(Object.values(site.packages).filter(p => p.name).map(p => p.name).sort(), ['@parcel/packager-js', 'a']);
   // a JavaScript bundle of a project that resolves no @parcel/packager-js: a problem (the code Parcel wrote would be
   // missing); a CSS-only output needs none
   const bare = project({ ...pj('a') });
@@ -4685,6 +5154,7 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: css }, options: { projectRoot: bare } });
   const js = fakeBundleGraph([{ filePath: J(bare, 'dist/main.js'), target: { name: 'dist', distDir: J(bare, 'dist') }, assets: [J(bare, 'node_modules/a/i.js')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: js }, options: { projectRoot: bare } }), /resolves no @parcel\/packager-js/);
+  problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
 }));
 
 // A fake @parcel/core lib/RequestTracker.js (and its lib/projectPath.js) at root: a RequestTracker class whose instance,
@@ -4749,6 +5219,7 @@ test('parcel adapter: the files Parcel\'s transformers inline (Sass partials, Le
   fs.mkdirSync(J(none, 'dist'), { recursive: true }); fs.writeFileSync(J(none, 'dist/main.css'), 'x');
   const css = fakeBundleGraph([{ filePath: J(none, 'dist/main.css'), target: { name: 'dist', distDir: J(none, 'dist') }, assets: [J(none, 'node_modules/a/s.scss')] }]);
   await assert.rejects(parcel.report({ event: { type: 'buildSuccess', bundleGraph: css }, options: { projectRoot: none } }), /no request graph of \S+: the style sheets Parcel's transformers inlined/);
+  problems.take(); // (also kept for the exit: Parcel's version is not known here, see failAtExit)
   // a RequestTracker of another shape: a problem when it loads
   problems.take();
   const where = '/p/node_modules/@parcel/core/lib/RequestTracker.js';
@@ -4792,6 +5263,12 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
     const asked = await run({ ...options, stats: true });
     assert.ok(asked.outputFiles.some(f => /stats\.json$/.test(f.path)), stats);
   }
+  // BUNDLE_LOCKFILE_TREE=on: Angular writes the package.json tree next to the lockfile too
+  await withConfig({ tree: 'on' }, async () => {
+    const r = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] }))(options);
+    const stubs = r.outputFiles.filter(f => f.path.startsWith('bundle-lockfile/packages/') && notUnit(JSON.parse(f.text))); // (and the bundler's)
+    assert.deepEqual(stubs.map(f => [f.path.replace(/[0-9a-f]{16}/, '<id>'), f.type, JSON.parse(f.text).name]), [['bundle-lockfile/packages/<id>/node_modules/a/package.json', 0, 'a']]);
+  });
   // a failed build: nothing added; a problem: an error of the build
   const failed = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'], errors: ['TS2307'] }))(options);
   assert.deepEqual(failed.outputFiles.map(f => f.path), ['main.js']);
@@ -5412,6 +5889,18 @@ test('strict: an ES-module bundler in a thread without ESM hooks fails when it l
     const r = run(undefined, file, 'require');
     assert.deepEqual([r.stdout.trim(), r.stderr, r.status], ['loaded', '', 0], file);
   }
+  // Yarn's pnpm linker: Rollup in its store (node_modules/.store/<slug>/package) is recognized as node_modules/rollup
+  const store = project({ ...Object.fromEntries(Object.entries(tools).filter(([k]) => k.startsWith('node_modules/rollup/'))
+    .map(([k, v]) => [k.replace('node_modules/rollup/', 'node_modules/.store/rollup-npm-4.64.6-0123456789/package/'), v])), 'app/package.json': { name: 'app', version: '1.0.0' } });
+  const yarn = run(undefined, J(store, 'node_modules/.store/rollup-npm-4.64.6-0123456789/package/dist/es/rollup.js'));
+  assert.match(yarn.stdout, /^failed: [\s\S]*rollup is loaded as an ES module in a process without bundle-lockfile's ESM hooks/, yarn.stdout + yarn.stderr);
+  // the ESM hooks could not be installed (in a process not taken for a bundler's: a warning): the check is on, too
+  const broken = spawnSync(process.execPath, ['-e', `const M = require('module'); M.register = () => { throw new Error('no loader thread'); };
+    require(${JSON.stringify(J(SRC, 'register.cjs'))});
+    import(${JSON.stringify(pathToFileURLHref(T('rollup/dist/es/rollup.js')))}).then(() => console.log('loaded'), (e) => { console.log('failed:', e.message); process.exitCode = 3; });`],
+  { encoding: 'utf8', cwd: J(root, 'app'), env: { ...strictEnv(undefined), BUNDLE_LOCKFILE_ESM_HOOKS: 'async' } });
+  assert.match(broken.stderr, /WARNING: could not install the ESM hooks: .*no loader thread/, broken.stderr);
+  assert.match(broken.stdout, /^failed: [\s\S]*rollup is loaded as an ES module in a process without bundle-lockfile's ESM hooks/, broken.stdout + broken.stderr);
 });
 
 test('hooks: an entry module the in-thread hook cannot wrap fails when it is imported (BUNDLE_LOCKFILE_STRICT=0: a warning)', { skip: !(typeof require('module').registerHooks === 'function' && require('../src/hooks.cjs').syncHooksSafe(process.versions.node)) }, () => {
@@ -5587,14 +6076,15 @@ test('strict: a bundler an adapter fails to patch is a problem (webpack, rspack,
   assert.match(taken[2], /^rollup: could not patch .*rollup\.js: /);
 }));
 
-test('strict: rspack of a version from 1.0 on whose Compiler is of an unknown shape is a problem; rspack 0.x is not, when it loads (when it compiles: above)', () => withConfig({ strict: true }, () => {
+test('strict: rspack whose Compiler is of an unknown shape is a problem when it loads - from 1.0 on, and 0.x (which is never patched, so it would not fail when it compiles: above)', () => withConfig({ strict: true }, () => {
   problems.take();
   const odd = Object.assign(function rspack() {}, { Compiler: class Compiler { compile() {} }, Compilation: class {}, rspackVersion: '3.0.0' });
   rspackAdapter.onCjsLoad(odd, '/p/x.js', () => '/p/x.js');
   rspackAdapter.onCjsLoad(Object.assign(function rspack() {}, { Compiler: class Compiler {}, rspackVersion: '0.7.5' }), '/p/y.js', () => '/p/y.js');
   const taken = problems.take();
-  assert.equal(taken.length, 1, JSON.stringify(taken));
+  assert.equal(taken.length, 2, JSON.stringify(taken));
   assert.match(taken[0], /^rspack: the Compiler of rspack 3\.0\.0 \(\/p\/x\.js\) is not one bundle-lockfile knows/);
+  assert.match(taken[1], /^rspack 0\.7\.5 \(\/p\/y\.js\) is not supported \(it needs 1\.1 or later\): its builds write no lockfile/);
 }));
 
 test('strict: the files copied into the output that cannot be checked fail the compilation', () => withConfig({ strict: true }, () => {
@@ -5612,6 +6102,28 @@ test('strict: the files copied into the output that cannot be checked fail the c
   comp.getAssets = () => [];
   comp.stage();
   assert.match(comp.errors.map(e => e.message).join(), /webpack: could not check the files copied into .*out-copies: assets gone/);
+}));
+
+test('strict: a build that cannot even be failed (its compilation gone) still lets webpack go on: afterEmit calls back, the process fails', () => withConfig({ strict: true }, async () => {
+  problems.take();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'out-gone') });
+  new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
+  const comp = compilation({ context: root, chunks: [{ files: ['main.js'], modules: [{ resource: J(root, 'node_modules/a/i.js') }] }] });
+  Object.assign(comp, { compiler, errors: [], emitAsset: () => {}, hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) } } });
+  taps.thisCompilation(comp);
+  comp.stage();
+  problems.problem('a problem when the build ends');
+  comp.errors = Object.freeze([]); // (pushing an error throws)
+  const saved = process.exitCode;
+  const errors = [], error = config.error;
+  config.error = (...a) => errors.push(a.join(' '));
+  try {
+    const called = await Promise.race([new Promise(resolve => taps.afterEmit(comp, () => resolve(true))), new Promise(resolve => setTimeout(() => resolve(false), 5000))]);
+    assert.equal(called, true);
+    assert.equal(process.exitCode, 1);
+    assert.match(errors.join('\n'), /could not fail the build of \S*out-gone/);
+  } finally { config.error = error; process.exitCode = saved; }
 }));
 
 test('rspack: BundleLockfilePlugin in an rspack 1.0 config fails each compilation (it cannot collect every package there)', () => withConfig({ strict: true }, () => {
@@ -5899,6 +6411,19 @@ test('strict: builds bundle-lockfile recognizes but does not hook fail (the roll
   assert.deepEqual([r.status, r.stderr], [0, '']);
   r = spawnNode({ BUNDLE_LOCKFILE_DISABLE: 'all' }, [J(root, 'ncc.cjs')]);
   assert.deepEqual([r.status, r.stdout.trim(), r.stderr], [0, 'loaded', '']);
+  // Yarn's pnpm linker: the main script in its store (node_modules/.store/<slug>/package) is recognized as well
+  for (const [name, bin] of [['rolldown', 'bin/cli.mjs'], ['next', 'dist/bin/next']]) {
+    const at = J(root, `node_modules/.store/${name}-npm-1.0.0-0123456789/package`);
+    fs.mkdirSync(path.dirname(J(at, bin)), { recursive: true });
+    fs.copyFileSync(J(root, 'node_modules', name, 'package.json'), J(at, 'package.json'));
+    fs.copyFileSync(J(root, 'node_modules', name, bin), J(at, bin));
+  }
+  r = spawnNode({}, [J(root, 'node_modules/.store/rolldown-npm-1.0.0-0123456789/package/bin/cli.mjs')]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, ROLLDOWN);
+  r = spawnNode({ FAKE_BUNDLER: 'TURBOPACK' }, [J(root, 'node_modules/.store/next-npm-1.0.0-0123456789/package/dist/bin/next'), 'build']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, TURBO);
 });
 
 test('strict: webpack before 4 (a Compiler without hooks) fails the process when it compiles; STRICT=0: a warning', () => {
@@ -6165,6 +6690,16 @@ test('children: a node started with an environment that drops bundle-lockfile\'s
   const cmdline = spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'parent.cjs')], { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
   assert.equal(cmdline.status, 0, cmdline.stderr);
   assert.doesNotMatch(cmdline.stderr, /WARNING/);
+  // a relative --require is put back by its absolute path: a child in another directory finds it
+  fs.symlinkSync(SRC, J(root, 'bl'), 'dir');
+  fs.mkdirSync(J(root, 'elsewhere'));
+  fs.writeFileSync(J(root, 'rel.cjs'), `const r = require('child_process').spawnSync(process.execPath, ['-e', 'process.stdout.write(String(!!globalThis[Symbol.for("bundle-lockfile.settings-reported")]))'],
+    { cwd: ${JSON.stringify(J(root, 'elsewhere'))}, env: { PATH: process.env.PATH }, encoding: 'utf8' });
+    console.log(JSON.stringify([r.status, r.stdout]));`);
+  const rel = spawnSync(process.execPath, [J(root, 'rel.cjs')], { cwd: root, encoding: 'utf8',
+    env: { ...process.env, NODE_OPTIONS: '--require ./bl/register.cjs', BUNDLE_LOCKFILE_NODE_SHIM: '/opt/bl/bin/node' } });
+  assert.equal(rel.status, 0, rel.stderr);
+  assert.deepEqual(JSON.parse(rel.stdout.trim()), [0, 'true'], rel.stderr);
 });
 
 test('generated: more chunks than kept warns once; packages of generate-only chunks no written output had warn when the process ends', () => {
@@ -6284,7 +6819,7 @@ test('strict: an adapter that fails on a module it patches (cjsFiles) fails its 
   assert.match(other.stderr, /WARNING: webpack adapter failed while inspecting .*index\.js:/);
 });
 
-test('strict: @rspack/core of an unknown shape fails its require() from 1.0 on; rspack 0.x loads (it fails when it compiles)', () => {
+test('strict: @rspack/core of an unknown shape fails its require() - from 1.0 on, and 0.x (one it patches fails when it compiles)', () => {
   const at = (version, src) => project({ 'node_modules/@rspack/core/package.json': { name: '@rspack/core', version }, 'node_modules/@rspack/core/dist/index.js': src });
   const adapter = `require(${JSON.stringify(J(SRC, 'adapters/rspack.cjs'))})`;
   const run = (root, strict) => nodeWith(cjsEnv(strict), ['-e', cjsHookScript(adapter, '',
@@ -6296,8 +6831,9 @@ test('strict: @rspack/core of an unknown shape fails its require() from 1.0 on; 
   const off = run(unknown, '0');
   assert.equal(off.stdout, 'loaded\n');
   assert.ok(off.stderr.includes(`WARNING: ${msg}`), off.stderr);
-  const old = run(at('0.7.5', 'module.exports = { rspack() {} };'), undefined);
-  assert.deepEqual([old.stdout, old.stderr], ['loaded\n', '']);
+  const oldAt = at('0.7.5', 'module.exports = { rspack() {} };');
+  const old = run(oldAt, undefined);
+  assert.equal(old.stdout, `failed:   rspack 0.7.5 (${J(oldAt, 'node_modules/@rspack/core/dist/index.js')}) is not supported (it needs 1.1 or later): its builds write no lockfile\n`, old.stderr);
   // rspack 2's ES module through require(esm), as its namespace (no "module.exports" export): patched (on a Node.js that
   // can require() an ES module: 20.19, 22.12 and later)
   if (!process.features.require_module) return;

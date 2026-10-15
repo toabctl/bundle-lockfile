@@ -10,9 +10,9 @@ const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
-const { cmp, toPackageLock, readMeta, reanchor, unknownPackage, located } = require('./lockfile.cjs');
+const { cmp, toPackageLock, readMeta, unreadableRecord, NOT_JSON, reanchor, unknownPackage, located } = require('./lockfile.cjs');
 const { readManifest } = require('./manifest.cjs');
-const { exportPath } = require('./paths.cjs');
+const { exportPath, posix } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
 const { writeTree } = require('./tree.cjs');
 const copies = require('./copies.cjs');
@@ -87,9 +87,12 @@ function there(file) {
   try { fs.lstatSync(file); return true; } catch (e) { return e.code !== 'ENOENT'; }
 }
 
-// Writers of `target` recorded by other processes (in the lockfile on disk) whose files are still there (all:
-// also those whose files are gone; a writer that records none has nothing in the output, and is never kept), except
-// those with an id in `own` (this process has their newest build):
+// Writers of `target` recorded by other processes (in the lockfile on disk) with a file that is still there and that no
+// build of this process writes again (ownFiles; all: also those whose files are gone; a writer that records none has
+// nothing in the output, and is never kept). One with an id in `own` (this process has its newest build) is replaced
+// by it - only if it is in `fresh` too (this process has not written the lockfile with it yet: the record is another process's run
+// of the same config), what is left of that run is kept: its files the newer build did not write again (another
+// plugin, other hashes in the file names, no output.clean), as a writer of its own (see remnantOf);
 // [{ id, pkgs, files, count, context, anchored }] (anchored: see readMeta). A lockfile that is gone since this process last read it was deleted with
 // the output directory - by this build's own output.clean, which deletes it with the other writers' files except
 // those clean.keep keeps: its record is still what the other processes put there, for their files that are left.
@@ -97,16 +100,23 @@ function there(file) {
  * @param {string} target
  * @param {Set<string>} own
  * @param {boolean} [all]
+ * @param {Set<string>} [ownFiles]
+ * @param {Set<string>} [fresh]
  * @returns {(Omit<RecordedWriter, 'contents'> & { contents: Record<string, string[]>, context: string | null, anchored: boolean | null })[]}
  */
-function foreign(target, own, all = false) {
+function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set()) {
   const file = outputs.disk.get(target) && stateFile(target);
   if (!file) return [];
   /** @type {LockRecord | null} */
   let meta;
   try {
-    meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(target), contextsOf(target));
+    const text = fs.readFileSync(file, 'utf8');
+    meta = readMeta(text, path.dirname(target), contextsOf(target));
     outputs.read.set(target, meta);
+    // a record this bundle-lockfile cannot read (of another version, or broken): the packages of the writers it lists
+    // would be lost with it. (Not JSON, or no record: npm's own lockfile, which is not replaced - see ours.)
+    const why = meta ? null : unreadableRecord(text);
+    if (why && why !== NOT_JSON) problems.problem(`${file} ${why}: the packages of the other builds it lists would be missing`, null, { once: file });
   } catch (e) {
     // not there (any more, or a file where a directory of its path would be); any other error (EACCES, EMFILE, EISDIR)
     // hides the other processes' records: a problem (core/problems.cjs), with what this process read last
@@ -114,10 +124,42 @@ function foreign(target, own, all = false) {
     meta = outputs.read.get(target) || null;
   }
   if (!meta) return [];
-  return meta.writers.filter(w => !own.has(w.id) && (all || w.files.some(there)))
-    .map(w => ({ id: w.id, pkgs: w.pkgs, files: w.files, count: w.count, outputs: w.outputs, outputCount: w.outputCount,
-      context: meta.context, anchored: meta.anchored, bundler: w.bundler, via: w.via,
-      contents: Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)])) }));
+  const m = meta;
+  /** @type {(f: string) => boolean} */
+  const left = (f) => !ownFiles.has(f) && there(f);
+  const out = outputDirOf(target);
+  return m.writers.flatMap((w) => {
+    let { id, files, count, outputs: outs, outputCount } = w;
+    let contents = Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)]));
+    if (own.has(w.id)) {
+      if (all || !fresh.has(w.id)) return [];
+      const rest = files.filter(f => within(out, f) && left(f)); // (files in the output: not traced node_modules files)
+      if (!rest.length) return [];
+      ({ id, files, outputs: outs, contents } = remnantOf(target, w.id, { files: w.files, outputs: outs, contents }, rest));
+      if (own.has(id)) return []; // (this process's remnant of it)
+      count = undefined; outputCount = undefined;
+    } else if (!all && !files.some(left)) return [];
+    return [{ id, pkgs: w.pkgs, files, count, outputs: outs, outputCount, context: m.context, anchored: m.anchored, bundler: w.bundler, via: w.via, contents }];
+  });
+}
+
+// What is left of an earlier build of writer `id` that a newer one replaced: its files `rest` (those still there that
+// the newer one did not write again), with its packages - all of them (which of them are in which file is known for
+// JavaScript and CSS files only): a writer of its own, whose id is the same for that build in every process.
+/**
+ * @template {{ files: string[], outputs: Record<string, string>, contents: Record<string, string[]> }} B
+ * @param {string} target
+ * @param {string} id
+ * @param {B} b
+ * @param {string[]} rest
+ * @returns {B & { id: string }}
+ */
+function remnantOf(target, id, b, rest) {
+  const keep = new Set(rest);
+  /** @type {<V>(o: Record<string, V>) => Record<string, V>} */
+  const only = (o) => Object.fromEntries(Object.entries(o).filter(([f]) => keep.has(f)));
+  const rel = b.files.map(f => posix(path.relative(path.dirname(target), f))).sort(cmp); // (no machine's paths in the id)
+  return { ...b, id: crypto.createHash('sha256').update(JSON.stringify([id, ...rel])).digest('hex').slice(0, 16), files: rest, outputs: only(b.outputs), contents: only(b.contents) };
 }
 
 // A build with its packages checked (seen: package directory -> its package, read once per render): a package's path
@@ -164,13 +206,30 @@ function render(target, own) {
   const builds = [];
   /** @type {Set<string>} */
   const ids = new Set();
-  for (const [id, w] of outputs.files.get(target) || []) {
+  /** @type {Set<string>} */
+  const fresh = new Set(); // writers whose record on disk is another process's
+  const mine = outputs.files.get(target) || new Map();
+  for (const [id, w] of mine) {
     const b = id === own && w.building ? w.building : w.landed;
     // a writer with no landed build here (its first build in this process failed): its record on disk is still the
     // output in the directory
     if (b) { builds.push({ ...b, id: w.id }); ids.add(w.id); }
+    // (not after a build of it landed here before the current one: the record on disk is this process's then, also one
+    // the bundler wrote with the content it was given - Angular, an in-memory output)
+    if (!w.wrote && (w.landings === 0 || (w.landings === 1 && !w.building))) fresh.add(w.id);
   }
-  builds.push(...foreign(target, ids));
+  // the files this process's builds write there; what is left of a writer's earlier builds besides them (see remnantOf)
+  const ownFiles = new Set(builds.flatMap(b => b.files));
+  for (const w of mine.values()) {
+    w.remnants = w.remnants.filter((/** @type {Build} */ r) => {
+      const rest = r.files.filter((/** @type {string} */ f) => within(outputDirOf(target), f) && !ownFiles.has(f) && there(f));
+      if (!rest.length) return false;
+      const b = remnantOf(target, w.id, r, rest);
+      builds.push(b); ids.add(b.id);
+      return true;
+    });
+  }
+  builds.push(...foreign(target, ids, false, ownFiles, fresh));
   if (!builds.length) return null;
   const checked = builds.map(stillThere(new Map()));
   /** @type {Map<string, Package>} */
@@ -194,7 +253,8 @@ function render(target, own) {
 // a hash of `writer`, which therefore must not contain machine-specific paths); opts.disk: see outputs.disk;
 // opts.outputs: { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, opts.contents: { absolute
 // path: [package paths] } the packages in each of them (see core/nested.cjs); opts.bundler: { name, version } of the
-// bundler that ran; opts.via: how it found its packages (a core/via.cjs collector, or Map(package path -> classes)).
+// bundler that ran; opts.via: how it found its packages (a core/via.cjs collector, or Map(package path -> classes));
+// opts.run: the compiler or build (plugin) object, the same across its watch rebuilds.
 /**
  * @param {string} target
  * @param {string} writer
@@ -202,7 +262,7 @@ function render(target, own) {
  * @param {string} context
  * @param {string[]} [files]
  * @param {{ id?: string, disk?: boolean, outputs?: Record<string, string>, contents?: Record<string, string[]>,
- *   bundler?: BundlerId | null, via?: ViaCollector | Via | null }} [opts]
+ *   bundler?: BundlerId | null, via?: ViaCollector | Via | null, run?: object }} [opts]
  * @returns {string}
  */
 function record(target, writer, pkgs, context, files = [], opts = {}) {
@@ -210,8 +270,13 @@ function record(target, writer, pkgs, context, files = [], opts = {}) {
   if (!writers) outputs.files.set(target, (writers = new Map()));
   const id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
   /** @type {Writer} */
-  const w = writers.get(writer) || { id, building: null, landed: null };
+  const w = writers.get(writer) || { id, building: null, landed: null, remnants: [], run: opts.run, wrote: false, landings: 0 };
+  // its landed build of another run (another compiler or build for the same config: the configs of `rollup -c`),
+  // replaced by this one: what this one does not write again is still in the output (see render). Not a rebuild of
+  // the same run (watch mode), whose late files its own check finds again (core/late.cjs).
+  if (!w.building && w.landed && w.id === id && w.run !== opts.run) w.remnants.push(w.landed);
   w.id = id;
+  w.run = opts.run;
   const via = !opts.via ? null : 'byPath' in opts.via ? opts.via.byPath : opts.via;
   w.building = { pkgs, context, files, outputs: opts.outputs || {}, contents: opts.contents || {}, bundler: opts.bundler || null, via };
   writers.set(writer, w);
@@ -239,7 +304,7 @@ function setFiles(target, writer, files) {
  */
 function emitted(target, writer) {
   const w = (outputs.files.get(target) || new Map()).get(writer);
-  if (w && w.building) { w.landed = w.building; w.building = null; }
+  if (w && w.building) { w.landed = w.building; w.building = null; w.landings++; }
 }
 
 // Another compiler, in this process or another one, writes `target` too - or did: a lockfile on disk that
@@ -330,7 +395,8 @@ const within = (dir, p) => p === dir || p.startsWith(dir + path.sep);
 // .output/public/_nuxt/, which ships - .nuxt/dist/client/bundle-lockfile/ stays behind. That copy of the output gets a
 // copy of its lockfile, where the copy's output directory is (as many directories up from the copy as the file is
 // below the output directory), followed like a copied lockfile: written again with every write of its lockfile.
-// Not with BUNDLE_LOCKFILE_INLINE=0 (no lockfile in outputs), nor where a lockfile is (another build's, a copy), nor in
+// Not with BUNDLE_LOCKFILE_INLINE=0 (no lockfile in outputs), nor where a lockfile is (another build's, a copy) - but the
+// copy an earlier run left there (a destination not cleaned between builds), which would keep its packages -, nor in
 // node_modules. A copy of only some of the output's files lists all of its packages: more, not fewer.
 /**
  * @param {string} src
@@ -348,7 +414,7 @@ function outputCopy(src, dest, isDirectory) {
     // a place that is (in) an output, or has one in it (a file copied up into the project): no copy there
     if (dirs.some(([, d]) => within(d, root) || within(root, d)) || root.split(path.sep).includes('node_modules')) return;
     const copy = path.join(root, config.file);
-    if (outputs.copies.has(copy) || there(copy)) return;
+    if (outputs.copies.has(copy) || (there(copy) && !earlierCopy(copy, target))) return;
     /** @type {string | null} */
     let content = null;
     try { content = fs.readFileSync(/** @type {string} */ (stateFile(target)), 'utf8'); } catch { /* not written yet: when it is (follow) */ }
@@ -363,6 +429,16 @@ function outputCopy(src, dest, isDirectory) {
     config.debug('a copy of the output', odir, 'in', root, '- its lockfile:', copy);
     return;
   }
+}
+
+// The lockfile at `copy` is one an earlier run copied of `target`: its record has a writer this process has there
+/** @param {string} copy @param {string} target */
+function earlierCopy(copy, target) {
+  const own = new Set([...(outputs.files.get(target) || new Map()).values()].map(w => w.id));
+  try {
+    const meta = readMeta(fs.readFileSync(copy, 'utf8'), path.dirname(copy), contextsOf(target));
+    return !!meta && meta.writers.some(w => own.has(w.id));
+  } catch { return false; }
 }
 
 if (!outputs.listening) { outputs.listening = true; copies.onCopy(copied); } // once per process, also with copies of this module
@@ -440,6 +516,10 @@ function rewrite(target, writeFile) {
       // directory removed after the build) the export copy - a lock in the output directory would recreate it
       const shared = outputs.disk.get(target) && (writeFile ? stateFile(target) : exportPath(target));
       if (shared) release = await lock(shared);
+      // the export copy, which a write without the inline file (above) locks by itself: under its lock too (after the
+      // other one, always in this order)
+      const exp = outputs.disk.get(target) && writeFile && config.inline ? exportPath(target) : null;
+      if (exp) { const first = release, second = await lock(exp); release = () => { second(); first(); }; }
       const content = render(target);
       if (content === null) { config.debug('nothing recorded for', target, '- not written'); return undefined; }
       if (!writeFile && !exportPath(target)) nowhere();
@@ -449,7 +529,10 @@ function rewrite(target, writeFile) {
         const file = exportOf(target);
         if (file) writeLock(file, content);
       } catch (e) { return err || e; }
-      if (!err) follow(target, content);
+      if (!err) {
+        follow(target, content);
+        for (const w of (outputs.files.get(target) || new Map()).values()) w.wrote = true; // (see render)
+      }
       return err;
     } catch (e) { return e; } finally { release(); }
   });
@@ -544,4 +627,8 @@ function listedPaths() {
   return out;
 }
 
-module.exports = { record, setFiles, emitted, isShared, prune, rewrite, land, onDisk, filesOf, hasFile, writeDisk, nowhere, listedPaths };
+// Whether any lockfile of this process lists `file` among its writers' files
+/** @param {string} file */
+const listedFile = (file) => [...outputs.files.keys()].some(target => hasFile(target, file));
+
+module.exports = { record, setFiles, emitted, isShared, prune, rewrite, land, onDisk, filesOf, hasFile, listedFile, writeDisk, nowhere, listedPaths };

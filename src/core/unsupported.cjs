@@ -12,21 +12,27 @@
 const fs = require('fs');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
+const { logical } = require('./layout.cjs');
 
 const ROLLDOWN_CLI = /[\\/]rolldown[\\/]bin[\\/]cli\.mjs$/;
 const NEXT_BIN = /[\\/]next[\\/]dist[\\/]bin[\\/]next$/;
 const NCC = /[\\/]@vercel[\\/]ncc[\\/]dist[\\/]ncc[\\/](?:cli|index)\.js$/;
 
 const real = (/** @type {string} */ f) => { try { return fs.realpathSync(f); } catch { return f; } };
+// The process's main script by its real path, a package in Yarn's store as node_modules/<name> (core/layout.cjs)
+/** @param {string[]} argv */
+const mainOf = (argv) => (argv[1] ? logical(real(argv[1])) : '');
+// The process is `next build` (argv: process.argv)
+/** @param {string[]} [argv] */
+const isNextBuild = (argv = process.argv) => NEXT_BIN.test(mainOf(argv)) && argv[2] === 'build';
 
 // At preload, in the main thread: what the process's main script tells (argv: process.argv)
 /** @param {string[]} [argv] */
 function check(argv = process.argv) {
-  const main = argv[1] ? real(argv[1]) : '';
-  if (ROLLDOWN_CLI.test(main) && !config.isDisabled('rolldown')) {
+  if (ROLLDOWN_CLI.test(mainOf(argv)) && !config.isDisabled('rolldown')) {
     problems.problem("the rolldown command line is not hooked: its builds write no lockfile (build with Rolldown's JavaScript API, or with Vite)");
   }
-  if (NEXT_BIN.test(main) && argv[2] === 'build') {
+  if (isNextBuild(argv)) {
     problems.atExit(() => {
       if (process.env.TURBOPACK && !process.env.NEXT_RSPACK) {
         problems.problem('Next.js built with Turbopack, which bundle-lockfile does not hook: no lockfile (build with next build --webpack, or with next-rspack)');
@@ -49,4 +55,4 @@ const adapter = {
   },
 };
 
-module.exports = { check, adapter };
+module.exports = { check, adapter, isNextBuild };

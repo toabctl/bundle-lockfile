@@ -202,7 +202,9 @@ function bundledFiles(compilation) {
     const issuerOf = issuers(c);
     for (const m of seen.modules) if (!shippedModules.has(m)) shippedModules.set(m, issuerOf);
     if (seen.unrecorded) for (const f of styleFallback(c)) { own.add(f); mark(f, 'style'); }
-    if (rspack) for (const f of inlinedModules(c, seen.modules)) { own.add(f); mark(f, 'inlined-exports'); }
+    // (a child compilation none of whose chunks ships - html-webpack-plugin's template - inlines nothing that ships;
+    // chunks: compilation.chunks, a Set, or an array of the child's)
+    if (rspack && [...chunks].length) for (const f of inlinedModules(c, seen.modules)) { own.add(f); mark(f, 'inlined-exports'); }
     for (const f of own) files.add(f);
     return own;
   };

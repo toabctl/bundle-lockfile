@@ -59,6 +59,7 @@ function writeTree(dir, json) {
   const stubs = stubsOf(json);
   const target = path.join(dir, DIR);
   if (sameTree(target, stubs)) return;
+  if (!ours(target)) throw new Error(`${target} is there and is no tree bundle-lockfile wrote (with BUNDLE_LOCKFILE_FILE=package-lock.json it is the output's own packages directory): it is not replaced`);
   const tmp = path.join(dir, `.${DIR}.${unique()}.tmp`);
   try {
     for (const [rel, content] of stubs) {
@@ -97,6 +98,24 @@ function sameTree(target, stubs) {
   walk(target);
   return same && n === want.size;
 }
+// The directory at target is not there, or holds a tree and nothing else (stubs below <id>/node_modules/): it may be
+// replaced. Another one - the output's own packages/ next to a lockfile at the output's top (BUNDLE_LOCKFILE_FILE=
+// package-lock.json), a project's packages/ when the output directory is the project - must not be deleted.
+const STUB = /^[0-9a-f]{16}\/node_modules\/(@[^/]+\/)?[^/]+\/package\.json$/;
+/** @param {string} target */
+function ours(target) {
+  let st;
+  try { st = fs.lstatSync(target); } catch (e) { if (e.code === 'ENOENT') return true; throw e; }
+  if (!st.isDirectory()) return false;
+  /** @type {(d: string, rel: string) => boolean} */
+  const walk = (d, rel) => fs.readdirSync(d, { withFileTypes: true }).every((e) => {
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) return (rel || /^[0-9a-f]{16}$/.test(e.name)) && walk(path.join(d, e.name), r);
+    return e.isFile() && STUB.test(r);
+  });
+  return walk(target, '');
+}
+
 /** @param {string} f */
 const readOr = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
 

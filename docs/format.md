@@ -158,7 +158,9 @@ components) is not found — not here, nor by syft, Trivy or the CycloneDX plugi
 
 **Linked packages**: a package whose real location is outside `node_modules` — a workspace package, a `link:` or
 `portal:` dependency, a `file:` directory dependency that npm installs as a symlink — is first-party and not listed,
-also with webpack's `resolve.symlinks: false`. Its dependencies are listed. With npm, pnpm or Yarn's node-modules
+also with webpack's `resolve.symlinks: false`. Its dependencies are listed. Only `node_modules/<name>` itself as a
+symbolic link makes a package linked: with a `node_modules` that is a symbolic link (to `deps/`), every package in it
+is outside `node_modules` by its real path and listed as a vendored copy. With npm, pnpm or Yarn's node-modules
 linker, one linked under another name (an alias, `"x": "link:../lib"`) whose `package.json` has a name and a version,
 is not private and is no workspace member is listed as a vendored copy (Yarn Plug'n'Play's links and portals are
 always first-party); `BUNDLE_LOCKFILE_FIRST_PARTY` leaves it out. Yarn 2+ (which packs it into its cache)
@@ -212,7 +214,7 @@ configuration.
   - `id`;
   - `packages` (keys);
   - up to 20 of its output `files`, and the `count` of all of them;
-  - for Vite, Rollup, Rolldown and esbuild: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with
+  - for Vite, Rollup, Rolldown, esbuild and Parcel: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with
     more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`),
     for [nested bundles](#nested-bundles);
   - `bundler`: the bundler that ran, `{ "name", "version" }` as it reports itself (`webpack`, `rspack`, `rollup`,
@@ -301,7 +303,10 @@ Builds that write to the same directory share its lockfile: it lists the package
   outputs) they build in parallel or rebuild in watch mode.
 - Separate processes (e.g. two `webpack` or `vite build` commands run by `concurrently` or `run-p`) find each other's
   writers in the lockfile on disk, and keep their packages as long as one of the files recorded for them (up to 20,
-  the first by path) is still there. A writer recorded without files is kept.
+  the first by path) is still there and was not written again by a build of this process. A writer recorded without
+  files has nothing in the output and is not kept. An earlier run of the same build (its writer has the same id) keeps
+  the files it left that the new run did not write again (other hashes in their names, no clean): as a writer of its
+  own.
 
 Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one.
 The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`,
@@ -339,9 +344,9 @@ that is there but cannot be read.
 
 ## Nested bundles
 
-A bundled file that another Vite, Rollup or Rolldown build wrote brings the packages that build put into it. E.g.
-GitLab's webpack build bundles the Vite-built "island" `ee/frontend_islands/apps/duo_next/dist/main.js`, with Vue
-inlined, as part of its own code.
+A bundled file that another build wrote brings the packages that build put into it. E.g. GitLab's webpack build
+bundles the Vite-built "island" `ee/frontend_islands/apps/duo_next/dist/main.js`, with Vue inlined, as part of its own
+code.
 
 Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its JavaScript and CSS files (`outputs`) and the
 packages in each (`contents`):
@@ -351,6 +356,10 @@ packages in each (`contents`):
   imports it), of the files it was emitted from, and of every file the build's plugins inlined, such as the style
   sheets it `@import`s from packages (which style sheet inlined which is not known);
 - a JavaScript asset (Vite's worker chunks): the packages of the build that produced it.
+
+webpack, rspack and Angular lockfiles record no `outputs`: a JavaScript or CSS file among a writer's `files` brings all
+of that writer's packages (a library built by webpack and bundled by the app, a DLL bundle), as does any such file of
+a writer whose `files` are only some of them (`count`).
 
 Of an output with more than 500 such files, only the first 500 by path are recorded, and `outputCount` gives the
 number of all of them. A JavaScript or CSS file in that output which is none of the 500 may be one of the others: it

@@ -67,7 +67,7 @@ the source maps show none of its code.
   advisories about its build-time code and dev server (most of Vite's): a package listed too many is better than
   one missing. The metafile importer lists the esbuild the working directory resolves, or the package `--bundler`
   names.
-- **nested bundles**: a bundled file that another Vite, Rollup or Rolldown build wrote brings that build's packages
+- **nested bundles**: a bundled file that another build wrote brings that build's packages
   ([details](format.md#nested-bundles)).
 
 ## Not listed

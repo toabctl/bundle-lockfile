@@ -20,6 +20,7 @@ const { portable, exportPath } = require('../core/paths.cjs');
 const { createRequire } = require('module');
 const { filesOfOutputs, fileOfInput } = require('./esbuild.cjs');
 const { bundlerPackage } = require('../core/bundler.cjs');
+const { stubsOf } = require('../core/tree.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.angular.patched');
 const EXECUTE_BUILD = /[\\/](@angular[\\/]build|@angular-devkit[\\/]build-angular)[\\/]src[\\/]builders[\\/]application[\\/]execute-build\.js$/;
@@ -153,8 +154,15 @@ function complete(options, result, forced, writes) {
       // file of the same name are one (the one added last): the server's lockfile is a file of the output path's root,
       // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above)
       if (content !== null && config.inline && typeof result.addOutputFile === 'function') {
-        if (side === 'browser') result.addOutputFile(path.posix.join(locale, file), content, TYPE.Browser);
-        else result.addOutputFile(path.posix.join(out.server || 'server', locale, file), content, TYPE.Root);
+        const at = side === 'browser' ? path.posix.join(locale, file) : path.posix.join(out.server || 'server', locale, file);
+        const type = side === 'browser' ? TYPE.Browser : TYPE.Root;
+        result.addOutputFile(at, content, type);
+        // its package.json tree (BUNDLE_LOCKFILE_TREE, core/tree.cjs): Angular writes it with the lockfile
+        if (config.tree !== 'off') {
+          try {
+            for (const [rel, stub] of stubsOf(content)) result.addOutputFile(path.posix.join(path.posix.dirname(at), rel), stub, type);
+          } catch (e) { problems.problem(`angular: could not write the package.json tree of ${path.join(dir, config.file)}`, e); }
+        }
       }
     };
     const sideDir = path.join(out.base, out[side] || side);

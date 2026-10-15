@@ -81,10 +81,12 @@ function outputContents(bundle, dir, ids, originals, inlined, byFile) {
   const hashes = {}, contents = {};
   const all = Object.values(bundle);
   const css = all.filter(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
-  const isStyle = (id) => STYLE.test(fileOf(id) || '');
+  // (also a single-file component's style block: App.vue?vue&type=style&index=0&lang.scss, X.svelte?svelte&type=style)
+  const isStyle = (id) => STYLE.test(fileOf(id) || '') || /[?&]type=style(&|$)/.test(id);
   const extracted = (id) => css.length > 0 && isStyle(id) && !/[?&](inline|raw|url)\b/.test(id);
   const add = (into, pkgs) => { if (pkgs) for (const p of pkgs) into.add(p.path); };
   const ofFiles = (into, list) => { for (const f of list) add(into, byFile.get(f)); };
+  const inChunks = new Set(all.filter(f => f.type === 'chunk').flatMap(moduleIds));
   for (const f of all) {
     const file = path.join(dir, f.fileName);
     const into = new Set();
@@ -96,7 +98,9 @@ function outputContents(bundle, dir, ids, originals, inlined, byFile) {
       hashes[file] = sha256(f.code);
     } else if (css.includes(f)) {
       const importers = all.filter(c => c.type === 'chunk' && c.viteMetadata && c.viteMetadata.importedCss && c.viteMetadata.importedCss.has(f.fileName));
-      const from = importers.length ? importers.flatMap(moduleIds) : [...ids];
+      // and the style modules of chunks no longer in the bundle (Vite removes a chunk of style only, and hands its CSS
+      // files to the chunks that imported it, not its modules)
+      const from = importers.length ? [...importers.flatMap(moduleIds), ...[...ids].filter(id => !inChunks.has(id))] : [...ids];
       ofFiles(into, from.filter(extracted).map(fileOf));
       ofFiles(into, inlined);
       ofFiles(into, originals.get(f) || []);
@@ -163,23 +167,27 @@ function buildOf(bundle, cwd) {
 /**
  * @param {any} ctx
  * @param {Record<string, any>} bundle
- * @param {{ cwd: string, bundlers: Package[] }} opts
+ * @param {{ cwd: string, bundlers: Package[], watched?: Iterable<unknown> }} opts
  * @returns {Package[]}
  */
-function keepGenerated(ctx, bundle, { cwd, bundlers }) {
+function keepGenerated(ctx, bundle, { cwd, bundlers, watched = [] }) {
   const all = [];
   const bases = once(() => entryDirs(bundle));
+  const build = buildOf(bundle, cwd);
+  // the files the build's plugins inlined (watch files: not known per chunk): in each chunk and CSS file
+  const inlined = inlinedFiles(watched, ctx);
+  const inl = inlined.length ? packages.packagesForFiles(inlined, build) : [];
   for (const f of Object.values(bundle)) {
     let pkgs;
     if (f.type === 'chunk') {
-      const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean), buildOf(bundle, cwd)).all;
-      const inl = helpers.ofModuleIds(moduleIds(f), (id) => ctx.getModuleInfo(id), fileOf, cwd);
-      pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values(), bundlers, inl);
+      const own = packages.packagesOfFiles(moduleIds(f).map(fileOf).filter(Boolean), build).all;
+      const helped = helpers.ofModuleIds(moduleIds(f), (id) => ctx.getModuleInfo(id), fileOf, cwd);
+      pkgs = packages.unique(own, generatedIn({ [f.fileName]: f }, moduleIds(f)).values(), bundlers, helped, inl);
       generated.addChunk(f.code, pkgs);
     } else {
       const names = f.originalFileNames || (f.originalFileName ? [f.originalFileName] : []);
       const sources = names.map(n => originalFile(n, f.source, cwd, bases)).filter(Boolean);
-      pkgs = sources.length ? packages.packagesForFiles(sources) : [];
+      pkgs = packages.unique(sources.length ? packages.packagesForFiles(sources, build) : [], /\.css$/i.test(f.fileName) ? inl : []);
       generated.addAsset(f.source, pkgs);
     }
     all.push(pkgs);

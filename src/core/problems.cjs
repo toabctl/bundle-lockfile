@@ -75,6 +75,9 @@ function onExit() {
     for (const t of left) config.error(t);
     config.error(`the process fails because a lockfile would be missing or incomplete (${HINT})`);
     if (!process.exitCode) process.exitCode = 1;
+    // a listener after this one that calls process.exit(0) (the build's own exit handling) does not make it succeed
+    const exit = process.exit;
+    process.exit = /** @type {typeof process.exit} */ (function (code) { return exit.call(process, code ? code : process.exitCode || 1); });
   });
 }
 /** @param {() => void} fn */
@@ -161,4 +164,17 @@ function failIfAny(fail) {
   return true;
 }
 
-module.exports = { problem, take, takeOwn, count, pending, failure, failIfAny, isFailure, atExit, within, outside, current };
+// Problems a build failed with that its bundler only printed (Parcel before 2.13 goes on after a reporter's error): kept
+// for the exit, which fails the process with them - no build takes them (their owner is none of the builds').
+const AT_EXIT = Object.freeze({});
+/** @param {string[]} list */
+function failAtExit(list) {
+  for (const t of list) state.pending.push({ text: t, owner: AT_EXIT });
+  if (list.length) onExit();
+}
+
+// The exit listener from the start (the preload): before listeners of the build's code - one that calls process.exit()
+// in its own exit listener ends the process there, before the listeners after it
+onExit();
+
+module.exports = { problem, take, takeOwn, count, pending, failure, failIfAny, failAtExit, isFailure, atExit, within, outside, current };

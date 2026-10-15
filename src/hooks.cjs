@@ -181,7 +181,7 @@ let companions = null; // the esmCompanions to check, in a thread without ESM ho
 const tripped = new Set();
 function companion(module, filename) {
   if (!companions || typeof filename !== 'string') return;
-  const c = companions.find(x => x.file.test(filename));
+  const c = companions.find(x => x.file.test(logical(filename))); // (a package in Yarn's store as node_modules/<name>)
   if (!c || tripped.has(c.id)) return;
   // the first module that required it (module.parent warns only with --pending-deprecation, DEP0144)
   const parent = module && module.parent;
@@ -290,10 +290,10 @@ function installEsm(entries, cjsFiles) {
   const packages = [...new Set(adapters.flatMap(a => a.esmPackages || []))];
   const mode = esmMode(packages);
   config.debug('ESM hooks:', mode, `(Node ${process.versions.node})`);
-  // no ESM hooks in this thread, although they were not turned off: the safety net (see companion)
-  if (mode === 'off' && config.esmHooksOf(process.env.BUNDLE_LOCKFILE_ESM_HOOKS) !== 'off' && !wt.isInternalThread) {
-    companions = adapters.flatMap(a => a.esmCompanions || []).filter(c => c.names.some(n => !config.isDisabled(n)));
-  }
+  // no ESM hooks in this thread, although they were not turned off: the safety net (see companion) - also when
+  // installing them fails, below
+  const arm = () => { companions = adapters.flatMap(a => a.esmCompanions || []).filter(c => c.names.some(n => !config.isDisabled(n))); };
+  if (mode === 'off' && config.esmHooksOf(process.env.BUNDLE_LOCKFILE_ESM_HOOKS) !== 'off' && !wt.isInternalThread) arm();
   // neither hook API (Node.js 20 before 20.6): Vite, Rollup, Rolldown and rspack 2 builds would write no lockfile
   if (mode === 'off' && typeof Module.registerHooks !== 'function' && typeof Module.register !== 'function'
     && config.esmHooksOf(process.env.BUNDLE_LOCKFILE_ESM_HOOKS) !== 'off' && !wt.isInternalThread && bundlerProcess(packages)) {
@@ -326,7 +326,7 @@ function installEsm(entries, cjsFiles) {
       ? 'could not install the ESM hooks: Node.js\'s loader thread did not start (a --loader or --import that fails there, or a --require preload that calls module.registerHooks, breaks it)'
       : 'could not install the ESM hooks';
     if (bundlerProcess(packages)) problems.problem(msg, e);
-    else config.warn(`${msg}:`, e);
+    else { config.warn(`${msg}:`, e); if (!wt.isInternalThread) arm(); } // (a bundler that loads all the same: a problem then)
   }
 }
 

@@ -145,17 +145,21 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
 
 - The lockfile goes into the output directory: `outdir`, or the directory of `outfile`. It is written once esbuild has
   written the output, after every other plugin's `onEnd`; with `watch()`, `rebuild()` and `serve()` (which writes the
-  output too) after every build. A failed build changes nothing.
+  output too) after every build. A failed build changes nothing; an error another plugin's `onEnd` returns (a type
+  check) comes after esbuild wrote the output: the lockfile is written. An output that another plugin's `onEnd` moved
+  away is a problem (no lockfile lists it).
 - It lists the packages of the input files of every output file esbuild writes (its metafile, which bundle-lockfile
   turns on, and takes out of the result again unless the build asked for it): modules, CSS `@import`ed from packages
   and files the `file` and `copy` loaders put into the output. Modules that only re-export count; tree-shaken modules,
   externals and modules a browser field maps to `false` do not. Modules of plugins (a namespace) count if their path is
   a file.
 - Several builds into one directory (other entry points) share one lockfile.
-- `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile, and no failure. Their
-  packages are listed where their output's bytes end up in another hooked build's output, or in a file written into an
-  output after the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files
-  itself: its lockfile comes from its own adapter ([Angular](#angular)).
+- `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile. Their packages are
+  listed where their output's bytes end up in another hooked build's output, or in a file written into an output after
+  the build ([coverage](coverage.md#also-listed)). Angular's builder builds that way and writes the files itself: its
+  lockfile comes from its own adapter ([Angular](#angular)). An output file of such a build that is on disk with its
+  bytes when the process ends and in no lockfile of the process (tsup and other tools write esbuild's `outputFiles`
+  themselves) is a problem: it ships without a lockfile (`bundle-lockfile-from-metafile` writes one).
 - Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`) and outputs
   below `node_modules` are left alone - except below `node_modules/.cache/`, as for Vite (tools build what ships there).
 - A problem fails the build: `build()` and `rebuild()` reject with it (as an error of bundle-lockfile's plugin),

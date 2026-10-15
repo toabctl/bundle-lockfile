@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
+const { isNextBuild } = require('./unsupported.cjs');
 
 const S = Symbol.for('bundle-lockfile.children.v1');
 /** @typedef {{ [S]?: { warned: boolean } }} Global */
@@ -42,8 +43,7 @@ const quoted = (f) => (/\s/.test(f) ? `"${f}"` : f);
 /** @type {boolean | undefined} */
 let isNext;
 /** @type {() => boolean} */
-const nextBuild = () => (isNext === undefined
-  ? (isNext = /[\\/]next[\\/]dist[\\/]bin[\\/]next$/.test(real(process.argv[1] || '')) && process.argv[2] === 'build') : isNext);
+const nextBuild = () => (isNext === undefined ? (isNext = isNextBuild()) : isNext);
 
 // env (an options.env) as the child gets it: unchanged, or with our --require put back (shim mode). what: for the
 // warning.
@@ -57,7 +57,8 @@ function checked(env, what) {
   if (String(env.NODE_OPTIONS || '').includes(/** @type {string} */ (ourRequire())) || ours(env.NODE_OPTIONS).length) return env;
   if (process.env.BUNDLE_LOCKFILE_NODE_SHIM || nextBuild()) {
     config.debug('the --require put back for', what);
-    return { ...env, NODE_OPTIONS: `--require ${quoted(/** @type {string} */ (ourRequire()))}${env.NODE_OPTIONS ? ` ${env.NODE_OPTIONS}` : ''}` };
+    // (by its absolute path: one relative to this process's working directory names nothing in a child's)
+    return { ...env, NODE_OPTIONS: `--require ${quoted(own)}${env.NODE_OPTIONS ? ` ${env.NODE_OPTIONS}` : ''}` };
   }
   config.debug('without bundle-lockfile:', what);
   if (!/** @type {{ warned: boolean }} */ (/** @type {Global} */ (globalThis)[S]).warned) {

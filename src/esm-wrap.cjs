@@ -128,6 +128,8 @@ function exportedNames(code) {
   }
   for (const m of src.matchAll(/\bexport\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([\w$]+)/g)) names.add(m[1]);
   if (/\bexport\s+default\b/.test(src)) names.add('default');
+  // a string name (ES2022): export { x as "default" } - its literal is gone from src
+  if (/\bexport\s*\{[^}]*\bas\s*([\x22\x27])default\1/.test(withoutComments(code))) names.add('default'); // (\x22\x27: quotes)
   return names;
 }
 

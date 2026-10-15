@@ -171,7 +171,7 @@ class BundleLockfilePlugin {
     const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || [], own, inl);
     return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)),
-      { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
+      { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found, run: compiler });
   }
 
   // { name, version } of the bundler of a compiler (core/lockfile.cjs): rspack's version, webpack 5's, or webpack 4's
@@ -253,7 +253,11 @@ class BundleLockfilePlugin {
       // may start another compiler (a config array's dependencies)
       this.afterEmit(compilation)
         .catch((e) => { problems.problem(`${kindOf(compiler)}: could not write the lockfile of ${outputDir(compilation)}`, e); })
-        .then(() => setImmediate(() => { failCompilation(compilation); problems.outside(callback); }));
+        .then(() => setImmediate(() => {
+          // (a failure that cannot even be recorded must not lose the callback: webpack would wait forever)
+          try { failCompilation(compilation); } catch (e) { config.error(`${kindOf(compiler)}: could not fail the build of ${outputDir(compilation)}:`, e); process.exitCode = 1; }
+          problems.outside(callback);
+        }));
     });
   }
 

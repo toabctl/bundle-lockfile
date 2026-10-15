@@ -25,14 +25,16 @@ const posix = (/** @type {string} */ p) => p.split(path.sep).join('/');
 // .../x.zip/node_modules/<name>) and pnpm (.pnpm/<id>/node_modules/<name>) lay packages out, and it
 // ignores package.json files inside a package - e.g. dist/esm/package.json = {"type":"module"} or
 // preact/hooks/package.json = {"name": "preact-hooks", ...}, which are not packages. Yarn's pnpm linker:
-// node_modules/.store/<slug>/package (see core/layout.cjs).
+// node_modules/.store/<slug>/package (see core/layout.cjs). No package's name starts with a dot: a directory such as
+// node_modules/.cache, .vite or .prisma holds what tools generate there - no package, but files as outside
+// node_modules (a nested build's output below node_modules/.cache is found by its lockfile, see core/nested.cjs).
 /** @param {string} file @returns {string | null} */
 function packageRoot(file) {
   const parts = file.split(path.sep);
   const s = storeRoot(parts);
   if (s >= 0) return s < parts.length - 1 ? parts.slice(0, s + 1).join(path.sep) : null;
   const i = parts.lastIndexOf('node_modules');
-  if (i < 0) return null;
+  if (i < 0 || (parts[i + 1] || '').startsWith('.')) return null;
   const n = parts[i + 1] && parts[i + 1].startsWith('@') ? 2 : 1;
   if (i + n >= parts.length - 1) return null; // the file must be inside the package directory
   return parts.slice(0, i + 1 + n).join(path.sep);
@@ -109,7 +111,7 @@ function below(dir, p) {
   const rel = path.relative(dir, p);
   return rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel) ? rel : null;
 }
-// the real path of p, as far as it exists (a lockfile's directory may not be there yet)
+// the real path of p, as far as it exists (a lockfile's directory, a copy's destination may not be there yet)
 /** @param {string} p @returns {string} */
 function realish(p) {
   /** @type {string[]} */
@@ -132,4 +134,4 @@ function inToolCache(dir) {
   return i >= 0 && parts[i + 1] !== '.cache';
 }
 
-module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, portable, exportPath, inToolCache, OUTSIDE_BASE };
+module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, portable, exportPath, inToolCache, realish, OUTSIDE_BASE };
