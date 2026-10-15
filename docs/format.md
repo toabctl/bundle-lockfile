@@ -341,9 +341,9 @@ that is there but cannot be read.
 
 ## Nested bundles
 
-A bundled file that another Vite, Rollup or Rolldown build wrote brings the packages that build put into it. E.g.
-GitLab's webpack build bundles the Vite-built "island" `ee/frontend_islands/apps/duo_next/dist/main.js`, with Vue
-inlined, as part of its own code.
+A bundled file that another build wrote brings the packages that build put into it. E.g. GitLab's webpack build
+bundles the Vite-built "island" `ee/frontend_islands/apps/duo_next/dist/main.js`, with Vue inlined, as part of its own
+code.
 
 Every Vite, Rollup and Rolldown lockfile records the SHA-256 of its JavaScript and CSS files (`outputs`) and the
 packages in each (`contents`):
@@ -353,6 +353,10 @@ packages in each (`contents`):
   imports it), of the files it was emitted from, and of every file the build's plugins inlined, such as the style
   sheets it `@import`s from packages (which style sheet inlined which is not known);
 - a JavaScript asset (Vite's worker chunks): the packages of the build that produced it.
+
+webpack, rspack and Angular lockfiles record no `outputs`: a JavaScript or CSS file among a writer's `files` brings all
+of that writer's packages (a library built by webpack and bundled by the app, a DLL bundle), as does any such file of
+a writer whose `files` are only some of them (`count`).
 
 Of an output with more than 500 such files, only the first 500 by path are recorded, and `outputCount` gives the
 number of all of them. A JavaScript or CSS file in that output which is none of the 500 may be one of the others: it

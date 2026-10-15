@@ -3,7 +3,8 @@
 // Vue inlined) that webpack bundles as a first-party file. The inner build recorded, in its lockfile next to its
 // output, the sha256 of each JavaScript and CSS file it wrote and the packages in each (see toPackageLock's "outputs"
 // and "contents"); a bundled file that is not in node_modules and has the bytes recorded by the nearest such lockfile
-// above it brings the packages in it.
+// above it brings the packages in it. A writer that records no hashes (webpack, rspack, Angular: its files only) brings
+// all its packages for a JavaScript or CSS file among its files.
 // Works across processes, separate commands and machines (the record travels with the output) and for the export
 // copy (BUNDLE_LOCKFILE_EXPORT_DIR) when the inline lockfile is off. A file at a path the record has whose bytes changed
 // after it was built (post-processed, minified again) still brings that build's packages, with a warning: the record
@@ -67,7 +68,7 @@ function metaOf(dir) {
         if (why) problems.problem(`${f} ${why}: ${missing('a bundled file there may be its output')}`, null, { once: f });
         continue;
       }
-      if (!m.writers.some(w => Object.keys(w.outputs).length)) continue; // (then the export copy)
+      if (!m.writers.some(w => Object.keys(w.outputs).length || w.files.length)) continue; // (then the export copy)
       if (mtime > newest) { meta = m; newest = mtime; }
       break; // the inline file over its export copy
     }
@@ -126,6 +127,17 @@ function nestedByFile(files) {
           config.warn(`${file} changed after the build that wrote it into ${dir}: listed with that build's packages`);
         }
         out.set(f, writer.contents[file] || writer.pkgs);
+        break;
+      }
+      // a writer that records no hashes (webpack, rspack, Angular) but the file among its files (or only some of its
+      // files, see count): all its packages
+      const by = OUTPUT.test(file) && meta.writers.filter(w => !Object.keys(w.outputs).length
+        && (w.files.includes(file) || /** @type {number} */ (w.count) > w.files.length));
+      if (by && by.length) {
+        /** @type {Map<string, Package>} */
+        const pkgs = new Map();
+        for (const w of by) for (const p of w.pkgs) if (!pkgs.has(p.path)) pkgs.set(p.path, p);
+        out.set(f, [...pkgs.values()]);
         break;
       }
       const cut = meta.writers.filter(w => /** @type {number} */ (w.outputCount) > Object.keys(w.outputs).length);

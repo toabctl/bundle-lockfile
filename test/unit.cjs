@@ -2216,6 +2216,20 @@ test('nested: a build into node_modules/.cache (nuxi build\'s .nuxt there) bring
   } finally { process.chdir(cwd); }
 });
 
+test('nested: a JavaScript or CSS file a webpack build wrote (no hashes recorded) brings all its packages', async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), ...pj('other'), 'lib/dist/widget.js': 'widget', 'lib/dist/widget.css': 'css', 'lib/dist/logo.svg': '<svg/>', 'lib/dist/stale.js': 'x' });
+  const target = J(root, 'lib/dist', LOCK);
+  const inner = packagesForFiles([J(root, 'node_modules/inner/i.js')]);
+  outputs.record(target, 'webpack-lib', inner, root, ['widget.js', 'widget.css', 'logo.svg'].map(f => J(root, 'lib/dist', f)), { disk: true });
+  await outputs.land(target, 'webpack-lib', 'test');
+  const idsOf = (files) => ids(packages.packagesOfFiles(files).all);
+  assert.deepEqual(idsOf([J(root, 'lib/dist/widget.js'), J(root, 'node_modules/other/i.js')]), ['inner@1.0.0', 'other@1.0.0']);
+  assert.deepEqual(idsOf([J(root, 'lib/dist/widget.css')]), ['inner@1.0.0']);
+  assert.deepEqual(idsOf([J(root, 'lib/dist/logo.svg')]), []);  // no JavaScript or CSS file
+  assert.deepEqual(idsOf([J(root, 'lib/dist/stale.js')]), []);  // none of its files
+});
+
 test('nested: the inner build\'s record is found whether it ran with BUNDLE_LOCKFILE_TREE=only (record.json) or not', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
@@ -6392,6 +6406,16 @@ test('children: a node started with an environment that drops bundle-lockfile\'s
   const cmdline = spawnSync(process.execPath, ['--require', J(SRC, 'register.cjs'), J(root, 'parent.cjs')], { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
   assert.equal(cmdline.status, 0, cmdline.stderr);
   assert.doesNotMatch(cmdline.stderr, /WARNING/);
+  // a relative --require is put back by its absolute path: a child in another directory finds it
+  fs.symlinkSync(SRC, J(root, 'bl'), 'dir');
+  fs.mkdirSync(J(root, 'elsewhere'));
+  fs.writeFileSync(J(root, 'rel.cjs'), `const r = require('child_process').spawnSync(process.execPath, ['-e', 'process.stdout.write(String(!!globalThis[Symbol.for("bundle-lockfile.settings-reported")]))'],
+    { cwd: ${JSON.stringify(J(root, 'elsewhere'))}, env: { PATH: process.env.PATH }, encoding: 'utf8' });
+    console.log(JSON.stringify([r.status, r.stdout]));`);
+  const rel = spawnSync(process.execPath, [J(root, 'rel.cjs')], { cwd: root, encoding: 'utf8',
+    env: { ...process.env, NODE_OPTIONS: '--require ./bl/register.cjs', BUNDLE_LOCKFILE_NODE_SHIM: '/opt/bl/bin/node' } });
+  assert.equal(rel.status, 0, rel.stderr);
+  assert.deepEqual(JSON.parse(rel.stdout.trim()), [0, 'true'], rel.stderr);
 });
 
 test('generated: more chunks than kept warns once; packages of generate-only chunks no written output had warn when the process ends', () => {
