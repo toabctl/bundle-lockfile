@@ -9,7 +9,8 @@
 //      in the output's bytes
 //   3. syft (if on PATH) reads exactly those packages from outDir via javascript-lock-cataloger
 //   4. Trivy (if on PATH) reads exactly those packages from outDir via its npm (package-lock.json) analyzer
-//   5. the build printed no Node.js warning that the matrix does not expect (warnings / allowWarnings in matrix.cjs);
+//   5. the build printed no Node.js warning that the matrix does not expect (warnings / allowWarnings in matrix.cjs),
+//      and no warning of bundle-lockfile's own that the case does not expect (expectOutput / allowOwnWarnings);
 //      BLTEST_WARNINGS=collect records every one in <fixtures-dir>/.warnings.jsonl instead (a census)
 //   6. the ES-module entries the adapters wrap, as installed in the fixture, agree with their wrappers when Node.js
 //      loads both (oracles/esm-entries.cjs; once per fixture)
@@ -84,13 +85,22 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // matrix (warnings), or by the case (allowWarnings) - a new one may come from bundle-lockfile, and builds that fail
 // on any warning would fail with it. module.register() is deprecated from Node.js 26 on (DEP0205):
 // BUNDLE_LOCKFILE_ESM_HOOKS=async calls it, so there DEP0205 is expected, and nowhere else.
+// bundle-lockfile's own warnings, "[bundle-lockfile] WARNING: <message>" (their first lines): each one a case expects,
+// by its expectOutput or allowOwnWarnings - such a warning says that something is not listed, or not as it should be
+// (with BUNDLE_LOCKFILE_STRICT=0: a problem), which a case that checks only the lockfile would not see.
 const WARNING = /^\(node:\d+\) ((?:\[([A-Z]+\d+)\] )?[A-Za-z]*Warning: .*)$/gm;
+const OWN_WARNING = /^\[bundle-lockfile\] WARNING: .*$/gm;
 function checkWarnings(c, output, env) {
   const all = [...output.matchAll(WARNING)].map(m => ({ text: m[1], code: m[2] || '' }));
+  const own = [...output.matchAll(OWN_WARNING)].map(m => m[0]);
   if (process.env.BLTEST_WARNINGS === 'collect') {
-    for (const w of all) fs.appendFileSync(path.join(FX, '.warnings.jsonl'), `${JSON.stringify({ case: c.name, fixture: c.fixture, node: process.versions.node, warning: w.text })}\n`);
-    return all.length ? `${all.length} warning(s) collected` : null;
+    const rows = [...all.map(w => ({ warning: w.text })), ...own.map(w => ({ own: w }))];
+    for (const r of rows) fs.appendFileSync(path.join(FX, '.warnings.jsonl'), `${JSON.stringify({ case: c.name, fixture: c.fixture, node: process.versions.node, ...r })}\n`);
+    return rows.length ? `${rows.length} warning(s) collected` : null;
   }
+  const ownExpected = [...(c.expectOutput ? [c.expectOutput] : []), ...(c.allowOwnWarnings || [])];
+  const unexpected = own.filter(w => !ownExpected.some(re => re.test(w)));
+  if (unexpected.length) throw new Error(`warnings of bundle-lockfile the case does not expect:\n    ${[...new Set(unexpected)].join('\n    ')}`);
   const dep0205 = env.BUNDLE_LOCKFILE_ESM_HOOKS === 'async' && NODE_MAJOR >= 26;
   const expected = [...WARNINGS.map(w => w.match), ...(c.allowWarnings || [])];
   const other = all.filter(w => !(dep0205 && w.code === 'DEP0205') && !expected.some(re => re.test(w.text)));

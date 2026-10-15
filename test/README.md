@@ -110,8 +110,10 @@ A case that expects a lockfile checks every lockfile the build writes:
 - the build printed no Node.js warning (`(node:<pid>) ...Warning: ...`) that the matrix does not expect: each expected
   one is listed with its cause (`warnings` in `matrix.cjs`, or a case's `allowWarnings`). With
   `BUNDLE_LOCKFILE_ESM_HOOKS=async` on Node.js 26 and later, `module.register()`'s deprecation (DEP0205) is required,
-  elsewhere it fails the case. `BLTEST_WARNINGS=collect` records every warning in `<fixtures>/.warnings.jsonl`
-  instead of checking them, to take a census;
+  elsewhere it fails the case. Nor a warning of bundle-lockfile's own (`[bundle-lockfile] WARNING: ...`) the case does
+  not expect (by its `expectOutput`, or `allowOwnWarnings` with the reason): such a warning says that something is not
+  listed, or not as it should be, which the lockfile alone may not show. `BLTEST_WARNINGS=collect` records every
+  warning of both kinds in `<fixtures>/.warnings.jsonl` instead of checking them, to take a census;
 - the ES-module entries the adapters wrap (Rollup's, Rolldown's, rspack 2's), every copy installed in the fixture, agree
   with their wrappers when Node.js loads both without bundle-lockfile
   ([`oracles/esm-entries.cjs`](oracles/esm-entries.cjs), once per fixture): the wrapper links (a `default` the module
