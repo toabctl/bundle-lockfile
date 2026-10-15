@@ -5008,6 +5008,12 @@ test('angular adapter: executeBuild with stats on; the lockfile added to its out
     const asked = await run({ ...options, stats: true });
     assert.ok(asked.outputFiles.some(f => /stats\.json$/.test(f.path)), stats);
   }
+  // BUNDLE_LOCKFILE_TREE=on: Angular writes the package.json tree next to the lockfile too
+  await withConfig({ tree: 'on' }, async () => {
+    const r = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'] }))(options);
+    const stubs = r.outputFiles.filter(f => f.path.startsWith('bundle-lockfile/packages/') && notUnit(JSON.parse(f.text))); // (and the bundler's)
+    assert.deepEqual(stubs.map(f => [f.path.replace(/[0-9a-f]{16}/, '<id>'), f.type, JSON.parse(f.text).name]), [['bundle-lockfile/packages/<id>/node_modules/a/package.json', 0, 'a']]);
+  });
   // a failed build: nothing added; a problem: an error of the build
   const failed = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'], errors: ['TS2307'] }))(options);
   assert.deepEqual(failed.outputFiles.map(f => f.path), ['main.js']);
