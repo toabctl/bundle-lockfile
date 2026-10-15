@@ -430,7 +430,15 @@ chunk optimizer) as output files, `browser-stats.json` and `server-stats.json` (
 (17 – 21). The wrapper reads them (and takes them out again unless the build asked for stats), maps their outputs'
 inputs and the result's asset files (`assetFiles`, copies Angular makes, also from `node_modules`) to packages, renders
 the lockfile with `core/outputs.cjs` and adds it with `addOutputFile`. Angular writes it; the export copy is written by
-bundle-lockfile.
+bundle-lockfile, only once the build is known not to fail (a problem in strict mode is an error of the result: Angular
+writes none of its files).
+- `executeBuild`'s second argument is the builder's context (Architect's `BuilderContext`): builds of the builders
+  whose output nobody ships (`context.builder.builderName` ending in `:dev-server`, `:extract-i18n`, `:karma`,
+  `:unit-test`) run unchanged, without stats, and get no lockfile.
+- A side's directory is `outputOptions.browser` / `.server` as Angular normalized them (defaults `browser`, `server`);
+  `''` is the output path itself (`browser-esbuild` always has `browser: ''`). With `server: ''` the server's lockfile,
+  a Root file at `<file>`, would be the browser's path in its directory: the browser's lockfile is then a Root file at
+  `<browser>/<file>`. Media files (type Media: what style sheets reference) are the browser's.
 - One `stats.json` (17 – 21) keys both sides' outputs by their path in their own directory (`main.server.mjs`, not
   `server/main.server.mjs`): an output belongs to the side whose output files (type Browser; ServerApplication or
   ServerRoot) have its path, to both if both have it; one no output file has counts for the browser in a build without
