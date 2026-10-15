@@ -342,7 +342,8 @@ apart (`compiler.webpack.rspackVersion`) and answers for each. `src/adapters/rsp
   the CommonJS hook): each class is patched once, marked on its prototype.
 - rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module
   graph: the plugin, also one in the config, fails each of their compilations (`core/problems.cjs`) instead of
-  collecting. rspack 0.x is left alone, with a debug message only: no lockfile, no failure.
+  collecting. rspack 0.x is not supported: a problem when one of its compilers compiles (or, of a shape bundle-lockfile does not
+know, when it loads).
 
 Where rspack's compilations differ:
 

@@ -119,10 +119,11 @@ function collect(graph, projectRoot) {
     if (inToolCache(dir)) continue; // a tool's cache (core/paths.cjs)
     let w = byDir.get(dir);
     if (!w) {
-      w = { dir, target: path.join(dir, config.file), writer: JSON.stringify(['parcel', bundle.target.name || null, portable(projectRoot, dir)]), files: new Set(), sources: new Set(), entries: new Set(), bundles: [], kinds: new Map() };
+      w = { dir, target: path.join(dir, config.file), writer: JSON.stringify(['parcel', bundle.target.name || null, portable(projectRoot, dir)]), files: new Set(), sources: new Set(), entries: new Set(), bundles: [], kinds: new Map(), inlineJs: false };
       byDir.set(dir, w);
     }
     if (bundle.bundleBehavior !== 'inline' && typeof bundle.filePath === 'string') { w.files.add(bundle.filePath); w.bundles.push(bundle); }
+    else if (bundle.type === 'js') w.inlineJs = true;
     const main = typeof bundle.getMainEntry === 'function' && bundle.getMainEntry();
     if (main && typeof main.filePath === 'string') w.entries.add(main.filePath);
     bundle.traverseAssets((asset) => {
@@ -186,7 +187,8 @@ async function reportBuild({ event, options }) {
       for (const [f] of inlined) { w.sources.add(f); w.kinds.set(f, packages.STYLE.test(f) ? 'style' : 'inlined'); }
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
       const { byFile } = result;
-      const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath));
+      // (also a bundle inlined into one of them: a <script type="module"> in the HTML has Parcel's code around it too)
+      const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath)) || w.inlineJs;
       const runtime = js ? [packagerOf(projectRoot)].filter(p => p !== null) : [];
       const all = packages.unique(result.all, runtime);
       const found = via.ofFiles(result, w.kinds);

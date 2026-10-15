@@ -57,6 +57,11 @@ function patchCompiler(Compiler, where) {
 }
 
 // The version in dir/package.json, or null
+// rspack 0.x that is not patched (of a shape bundle-lockfile does not know): a problem when it loads
+/** @param {string} version @param {string} where */
+function unsupported(version, where) {
+  problems.problem(`rspack ${version} (${where}) is not supported (it needs 1.1 or later): its builds write no lockfile`);
+}
 function versionIn(dir) {
   try { const v = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version; return typeof v === 'string' ? v : null; } catch { return null; }
 }
@@ -64,7 +69,8 @@ function versionIn(dir) {
 // @rspack/core's Compiler, of a version from 1.0 on, that is not of the shape rspack.cjs knows: its builds would write no
 // lockfile - a problem (in strict mode loading it fails, see hooks.cjs). rspack 0.x fails when it compiles.
 function patchRspack(Compiler, version, where) {
-  if (patchCompiler(Compiler, where) || !(versionOf(version)[0] >= 1)) return;
+  if (patchCompiler(Compiler, where)) return;
+  if (!(versionOf(version)[0] >= 1)) { unsupported(version, where); return; }
   problems.problem(`rspack: the Compiler of rspack ${version} (${where}) is not one bundle-lockfile knows (compile, run, watch, isChild, runAsChild, createChildCompiler): its builds would write no lockfile`);
 }
 
@@ -104,7 +110,7 @@ module.exports = {
       const version = exp && typeof exp.rspackVersion === 'string' ? exp.rspackVersion : versionIn(path.join(path.dirname(resolve()), '..'));
       if (version && versionOf(version)[0] >= 1) {
         problems.problem(`rspack: ${resolve()} (rspack ${version}) exports no rspack() with rspackVersion and Compiler, as bundle-lockfile knows it: its builds would write no lockfile`);
-      }
+      } else if (version) unsupported(version, resolve()); // (0.x of another shape: never patched, so it would not fail when it compiles)
       return;
     }
     try { patchRspack(api.Compiler, api.rspackVersion, resolve()); } catch (e) { problems.problem(`rspack: could not patch ${resolve()}`, e); }

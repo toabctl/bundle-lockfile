@@ -214,7 +214,7 @@ configuration.
   - `id`;
   - `packages` (keys);
   - up to 20 of its output `files`, and the `count` of all of them;
-  - for Vite, Rollup, Rolldown and esbuild: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with
+  - for Vite, Rollup, Rolldown, esbuild and Parcel: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with
     more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`),
     for [nested bundles](#nested-bundles);
   - `bundler`: the bundler that ran, `{ "name", "version" }` as it reports itself (`webpack`, `rspack`, `rollup`,
@@ -303,7 +303,10 @@ Builds that write to the same directory share its lockfile: it lists the package
   outputs) they build in parallel or rebuild in watch mode.
 - Separate processes (e.g. two `webpack` or `vite build` commands run by `concurrently` or `run-p`) find each other's
   writers in the lockfile on disk, and keep their packages as long as one of the files recorded for them (up to 20,
-  the first by path) is still there. A writer recorded without files is kept.
+  the first by path) is still there and was not written again by a build of this process. A writer recorded without
+  files has nothing in the output and is not kept. An earlier run of the same build (its writer has the same id) keeps
+  the files it left that the new run did not write again (other hashes in their names, no clean): as a writer of its
+  own.
 
 Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one.
 The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`,

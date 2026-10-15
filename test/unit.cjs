@@ -5068,6 +5068,14 @@ test('parcel adapter: the reporter writes the packages of every bundle\'s assets
   const noHoist = fakeBundleGraph([{ filePath: J(root, 'dist/main.js'), target: target('dist'), scope: false, assets: [{ f: J(root, 'node_modules/skip/i.js'), sideEffects: false, used: new Set() }] }]);
   await parcel.report({ event: { type: 'buildSuccess', bundleGraph: noHoist }, options: { projectRoot: root } });
   assert.deepEqual(lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')), ['skip']);
+  // JavaScript only inlined into the HTML (<script type="module">): Parcel's code is around it too
+  fs.mkdirSync(J(root, 'site'), { recursive: true });
+  fs.writeFileSync(J(root, 'site/index.html'), '<script type="module">a</script>');
+  const html = fakeBundleGraph([{ filePath: J(root, 'site/index.html'), type: 'html', target: target('site'), assets: [J(root, 'src/index.html')] },
+    { filePath: null, type: 'js', bundleBehavior: 'inline', target: target('site'), assets: [J(root, 'node_modules/a/i.js')] }]);
+  await parcel.report({ event: { type: 'buildSuccess', bundleGraph: html }, options: { projectRoot: root } });
+  const site = JSON.parse(fs.readFileSync(J(root, 'site', LOCK), 'utf8'));
+  assert.deepEqual(Object.values(site.packages).filter(p => p.name).map(p => p.name).sort(), ['@parcel/packager-js', 'a']);
   // a JavaScript bundle of a project that resolves no @parcel/packager-js: a problem (the code Parcel wrote would be
   // missing); a CSS-only output needs none
   const bare = project({ ...pj('a') });
@@ -5999,14 +6007,15 @@ test('strict: a bundler an adapter fails to patch is a problem (webpack, rspack,
   assert.match(taken[2], /^rollup: could not patch .*rollup\.js: /);
 }));
 
-test('strict: rspack of a version from 1.0 on whose Compiler is of an unknown shape is a problem; rspack 0.x is not, when it loads (when it compiles: above)', () => withConfig({ strict: true }, () => {
+test('strict: rspack whose Compiler is of an unknown shape is a problem when it loads - from 1.0 on, and 0.x (which is never patched, so it would not fail when it compiles: above)', () => withConfig({ strict: true }, () => {
   problems.take();
   const odd = Object.assign(function rspack() {}, { Compiler: class Compiler { compile() {} }, Compilation: class {}, rspackVersion: '3.0.0' });
   rspackAdapter.onCjsLoad(odd, '/p/x.js', () => '/p/x.js');
   rspackAdapter.onCjsLoad(Object.assign(function rspack() {}, { Compiler: class Compiler {}, rspackVersion: '0.7.5' }), '/p/y.js', () => '/p/y.js');
   const taken = problems.take();
-  assert.equal(taken.length, 1, JSON.stringify(taken));
+  assert.equal(taken.length, 2, JSON.stringify(taken));
   assert.match(taken[0], /^rspack: the Compiler of rspack 3\.0\.0 \(\/p\/x\.js\) is not one bundle-lockfile knows/);
+  assert.match(taken[1], /^rspack 0\.7\.5 \(\/p\/y\.js\) is not supported \(it needs 1\.1 or later\): its builds write no lockfile/);
 }));
 
 test('strict: the files copied into the output that cannot be checked fail the compilation', () => withConfig({ strict: true }, () => {
@@ -6719,7 +6728,7 @@ test('strict: an adapter that fails on a module it patches (cjsFiles) fails its 
   assert.match(other.stderr, /WARNING: webpack adapter failed while inspecting .*index\.js:/);
 });
 
-test('strict: @rspack/core of an unknown shape fails its require() from 1.0 on; rspack 0.x loads (it fails when it compiles)', () => {
+test('strict: @rspack/core of an unknown shape fails its require() - from 1.0 on, and 0.x (one it patches fails when it compiles)', () => {
   const at = (version, src) => project({ 'node_modules/@rspack/core/package.json': { name: '@rspack/core', version }, 'node_modules/@rspack/core/dist/index.js': src });
   const adapter = `require(${JSON.stringify(J(SRC, 'adapters/rspack.cjs'))})`;
   const run = (root, strict) => nodeWith(cjsEnv(strict), ['-e', cjsHookScript(adapter, '',
@@ -6731,8 +6740,9 @@ test('strict: @rspack/core of an unknown shape fails its require() from 1.0 on; 
   const off = run(unknown, '0');
   assert.equal(off.stdout, 'loaded\n');
   assert.ok(off.stderr.includes(`WARNING: ${msg}`), off.stderr);
-  const old = run(at('0.7.5', 'module.exports = { rspack() {} };'), undefined);
-  assert.deepEqual([old.stdout, old.stderr], ['loaded\n', '']);
+  const oldAt = at('0.7.5', 'module.exports = { rspack() {} };');
+  const old = run(oldAt, undefined);
+  assert.equal(old.stdout, `failed:   rspack 0.7.5 (${J(oldAt, 'node_modules/@rspack/core/dist/index.js')}) is not supported (it needs 1.1 or later): its builds write no lockfile\n`, old.stderr);
   // rspack 2's ES module through require(esm), as its namespace (no "module.exports" export): patched (on a Node.js that
   // can require() an ES module: 20.19, 22.12 and later)
   if (!process.features.require_module) return;
