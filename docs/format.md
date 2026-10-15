@@ -158,7 +158,9 @@ components) is not found — not here, nor by syft, Trivy or the CycloneDX plugi
 
 **Linked packages**: a package whose real location is outside `node_modules` — a workspace package, a `link:` or
 `portal:` dependency, a `file:` directory dependency that npm installs as a symlink — is first-party and not listed,
-also with webpack's `resolve.symlinks: false`. Its dependencies are listed. With npm, pnpm or Yarn's node-modules
+also with webpack's `resolve.symlinks: false`. Its dependencies are listed. Only `node_modules/<name>` itself as a
+symbolic link makes a package linked: with a `node_modules` that is a symbolic link (to `deps/`), every package in it
+is outside `node_modules` by its real path and listed as a vendored copy. With npm, pnpm or Yarn's node-modules
 linker, one linked under another name (an alias, `"x": "link:../lib"`) whose `package.json` has a name and a version,
 is not private and is no workspace member is listed as a vendored copy (Yarn Plug'n'Play's links and portals are
 always first-party); `BUNDLE_LOCKFILE_FIRST_PARTY` leaves it out. Yarn 2+ (which packs it into its cache)

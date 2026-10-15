@@ -143,6 +143,13 @@ function note(p) {
   config.note(`${p.path} is a vendored copy of ${p.name}@${p.version}, listed (BUNDLE_LOCKFILE_FIRST_PARTY: directories that are not)`);
 }
 
+// node_modules/<name> is a symbolic link to dir (a workspace package, link:, file:) - itself, not a directory below a
+// node_modules that is one (node_modules -> deps/: deps/react is a package, not a first-party directory)
+/** @param {string} link @param {string} dir */
+function linkedAs(link, dir) {
+  try { return fs.lstatSync(link).isSymbolicLink() && real(link) === dir; } catch { return false; }
+}
+
 // The packages of one build: { context: its context (webpack) or working directory (Rollup, Vite), entries: its entry
 // modules' files }. Cached for the build (manifests and boundaries do not change during it).
 /** @param {Partial<BuildScope>} [build] @returns {VendorScope} */
@@ -176,7 +183,7 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
     if (states.has(dir)) return /** @type {boolean} */ (states.get(dir));
     const j = manifest(dir);
     const yes = boundary.has(dir) || monorepos.some(m => m(dir)) || firstParty.some(t => t(posix(dir)))
-      || (!!j && typeof j.name === 'string' && [...boundary].some(a => real(path.join(a, 'node_modules', j.name)) === dir))
+      || (!!j && typeof j.name === 'string' && [...boundary].some(a => linkedAs(path.join(a, 'node_modules', j.name), dir)))
       || (!!j && pnpFirstParty(dir));
     states.set(dir, yes);
     return yes;

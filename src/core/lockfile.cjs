@@ -439,13 +439,14 @@ function readMeta(json, dir, contexts = []) {
 // Why a lockfile's content that readMeta returned null for has no record it can use, if it is one of bundle-lockfile's
 // that cannot be read (not JSON, a record of another version or shape); null for a lockfile without a record (another
 // tool's, e.g. the project's own).
+const NOT_JSON = 'is not JSON';
 /**
  * @param {string} json
  * @returns {string | null}
  */
 function unreadableRecord(json) {
   let doc;
-  try { doc = JSON.parse(json); } catch { return 'is not JSON'; }
+  try { doc = JSON.parse(json); } catch { return NOT_JSON; }
   const m = doc && typeof doc === 'object' ? doc['bundle-lockfile'] : undefined;
   if (m === undefined) return null;
   if (m && typeof m === 'object' && !Array.isArray(m) && m.v !== VERSION) return `has a record of version ${JSON.stringify(m.v)}, which this bundle-lockfile does not read (it reads version ${VERSION}): build it again with this one`;
@@ -481,4 +482,4 @@ function reanchor(json, from, to, contexts = []) {
   return JSON.stringify(doc, null, 2) + '\n';
 }
 
-module.exports = { cmp, toPackageLock, readMeta, unreadableRecord, reanchor, unknownPackage, located, VERSION };
+module.exports = { cmp, toPackageLock, readMeta, unreadableRecord, NOT_JSON, reanchor, unknownPackage, located, VERSION };

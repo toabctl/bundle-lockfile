@@ -163,6 +163,16 @@ test('packagesForFiles: symlinked packages are resolved; ones that resolve out o
   assert.deepEqual(pkgs.map(p => [p.name, p.path]), [['d', J(root, 'node_modules/.pnpm/d@1.0.0/node_modules/d')]]);
 });
 
+test('packagesForFiles: a node_modules that is a symbolic link (node_modules -> deps/): its packages are listed, bundled by their real path', { skip: process.platform === 'win32' }, () => {
+  const root = project({ 'package.json': { name: 'app', version: '1.0.0' }, 'deps/react/package.json': { name: 'react', version: '19.0.0' },
+    'deps/@s/b/package.json': { name: '@s/b', version: '2.0.0' }, 'packages/ui/package.json': { name: '@acme/ui', version: '1.0.0' } });
+  fs.symlinkSync(J(root, 'deps'), J(root, 'node_modules'), 'dir');
+  fs.mkdirSync(J(root, 'deps/@acme'));
+  fs.symlinkSync(J(root, 'packages/ui'), J(root, 'deps/@acme/ui'), 'dir'); // a workspace package: still first-party
+  const pkgs = packagesForFiles([J(root, 'deps/react/index.js'), J(root, 'deps/@s/b/i.js'), J(root, 'packages/ui/i.js'), J(root, 'src/app.js')], { context: root });
+  assert.deepEqual(ids(pkgs), ['@s/b@2.0.0', 'react@19.0.0']);
+});
+
 test('licenses: string, legacy object, legacy array - always one string; nothing usable means no license field', () => {
   // one string is the only form both syft (string, array of strings) and Trivy (string, {type} objects) read; several
   // licenses are the SPDX expression npm's documentation gives for them
@@ -1031,6 +1041,26 @@ test('outputs: a lockfile on disk keeps the packages other processes put there, 
   assert.deepEqual(lockedNames(await rewrite()), ['a']); // the other process's output is gone
   assert.equal(outputs.isShared(target), false);
 });
+
+test('strict: a lockfile on disk whose record this bundle-lockfile cannot read (another version, another shape) fails the build that would replace it', () => withConfig({ strict: true }, async () => {
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), 'dist/other.js': 'x' });
+  const target = J(root, 'dist', LOCK);
+  const a = packagesForFiles([J(root, 'node_modules/a/i.js')])[0];
+  for (const [record, why] of [
+    [{ v: 1, writers: [{ id: 'w', files: ['../other.js'], packages: [1] }] }, /has a record of version 1, which this bundle-lockfile does not read/],
+    [{ v: 2, writers: 'x' }, /has a bundle-lockfile record of a shape it does not read/],
+  ]) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, 'node_modules/left-pad': { name: 'left-pad', version: '1.3.0' } }, 'bundle-lockfile': record }));
+    const writer = `unreadable-${JSON.stringify(record)}`;
+    outputs.record(target, writer, [a], root, [J(root, 'dist/main.js')], { disk: true });
+    await outputs.land(target, writer, 'test');
+    const taken = problems.take();
+    assert.ok(taken.some(t => why.test(t) && t.includes(target) && /the packages of the other builds it lists would be missing/.test(t)), taken.join('\n'));
+  }
+  // npm's own lockfile (no record): not replaced, which is a problem of its own (see ours)
+}));
 
 test('outputs: another process\'s file that is a symbolic link to nothing is there, as for this process\'s writers', { skip: process.platform === 'win32' }, async () => {
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
@@ -4342,6 +4372,8 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
     BUNDLE_LOCKFILE_NODE_SHIM: '/s', BUNDLE_LOCKFILE_NODE_SEEN: '/a:/b' }).invalid, []);
   const one = (vars) => { const { invalid } = invalidFor(vars); assert.equal(invalid.length, 1, JSON.stringify(invalid)); return invalid[0]; };
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORTDIR: '/x' }), 'BUNDLE_LOCKFILE_EXPORTDIR is set, but is no setting of bundle-lockfile');
+  // a name in another case: case-sensitive, it would not be read (Windows: it is)
+  if (process.platform !== 'win32') assert.equal(one({ bundle_lockfile_strict: '0' }), 'bundle_lockfile_strict is set, but the settings of bundle-lockfile are named in upper case (BUNDLE_LOCKFILE_STRICT)');
   assert.equal(one({ BUNDLE_LOCKFILE_DISABLE: 'webpack,rsbuild' }), 'BUNDLE_LOCKFILE_DISABLE names rsbuild, which is none of webpack, rspack, vite, rollup, rolldown, esbuild, parcel, angular, next or all');
   assert.equal(one({ BUNDLE_LOCKFILE_ESM_HOOKS: 'asnyc' }), 'BUNDLE_LOCKFILE_ESM_HOOKS=asnyc is none of auto, sync, async, off');
   assert.equal(one({ BUNDLE_LOCKFILE_TREE: 'both' }), 'BUNDLE_LOCKFILE_TREE=both is none of off, on, only');
@@ -4709,7 +4741,7 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
     'meta.json': { inputs: {}, outputs: { 'dist/main.js': { inputs: { 'node_modules/a/i.js': { bytesInOutput: 1 }, '(disabled):node_modules/b/i.js': { bytesInOutput: 9 } } },
       'dist/assets/f.woff2': { inputs: { 'node_modules/b/f.woff2': { bytesInOutput: 1 } } } } },
     'bad.json': { outputs: { 'dist/main.js': { inputs: { 'node_modules/nopj/i.js': { bytesInOutput: 1 } } } } },
-    'none.json': { inputs: {} },
+    'none.json': { inputs: {} }, 'broken.json': '{"BUNDLE_LOCKFILE_EXPORT_DIR": ',
   });
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('BUNDLE_LOCKFILE_') && k !== 'NODE_OPTIONS'));
   const run = (args, extra = {}) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8' });
@@ -4736,7 +4768,10 @@ test('bundle-lockfile-from-metafile: the lockfile of an output from an esbuild m
   assert.ok(fs.existsSync(J(root, 'elsewhere', LOCK)));
   // a package without a package.json, a file that is no metafile, none at all, a misspelled setting: exit code 1
   for (const [args, re, extra] of [[['bad.json'], /no package\.json with name and version in \S*nopj/], [['none.json'], /none\.json is no esbuild metafile/],
-    [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }]]) {
+    [['missing.json'], /could not read the metafile \S*missing\.json/], [['meta.json'], /BUNDLE_LOCKFILE_EXPORTDIR is set/, { BUNDLE_LOCKFILE_EXPORTDIR: '/x' }],
+    // a settings file that is missing or broken: its settings would not apply
+    [['meta.json'], /could not read the settings file \S*nonexistent\.json/, { BUNDLE_LOCKFILE_CONFIG: J(root, 'nonexistent.json') }],
+    [['meta.json'], /could not read the settings file \S*broken\.json/, { BUNDLE_LOCKFILE_CONFIG: J(root, 'broken.json') }]]) {
     const r = run(args, extra);
     assert.equal(r.status, 1, `${args}: ${r.stderr}`);
     assert.match(r.stderr, /\[bundle-lockfile\] ERROR: bundle-lockfile: the lockfile would be missing or incomplete/);

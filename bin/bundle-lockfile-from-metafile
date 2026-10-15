@@ -34,7 +34,8 @@ const opt = (name) => {
 };
 const wdArg = opt('--working-dir'), outArg = opt('--out'), bundlerArg = opt('--bundler');
 if (args.length !== 1 || args[0].startsWith('-')) { console.error(usage); process.exit(2); }
-for (const msg of config.invalid) problems.problem(msg);
+// what is wrong with the settings (unless the preload, through the node shim, reported it already)
+if (!globalThis[Symbol.for('bundle-lockfile.settings-reported')]) for (const [what, cause] of config.settingsProblems()) problems.problem(what, cause);
 const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 const wd = real(wdArg || process.cwd());
 const metaFile = path.resolve(args[0]);

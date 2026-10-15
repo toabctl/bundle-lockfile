@@ -75,6 +75,8 @@ function readSettingsFile() {
 const settingsFile = readSettingsFile();
 for (const k of Object.keys(env)) {
   if (k.startsWith('BUNDLE_LOCKFILE_') && !NAMES.includes(k)) invalid.push(`${k} is set, but is no setting of bundle-lockfile`);
+  // (names are case-sensitive but on Windows: bundle_lockfile_strict would be set and not read)
+  else if (process.platform !== 'win32' && !k.startsWith('BUNDLE_LOCKFILE_') && k.toUpperCase().startsWith('BUNDLE_LOCKFILE_')) invalid.push(`${k} is set, but the settings of bundle-lockfile are named in upper case (${k.toUpperCase()})`);
 }
 
 /** @type {(k: string) => string} */
@@ -154,9 +156,19 @@ const firstParty = value('BUNDLE_LOCKFILE_FIRST_PARTY').split(',').map(s => s.tr
   return false;
 });
 
+// What is wrong with the settings, as problems (core/problems.cjs) of the process that reads them: a settings file that is
+// there but cannot be used (its settings, an export directory, would be missing), settings that are set but not
+// recognized or cannot work (the build would not do what was asked of it). [what, cause]
+/** @returns {[string, unknown][]} */
+const settingsProblems = () => [
+  ...(settingsFile.error ? /** @type {[string, unknown][]} */ ([[`could not read the settings file ${settingsFile.file}`, settingsFile.error]]) : []),
+  ...invalid.map(msg => /** @type {[string, unknown]} */ ([msg, null])),
+];
+
 module.exports = {
   settingsFile, // { file: the settings file read, or null; error: why it could not be used, or null }
   invalid, // settings that are set but not recognized, or cannot work (messages)
+  settingsProblems,
   ADAPTER_NAMES,
   esmHooksOf,
   file: lockfilePath(),

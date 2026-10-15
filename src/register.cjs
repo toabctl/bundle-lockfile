@@ -62,16 +62,13 @@ function preloads() {
 if (!internalThread) delete process.env.BUNDLE_LOCKFILE_NODE_SEEN;
 
 if (!internalThread && !config.isDisabled('all')) {
-  // a settings file that is there but cannot be used: its settings (an export directory) would be missing - a problem
-  // (the first build fails with it, or the process, see core/problems.cjs)
+  // what is wrong with the settings: a problem (the first build fails with it, or the process, see core/problems.cjs)
   // Reported by the main thread of each process, once: worker threads run the preload too
   if (require('worker_threads').isMainThread) {
     const problems = require('./core/problems.cjs');
-    const { file: settings, error } = config.settingsFile;
-    if (error) problems.problem(`could not read the settings file ${settings}`, error);
-    else if (settings) config.debug('settings from', settings);
-    // settings that are set but not recognized, or cannot work: the build would not do what was asked of it
-    for (const msg of config.invalid) problems.problem(msg);
+    for (const [what, cause] of config.settingsProblems()) problems.problem(what, cause);
+    /** @type {any} */ (globalThis)[Symbol.for('bundle-lockfile.settings-reported')] = true; // (bin/bundle-lockfile-from-metafile)
+    if (config.settingsFile.file && !config.settingsFile.error) config.debug('settings from', config.settingsFile.file);
     // another copy of bundle-lockfile preloaded too: only the first one runs (hooks.cjs), whose settings and version
     // may not be the ones meant. Each new copy reports the others, whichever comes first.
     for (const other of otherCopies()) problems.problem(`another copy of bundle-lockfile is preloaded too: ${other} (only the first one runs; preload one)`);

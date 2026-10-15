@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
-const { cmp, toPackageLock, readMeta, reanchor, unknownPackage, located } = require('./lockfile.cjs');
+const { cmp, toPackageLock, readMeta, unreadableRecord, NOT_JSON, reanchor, unknownPackage, located } = require('./lockfile.cjs');
 const { readManifest } = require('./manifest.cjs');
 const { exportPath, posix } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
@@ -110,8 +110,13 @@ function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set
   /** @type {LockRecord | null} */
   let meta;
   try {
-    meta = readMeta(fs.readFileSync(file, 'utf8'), path.dirname(target), contextsOf(target));
+    const text = fs.readFileSync(file, 'utf8');
+    meta = readMeta(text, path.dirname(target), contextsOf(target));
     outputs.read.set(target, meta);
+    // a record this bundle-lockfile cannot read (of another version, or broken): the packages of the writers it lists
+    // would be lost with it. (Not JSON, or no record: npm's own lockfile, which is not replaced - see ours.)
+    const why = meta ? null : unreadableRecord(text);
+    if (why && why !== NOT_JSON) problems.problem(`${file} ${why}: the packages of the other builds it lists would be missing`, null, { once: file });
   } catch (e) {
     // not there (any more, or a file where a directory of its path would be); any other error (EACCES, EMFILE, EISDIR)
     // hides the other processes' records: a problem (core/problems.cjs), with what this process read last
