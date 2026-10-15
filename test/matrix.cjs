@@ -1310,6 +1310,22 @@ const cases = [
   { name: 'esbuild 0.28.2: two build()s into one directory, one lockfile with the packages of both', fixture: 'esbuild', cmd: 'node build.mjs two',
     expect: [...ESBUILD, 'is-number@7.0.0'].sort(), oracleArgs: 'two', oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'esbuild 0.28.2: write: false writes no lockfile', fixture: 'esbuild', cmd: 'node build.mjs write-false', expect: null },
+  // a worker bundled by a write: false build without outdir (its output file is <stdout>), inlined as a string by a
+  // plugin's onLoad (esbuild-plugin-inline-worker), or written into the output by a plugin's onEnd; the oracle's source
+  // maps see neither (the worker is no module of the build, the written file has no map)
+  ...[['inlined by a plugin\'s onLoad', 'worker-inline'], ['written into the output by a plugin\'s onEnd', 'worker-file']].map(([what, mode]) => (
+    { name: `esbuild 0.28.2: a worker bundled with write: false, ${what}`, fixture: 'esbuild', cmd: `node build.mjs ${mode}`, expect: ['is-number@7.0.0'],
+      oracleArgs: mode, oracleMissing: ['is-number@7.0.0'] })),
+  // separate builds of one configuration into one directory: each keeps the other's packages (is-number: only the ES
+  // modules build has it)
+  { name: 'esbuild 0.28.2: an ES-module and a CommonJS build of the same entry into one directory, one lockfile with both', fixture: 'esbuild',
+    cmd: 'node build.mjs dual', expect: ['is-number@7.0.0', 'ms@2.1.3'], oracleArgs: 'dual' },
+  { name: 'esbuild 0.28.2: a script that changes its working directory after importing esbuild', fixture: 'esbuild', cmd: 'node build.mjs chdir',
+    expect: ESBUILD, oracleArgs: 'chdir', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild 0.28.2: context().serve() writes the output, and the lockfile', fixture: 'esbuild', cmd: 'node build.mjs serve', expect: ESBUILD,
+    oracleArgs: 'build', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'esbuild 0.28.2, strict: a rebuild with a problem rejects, the next one without it writes the lockfile', fixture: 'esbuild',
+    cmd: 'node build.mjs rebuild-fail', expect: ESBUILD, oracleArgs: 'build', oracleMissing: ['bootstrap-icons@1.13.2'] },
   // the command line is esbuild's binary: not hooked; its metafile, read by the importer, gives the lockfile
   { name: 'esbuild 0.28.2 command line: not hooked, no lockfile', fixture: 'esbuild', cmd: ESBUILD_CLI, expect: null },
   { name: 'esbuild 0.28.2 command line, its metafile read by bundle-lockfile-from-metafile', fixture: 'esbuild', cmd: `${ESBUILD_CLI} && ${FROM_METAFILE} meta.json`,
