@@ -1,7 +1,7 @@
 'use strict';
 // Serializes packages as package-lock.json (lockfileVersion 3, npm's format: docs.npmjs.com/cli/configuring-npm/
 // package-lock-json), in the subset that syft's javascript-lock-cataloger and Trivy's npm analyzer both read.
-/** @import { BundlerId, LocatedPackage, LockRecord, Package, UnknownPackage, Via } from '../types' */
+/** @import { BundlerId, LocatedPackage, LockRecord, OutsidePackage, Package, UnknownPackage, Via } from '../types' */
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -385,9 +385,16 @@ function readMeta(json, dir, contexts = []) {
   const pkgOf = (k) => {
     const p = own(doc.packages, k) && doc.packages[k];
     if (!isObject(p) || typeof p.name !== 'string' || !p.name || typeof p.version !== 'string' || !p.version) return null;
-    if (outside.has(k)) return { ...p, path: `\0outside:${k}`, outside: k };
-    if (unknown.has(k) || anchored === false || !context) return unknownPackage(p);
-    return { ...p, path: path.resolve(context, locationOf(k)) };
+    // only the fields of a package: an entry's other fields (an edited lockfile's "unknown", "outside", "dev") are not
+    // what the record says about where it is
+    const base = { name: p.name, version: p.version, ...(typeof p.license === 'string' || Array.isArray(p.license) ? { license: p.license } : {}) };
+    if (outside.has(k)) {
+      /** @type {OutsidePackage} */
+      const o = { ...base, path: `\0outside:${k}`, outside: k };
+      return o;
+    }
+    if (unknown.has(k) || anchored === false || !context) return unknownPackage({ ...base, path: path.resolve(dir, locationOf(k)) });
+    return { ...base, path: path.resolve(context, locationOf(k)) };
   };
   return {
     context,
