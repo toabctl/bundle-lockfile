@@ -14,7 +14,8 @@ puts the lockfiles, and how the node shim works. The overview and the common set
    A missing `config.json` is no error. The project cannot provide one: a package build's lockfiles must not be
    redirected by the project it builds.
 
-A variable that is set, also to an empty value, wins over the file. The file's settings are put into the
+A variable that is set, also to an empty value, wins over the file. The file's values may be strings, numbers or
+booleans; they are taken as strings (`false` and `0` are off, `true` and `1` on). The file's settings are put into the
 environment of the process, so that the processes the build starts get them as variables.
 
 ## Settings
@@ -27,27 +28,33 @@ environment of the process, so that the processes the build starts get them as v
 | `BUNDLE_LOCKFILE_INLINE` | on | off: write lockfiles only into the export directory (without `BUNDLE_LOCKFILE_EXPORT_DIR` nothing is written, and the build fails, or warns with `BUNDLE_LOCKFILE_STRICT=0`) |
 | `BUNDLE_LOCKFILE_STRICT` | on | a build whose lockfile cannot be written or would be incomplete fails (see [troubleshooting](troubleshooting.md)); off: only warn, and let the build go on (e.g. for local experiments or dev servers) |
 | `BUNDLE_LOCKFILE_DEBUG` | off | on: log what gets patched and applied to stderr |
-| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are first-party: never listed as [vendored copies](format.md#which-package-a-file-belongs-to). A glob names directories, not what is below them: `/src/app/lib/**` for `/src/app/lib/` and everything in it; `/**`: no vendored copies outside `node_modules`. A glob through a symbolic link also names the directories at their real paths |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are first-party: never listed as [vendored copies](format.md#which-package-a-file-belongs-to). A glob names directories, not what is below them: `/src/app/lib/**` for `/src/app/lib/` and everything in it; `/**`: no vendored copies outside `node_modules`. `*` matches within one directory name, `**` any number of directories, `?` one character; a trailing `/` is ignored. A glob through a symbolic link also names the directories at their real paths |
 | `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated names to skip, case-insensitive: `webpack` (also Next.js, and the failure of builds bundle-lockfile cannot hook in its place: Next.js with Turbopack, `@vercel/ncc`); `rspack` (also Rsbuild, Rslib, next-rspack); `vite` (builds with Vite's plugins, also SvelteKit), `rollup`, `rolldown` (other `rollup()` / `rolldown()` builds, the `rollup` command line; `rolldown` also the failure of the `rolldown` command line, which is not hooked); `esbuild` (its JavaScript API); `parcel`; `angular` (its application builder); `next` (the runtime packages of Next.js' server, `.next/runtime/`); or `all`. Plugins added to a config by hand still run |
-| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked (and webpack and rspack 1 when a loader hook such as Yarn Plug'n'Play's provides their code): `sync`, `async` or `off` instead of choosing by Node.js version ([which processes](bundlers.md#which-processes-are-hooked)). `sync` without `module.registerHooks` (Node.js before 22.15) is invalid; `async` hooks the main thread and worker threads. `async` uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about |
+| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | how Vite, Rollup, Rolldown and rspack 2 are hooked (and webpack and rspack 1 when a loader hook such as Yarn Plug'n'Play's provides their code): `sync`, `async` or `off` instead of choosing by Node.js version ([which processes](bundlers.md#which-processes-are-hooked)). `auto` takes `sync` on Node.js 22.22.3 and later 22.x, 24.11.1 and later 24.x, 25.1 and later, else `async` in the processes that need it. `sync` without `module.registerHooks` (Node.js before 22.15) is invalid; `sync` forced on an older Node.js with another loader thread hook (Yarn Plug'n'Play's) can fail ([details](internals.md#which-esm-hook)). `async` hooks the main thread and worker threads; it uses `module.register`, which Node.js 24.15 / 25.9 deprecate and Node.js 26 warns about. `off`: ES-module bundlers are not hooked; their builds write no lockfile, and nothing fails |
 | `BUNDLE_LOCKFILE_TREE` | `off` | `on`: also a `package.json` per package next to each lockfile, which image scans read ([the tree](format.md#the-packagejson-tree)); `only`: the tree instead of a `package-lock.json` - for an output scanned only as an image; the lockfile, record and all, is then `record.json` next to it (in `BUNDLE_LOCKFILE_FILE`'s directory), which no SBOM tool reads. Not for a webpack or rspack dev server's in-memory output |
-| `BUNDLE_LOCKFILE_REGISTER` | `../src/register.cjs` or `../register.cjs` from the shim | an absolute path: the `register.cjs` the [node shim](#the-node-shim) preloads (only from the environment) |
+| `BUNDLE_LOCKFILE_REGISTER` | `../src/register.cjs` or `../register.cjs` from the shim | an absolute path, without spaces around it: the `register.cjs` the [node shim](#the-node-shim) preloads (only from the environment) |
 | `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | an absolute path: the settings file (only from the environment) |
 
-On/off settings take `1`, `true` or `on` and `0`, `false` or `off`, in any case; empty means the default.
+On/off settings take `1`, `true` or `on` and `0`, `false` or `off`, in any case; empty means the default. The values
+of `BUNDLE_LOCKFILE_DISABLE`, `BUNDLE_LOCKFILE_ESM_HOOKS` and `BUNDLE_LOCKFILE_TREE` are taken in any case too. Spaces
+around a value, and around each name or glob of a comma-separated list, are ignored; empty list entries are skipped.
+The names of the settings are upper case: `bundle_lockfile_strict` is invalid (on Windows, whose environment ignores
+case, it is `BUNDLE_LOCKFILE_STRICT`).
+
 `BUNDLE_LOCKFILE_NODE_SHIM` and `BUNDLE_LOCKFILE_NODE_SEEN` are set by the node shim for the processes it starts; do
-not set them.
+not set them. `BUNDLE_LOCKFILE_NODE_SHIM` tells the preload that the shim is in use: it then puts the `--require` back
+into the environment of processes it starts without it, and makes yarn's `process.execPath` the shim.
 
 ## Invalid settings fail the build
 
 A setting that bundle-lockfile does not recognize, or that cannot work, fails every process that preloads
 bundle-lockfile: its first build, or else the process itself at exit, also `npm ci` (with `BUNDLE_LOCKFILE_STRICT=0`: a
 warning). A build must not go on without doing what was asked of it. That is:
-- a `BUNDLE_LOCKFILE_*` variable that is not in the table (e.g. a misspelled `BUNDLE_LOCKFILE_EXPORTDIR`), and in the
-  settings file any other key, a key only the environment can set, or a value that is not a string, number or
-  boolean;
-- a value the setting does not take: an on/off setting set to anything else, a name `BUNDLE_LOCKFILE_DISABLE` or
-  `BUNDLE_LOCKFILE_ESM_HOOKS` does not take;
+- a `BUNDLE_LOCKFILE_*` variable that is not in the table nor one of the shim's two (e.g. a misspelled
+  `BUNDLE_LOCKFILE_EXPORTDIR`), a setting's name in lower case, and in the settings file any other key, a key only the
+  environment can set, or a value that is not a string, number or boolean;
+- a value the setting does not take: an on/off setting set to anything else, a name `BUNDLE_LOCKFILE_DISABLE`,
+  a value `BUNDLE_LOCKFILE_ESM_HOOKS` or `BUNDLE_LOCKFILE_TREE` does not take;
 - a relative `BUNDLE_LOCKFILE_EXPORT_DIR`, `BUNDLE_LOCKFILE_EXPORT_BASE`, `BUNDLE_LOCKFILE_CONFIG` or
   `BUNDLE_LOCKFILE_REGISTER`, or a relative glob in `BUNDLE_LOCKFILE_FIRST_PARTY` (each process would resolve it in
   its own working directory), and
@@ -56,8 +63,9 @@ warning). A build must not go on without doing what was asked of it. That is:
 - a settings file that cannot be read, or a file `BUNDLE_LOCKFILE_CONFIG` names that does not exist;
 - another copy of bundle-lockfile preloaded into the same process (only the first one would run).
 
-With `BUNDLE_LOCKFILE_DISABLE=all` nothing is checked. A plugin added to a config by hand, without the preload, does
-not check the settings.
+With `BUNDLE_LOCKFILE_DISABLE=all` the preload checks nothing (`bundle-lockfile-from-metafile`, which is run by hand,
+still checks the settings and writes its lockfile). A plugin added to a config by hand, without the preload, does not
+check the settings.
 
 ## The export directory
 
@@ -90,14 +98,14 @@ bundle-lockfile, also when a build script overwrites `NODE_OPTIONS`.
 - Not covered: a `node` started by its absolute path, or through a `PATH` that a version manager put the real `node`'s
   directory in front of (nodenv and asdf do, for what they start). Those keep the `NODE_OPTIONS` they get - except
   where a preloaded process starts them itself (`child_process`, `worker_threads`) with an environment that drops the
-  `--require`: with the shim in use, bundle-lockfile puts it back (without the shim: a warning).
+  `--require`: with the shim in use, and in `next build`, bundle-lockfile puts it back (otherwise: a warning).
 - It preloads the `register.cjs` that `BUNDLE_LOCKFILE_REGISTER` names. By default it looks for `../src/register.cjs`
   (a checkout, as in `/opt/bundle-lockfile`) and `../register.cjs` (a package, `/usr/lib/bundle-lockfile/bin/node`
   next to its `register.cjs`), from its own directory with symlinks resolved.
-- `BUNDLE_LOCKFILE_REGISTER` must be set in the environment, as an absolute path (`node` would take a relative one
-  for a package name, in every directory it runs in). The shim is a shell script and does not read the settings file:
-  a shim started by a preloaded process sees the file's settings as variables, but the first one, which starts the
-  build, does not.
+- `BUNDLE_LOCKFILE_REGISTER`, if set, is read from the environment only, and must be an absolute path (`node` would take
+  a relative one for a package name, in every directory it runs in). The shim is a shell script and does not read the
+  settings file: a shim started by a preloaded process sees the file's settings as variables, but the first one, which
+  starts the build, does not.
 - Without a `register.cjs` (none found, or `BUNDLE_LOCKFILE_REGISTER` names no file or a relative path), the shim
   fails without running `node`, as bundle-lockfile fails a build it cannot write a lockfile for. With
   `BUNDLE_LOCKFILE_STRICT=0` in the environment it warns and runs `node` without the preload; with

@@ -274,13 +274,13 @@ recognized as if every package were at `node_modules/<name>` (`core/layout.cjs`:
 ### Which ESM hook
 
 The ESM hook depends on the Node.js version (`BUNDLE_LOCKFILE_ESM_HOOKS` overrides it):
-- Node.js 22.22.3, 24.11.1, 25.1 and later: `module.registerHooks`, in the same thread, in every process. Before
-  those versions, in-thread hooks fail next to a loader-thread hook (Yarn Plug'n'Play's, tsx's, OpenTelemetry's
-  `hook.mjs`) that provides no source for a CommonJS module, which Node then reads itself: they reject it
-  (`ERR_INVALID_RETURN_PROPERTY_VALUE`; fixed by [nodejs/node#59929](https://github.com/nodejs/node/pull/59929)).
-  `module.registerHooks` called in Node's own loader thread - by a `--require` preload, which Node 22 – 24.11 runs
-  there too - crashes the process ("this[#customizations].loadSync is not a function"): `register.cjs` does nothing
-  there.
+- Node.js 22.22.3 and later 22.x, 24.11.1 and later 24.x, 25.1 and later (not 23.x): `module.registerHooks`, in the same
+  thread, in every process. Before those versions, in-thread hooks fail next to a loader-thread hook (Yarn
+  Plug'n'Play's, tsx's, OpenTelemetry's `hook.mjs`) that provides no source for a CommonJS module, which Node then reads
+  itself: they reject it (`ERR_INVALID_RETURN_PROPERTY_VALUE`; fixed by
+  [nodejs/node#59929](https://github.com/nodejs/node/pull/59929)). `module.registerHooks` called in Node's own loader
+  thread - by a `--require` preload, which Node 22 – 24.11 runs there too - crashes the process
+  ("this[#customizations].loadSync is not a function"): `register.cjs` does nothing there.
 - Older versions with `module.register` (18.19, 20.6 and later): a loader thread, only in processes whose main script
   belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`, `@rspack/core`,
   `@rspack/cli` or `@rsbuild/core` (the adapters' `esmPackages`) — the `vite`, `rspack` or `rsbuild` command, a build
@@ -345,10 +345,10 @@ apart (`compiler.webpack.rspackVersion`) and answers for each. `src/adapters/rsp
   assigns rspack's exports to its vendored webpack). A process can load several copies (OHIF: rspack 1 for the config's
   plugins, rspack 2 for the compiler) and see one copy on several paths (with the in-thread ESM hook, the ESM hook and
   the CommonJS hook): each class is patched once, marked on its prototype.
-- rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module
-  graph: the plugin, also one in the config, fails each of their compilations (`core/problems.cjs`) instead of
-  collecting. rspack 0.x is not supported: a problem when one of its compilers compiles (or, of a shape bundle-lockfile does not
-know, when it loads).
+- rspack 1.0 has no inner modules of concatenated modules (`ConcatenatedModule.modules`, from 1.1) nor a module graph:
+  the plugin, also one in the config, fails each of their compilations (`core/problems.cjs`) instead of collecting.
+  rspack 0.x is not supported: a problem when one of its compilers compiles (or, of a shape bundle-lockfile does not
+  know, when it loads).
 
 Where rspack's compilations differ:
 
@@ -557,10 +557,10 @@ An ESM hook (in the thread or in the loader thread) that cannot wrap a module (a
 makes it a module that throws, so its import fails with the reason (`BUNDLE_LOCKFILE_STRICT=0`: it loads unchanged, with
 a warning in the thread). A problem belongs to the build whose hook recorded it, also asynchronously (each adapter runs
 its hooks in `problems.within(owner)`, an `AsyncLocalStorage` context: the webpack or rspack compiler, the Rollup,
-Rolldown or esbuild plugin of a build, Angular's builder, a Parcel report): a build fails with its own problems and those
-recorded outside any build (a module that could not be patched), never with another build's of the same process.
-Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that
-is a bundler counts, and recognizing one an adapter patches (its `cjsFiles`).
+Rolldown or esbuild plugin of a build, Angular's builder, a Parcel report): a build fails with its own problems and
+those recorded outside any build (a module that could not be patched), never with another build's of the same process.
+Recognizing modules (reading arbitrary modules' exports) stays a warning: only patching a module that is a bundler
+counts, and recognizing one an adapter patches (its `cjsFiles`).
 
 To add a bundler:
 1. Write `src/adapters/<name>.cjs` (the interface is described at the top of `src/hooks.cjs`):

@@ -38,9 +38,9 @@ the source maps show none of its code.
   esbuild-plugin-inline-worker inlines a worker it bundles).
 - **files a loader or plugin inlines into a module**, which are no modules of their own, as the build records them (a
   loader's `this.addDependency`, a plugin's `this.addWatchFile`):
-  - style sheets `@import`ed from packages: CSS, Sass, Less and Stylus in Vite, Rollup and Rolldown; Sass, Less,
-    postcss-import and Tailwind through their webpack loaders, also in a Vue single-file component's `<style>` block
-    and an Angular component's styles; Sass and Less partials in Parcel builds (from its request graph);
+  - style sheets `@import`ed from packages: CSS, Sass, Less (and Stylus, not tested) in Vite, Rollup and Rolldown; Sass,
+    Less, postcss-import and Tailwind through their webpack loaders, also in a Vue single-file component's `<style>`
+    block and an Angular component's styles; Sass and Less partials in Parcel builds (from its request graph);
   - images and fonts from packages that a style sheet inlines as `data:` URLs: in webpack and rspack builds (also
     those mini-css-extract-plugin builds at build time, in no chunk), in esbuild builds (the `dataurl`, `base64`,
     `text` and `binary` loaders), and in Vite builds from 6.1 on (an image that JavaScript inlines with

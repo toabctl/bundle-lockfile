@@ -293,7 +293,7 @@ and reads the stats:
   written and a package that cannot be listed (strict mode)
 - two copies of `@rspack/core` in one process (OHIF's shape: rspack 1 for the config's plugins, rspack 2 for the
   compiler)
-- Rsbuild 1.1, 1.2, 1.7 and 2.2 (npm; 2.2 also with bun and yarn 4 Plug'n'Play), with `output.copy`; environments
+- Rsbuild 1.1, 1.2, 1.6, 1.7 and 2.2 (npm; 2.2 also with bun and yarn 4 Plug'n'Play), with `output.copy`; environments
   web and node (into `dist/` and `dist/server/`; 1.7 and 2.2)
 - module federation (rspack's plugin on 1.7 and 2.2, `@module-federation/enhanced`'s on 2.2): a host, a remote, a
   shared package, the federation runtime; tree shaking of the shared package, which rspack builds again in compilers
@@ -385,7 +385,7 @@ Vite build fails without bundle-lockfile too).
 
 `test/compare/` runs other tools that list a build's packages next to bundle-lockfile, without config changes, and
 reports per output the packages only one side lists - each explained from data the tools do not share with
-bundle-lockfile. Not a test: it never writes expectations, and runs by hand (on the workstation), not in CI:
+bundle-lockfile. Not a test: it never writes expectations, and runs by hand, not in CI:
 
 | bundler | tools | attached by |
 |---|---|---|

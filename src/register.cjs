@@ -91,7 +91,7 @@ if (!internalThread && !config.isDisabled('all')) {
     enabled++;
   }
   if (enabled) {
-    // builds of bundlers it recognizes but does not hook (Turbopack, Parcel, the rolldown command line, ncc)
+    // builds of bundlers it recognizes but does not hook (Turbopack, the rolldown command line, ncc)
     const unsupported = require('./core/unsupported.cjs');
     hooks.register(unsupported.adapter);
     if (require('worker_threads').isMainThread) unsupported.check();

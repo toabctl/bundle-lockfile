@@ -1,6 +1,7 @@
 # Troubleshooting
 
-The [README](../README.md#troubleshooting) has the short version.
+What bundle-lockfile's errors, warnings and notes mean and what to do about them, why a build may have no lockfile,
+and what the debug output shows. The [README](../README.md#troubleshooting) has the short version.
 
 ## The build fails with `[bundle-lockfile] ERROR`
 
@@ -25,7 +26,7 @@ output is written is printed and the watcher goes on. A bundler that cannot be h
 | `Node.js … has no ESM hooks (module.register: 20.6 and later)` | Node.js 20.0 – 20.5 in a process that builds with Vite, Rollup, Rolldown or rspack 2 | use a supported Node.js: 20.18 or later |
 | `<file URL> is wrapped, but bundle-lockfile is not loaded in this thread` | an ES-module bundler's entry was replaced by bundle-lockfile's wrapper in a thread where its preload did not run | please report it, with the Node.js version and how the build starts its threads |
 | `could not read <lockfile>: the packages of the build that wrote <dir> would be missing …`, `<lockfile> is not JSON: …`, `<lockfile> has a record of version …` | a bundled file is below the output of another build whose lockfile cannot be read ([nested bundles](format.md#nested-bundles)): permissions, an edited file, a lockfile of another bundle-lockfile version | fix the permissions, or rebuild that output with this bundle-lockfile |
-| `<rollup\|rolldown\|rspack> is loaded as an ES module in a process without bundle-lockfile's ESM hooks (<file>) …` | on older Node.js (20, 22 before 22.22.3, 24 before 24.11.1), a process bundle-lockfile did not take for a bundler process ([which processes](bundlers.md#which-processes-are-hooked)) imports an ES-module bundler: a programmatic build started outside the project, a tool that loads Vite through a package that names none | `BUNDLE_LOCKFILE_ESM_HOOKS=async`, or Node.js 22.22.3 / 24.11.1 or later |
+| `<rollup\|rolldown\|rspack> is loaded as an ES module in a process without bundle-lockfile's ESM hooks (<file>) …` | on older Node.js (20, 22 before 22.22.3, 23, 24 before 24.11.1, 25.0), a process bundle-lockfile did not take for a bundler process ([which processes](bundlers.md#which-processes-are-hooked)) imports an ES-module bundler: a programmatic build started outside the project, a tool that loads Vite through a package that names none | `BUNDLE_LOCKFILE_ESM_HOOKS=async`, or Node.js 22.22.3 / 24.11.1 or later |
 | `Node.js … has no Module.prototype._compile` (or `Module._extensions['.js']`)`: CommonJS bundlers … are not hooked` | a Node.js whose module loader bundle-lockfile cannot hook, in a process that builds with webpack, Next.js, rspack, Rollup, esbuild, Parcel or Angular's builder | use a supported Node.js ([supported](bundlers.md#supported)) |
 | `<file> ran past bundle-lockfile's CommonJS hook (a loader that compiles modules itself) …` | at exit: a bundler's module (webpack's `lib/Compiler.js`, Next.js' webpack, `@rspack/core`, Rollup's CommonJS build, esbuild's `lib/main.js`) is in `require.cache` but was loaded without Node's module handlers, e.g. by a test runner or a tool that compiles modules itself | run the build without that loader; if it is a common tool, please report it |
 | `<adapter> adapter failed on <file>: its builds would write no lockfile` | recognizing a bundler's own module threw (a version whose module bundle-lockfile cannot read) | please report it, with the bundler's version |
@@ -71,11 +72,14 @@ They do not fail the build:
 - Check that `NODE_OPTIONS` reaches the bundler: `BUNDLE_LOCKFILE_DEBUG=1` logs each bundler it patches and each
   lockfile it writes. A script that overwrites `NODE_OPTIONS` needs the [node
   shim](configuration.md#the-node-shim). `BUNDLE_LOCKFILE_DISABLE` may be set.
-- The bundler is not supported: the `esbuild` command line (build with its JavaScript API instead), Bun's own
+- The bundler is not supported: the `esbuild` command line (build with its JavaScript API instead, or write the
+  lockfile from its metafile with [bundle-lockfile-from-metafile](bundlers.md#esbuild)), Bun's own
   runtime (with `BUNDLE_LOCKFILE_STRICT=0` also those that fail in strict mode: Turbopack, the
   `rolldown` command line, ncc, webpack < 4, rspack 0.x).
-- On Node.js 20, 22 before 22.22.3 and 24 before 24.11.1, Vite, Rollup, Rolldown and rspack 2 are hooked only in
-  some processes: a programmatic build may need `BUNDLE_LOCKFILE_ESM_HOOKS=async` ([which
+- `BUNDLE_LOCKFILE_ESM_HOOKS=off`: Vite, Rolldown, rspack 2 and Rollup through `import` are not hooked, and nothing
+  fails.
+- On Node.js 20, 22 before 22.22.3, 23, 24 before 24.11.1 and 25.0, Vite, Rolldown, rspack 2 and Rollup through
+  `import` are hooked only in some processes: a programmatic build may need `BUNDLE_LOCKFILE_ESM_HOOKS=async` ([which
   processes](bundlers.md#which-processes-are-hooked)).
 - `bun run` without Node.js installed runs the build in Bun's own runtime, which nothing hooks.
 - Vite, Rollup, Rolldown, esbuild and Parcel outputs below `node_modules` (except `node_modules/.cache/`, where tools
@@ -85,7 +89,8 @@ They do not fail the build:
 - Another plugin removed a webpack or rspack output directory after the build: only the export copy is written.
 - `BUNDLE_LOCKFILE_INLINE=0` without `BUNDLE_LOCKFILE_EXPORT_DIR` writes nothing (and fails the build unless
   `BUNDLE_LOCKFILE_STRICT=0`).
-- A step after the build dropped it: Next.js' static export, a copy of only some files. Use an export directory.
+- A step after the build dropped it: a copy of only some files, made outside the build's process. Use an export
+  directory.
 
 ## Debug output
 
