@@ -11,6 +11,7 @@ const packages = require('./packages.cjs');
 const generated = require('./generated.cjs');
 const { inTree } = require('./tree.cjs');
 const copies = require('./copies.cjs');
+const lru = require('./lru.cjs');
 const { ancestors, packageRoot, posix } = require('./paths.cjs');
 
 const JS = /\.[cm]?js$/i;
@@ -21,6 +22,10 @@ const MAX_LATE = 20 * 1024 * 1024; // larger files are not compared
 const warned = new Set();
 /** @type {(key: string, msg: string) => void} */
 const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); config.warn(msg); } };
+// the late files found in this process (watch rebuilds): file -> its size and time then, and its packages
+/** @type {Map<string, { mtimeMs: number, size: number, pkgs: Package[] }>} */
+const earlier = new Map();
+const MAX_EARLIER = 20000;
 
 // The package a file copied into the output comes from: one this process copied out of a package with fs (see
 // core/copies.cjs), or dist/vendor/node_modules/normalize.css/normalize.css (e.g. vite-plugin-static-copy with a
@@ -77,12 +82,21 @@ function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
       if (!e.isFile() || known.has(file) || inTree(file)) continue; // (a copied lockfile's package.json tree: no package's)
       let st;
       try { st = fs.statSync(file); } catch { continue; }
-      if (st.mtimeMs < since) continue;
       /** @type {Package[] | null} */
       let pkgs = null;
-      if (JS.test(file) && st.size <= MAX_LATE) { try { pkgs = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
-      if (!pkgs) pkgs = copiedFrom(file, path.relative(dir, file), cwd);
-      if (pkgs) found.push({ file, pkgs });
+      if (st.mtimeMs < since) {
+        // older than the build: a copy this process made with fs (also one that kept its source's time, fs.cp's
+        // preserveTimestamps), or a late file of an earlier build of this process still as it was then (a plugin that
+        // copies once in watch mode: its file still ships, with its packages)
+        const before = earlier.get(file);
+        if (before && before.mtimeMs === st.mtimeMs && before.size === st.size) pkgs = before.pkgs;
+        else { const src = copies.sourceOf(file); if (src) pkgs = packages.packagesForFiles([src]); }
+        if (!pkgs || !pkgs.length) continue;
+      } else {
+        if (JS.test(file) && st.size <= MAX_LATE) { try { pkgs = generated.byContent(fs.readFileSync(file)); } catch { /* gone */ } }
+        if (!pkgs) pkgs = copiedFrom(file, path.relative(dir, file), cwd);
+      }
+      if (pkgs) { found.push({ file, pkgs }); lru.set(earlier, file, { mtimeMs: st.mtimeMs, size: st.size, pkgs }, MAX_EARLIER); }
     }
   };
   walk(dir);

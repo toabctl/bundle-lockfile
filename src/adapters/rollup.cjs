@@ -96,6 +96,7 @@ function bundlersOf(kind, from, ctx, cwd) {
 // the plugin is added to (undefined: not known, a plugin from a config); from: where the bundler packages are (bundlersOf)
 function createPlugin(kind, inputOptions, engine, from = {}) {
   const cwd = realCwd();
+  const run = {}; // this build, across its watch rebuilds (see core/outputs.cjs record)
   const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
   /** @type {string | null} */
   let unreadable = null; // what keeps the files Rolldown's plugins inlined from being recorded (see rolldown-watch.cjs)
@@ -242,7 +243,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           const writer = outputWriter(kind, input, out, ordinals.get(out) || 0, cwd);
           const bundler = bundlerOf(kind, this && this.meta);
           written.set(out, { target, writer, dir, pkgs, files: new Set(files), hashes, contents, bundler, via: found, landed: false });
-          outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents, bundler, via: found });
+          outputs.record(target, writer, pkgs, cwd, files, { disk: true, outputs: hashes, contents, bundler, via: found, run });
         } catch (e) { problems.problem(`${kind}: could not collect the bundled packages of ${out.dir || out.file || 'a build that writes nothing itself'}`, e); }
         // what went wrong fails the build (strict mode, see core/problems.cjs): this.error throws the build's error
         problems.failIfAny((err) => this.error(err));
@@ -277,7 +278,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             w.via.add('late', add);
             for (const l of late) w.files.add(l.file);
             outputs.record(w.target, w.writer, w.pkgs, cwd, [...w.files],
-              { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via });
+              { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via, run });
             await write(w);
           } catch (e) {
             if (problems.isFailure(e)) { failClose(this, e); return; } // from write()

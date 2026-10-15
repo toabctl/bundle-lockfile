@@ -278,7 +278,7 @@ async function finish(options, result, state = {}) {
       }
     }
     outputs.record(target, writer, pkgs, realOr(wd), files, { disk: true, outputs: hashes, contents,
-      bundler: { name: 'esbuild', ...(typeof state.version === 'string' ? { version: state.version } : {}) }, via: found });
+      bundler: { name: 'esbuild', ...(typeof state.version === 'string' ? { version: state.version } : {}) }, via: found, run: state });
     await outputs.land(target, writer, 'esbuild'); // (never rejects)
   } catch (e) {
     problems.problem(`esbuild: could not collect the bundled packages of ${dir || 'a build that writes nothing itself'}`, e);

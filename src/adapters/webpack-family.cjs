@@ -171,7 +171,7 @@ class BundleLockfilePlugin {
     const pkgs = packages.unique(result.all, gen, late.generated || [], late.late || [], own, inl);
     return outputs.record(path.join(dir, this.file), compilerWriter(compiler), pkgs,
       compiler.context, assetFiles(dir, assetNames(compilation).filter(n => n !== this.file)),
-      { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found });
+      { disk: onDisk(compiler), bundler: this.bundler(compiler), via: found, run: compiler });
   }
 
   // { name, version } of the bundler of a compiler (core/lockfile.cjs): rspack's version, webpack 5's, or webpack 4's

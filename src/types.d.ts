@@ -101,6 +101,12 @@ export interface Writer {
   id: string;
   building: Build | null;
   landed: Build | null;
+  /** its earlier landed builds that later ones replaced, while files of theirs are left in the output (core/outputs.cjs) */
+  remnants: Build[];
+  /** the compiler or build that records its builds (outputs.record's opts.run), the same across its watch rebuilds */
+  run: object | undefined;
+  /** the lockfile was written with it: the record of its id there is this process's */
+  wrote: boolean;
 }
 
 /** A writer as a lockfile on disk records it (core/lockfile.cjs readMeta). */

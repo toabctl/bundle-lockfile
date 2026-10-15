@@ -11,7 +11,7 @@ const path = require('path');
 const { fileURLToPath } = require('url');
 const lru = require('./lru.cjs');
 const { inTree } = require('./tree.cjs');
-const { ancestors } = require('./paths.cjs');
+const { ancestors, packageRoot, realish } = require('./paths.cjs');
 /** @typedef {(src: string, dest: string, isDirectory: boolean) => void} CopyListener */
 /**
  * @typedef {{ files: Map<string, string>, dirs: Map<string, string>, installed: boolean, listeners: CopyListener[], warned?: boolean }} State
@@ -39,8 +39,13 @@ function copied(src, dest, dir) {
   for (const fn of state.listeners) { try { fn(s, d, dir); } catch { /* never in the way */ } }
 }
 
+// p is below node_modules, not in a tool's directory there (node_modules/.cache: no package, see core/paths.cjs
+// packageRoot - a copy into it is followed, as one into the output)
 /** @param {string} p */
-const inPackage = (p) => p.split(path.sep).includes('node_modules');
+const inPackage = (p) => {
+  const parts = p.split(path.sep), i = parts.lastIndexOf('node_modules');
+  return i >= 0 && (!(parts[i + 1] || '').startsWith('.') || packageRoot(path.join(p, 'x')) !== null);
+};
 
 /**
  * @param {unknown} p
@@ -63,6 +68,9 @@ function record(src, dest, dir) {
   const s = abs(src), d = abs(dest);
   // (a lockfile's package.json tree, core/tree.cjs, is no package's: copied with its output, not out of a package)
   if (!s || !d || !inPackage(s) || inPackage(d) || inTree(s)) return;
+  // also by the real path, which bundlers name a file by (a destination through a symbolic link: macOS /tmp)
+  const real = realish(d);
+  if (real !== d) lru.set(dir ? state.dirs : state.files, real, s, MAX);
   if (lru.set(dir ? state.dirs : state.files, d, s, MAX) && !state.warned) {
     // the oldest copies are forgotten: a bundled copy of one of them counts as first-party from now on
     state.warned = true;
@@ -90,14 +98,16 @@ function sameBytes(a, b) {
 function sourceOf(file) {
   if (!state.files.size && !state.dirs.size) return null;
   const f = path.resolve(file);
+  // a file copied by itself, then (overwritten since) as part of a directory: the copy whose bytes it has
   const direct = state.files.get(f);
-  if (direct) return sameBytes(f, direct) ? direct : null;
+  if (direct && sameBytes(f, direct)) return direct;
   for (const dir of ancestors(path.dirname(f))) {
     const src = state.dirs.get(dir);
-    if (src) { const s = path.join(src, path.relative(dir, f)); return sameBytes(f, s) ? s : null; }
+    if (src) { const s = path.join(src, path.relative(dir, f)); if (sameBytes(f, s)) return s; }
   }
   return null;
 }
+
 
 // Wraps fs.copyFile, fs.copyFileSync, fs.cp, fs.cpSync and their fs.promises versions (also what fs-extra and
 // graceful-fs call: they take them from fs). Recording never makes a copy fail.

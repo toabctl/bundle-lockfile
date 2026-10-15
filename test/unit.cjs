@@ -94,6 +94,11 @@ test('packageRoot: directory below the last node_modules', () => {
   assert.equal(r('/p/node_modules/index.js'), null);   // a file directly in node_modules
   assert.equal(r('/p/node_modules/@s/b'), null);       // the package directory itself, not a file in it
   assert.equal(r('/p/node_modules/@s'), null);
+  // a tool's directory below node_modules is no package (no package name starts with a dot)
+  assert.equal(r('/p/node_modules/.cache/nuxt/.nuxt/dist/server/server.mjs'), null);
+  assert.equal(r('/p/node_modules/.vite/deps/react.js'), null);
+  assert.equal(r('/p/node_modules/.cache/x/node_modules/a/i.js'), '/p/node_modules/.cache/x/node_modules/a'.split('/').join(path.sep));
+  assert.equal(r('/p/node_modules/.store/a-npm-1.0.0-x/package/i.js'), '/p/node_modules/.store/a-npm-1.0.0-x/package'.split('/').join(path.sep));
 });
 
 test('packagesForFiles: one entry per package, nested manifests and first-party files ignored', () => {
@@ -1993,6 +1998,46 @@ test('rollup adapter: outputs of one build written at the same time into one dir
   } finally { process.chdir(cwd); }
 });
 
+test('outputs: runs of one config into one directory that write other files (other plugins, hashes, no clean) keep each other\'s packages while those files are there', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('b'), ...pj('c') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    const run = (file, name, plugin = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' })) =>
+      rollupBuild(plugin, { outDir: dist, chunks: [{ fileName: file, code: file, modules: [J(root, `node_modules/${name}/i.js`)] }] });
+    const locked = () => lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    // the same config twice in one process (rollup -c with two configs, other plugins), with hashed file names
+    await run('sel-1.js', 'a');
+    await run('sel-2.js', 'b');
+    assert.deepEqual(locked(), ['a', 'b']);
+    // its rebuild writing the same file again replaces it
+    const plugin = rollupAdapter.bundleLockfile('vite', { input: 'src/sel.js' });
+    await run('sel-2.js', 'c', plugin);
+    assert.deepEqual(locked(), ['a', 'c']);
+    // gone: no longer
+    fs.rmSync(J(dist, 'sel-1.js'));
+    await run('sel-2.js', 'c', plugin);
+    assert.deepEqual(locked(), ['c']);
+    // another process ran the same config before, into other files: the lockfile on disk has them, this run keeps them
+    const before = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    const state = globalThis[Symbol.for('bundle-lockfile.outputs.v4')];
+    state.files.delete(J(dist, LOCK)); // (as a new process)
+    fs.writeFileSync(J(dist, LOCK), JSON.stringify(before));
+    await run('sel-3.js', 'a');
+    assert.deepEqual(locked(), ['a', 'c']);
+    const lock = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
+    assert.deepEqual(lock['bundle-lockfile'].writers.map(w => w.files.join(' ')).sort(), ['../sel-2.js', '../sel-3.js']);
+    assert.equal(new Set(lock['bundle-lockfile'].writers.map(w => w.id)).size, 2);
+    // and the next run of it again (the earlier run's writer, an id of its own now, is another process's)
+    state.files.delete(J(dist, LOCK));
+    await run('sel-3.js', 'b');
+    assert.deepEqual(locked(), ['b', 'c']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: Rolldown write() without dir and file: the lockfile in dist/, where Rolldown writes', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
@@ -2115,6 +2160,29 @@ test('nested: a bundled file another build produced brings its packages, also wh
     // a file the record does not have: first-party
     fs.writeFileSync(J(root, 'island/dist/other.js'), 'x');
     assert.deepEqual(idsOf([J(root, 'island/dist/other.js')]), []);
+  } finally { process.chdir(cwd); }
+});
+
+test('nested: a build into node_modules/.cache (nuxi build\'s .nuxt there) brings its packages to the build that bundles its output', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('inner'), ...pj('outer'), ...pj('copied') });
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const out = J(root, 'node_modules/.cache/nuxt/.nuxt/dist/server');
+    await rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: out, chunks: [{ fileName: 'server.mjs', code: 'server code', modules: [J(root, 'node_modules/inner/i.js')] }] });
+    assert.ok(fs.existsSync(J(out, LOCK)));
+    const idsOf = (files) => ids(packages.packagesOfFiles(files).all);
+    assert.deepEqual(idsOf([J(out, 'server.mjs'), J(root, 'node_modules/outer/i.js')]), ['inner@1.0.0', 'outer@1.0.0']);
+    // a file copied out of a package into node_modules/.cache is that package's
+    fs.writeFileSync(J(root, 'node_modules/copied/c.js'), 'copied code');
+    fs.mkdirSync(J(root, 'node_modules/.cache/gen'), { recursive: true });
+    fs.copyFileSync(J(root, 'node_modules/copied/c.js'), J(root, 'node_modules/.cache/gen/c.js'));
+    assert.equal(copies.sourceOf(J(root, 'node_modules/.cache/gen/c.js')), J(root, 'node_modules/copied/c.js'));
+    assert.deepEqual(idsOf([J(root, 'node_modules/.cache/gen/c.js')]), ['copied@1.0.0']);
   } finally { process.chdir(cwd); }
 });
 
@@ -2418,6 +2486,42 @@ test('rollup adapter: files written after the build: over 20 MiB only this proce
   } finally { process.chdir(cwd); }
 });
 
+test('rollup adapter: files written after the build that are older: copies keeping their source\'s time, files a watch rebuild did not write again', async () => {
+  const rollupAdapter = require('../src/adapters/rollup.cjs');
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('app'), ...pj('kept'), ...pj('once'), 'node_modules/kept/k.js': 'kept code', 'node_modules/once/o.js': 'once code' });
+  const old = new Date('1985-10-26T08:15:00Z');
+  fs.utimesSync(J(root, 'node_modules/kept/k.js'), old, old);
+  fs.utimesSync(J(root, 'node_modules/once/o.js'), old, old);
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const dist = J(root, 'dist');
+    const plugin = rollupAdapter.bundleLockfile('vite');
+    const build = (n, late) => rollupBuild(plugin, { outDir: dist, chunks: [{ fileName: 'index.js', code: `index ${n}`, modules: [J(root, 'node_modules/app/i.js')] }], late });
+    // fs.cp with preserveTimestamps: the copy has npm's time of its source, long before the build
+    await build(1, () => {
+      fs.cpSync(J(root, 'node_modules/kept/k.js'), J(dist, 'vendor/k.js'), { preserveTimestamps: true });
+      fs.mkdirSync(J(dist, 'vendor/node_modules/once'), { recursive: true }); // (another process's copy: found by path and bytes)
+      fs.writeFileSync(J(dist, 'vendor/node_modules/once/o.js'), 'once code');
+    });
+    assert.ok(fs.statSync(J(dist, 'vendor/k.js')).mtimeMs < Date.now() - 1e9);
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app', 'kept', 'once']);
+    // the watch rebuild: the copy plugin copies only once; its files still ship
+    await new Promise(res => setTimeout(res, 2100)); // (older than the rebuild by more than the coarse-timestamp margin)
+    await build(2, () => {});
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app', 'kept', 'once']);
+    // gone, or changed since: no longer
+    fs.rmSync(J(dist, 'vendor/node_modules'), { recursive: true });
+    fs.writeFileSync(J(dist, 'vendor/k.js'), 'own code');
+    fs.utimesSync(J(dist, 'vendor/k.js'), old, old);
+    await build(3, () => {});
+    assert.deepEqual(lockedNames(fs.readFileSync(J(dist, LOCK), 'utf8')), ['app']);
+  } finally { process.chdir(cwd); }
+});
+
 test('rollup adapter: the late files of one output are not those another output of the process writes there', async () => {
   const rollupAdapter = require('../src/adapters/rollup.cjs');
   const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
@@ -2513,6 +2617,25 @@ test('copies: a file copied out of a package (fs.copyFile*, fs.cp*) belongs to i
   assert.throws(() => fs.copyFileSync(J(root, 'missing.js'), out('x.js')), { code: 'ENOENT' });
   await assert.rejects(fs.promises.copyFile(J(root, 'missing.js'), out('x.js')), { code: 'ENOENT' });
   assert.equal(fs.copyFileSync.name, 'copyFileSync');
+});
+
+test('copies: a file copied, then overwritten by a directory copy, is the later copy\'s; a destination through a symbolic link by its real path', { skip: process.platform === 'win32' }, () => {
+  const copies = require('../src/core/copies.cjs');
+  copies.install();
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/a/x.js': 'a code',
+    'node_modules/b/package.json': { name: 'b', version: '1.0.0' }, 'node_modules/b/lib/x.js': 'b code', 'node_modules/b/lib/y.js': 'b y' });
+  fs.mkdirSync(J(root, 'out'));
+  fs.copyFileSync(J(root, 'node_modules/a/x.js'), J(root, 'out/x.js'));
+  fs.cpSync(J(root, 'node_modules/b/lib'), J(root, 'out'), { recursive: true });
+  assert.equal(copies.sourceOf(J(root, 'out/x.js')), J(root, 'node_modules/b/lib/x.js'));
+  // copied to a path through a symbolic link, bundled by its real path
+  fs.mkdirSync(J(root, 'real'));
+  fs.symlinkSync(J(root, 'real'), J(root, 'link'));
+  fs.copyFileSync(J(root, 'node_modules/b/lib/y.js'), J(root, 'link/y.js'));
+  fs.cpSync(J(root, 'node_modules/a'), J(root, 'link/a-copy'), { recursive: true });
+  assert.equal(copies.sourceOf(J(root, 'real/y.js')), J(root, 'node_modules/b/lib/y.js'));
+  assert.equal(copies.sourceOf(J(root, 'link/y.js')), J(root, 'node_modules/b/lib/y.js'));
+  assert.equal(copies.sourceOf(J(root, 'real/a-copy/x.js')), J(root, 'node_modules/a/x.js'));
 });
 
 test('copies: a file copied out of a package into the output after the build (static copy under another name)', async () => {
@@ -4301,6 +4424,28 @@ test('tree: a package name that is no path of a package (.., an extra /, \\) wri
   assert.equal(stubsOf(lock('a..b')).length, 1);
 });
 
+test('tree: a packages directory bundle-lockfile did not write is never replaced (BUNDLE_LOCKFILE_FILE=package-lock.json: the output\'s own)', () => {
+  const { writeTree } = require('../src/core/tree.cjs');
+  const lock = (pkgs) => JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, ...pkgs } });
+  const a = lock({ 'node_modules/a': { name: 'a', version: '1.0.0' } });
+  const b = lock({ 'node_modules/b': { name: 'b', version: '1.0.0' } });
+  // the output's (or the project's) own packages/: its files stay, the tree is not written
+  for (const own of ['packages/keep.html', 'packages/docs/index.html', 'packages/0123456789abcdef/x.js', 'packages/0123456789abcdef/node_modules/a/index.js']) {
+    const dir = project({ [own]: 'mine' });
+    assert.throws(() => writeTree(dir, a), /is no tree bundle-lockfile wrote/, own);
+    assert.equal(fs.readFileSync(J(dir, own), 'utf8'), 'mine', own);
+    assert.deepEqual(fs.readdirSync(dir), ['packages'], own); // (nothing left aside)
+  }
+  const file = project({ packages: 'a file' });
+  assert.throws(() => writeTree(file, a), /is no tree bundle-lockfile wrote/);
+  // its own tree, and an empty directory, are replaced
+  const dir = project({});
+  fs.mkdirSync(J(dir, 'packages'));
+  writeTree(dir, a);
+  writeTree(dir, b);
+  assert.deepEqual(fs.readdirSync(J(dir, 'packages')).flatMap(id => fs.readdirSync(J(dir, 'packages', id, 'node_modules'))), ['b']);
+});
+
 test('tree: a copy of a stub made with fs is no copy of a package file', () => {
   const copies = require('../src/core/copies.cjs');
   const root = project({ 'dist/bundle-lockfile/packages/0123456789abcdef/node_modules/a/package.json': { name: 'a', version: '1.0.0' },
@@ -4462,6 +4607,8 @@ test('esbuild adapter: onEnd lists the packages of the inputs of every output, w
   assert.ok(at('../main.js').includes('node_modules/esbuild'));
   assert.ok(!at('../main.css').includes('node_modules/esbuild'));
   const cssOnly = { outputs: { 'dist/main.css': metafile.outputs['dist/main.css'] } };
+  // (the files of the earlier builds that are still there ship, with their packages: an output of main.css alone)
+  for (const f of ['main.js', 'f.woff2']) fs.rmSync(J(root, 'dist', f));
   await esbuildEnd({ ...options }, { errors: [], metafile: cssOnly }, esb);
   assert.ok(!lockedNames(fs.readFileSync(J(root, 'dist', LOCK), 'utf8')).includes('esbuild'));
   // a failed build wrote nothing: nothing recorded
