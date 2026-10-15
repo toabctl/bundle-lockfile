@@ -244,6 +244,17 @@ test('toPackageLock: every key starts with node_modules/, and the record gives t
   assert.deepEqual(readMeta(old, dir).writers[0].pkgs.map(p => p.path), [J(root, 'node_modules/b')]);
 });
 
+test('readMeta: a package is read with its name, version and license only - other fields of its entry are no record', () => {
+  // an edited lockfile whose entry has fields of the record's own words ("unknown", "outside") or npm's ("dev")
+  const { readMeta } = require('../src/core/lockfile.cjs');
+  const ctx = J(path.sep, 'p'), dir = J(ctx, 'dist/bundle-lockfile');
+  const a = pkg('a', '1.0.0', J(ctx, 'node_modules/a'));
+  const doc = JSON.parse(toPackageLock([a], ctx, { dir, writers: [{ id: 'w', files: [], paths: [a.path] }] }));
+  Object.assign(doc.packages['node_modules/a'], { unknown: true, outside: 'node_modules/x', dev: true, license: { type: 'MIT' } });
+  const [read] = readMeta(JSON.stringify(doc), dir).writers[0].pkgs;
+  assert.deepEqual(read, { name: 'a', version: '1.0.0', path: a.path });
+});
+
 test('toPackageLock: a writer\'s bundler and how it found its packages (via), read back by another process', () => {
   const { readMeta } = require('../src/core/lockfile.cjs');
   const via = require('../src/core/via.cjs');
