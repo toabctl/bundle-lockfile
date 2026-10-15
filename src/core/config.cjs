@@ -25,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const util = require('util');
 const env = process.env;
 
 // Every BUNDLE_LOCKFILE_* variable bundle-lockfile reads. A name that is not one of them is a mistake (a typo such as
@@ -165,6 +166,11 @@ const settingsProblems = () => [
   ...invalid.map(msg => /** @type {[string, unknown]} */ ([msg, null])),
 ];
 
+// To stderr itself, not through console: a bundler may have replaced console's methods (Parcel's command line sends
+// them to its logger, whose reporters print nothing of a reporter's own warnings, nor anything at the process's exit)
+/** @type {(prefix: string, a: any[]) => void} */
+const print = (prefix, a) => { process.stderr.write(`${util.format(prefix, ...a)}\n`); };
+
 module.exports = {
   settingsFile, // { file: the settings file read, or null; error: why it could not be used, or null }
   invalid, // settings that are set but not recognized, or cannot work (messages)
@@ -179,12 +185,12 @@ module.exports = {
   isDisabled: /** @param {string} name */ (name) => disabled.has('all') || disabled.has(name.toLowerCase()),
   firstParty,
   strict: flag('BUNDLE_LOCKFILE_STRICT', true),
-  debug: /** @param {...any} a */ (...a) => { if (debugOn) console.error('[bundle-lockfile]', ...a); },
+  debug: /** @param {...any} a */ (...a) => { if (debugOn) print('[bundle-lockfile]', a); },
   // always printed: what is wrong but does not fail the build (with BUNDLE_LOCKFILE_STRICT=0: also what makes a
   // lockfile missing or incomplete, see core/problems.cjs)
-  warn: /** @param {...any} a */ (...a) => console.error('[bundle-lockfile] WARNING:', ...a),
+  warn: /** @param {...any} a */ (...a) => print('[bundle-lockfile] WARNING:', a),
   // what fails the build (see core/problems.cjs)
-  error: /** @param {...any} a */ (...a) => console.error('[bundle-lockfile] ERROR:', ...a),
+  error: /** @param {...any} a */ (...a) => print('[bundle-lockfile] ERROR:', a),
   // always printed too: what a build lists that it might not expect (vendored copies, see core/vendored.cjs)
-  note: /** @param {...any} a */ (...a) => console.error('[bundle-lockfile] note:', ...a),
+  note: /** @param {...any} a */ (...a) => print('[bundle-lockfile] note:', a),
 };

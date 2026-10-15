@@ -1,5 +1,7 @@
 // Builds through Parcel's JavaScript API (@parcel/core), as tools do: node build.mjs <mode>
 //   api    new Parcel({ entries, defaultConfig }).run() into dist/
+//   two    as api, then a second new Parcel() for src/other.js (is-number only) into dist/ too: one target, one
+//          directory, as a script that builds several entries one after the other
 //   watch  .watch(): builds, rebuilds without src/main.js's is-number line (is-number must leave the lockfile), rebuilds
 //          with it (it must come back); the lockfile is deleted before every build; prints the package list of every
 //          build as JSON last. src/main.js is restored also on failure. (Not without the lazy import of nanoid: Parcel
@@ -18,6 +20,10 @@ const names = () => Object.entries(JSON.parse(fs.readFileSync(lockfile, 'utf8'))
 
 if (mode === 'api') {
   await new Parcel(options).run();
+} else if (mode === 'two') {
+  await new Parcel(options).run();
+  await new Parcel({ ...options, entries: 'src/other.js' }).run();
+  if (!fs.existsSync(path.join(dist, 'other.js'))) fail('two: the second Parcel wrote no dist/other.js');
 } else if (mode === 'watch') {
   const input = 'src/main.js';
   const source = fs.readFileSync(input, 'utf8');

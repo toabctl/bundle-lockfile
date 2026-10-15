@@ -227,7 +227,7 @@ const fixtures = {
   'esbuild-features': esbuildApp('0.28.2', { type: 'npm' }, { 'esbuild-sass-plugin': '3.7.0', sass: '1.105.1', bulma: '1.0.4', 'sanitize.css': '13.0.0' }),
   // Parcel 2: the latest, the first release; installers
   'parcel': parcelApp('2.16.4'),
-  'parcel-floor': parcelApp('2.0.0'),
+  'parcel-floor': parcelApp('2.8.3'),
   'parcel-pnpm10': parcelApp('2.16.4', { type: 'pnpm', version: '10.34.6' }),
   'parcel-yarn4-pnp': parcelApp('2.16.4', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }),
   // Angular 22 (the latest), 21, 20
@@ -482,6 +482,7 @@ const ESBUILD = ['bootstrap-icons@1.13.2', 'debug@2.6.9', 'lodash-es@4.18.1', 'm
 // test/apps/parcel: as ESBUILD (the font through a style sheet's url()), is-number; and Parcel's runtime, which loads
 // the lazy bundle (a file Parcel generates in @parcel/runtime-js)
 const PARCEL = (v) => [...ESBUILD, 'is-number@7.0.0', `@parcel/runtime-js@${v}`].sort();
+const PARCEL_FLOOR = [...PARCEL('2.8.3'), 'process@0.11.10'].sort();
 // test/apps/angular: the framework's packages of the fixture's release, rxjs (the framework imports it), the app's
 const ANGULAR = (fixture) => { const fw = fixtures[fixture].deps['@angular/core'];
   return [...['common', 'core', 'platform-browser'].map(p => `@angular/${p}@${fw}`), 'bootstrap-icons@1.13.2', 'debug@2.6.9', 'is-number@7.0.0', 'lodash-es@4.18.1',
@@ -1344,6 +1345,10 @@ const cases = [
   { name: 'Parcel 2.16.4: parcel build', fixture: 'parcel', cmd: 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'],
     expectVia: { chunk: PARCEL('2.16.4').filter(p => p !== 'bootstrap-icons@1.13.2'), asset: ['bootstrap-icons@1.13.2'] } },
   { name: 'Parcel 2.16.4: JavaScript API, run()', fixture: 'parcel', cmd: 'node build.mjs api', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // two Parcels of one process into one directory, of one target (src/other.js has is-number only): the second keeps
+  // the files of the first that are still there, with their packages
+  { name: 'Parcel 2.16.4: JavaScript API, a second Parcel of the process into the same directory keeps the first one\'s packages', fixture: 'parcel',
+    cmd: 'node build.mjs two', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Parcel 2.16.4: JavaScript API, watch(): every rebuild writes the lockfile, with the packages of that build', fixture: 'parcel', cmd: 'node build.mjs watch',
     expect: PARCEL('2.16.4'), watchBuilds: [PARCEL('2.16.4'), PARCEL('2.16.4').filter(p => p !== 'is-number@7.0.0'), PARCEL('2.16.4')],
     oracleMissing: ['bootstrap-icons@1.13.2'] },
@@ -1357,10 +1362,20 @@ const cases = [
     expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of\s+\S+:\s+injected fault/ },
   { name: 'STRICT=0: failing adapter does not break the build (Parcel 2.16.4)', fixture: 'parcel', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
     expect: null, expectOutput: /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages/ },
-  // (Parcel 2.0.0's own dependencies are ranges, ^2.0.0: its runtime, @parcel/runtime-js, is the latest 2.x)
-  ...[['2.0.0 (the first release)', 'parcel-floor', '2.16.4'], ['2.16.4, pnpm 10', 'parcel-pnpm10', '2.16.4'], ['2.16.4, yarn 4 Plug\'n\'Play', 'parcel-yarn4-pnp', '2.16.4']].map(([what, fixture, v]) => (
-    { name: `Parcel ${what}: parcel build`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'npm run -s build', expect: PARCEL(v), oracleMissing: ['bootstrap-icons@1.13.2'],
-      ...(fixture === 'parcel-floor' && { installed: ['@parcel/core@2.0.0'] }) })),
+  ...[['2.16.4, pnpm 10', 'parcel-pnpm10'], ['2.16.4, yarn 4 Plug\'n\'Play', 'parcel-yarn4-pnp']].map(([what, fixture]) => (
+    { name: `Parcel ${what}: parcel build`, fixture, cmd: fixture.endsWith('pnp') ? 'yarn build' : 'npm run -s build', expect: PARCEL('2.16.4'), oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  // Parcel before 2.13 (2.8.3, whose packages pin each other's versions: one @parcel/core; the earliest releases do not
+  // run on the Node.js versions tested, their lmdb-store has no build for them): the request graph's older shape, and a
+  // reporter's error that Parcel only prints - the process fails at its exit. Parcel 2.8 adds process for the browser
+  // (debug uses it)
+  { name: 'Parcel 2.8.3: parcel build', fixture: 'parcel-floor', cmd: 'npm run -s build', expect: PARCEL_FLOOR, oracleMissing: ['bootstrap-icons@1.13.2'],
+    installed: ['@parcel/core@2.8.3'] },
+  { name: 'Parcel 2.8.3: JavaScript API, watch(): every rebuild writes the lockfile, with the packages of that build', fixture: 'parcel-floor', cmd: 'node build.mjs watch',
+    expect: PARCEL_FLOOR, watchBuilds: [PARCEL_FLOOR, PARCEL_FLOOR.filter(p => p !== 'is-number@7.0.0'), PARCEL_FLOOR], oracleMissing: ['bootstrap-icons@1.13.2'] },
+  { name: 'strict: failing adapter fails the process at its exit (Parcel 2.8.3, which only prints a reporter\'s error)', fixture: 'parcel-floor', cmd: 'npm run -s build', nodeOptions: FAULT,
+    expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*parcel: could not collect the bundled packages of\s+\S+:\s+injected fault/ },
+  { name: 'STRICT=0: failing adapter does not break the build (Parcel 2.8.3)', fixture: 'parcel-floor', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: null, expectOutput: /\[bundle-lockfile\] WARNING: parcel: could not collect the bundled packages/ },
   // Angular's application builder: the lockfile with its output files (dist/browser/), from its final metafile (after
   // its chunk optimizer, which three lazy chunks turn on) and its asset files (bootstrap-icons' font, copied from
   // node_modules: in no source map, the oracle's); not uuid (unused)
