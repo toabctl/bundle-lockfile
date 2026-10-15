@@ -218,7 +218,8 @@ bundle-lockfile wraps the function that runs one build (`executeBuild()`) and ta
 one its `stats` option writes, turned on for the build and taken out of its output again unless asked for.
 
 - The lockfile is one of the build's output files: `<outputPath>/browser/bundle-lockfile/package-lock.json`, which
-  Angular writes with the others, after it cleaned the output path.
+  Angular writes with the others, after it cleaned the output path (with `outputPath.browser: ''`, as the
+  `browser-esbuild` builder of `@angular-devkit/build-angular` has it, in `<outputPath>/bundle-lockfile/`).
 - With server-side rendering (`outputMode: 'server'`) the server gets its own,
   `<outputPath>/server/bundle-lockfile/package-lock.json`: the packages bundled into the server (`@angular/ssr`,
   `@angular/platform-server`, the server entry's own dependencies, what the rendered components use). `outputMode:
@@ -227,16 +228,20 @@ one its `stats` option writes, turned on for the build and taken out of its outp
   `<subPath>/` (the locale by default): each copy gets the lockfile, `<outputPath>/browser/<locale>/bundle-lockfile/`
   (and the server's in `<outputPath>/server/<locale>/`), with the same packages. With SSR, the server's entry
   (`server.mjs`) and its chunks are written once, in `<outputPath>/server/`: their packages are in a lockfile there,
-  those of the locales' copies in each locale's.
-- `ng build --watch` writes the lockfile again with every rebuild that changes it. `ng serve` writes none: the dev
-  server serves its builds from memory (bundle-lockfile tells them by the `partialSSRBuild` option the dev server
-  sets; with `NG_BUILD_PARTIAL_SSR` set, `ng build` sets it too, and every build counts as one that writes).
+  those of the locales' copies in each locale's. A locale at `subPath: ''` has its copy in the side's own directory,
+  and one lockfile there.
+- `ng build --watch` writes the lockfile again with every rebuild that changes it. The builders that build the app for
+  output nobody ships write none, nor an export copy: `ng serve` (the dev server serves its builds from memory),
+  `ng extract-i18n` (reads the messages only), `ng test` (karma: a temporary directory; unit-test: memory) — known by
+  the builder's name (also another package's builder of that name, as `@angular-builders/custom-esbuild:dev-server`).
+- A build that fails writes no lockfile: Angular writes none of its files, and bundle-lockfile no export copy.
 - It lists the packages of the inputs of every output (Angular's own packages, rxjs, the app's), and of the assets
   Angular copies from `node_modules` (an `assets` glob there).
 - A problem is an error of the build. `BUNDLE_LOCKFILE_DISABLE=angular` leaves Angular alone (its esbuild builds then
   write nothing: no lockfile).
 - Tested: Angular 20, 21, 22 with npm: browser builds, SSR (`outputMode` server and static); on 20 and 22 also i18n
-  (two locales), SSR with i18n, `ng build --watch`, `ng serve`; Angular 22 also with pnpm 10 and yarn 4 Plug'n'Play
+  (two locales), SSR with i18n, `ng build --watch`, `ng serve`, `ng extract-i18n`; Angular 22 also `outputPath.browser:
+  ''`, a failing adapter (strict and `BUNDLE_LOCKFILE_STRICT=0`), and pnpm 10 and yarn 4 Plug'n'Play
   (where an asset glob from `node_modules/`, as in angular.json's `assets`, copies nothing: there is no
   `node_modules`).
 

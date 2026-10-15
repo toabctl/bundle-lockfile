@@ -209,7 +209,10 @@ function runCase(c) {
     const out = `${r.stdout || ''}${r.stderr || ''}`;
     if (r.status === 0) throw new Error(`"${c.cmd}" succeeded, expected it to fail with ${c.expectError}`);
     if (!c.expectError.test(out)) throw new Error(`"${c.cmd}" failed, but its output does not match ${c.expectError}\n${out.split('\n').slice(-15).join('\n')}`);
-    return `failed as expected (${c.expectError})`;
+    // a failed build writes no lockfile: with an export dir, no copy there either
+    const left = exportDir ? readLockfiles(exportDir, c.lockfile) : {};
+    if (Object.keys(left).length) throw new Error(`"${c.cmd}" failed as expected, but wrote lockfiles to the export dir${show(left)}`);
+    return `failed as expected (${c.expectError})${exportDir ? ', no export copy' : ''}`;
   }
   const build = run(c.cmd, dir, env);
   const warned = checkWarnings(c, build.stdout + build.stderr, env);

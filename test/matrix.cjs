@@ -690,7 +690,8 @@ function nextCase(fixture, version, react, flags = '') {
 //   outside    why the lockfiles may list packages outside the project or of unknown location ("outside", "unknown"
 //              in the record: a global store or cache, copies of outputs): without it, any such package fails the case
 //   expectOutput  RegExp the build's stdout+stderr must match
-//   expectError  RegExp: a known failure of the build tool - the build must fail, its output match (nothing else checked)
+//   expectError  RegExp: a known failure of the build tool - the build must fail, its output match (nothing else checked,
+//              but that with exportDir no lockfile is in the export dir)
 //   lockfile   lockfile path below each output dir (default bundle-lockfile/package-lock.json)
 //   expectKeys {lockfile key: name@version} - exactly the keys of the single output
 //   watchBuilds  the cmd prints a JSON list of per-build package lists last; it must be this list of lists
@@ -1396,11 +1397,32 @@ const cases = [
   { name: 'Angular 22.2.2: export directory only', fixture: 'angular22', cmd: 'npm run -s build', exportOnly: true, expectIn: { browser: ANGULAR('angular22') },
     oracleMissing: ['bootstrap-icons@1.13.2'] },
   { name: 'Angular: BUNDLE_LOCKFILE_DISABLE=angular', fixture: 'angular22', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'angular' }, expect: null },
+  // outputPath.browser '' (as the browser-esbuild builder of @angular-devkit/build-angular always has it): Angular writes
+  // the browser files into dist/ itself - the lockfile there, its record saying so (the oracle's build into
+  // dist-oracle/browser/: its --output-path)
+  { name: 'Angular 22.2.2: ng build with outputPath.browser \'\', the lockfile in dist/', fixture: 'angular22', cmd: 'npm run -s build -- --configuration production,flat',
+    exportDir: true, expect: ANGULAR('angular22'), oracleArgs: '--browser-as-root', oracleMissing: ['bootstrap-icons@1.13.2'] },
+  // strict mode: Angular's own adapter failing (the fault only there: in the builds Angular runs with esbuild and
+  // Rolldown it trips first, through their adapters) fails ng build with the reason, and nothing is written - no export
+  // copy either; with BUNDLE_LOCKFILE_STRICT=0 the build succeeds without a lockfile, a warning says why
+  { name: 'strict: failing adapter fails the build (Angular 22.2.2)', fixture: 'angular22', cmd: 'npm run -s build', nodeOptions: FAULT, env: { BLTEST_FAULT_IN: 'angular' },
+    exportDir: true, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*angular: could not collect the bundled packages: injected fault/ },
+  // a problem found after the lockfile was rendered (an asset copied from a package without a version): the build fails,
+  // and the export copy is not written either
+  { name: 'strict: a package without version fails ng build, no export copy (Angular 22.2.2)', fixture: 'angular22',
+    cmd: 'mkdir -p node_modules/bl-nover && echo \'{"name":"bl-nover"}\' > node_modules/bl-nover/package.json && echo x > node_modules/bl-nover/x.txt && npm run -s build -- --configuration production,nover',
+    exportDir: true, expectError: /bundle-lockfile: the lockfile would be missing or incomplete[\s\S]*no package\.json with name and version in \S*bl-nover/ },
+  { name: 'STRICT=0: failing adapter does not break the build (Angular 22.2.2)', fixture: 'angular22', cmd: 'npm run -s build', nodeOptions: FAULT,
+    env: { BLTEST_FAULT_IN: 'angular', BUNDLE_LOCKFILE_STRICT: '0' }, exportDir: true, expect: null,
+    expectOutput: /\[bundle-lockfile\] WARNING: angular: could not collect the bundled packages: Error: injected fault/ },
   // i18n (localize: en-US, de): Angular writes a copy of the output per locale, translations inlined - each gets the
   // lockfile, in dist/browser/<locale>/ (the oracle reads each locale's source maps)
   ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
     { name: `Angular ${v}: ng build with i18n, a lockfile in each locale's output`, fixture, cmd: 'npm run -s build', oracleArgs: '--locales de,en-US',
       oracleMissing: ['bootstrap-icons@1.13.2'], expectIncludes: ANGULAR(fixture) })),
+  // ng extract-i18n: builds the app to read its messages, writes no output - no lockfile, not even an export copy
+  ...[['22.2.2', 'angular22-i18n'], ['20.3.39', 'angular20-i18n']].map(([v, fixture]) => (
+    { name: `Angular ${v}: ng extract-i18n writes no lockfile`, fixture, cmd: 'npx ng extract-i18n --output-path .xi18n', exportDir: true, expect: null })),
   // ng serve: the dev server builds into memory and serves it - no lockfile, served or written, not even an export copy
   ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
     { name: `Angular ${v}: ng serve writes no lockfile`, fixture, cmd: ANGULAR_SERVE, env: { BUNDLE_LOCKFILE_EXPORT_DIR: '/tmp/bl-angular-serve-export' }, expect: null })),
