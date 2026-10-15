@@ -1,7 +1,7 @@
 'use strict';
 // Serializes packages as package-lock.json (lockfileVersion 3, npm's format: docs.npmjs.com/cli/configuring-npm/
 // package-lock-json), in the subset that syft's javascript-lock-cataloger and Trivy's npm analyzer both read.
-/** @import { BundlerId, LockRecord, Package, Via } from '../types' */
+/** @import { BundlerId, LocatedPackage, LockRecord, Package, UnknownPackage, Via } from '../types' */
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -162,7 +162,7 @@ function toPackageLock(pkgs, context, meta) {
   // p.outside: a package outside the project that another writer's lockfile listed (readMeta): its real path is not
   // known, only its key; p.unknown: a package whose location is not known
   /** @type {[Package, string | null][]} */
-  const keyed = sorted.filter(p => !p.unknown).map(p => [p, p.outside ? null : locationKey(base, p.path)]);
+  const keyed = sorted.filter(p => !p.unknown).map(p => [p, located(p) ? locationKey(base, p.path) : null]);
   // Keys (see npmKey): a location in the context's node_modules is its own key (real locations are unique per
   // package); one in an ancestor's node_modules is without its ../ if no other package has that key (a context with a
   // node_modules of its own can have both node_modules/a and ../node_modules/a); every other package, and a package
@@ -446,8 +446,11 @@ function unreadableRecord(json) {
 }
 
 // A package whose location is not known: identified by its name and version only (see toPackageLock).
-/** @type {(p: Package) => Package} */
+/** @type {(p: LocatedPackage) => UnknownPackage} */
 const unknownPackage = (p) => ({ ...p, path: `\0unknown:${p.name}@${p.version}`, unknown: true });
+// The package is at its path, a directory (neither outside the project nor of a location not known).
+/** @param {Package} p @returns {p is LocatedPackage} */
+function located(p) { return !p.outside && !p.unknown; }
 
 // The content of a copy of a lockfile, for its directory `to`: the record of the lockfile (anchored in `from`, see
 // readMeta; contexts: as for readMeta) anchored at `to` (see anchorOf); the paths relative to the context and to the
@@ -471,4 +474,4 @@ function reanchor(json, from, to, contexts = []) {
   return JSON.stringify(doc, null, 2) + '\n';
 }
 
-module.exports = { cmp, toPackageLock, readMeta, unreadableRecord, reanchor, unknownPackage, VERSION };
+module.exports = { cmp, toPackageLock, readMeta, unreadableRecord, reanchor, unknownPackage, located, VERSION };

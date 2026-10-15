@@ -1,22 +1,45 @@
 // The shapes the modules hand each other, for the type check only (tsconfig.json, `npm run typecheck`): the .cjs
 // files refer to them with JSDoc (`@import { Package } from '../types'`). Nothing loads this file at run time.
 
-/** A package as a lockfile lists it: what its package.json says, and where it is. */
-export interface Package {
+/** What every package has: what its package.json says. */
+interface PackageBase {
   name: string;
   version: string;
-  /**
-   * Its directory (a real path). A package whose location is not known has `\0unknown:<name>@<version>`, one outside
-   * the project that another writer's record listed `\0outside:<key>` (see core/lockfile.cjs readMeta).
-   */
-  path: string;
   /** "license", or the legacy "licenses" (core/manifest.cjs licenseOf) */
   license?: string | string[];
-  /** the key of a package outside the project, read from another writer's record */
-  outside?: string;
-  /** its location is not known: read from a copy, or no longer where a record said (core/outputs.cjs stillThere) */
-  unknown?: boolean;
 }
+
+/** A package at a directory this process knows (a real path): read from its package.json, or from a record. */
+export interface LocatedPackage extends PackageBase {
+  path: string;
+  outside?: undefined;
+  unknown?: undefined;
+}
+
+/** A package outside the project that another writer's record listed: only its key is known (core/lockfile.cjs readMeta). */
+export interface OutsidePackage extends PackageBase {
+  /** an id of its own, never a real path that could be another package */
+  path: `\0outside:${string}`;
+  /** its key in that record */
+  outside: string;
+  unknown?: undefined;
+}
+
+/**
+ * A package whose location is not known: read from a copy, or no longer where a record said (core/outputs.cjs
+ * stillThere). The same package as any other one with its name and version (core/lockfile.cjs toPackageLock).
+ */
+export interface UnknownPackage extends PackageBase {
+  path: `\0unknown:${string}`;
+  unknown: true;
+  outside?: undefined;
+}
+
+/**
+ * A package as a lockfile lists it: what its package.json says, and where it is. `path` identifies it everywhere (maps,
+ * a writer's contents and via); only a LocatedPackage's is a directory (core/lockfile.cjs located).
+ */
+export type Package = LocatedPackage | OutsidePackage | UnknownPackage;
 
 /** Anything with a package path: what a via collector records. */
 export interface HasPath { path: string }

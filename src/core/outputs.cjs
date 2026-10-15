@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
-const { cmp, toPackageLock, readMeta, reanchor, unknownPackage } = require('./lockfile.cjs');
+const { cmp, toPackageLock, readMeta, reanchor, unknownPackage, located } = require('./lockfile.cjs');
 const { readManifest } = require('./manifest.cjs');
 const { exportPath } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
@@ -134,9 +134,10 @@ const stillThere = (seen) => (b) => {
   /** @type {Map<string, string>} */
   const ids = new Map(); // path -> path after the check, of this build's packages
   const pkgs = b.pkgs.map((p) => {
-    const now = !p.outside && !p.unknown && at(p.path);
+    if (!located(p)) return p; // outside the project, or its location not known already: as it is, and so is its path
+    const now = at(p.path);
     const same = !!now && typeof now.name === 'string' && now.name === p.name && (now.version === p.version || now.version === undefined);
-    const q = p.outside || p.unknown || same ? p : unknownPackage(p);
+    const q = same ? p : unknownPackage(p);
     ids.set(p.path, q.path);
     return q;
   });
@@ -179,7 +180,7 @@ function render(target, own) {
   // keys are relative to one context; pick it independently of which writer finished last - this process's, and that of
   // another process's record only if it is no copy's (see readMeta) and has a package that is still where it says: the
   // context of a copy is not the project (two directories above it, for SvelteKit's build/)
-  const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(p => !p.unknown && !p.outside)));
+  const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(located)));
   // (a record of another project, without its paths, has none: its packages' locations are not known, see readMeta)
   const context = /** @type {string[]} */ ((valid.length ? valid : checked).map(b => b.context).filter(Boolean)).sort(cmp)[0] || path.dirname(target);
   const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, outputCount: b.outputCount, contents: b.contents,

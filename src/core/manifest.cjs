@@ -1,7 +1,7 @@
 'use strict';
 // A package directory's package.json: its name, version and license. Shared by the modules that map files to packages
 // (packages.cjs, vendored.cjs) and the ones that check a recorded package is still where it was (outputs.cjs).
-/** @import { Manifest, Package } from '../types' */
+/** @import { LocatedPackage, Manifest } from '../types' */
 const fs = require('fs');
 const path = require('path');
 
@@ -33,14 +33,14 @@ function readManifest(dir) {
 /**
  * @param {Manifest | null} j
  * @param {string} dir
- * @returns {Package | null}
+ * @returns {LocatedPackage | null}
  */
 function packageOf(j, dir) {
   if (!j || typeof j.name !== 'string' || !j.name || typeof j.version !== 'string' || !j.version) return null;
   return { name: j.name, version: j.version, path: dir, license: licenseOf(j) };
 }
 
-/** @type {(dir: string) => Package | null} */
+/** @type {(dir: string) => LocatedPackage | null} */
 const readPackage = (dir) => packageOf(readManifest(dir), dir);
 
 module.exports = { readPackage, readManifest, packageOf };
