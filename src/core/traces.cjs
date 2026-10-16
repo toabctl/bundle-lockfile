@@ -7,6 +7,7 @@
 // them from the project's node_modules.
 const fs = require('fs');
 const path = require('path');
+const { isObject, isArray, strings, parseJson } = require('./values.cjs');
 
 // Directories of distDir that hold no traces of this build: Next's caches, the standalone copy (which has copies of
 // the traces), the client output, Turbopack's diagnostics and its links to external packages
@@ -46,15 +47,14 @@ const traceFiles = (distDir) => filesBelow(distDir, SKIP, (f) => f.endsWith('.nf
  * @returns {string[]}
  */
 function filesOf(traceFile) {
-  /** @type {any} */
   let j;
-  try { j = JSON.parse(fs.readFileSync(traceFile, 'utf8')); } catch (e) {
+  try { j = parseJson(fs.readFileSync(traceFile, 'utf8')); } catch (e) {
     throw new Error(`could not read ${traceFile}: ${/** @type {Error} */ (e).message}`, { cause: e });
   }
-  if (!j || typeof j !== 'object' || j.version !== 1) throw new Error(`${traceFile} is a trace of a version bundle-lockfile does not know (${j && j.version})`);
-  if (!Array.isArray(j.files) || j.files.some(/** @param {unknown} f */ f => typeof f !== 'string')) throw new Error(`${traceFile} has no list of files`);
+  if (!isObject(j) || j.version !== 1) throw new Error(`${traceFile} is a trace of a version bundle-lockfile does not know (${String(isObject(j) ? j.version : j)})`);
+  if (!isArray(j.files) || j.files.some(f => typeof f !== 'string')) throw new Error(`${traceFile} has no list of files`);
   const dir = path.dirname(traceFile);
-  return j.files.map(/** @param {string} f */ f => path.resolve(dir, f));
+  return strings(j.files).map(f => path.resolve(dir, f));
 }
 
 module.exports = { filesBelow, traceFiles, filesOf };

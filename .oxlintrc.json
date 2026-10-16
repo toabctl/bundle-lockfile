@@ -1,0 +1,31 @@
+// Lint with types: `npm run lint` runs it after ESLint (development only, see package.json). ESLint has the syntax
+// rules; oxlint here only the rules that need the types of the JSDoc type check (tsconfig.json), which typescript-eslint
+// cannot have with TypeScript 7 (it has no JavaScript API): oxlint-tsgolint is built on TypeScript 7.
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": { "correctness": "off", "suspicious": "off", "pedantic": "off", "perf": "off", "style": "off", "restriction": "off", "nursery": "off" },
+  "plugins": ["typescript"],
+  "options": { "typeAware": true },
+  "rules": {
+    // a promise nobody handles: a failure that does not fail the build (or crashes the process instead); one that
+    // cannot reject is marked with `void` where it is dropped
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    // a promise returned in a try block without await skips its catch and finally
+    "typescript/return-await": ["error", "in-try-catch"]
+  },
+  "overrides": [
+    {
+      // the core has no any: what it reads (JSON, errors, other copies' state) is unknown until checked
+      "files": ["src/core/**"],
+      "rules": {
+        "typescript/no-unsafe-argument": "error",
+        "typescript/no-unsafe-assignment": "error",
+        "typescript/no-unsafe-call": "error",
+        "typescript/no-unsafe-member-access": "error",
+        "typescript/no-unsafe-return": "error"
+      }
+    }
+  ]
+}

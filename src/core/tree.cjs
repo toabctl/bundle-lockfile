@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { shortHash } = require('./hashes.cjs');
 const { unique } = require('./lock.cjs');
+const { codeOf, isObject, parseJson } = require('./values.cjs');
 
 const DIR = 'packages';
 // a file of a tree: <lockfile dir>/packages/<id>/node_modules/... (see copies.cjs, late.cjs: no package's file)
@@ -34,12 +35,11 @@ function nameDirs(name) {
  * @returns {[string, string][]}
  */
 function stubsOf(json) {
-  /** @type {any} */
-  const doc = JSON.parse(json);
+  const doc = parseJson(json);
   /** @type {[string, string][]} */
   const out = [];
-  for (const [key, p] of Object.entries(/** @type {Record<string, any>} */ ((doc && doc.packages) || {}))) {
-    if (!key || !p || typeof p.name !== 'string' || typeof p.version !== 'string') continue;
+  for (const [key, p] of Object.entries(isObject(doc) && isObject(doc.packages) ? doc.packages : {})) {
+    if (!key || !isObject(p) || typeof p.name !== 'string' || typeof p.version !== 'string') continue;
     const dirs = nameDirs(p.name);
     const id = shortHash(key);
     const stub = { name: p.name, version: p.version, ...(typeof p.license === 'string' ? { license: p.license } : {}) };
@@ -105,7 +105,7 @@ const STUB = /^[0-9a-f]{16}\/node_modules\/(@[^/]+\/)?[^/]+\/package\.json$/;
 /** @param {string} target */
 function ours(target) {
   let st;
-  try { st = fs.lstatSync(target); } catch (e) { if (e.code === 'ENOENT') return true; throw e; }
+  try { st = fs.lstatSync(target); } catch (e) { if (codeOf(e) === 'ENOENT') return true; throw e; }
   if (!st.isDirectory()) return false;
   /** @type {(d: string, rel: string) => boolean} */
   const walk = (d, rel) => fs.readdirSync(d, { withFileTypes: true }).every((e) => {

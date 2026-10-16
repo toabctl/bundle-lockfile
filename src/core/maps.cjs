@@ -7,7 +7,7 @@
  * @template K, V
  * @param {Map<K, V>} map
  * @param {K} key
- * @param {() => V} make
+ * @param {() => NoInfer<V>} make
  * @returns {V}
  */
 function getOr(map, key, make) {

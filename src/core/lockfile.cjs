@@ -8,6 +8,7 @@ const { posix, within, realish } = require('./paths.cjs');
 const { hex } = require('./hashes.cjs');
 const { getOr } = require('./maps.cjs');
 const { CLASSES, KNOWN } = require('./via.cjs');
+const { isObject, isArray, strings, parseJson } = require('./values.cjs');
 
 // Code-unit order, not localeCompare: the output must not depend on the build machine's locale
 // (with LC_ALL=da_DK.UTF-8, "aa-utils" sorts after "zod").
@@ -53,8 +54,8 @@ const npmKey = (location) => { const k = location.replace(/^(\.\.\/)+/, ''); ret
  * @returns {string | undefined}
  */
 function licenseString(l) {
-  if (!Array.isArray(l)) return typeof l === 'string' ? l : undefined; // also from an edited lockfile (readMeta)
-  const all = [...new Set(l.filter(x => typeof x === 'string' && x))];
+  if (!isArray(l)) return typeof l === 'string' ? l : undefined; // also from an edited lockfile (readMeta)
+  const all = [...new Set(strings(l).filter(x => x))];
   if (all.length < 2) return all[0];
   return `(${all.map(x => (/\s/.test(x) && !/^\(.*\)$/.test(x) ? `(${x})` : x)).join(' OR ')})`;
 }
@@ -142,7 +143,7 @@ function provenanceOf(w, indexOf) {
     if (i === undefined) continue;
     for (const c of classes) if (KNOWN.has(c)) getOr(by, c, () => new Set()).add(i);
   }
-  const via = CLASSES.flatMap((c) => { const s = by.get(c); return s ? [[c, [...s].sort((a, b) => a - b)]] : []; });
+  const via = CLASSES.flatMap(/** @returns {[string, number[]][]} */ (c) => { const s = by.get(c); return s ? [[c, [...s].sort((a, b) => a - b)]] : []; });
   if (via.length) out.via = Object.fromEntries(via);
   return out;
 }
@@ -330,14 +331,11 @@ const anchoredAt = (dir, context, self) => path.resolve(dir, context, self) === 
  */
 function readMeta(json, dir, contexts = []) {
   let doc;
-  try { doc = JSON.parse(json); } catch { return null; }
-  const m = doc && doc['bundle-lockfile'];
-  /** @type {(v: unknown) => boolean} */
-  const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
-  /** @type {(v: unknown) => string[]} */
-  const strings = (v) => (Array.isArray(v) ? v.filter(s => typeof s === 'string') : []);
+  try { doc = parseJson(json); } catch { return null; }
+  const m = isObject(doc) ? doc['bundle-lockfile'] : undefined;
   // a lockfile of another shape (edited, another tool's) is no record: it must not stop this one from being written
-  if (!isObject(m) || m.v !== VERSION || !Array.isArray(m.writers) || !isObject(doc.packages)) return null;
+  if (!isObject(doc) || !isObject(m) || m.v !== VERSION || !isArray(m.writers) || !isObject(doc.packages)) return null;
+  const entries = doc.packages;
   let context, anchored;
   if (typeof m.context === 'string') {
     context = path.resolve(dir, m.context);
@@ -354,15 +352,13 @@ function readMeta(json, dir, contexts = []) {
   const unknown = new Set(strings(m.unknown));
   // a key is the package's location unless "locations" gives it (no "locations": written by v0.0.3 or earlier, whose
   // keys were all locations)
-  /** @type {(o: object, k: string) => boolean} */
-  const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   const locations = isObject(m.locations) ? m.locations : {};
   /** @type {(k: string) => string} */
-  const locationOf = (k) => (own(locations, k) && typeof locations[k] === 'string' ? locations[k] : k);
+  const locationOf = (k) => { const l = Object.hasOwn(locations, k) ? locations[k] : undefined; return typeof l === 'string' ? l : k; };
   // a package outside the project has no path here: an id of its own, never a real path that could be another package
   /** @type {(k: string) => Package | null} */
   const pkgOf = (k) => {
-    const p = own(doc.packages, k) && doc.packages[k];
+    const p = Object.hasOwn(entries, k) ? entries[k] : undefined;
     if (!isObject(p) || typeof p.name !== 'string' || !p.name || typeof p.version !== 'string' || !p.version) return null;
     // only the fields of a package: an entry's other fields (an edited lockfile's "unknown", "outside", "dev") are not
     // what the record says about where it is
@@ -380,7 +376,8 @@ function readMeta(json, dir, contexts = []) {
   return {
     context,
     anchored,
-    writers: m.writers.filter((/** @type {any} */ w) => isObject(w) && typeof w.id === 'string').map((/** @type {any} */ w) => {
+    writers: m.writers.flatMap((w) => {
+      if (!isObject(w) || typeof w.id !== 'string') return [];
       // the writer's packages, one object per key (also of any other writer's), and the one an index names, or null
       const keys = strings(w.packages);
       const byIndex = keys.map(k => getOr(byKey, k, () => pkgOf(k)));
@@ -389,16 +386,19 @@ function readMeta(json, dir, contexts = []) {
       /** @type {Record<string, string[]>} */
       const contents = {};
       for (const [f, list] of Object.entries(isObject(w.contents) ? w.contents : {})) {
-        if (!Array.isArray(list)) continue;
+        if (!isArray(list)) continue;
         contents[path.resolve(dir, f)] = list.map(at).filter(p => p !== null).map(p => p.path);
       }
       /** @type {Via} */
       const via = new Map(); // package path -> Set(class)
       for (const [c, list] of Object.entries(isObject(w.via) ? w.via : {})) {
-        if (!KNOWN.has(c) || !Array.isArray(list)) continue;
+        if (!KNOWN.has(c) || !isArray(list)) continue;
         for (const i of list) { const p = at(i); if (p) getOr(via, p.path, () => new Set()).add(c); }
       }
       const b = w.bundler;
+      /** @type {Record<string, string>} */
+      const outputs = {};
+      for (const [f, h] of Object.entries(isObject(w.outputs) ? w.outputs : {})) if (typeof h === 'string') outputs[path.resolve(dir, f)] = h;
       /** @type {RecordedWriter} */
       const out = {
         id: w.id,
@@ -406,13 +406,12 @@ function readMeta(json, dir, contexts = []) {
         via,
         files: strings(w.files).map(f => path.resolve(dir, f)),
         count: typeof w.count === 'number' ? w.count : undefined,
-        outputs: isObject(w.outputs)
-          ? Object.fromEntries(Object.entries(w.outputs).filter(([, h]) => typeof h === 'string').map(([f, h]) => [path.resolve(dir, f), h])) : {},
+        outputs,
         outputCount: typeof w.outputCount === 'number' ? w.outputCount : undefined,
         contents,
         pkgs: byIndex.filter(p => p !== null),
       };
-      return out;
+      return [out];
     }),
   };
 }
@@ -427,10 +426,10 @@ const NOT_JSON = 'is not JSON';
  */
 function unreadableRecord(json) {
   let doc;
-  try { doc = JSON.parse(json); } catch { return NOT_JSON; }
-  const m = doc && typeof doc === 'object' ? doc['bundle-lockfile'] : undefined;
+  try { doc = parseJson(json); } catch { return NOT_JSON; }
+  const m = isObject(doc) ? doc['bundle-lockfile'] : undefined;
   if (m === undefined) return null;
-  if (m && typeof m === 'object' && !Array.isArray(m) && m.v !== VERSION) return `has a record of version ${JSON.stringify(m.v)}, which this bundle-lockfile does not read (it reads version ${VERSION}): build it again with this one`;
+  if (isObject(m) && m.v !== VERSION) return `has a record of version ${JSON.stringify(m.v)}, which this bundle-lockfile does not read (it reads version ${VERSION}): build it again with this one`;
   return 'has a bundle-lockfile record of a shape it does not read';
 }
 
@@ -455,8 +454,10 @@ function located(p) { return !p.outside && !p.unknown; }
 function reanchor(json, from, to, contexts = []) {
   const meta = readMeta(json, from, contexts);
   if (!meta || meta.anchored !== true || !meta.context) return null;
-  const doc = JSON.parse(json);
-  const { context: c, self, contextId, selfId, v, ...rest } = doc['bundle-lockfile'];
+  const doc = parseJson(json);
+  const record = isObject(doc) ? doc['bundle-lockfile'] : undefined;
+  if (!isObject(doc) || !isObject(record)) return null; // (readMeta read it)
+  const { context: c, self, contextId, selfId, v, ...rest } = record;
   // as given, through the same symbolic links as the writer's (a record without its paths: the reader's context)
   const context = typeof c === 'string' ? path.resolve(from, c) : contexts.find(x => realish(x) === meta.context) || meta.context;
   doc['bundle-lockfile'] = { v, ...anchorOf(context, to), ...rest };

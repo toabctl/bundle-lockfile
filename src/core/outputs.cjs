@@ -18,6 +18,7 @@ const { shortHash } = require('./hashes.cjs');
 const { getOr } = require('./maps.cjs');
 const copies = require('./copies.cjs');
 const lru = require('./lru.cjs');
+const { codeOf, isObject, parseJson, perProcess } = require('./values.cjs');
 
 /** @import { Build, BundlerId, LockRecord, Manifest, Package, ViaCollector, Via, Writer, WriterRecord } from '../types' */
 /**
@@ -42,11 +43,13 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies
  *   read: Map<string, LockRecord | null>, copies: Map<string, { target: string | null, content: string | null }>,
  *   exports: Map<string, string>, listening?: boolean }}
  */
-const outputs = /** @type {any} */ (globalThis)[KEY]
-  || (/** @type {any} */ (globalThis)[KEY] = { files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map(), exports: new Map() });
+const outputs = perProcess(KEY, () => ({ files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map(), exports: new Map() }));
 // exports: export copy -> the lockfile this process writes there (see exportOf); a copy of this module of a release
 // before it made none
 if (!outputs.exports) outputs.exports = new Map();
+// The writers of a lockfile path in this process (none: a new, empty map)
+/** @type {(target: string) => Map<string, Writer>} */
+const writersOf = (target) => outputs.files.get(target) || /** @type {Map<string, Writer>} */ (new Map());
 const MAX_COPIES = 1000;
 
 // The contexts of this process's writers of `target` (all writers: target null), for records without their paths (see
@@ -83,7 +86,7 @@ const stateFile = (target) => (config.inline ? target : exportPath(target));
 // symbolic link the build wrote is there also if what it points at is not - as prune's checks of this process's writers.
 /** @param {string} file */
 function there(file) {
-  try { fs.lstatSync(file); return true; } catch (e) { return e.code !== 'ENOENT'; }
+  try { fs.lstatSync(file); return true; } catch (e) { return codeOf(e) !== 'ENOENT'; }
 }
 
 // Writers of `target` recorded by other processes (in the lockfile on disk) with a file that is still there and that no
@@ -119,7 +122,7 @@ function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set
   } catch (e) {
     // not there (any more, or a file where a directory of its path would be); any other error (EACCES, EMFILE, EISDIR)
     // hides the other processes' records: a problem (core/problems.cjs), with what this process read last
-    if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') problems.problem(`could not read ${file}: the packages other processes recorded there may be missing`, e);
+    if (codeOf(e) !== 'ENOENT' && codeOf(e) !== 'ENOTDIR') problems.problem(`could not read ${file}: the packages other processes recorded there may be missing`, e);
     meta = outputs.read.get(target) || null;
   }
   if (!meta) return [];
@@ -205,7 +208,7 @@ function render(target, own) {
   const ids = new Set();
   /** @type {Set<string>} */
   const fresh = new Set(); // writers whose record on disk is another process's
-  const mine = outputs.files.get(target) || new Map();
+  const mine = writersOf(target);
   for (const [id, w] of mine) {
     const b = id === own && w.building ? w.building : w.landed;
     // a writer with no landed build here (its first build in this process failed): its record on disk is still the
@@ -288,7 +291,7 @@ function record(target, writer, pkgs, context, files = [], opts = {}) {
  * @param {string[]} files
  */
 function setFiles(target, writer, files) {
-  const w = (outputs.files.get(target) || new Map()).get(writer);
+  const w = writersOf(target).get(writer);
   if (w && w.building) w.building = { ...w.building, files };
 }
 
@@ -298,7 +301,7 @@ function setFiles(target, writer, files) {
  * @param {string} writer
  */
 function emitted(target, writer) {
-  const w = (outputs.files.get(target) || new Map()).get(writer);
+  const w = writersOf(target).get(writer);
   if (w && w.building) { w.landed = w.building; w.building = null; w.landings++; }
 }
 
@@ -307,7 +310,7 @@ function emitted(target, writer) {
 // rendered its lockfile), is written again without it.
 /** @param {string} target */
 function isShared(target) {
-  const writers = outputs.files.get(target) || new Map();
+  const writers = writersOf(target);
   return writers.size > 1 || foreign(target, new Set([...writers.values()].map(w => w.id)), true).length > 0;
 }
 
@@ -324,7 +327,7 @@ function isShared(target) {
  * @returns {Promise<void>}
  */
 async function prune(target, writer, exists) {
-  const writers = outputs.files.get(target) || new Map();
+  const writers = writersOf(target);
   /** @type {[string, Writer, Build][]} */
   const others = [];
   for (const [id, w] of writers) if (id !== writer && w.landed && w.landed.files.length) others.push([id, w, w.landed]);
@@ -403,7 +406,7 @@ function outputCopy(src, dest, isDirectory) {
     if (!within(odir, src) || within(src, target)) continue; // (a directory with the lockfile in it: copied with it)
     if (!isDirectory && !hasFile(target, src)) continue;
     const up = path.relative(odir, src).split(path.sep).filter(Boolean).length;
-    const root = path.join(dest, ...Array(up).fill('..'));
+    const root = path.join(dest, ...Array.from({ length: up }, () => '..'));
     // a place that is (in) an output, or has one in it (a file copied up into the project): no copy there
     if (dirs.some(([, d]) => within(d, root) || within(root, d)) || root.split(path.sep).includes('node_modules')) return;
     const copy = path.join(root, config.file);
@@ -427,7 +430,7 @@ function outputCopy(src, dest, isDirectory) {
 // The lockfile at `copy` is one an earlier run copied of `target`: its record has a writer this process has there
 /** @param {string} copy @param {string} target */
 function earlierCopy(copy, target) {
-  const own = new Set([...(outputs.files.get(target) || new Map()).values()].map(w => w.id));
+  const own = new Set([...writersOf(target).values()].map(w => w.id));
   try {
     const meta = readMeta(fs.readFileSync(copy, 'utf8'), path.dirname(copy), contextsOf(target));
     return !!meta && meta.writers.some(w => own.has(w.id));
@@ -474,10 +477,11 @@ function writeDisk(file) {
 /** @param {string} file */
 function ours(file) {
   let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return; throw e; }
-  let doc = null;
-  try { doc = JSON.parse(text); } catch { /* not JSON */ }
-  if (!doc || typeof doc !== 'object' || !doc['bundle-lockfile'] || typeof doc['bundle-lockfile'] !== 'object') {
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (codeOf(e) === 'ENOENT') return; throw e; }
+  let doc;
+  try { doc = parseJson(text); } catch { /* not JSON */ }
+  const rec = isObject(doc) ? doc['bundle-lockfile'] : null;
+  if (!rec || typeof rec !== 'object') {
     throw new Error(`${file} is there and was not written by bundle-lockfile (e.g. npm's own lockfile): it is not replaced`);
   }
 }
@@ -524,7 +528,7 @@ function rewrite(target, writeFile) {
       } catch (e) { return err || e; }
       if (!err) {
         follow(target, content);
-        for (const w of (outputs.files.get(target) || new Map()).values()) w.wrote = true; // (see render)
+        for (const w of writersOf(target).values()) w.wrote = true; // (see render)
       }
       return err;
     } catch (e) { return e; } finally { release(); }
@@ -535,7 +539,7 @@ function rewrite(target, writeFile) {
 
 // A file of a writer on the real disk is there (see there; asynchronous, for prune)
 /** @type {(file: string) => Promise<boolean>} */
-const onDisk = (file) => fs.promises.lstat(file).then(() => true, (e) => e.code !== 'ENOENT');
+const onDisk = (file) => fs.promises.lstat(file).then(() => true, (/** @type {unknown} */ e) => codeOf(e) !== 'ENOENT');
 
 // The writer's build has landed - its output is written: the other writers whose files are gone are dropped (prune),
 // then the lockfile is written (rewrite): inline with writeFile (default: on the real disk, unless BUNDLE_LOCKFILE_INLINE
@@ -583,7 +587,7 @@ function exportOf(target) {
 function filesOf(target) {
   /** @type {Set<string>} */
   const all = new Set();
-  for (const w of (outputs.files.get(target) || new Map()).values()) {
+  for (const w of writersOf(target).values()) {
     for (const b of [w.building, w.landed]) if (b) for (const f of b.files) all.add(f);
   }
   return all;
@@ -599,7 +603,7 @@ const fileSets = new WeakMap(); // files array -> { n: its length then, set }
  * @param {string} file
  */
 function hasFile(target, file) {
-  for (const w of (outputs.files.get(target) || new Map()).values()) {
+  for (const w of writersOf(target).values()) {
     for (const b of [w.building, w.landed]) {
       if (!b) continue;
       let c = fileSets.get(b.files);

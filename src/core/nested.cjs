@@ -23,11 +23,11 @@ const { readMeta, unreadableRecord } = require('./lockfile.cjs');
 const { hashOf } = require('./hashes.cjs');
 const { unique } = require('./manifest.cjs');
 const { ancestors, packageRoot, realRoot, exportPath, JS_CSS } = require('./paths.cjs');
+const { codeOf, perProcess } = require('./values.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
 /** @type {{ metas: Map<string, LockRecord | null>, changed: Set<string> }} */
-const state = /** @type {any} */ (globalThis)[S]
-  || (/** @type {any} */ (globalThis)[S] = { metas: new Map(), changed: new Set() }); // dir -> meta | null; files warned about
+const state = perProcess(S, () => ({ metas: new Map(), changed: new Set() })); // dir -> meta | null; files warned about
 if (!state.changed) state.changed = new Set();
 
 // The record's file below an output dir, under both names it can have: package-lock.json, and record.json next to it
@@ -60,7 +60,7 @@ function metaOf(dir) {
     for (const f of exp ? [target, exp] : [target]) {
       let text, mtime;
       try { text = fs.readFileSync(f, 'utf8'); mtime = fs.statSync(f).mtimeMs; } catch (e) {
-        if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) problems.problem(`could not read ${f}: ${missing('a bundled file there may be its output')}`, e, { once: f });
+        if (codeOf(e) !== 'ENOENT' && codeOf(e) !== 'ENOTDIR') problems.problem(`could not read ${f}: ${missing('a bundled file there may be its output')}`, e, { once: f });
         continue;
       }
       const m = readMeta(text, path.dirname(target), [process.cwd()]); // (a record without its paths: anchored if it is this project's)

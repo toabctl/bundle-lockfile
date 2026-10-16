@@ -43,14 +43,14 @@ let esbuildFile = null;
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
 // that path); what lands it (its export copy written) added to `lands`, for once the build is known not to fail.
 // Returns the content Angular writes, or null.
-/** @param {(() => Promise<void> | void)[]} lands */
+/** @param {(() => Promise<void>)[]} lands */
 function render(side, target, writer, pkgs, context, files, found, lands) {
   const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found,
     bundler: { name: 'angular', ...(version ? { version } : {}) } });
   // Angular writes the lockfile in the output; bundle-lockfile its export copy
   if (exportPath(target)) lands.push(() => outputs.land(target, writer, 'angular', { writeFile: null, prune: false }));
   else {
-    lands.push(() => {
+    lands.push(async () => {
       outputs.emitted(target, writer);
       if (!config.inline) outputs.nowhere();
     });
@@ -71,7 +71,7 @@ function esbuildOf(wd) {
 
 // The result of executeBuild: the lockfiles added to its output files; problems as its errors. lands: what lands them
 // (writes the export copies) is added to it.
-/** @param {(() => Promise<void> | void)[]} lands */
+/** @param {(() => Promise<void>)[]} lands */
 function complete(options, result, forced, lands) {
   const files = Array.isArray(result.outputFiles) ? result.outputFiles : [];
   const stats = {};
@@ -233,7 +233,7 @@ function wrap(executeBuild) {
       if (typeof result.addError === 'function') result.addError(err.message.replace(/\n$/, ''));
       else throw err;
     };
-    /** @type {(() => Promise<void> | void)[]} */
+    /** @type {(() => Promise<void>)[]} */
     const lands = [];
     try { complete(options, result, forced, lands); } catch (e) { problems.problem('angular: could not collect the bundled packages', e); }
     // a build that fails writes nothing (Angular writes no output files then): nor the export copies

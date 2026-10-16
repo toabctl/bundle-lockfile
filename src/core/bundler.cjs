@@ -11,6 +11,7 @@ const config = require('./config.cjs');
 const problems = require('./problems.cjs');
 const { readManifest, licenseOf } = require('./manifest.cjs');
 const { ancestors, realRoot, within } = require('./paths.cjs');
+const { isArray } = require('./values.cjs');
 
 const fileOf = (/** @type {unknown} */ f) => (typeof f === 'string' && f.startsWith('file:') ? fileURLToPath(f.split('?')[0]) : f);
 
@@ -38,12 +39,12 @@ function bundlerPackage(kind, file, names, version) {
   const f = fileOf(file);
   const key = `${f}\0${names.join(',')}\0${version || ''}`;
   if (cache.has(key)) return /** @type {Package} */ (cache.get(key));
-  /** @type {{ dir: string, j: Manifest } | null} */
+  /** @type {{ dir: string, name: string, j: Manifest } | null} */
   let found = null;
   if (typeof f === 'string' && path.isAbsolute(f)) {
     for (const d of ancestors(path.dirname(realRoot(f)))) {
       const j = readManifest(d);
-      if (j && typeof j.name === 'string' && names.includes(j.name)) { found = { dir: d, j }; break; }
+      if (j && typeof j.name === 'string' && names.includes(j.name)) { found = { dir: d, name: j.name, j }; break; }
     }
   }
   /** @type {Package | null} */
@@ -53,10 +54,10 @@ function bundlerPackage(kind, file, names, version) {
   } else {
     const own = typeof found.j.version === 'string' && found.j.version ? found.j.version : null;
     const v = own || (typeof version === 'string' && version ? version : null);
-    if (!v) problems.problem(`${kind}: ${found.dir} (${found.j.name}) has no version, nor does the bundler say it: the lockfile would miss the bundler, whose code is in the output`, null, { once: key });
+    if (!v) problems.problem(`${kind}: ${found.dir} (${found.name}) has no version, nor does the bundler say it: the lockfile would miss the bundler, whose code is in the output`, null, { once: key });
     else {
-      if (own && version && own !== version) config.debug(`${kind}: ${found.dir} is ${found.j.name}@${own}, its code says ${version}`);
-      const pkg = { name: found.j.name, version: v, path: found.dir, license: licenseOf(found.j) };
+      if (own && version && own !== version) config.debug(`${kind}: ${found.dir} is ${found.name}@${own}, its code says ${version}`);
+      const pkg = { name: found.name, version: v, path: found.dir, license: licenseOf(found.j) };
       paths.add(pkg.path);
       config.debug(`${kind}: bundler package ${pkg.name}@${pkg.version} (from ${f})`);
       p = pkg;
@@ -80,10 +81,10 @@ function callerFiles() {
     const holder = {};
     Error.captureStackTrace(holder, callerFiles);
     const sites = holder.stack;
-    if (!Array.isArray(sites)) return [];
+    if (!isArray(sites)) return [];
     const out = [];
-    for (const s of sites) {
-      const f = fileOf(typeof s.getFileName === 'function' ? s.getFileName() : null);
+    for (const s of /** @type {Partial<NodeJS.CallSite>[]} */ (sites)) {
+      const f = fileOf(s && typeof s.getFileName === 'function' ? s.getFileName() : null);
       if (typeof f !== 'string' || !path.isAbsolute(f) || within(SRC, f)) continue;
       out.push(f);
     }

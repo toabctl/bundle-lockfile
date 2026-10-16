@@ -344,7 +344,7 @@ class BundleLockfilePlugin {
       // the end of this hook: what went wrong fails the build (a compilation error, see failCompilation) - outside the
       // promise and outside this compiler's builds (core/problems.cjs outside): callback() continues webpack's work, which
       // may start another compiler (a config array's dependencies)
-      this.afterEmit(compilation)
+      void this.afterEmit(compilation)
         .catch((e) => { problems.problem(`${kindOf(compiler)}: could not write the lockfile of ${outputDir(compilation)}`, e); })
         .then(() => setImmediate(() => {
           // (a failure that cannot even be recorded must not lose the callback: webpack would wait forever)

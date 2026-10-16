@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const problems = require('./problems.cjs');
+const { codeOf, isObject, parseJson } = require('./values.cjs');
 /** @typedef {import('fs').Stats} Stats */
 
 // Takes an exclusive lock on `file` across processes (a <file>.lock next to it); resolves with the function that
@@ -37,17 +38,17 @@ async function lock(file, { wait = 30000, staleAfter = 60000 } = {}) {
       // not one another process took over as stale meanwhile (see takeStale)
       return () => { try { if (sameFile(fs.lstatSync(l), mine)) fs.unlinkSync(l); } catch { /* gone */ } };
     } catch (e) {
-      if (e.code === 'ENOENT' && !created) { // no directory (yet, or no longer)
+      if (codeOf(e) === 'ENOENT' && !created) { // no directory (yet, or no longer)
         created = true;
         try { fs.mkdirSync(path.dirname(l), { recursive: true }); } catch (m) { return without('', m); }
         continue;
       }
-      if (e.code !== 'EEXIST') return without('', e);
+      if (codeOf(e) !== 'EEXIST') return without('', e);
     }
     created = false;
     let st;
     // lstat: a lock that is a symbolic link to nothing is there (open with wx fails on it), and is as old as the link
-    try { st = fs.lstatSync(l); } catch (e) { if (e.code === 'ENOENT') continue; return without('', e); } // released meanwhile
+    try { st = fs.lstatSync(l); } catch (e) { if (codeOf(e) === 'ENOENT') continue; return without('', e); } // released meanwhile
     if ((holderGone(l) || isStale(l, st, staleAfter)) && takeStale(l, st)) continue;
     if (Date.now() > deadline) return without('');
     await sleep(20);
@@ -88,9 +89,9 @@ const HOLDER = JSON.stringify({ host: os.hostname(), ns: pidNamespace, pid: proc
 /** @param {string} l */
 function holderGone(l) {
   let h;
-  try { h = JSON.parse(fs.readFileSync(l, 'utf8')); } catch { return false; } // (empty, or another shape: by its age)
-  if (!h || h.host !== os.hostname() || h.ns !== pidNamespace || !Number.isInteger(h.pid) || h.pid <= 0 || h.pid === process.pid) return false;
-  try { process.kill(h.pid, 0); return false; } catch (e) { return e.code === 'ESRCH'; } // (EPERM: another user's, alive)
+  try { h = parseJson(fs.readFileSync(l, 'utf8')); } catch { return false; } // (empty, or another shape: by its age)
+  if (!isObject(h) || h.host !== os.hostname() || h.ns !== pidNamespace || typeof h.pid !== 'number' || !Number.isInteger(h.pid) || h.pid <= 0 || h.pid === process.pid) return false;
+  try { process.kill(h.pid, 0); return false; } catch (e) { return codeOf(e) === 'ESRCH'; } // (EPERM: another user's, alive)
 }
 
 // Removes the stale lock `l` that had the stats `st` - not a lock another process has taken since. One process at a time
@@ -108,7 +109,7 @@ function holderGone(l) {
 function takeStale(l, st) {
   const t = `${l}.takeover`;
   try { fs.closeSync(fs.openSync(t, 'wx')); } catch (e) {
-    if (e.code === 'EEXIST') { try { if (Date.now() - fs.lstatSync(t).mtimeMs > TAKEOVER_STALE) fs.unlinkSync(t); } catch { /* gone */ } }
+    if (codeOf(e) === 'EEXIST') { try { if (Date.now() - fs.lstatSync(t).mtimeMs > TAKEOVER_STALE) fs.unlinkSync(t); } catch { /* gone */ } }
     return false;
   }
   try {
@@ -116,13 +117,13 @@ function takeStale(l, st) {
     try { now = fs.lstatSync(l); } catch { return true; } // released meanwhile
     if (!sameFile(now, st)) return true; // another lock now
     const away = `${l}.${unique()}.stale`;
-    try { fs.renameSync(l, away); } catch (e) { return e.code === 'ENOENT'; }
+    try { fs.renameSync(l, away); } catch (e) { return codeOf(e) === 'ENOENT'; }
     try {
       if (!sameFile(fs.lstatSync(away), st)) {
         try { fs.linkSync(away, l); } catch (e) {
           // EEXIST: a third one holds it now, and it waits for that one like everyone else; a file system without hard
           // links cannot put back the very file: an empty lock in its place keeps the others out until it is stale
-          if (e.code !== 'EEXIST') { try { fs.closeSync(fs.openSync(l, 'wx')); } catch { /* a third one holds it */ } }
+          if (codeOf(e) !== 'EEXIST') { try { fs.closeSync(fs.openSync(l, 'wx')); } catch { /* a third one holds it */ } }
         }
       }
     } catch { /* gone */ } finally { try { fs.unlinkSync(away); } catch { /* gone */ } }

@@ -395,7 +395,7 @@ function createPlugin({ inlined, pluginLoaded }, file) {
         // then): errors with one are other plugins' onEnd errors, after the write
         if (!result || (result.errors && result.errors.length && !result.metafile)) return end();
         state.version = build.esbuild && build.esbuild.version;
-        finish(options, result, state).then(end);
+        void finish(options, result, state).then(end); // (finish never rejects)
       })));
     },
   };
@@ -452,7 +452,7 @@ function wrapSync(fn, version, file, defaultWd) {
     const opts = { ...options, absWorkingDir: place.wd, metafile: true }; // (absWorkingDir: see attach)
     const result = fn.call(this, opts, ...rest);
     const own = {}; // (this call's problems, and those of none: not those of another build running meanwhile)
-    problems.within(own, () => finish(opts, result, { version, file }));
+    problems.within(own, () => void finish(opts, result, { version, file })); // (never rejects)
     if (!asked) delete result.metafile;
     problems.within(own, () => problems.failIfAny((err) => { throw err; }));
     return result;

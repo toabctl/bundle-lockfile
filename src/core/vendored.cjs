@@ -23,15 +23,16 @@ const path = require('path');
 const config = require('./config.cjs');
 const { ancestors, posix, packageRoot, real, within } = require('./paths.cjs');
 const { readManifest, packageOf } = require('./manifest.cjs');
+const { isObject, isArray, parseJson } = require('./values.cjs');
 
 const NAME = /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/; // as Trivy reads names, plus npm's ~
-const readJson = (/** @type {string} */ file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+const readJson = (/** @type {string} */ file) => { try { return parseJson(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 
 // package.json content that says it is an npm package another one could be a copy of
 /** @param {Manifest | null | undefined} j */
 function isVendorable(j) {
   return !!j && typeof j.name === 'string' && j.name.length <= 214 && NAME.test(j.name) && typeof j.version === 'string' && !!j.version
-    && !j.private && !(j.publisher && j.engines && j.engines.vscode);
+    && !j.private && !(j.publisher && isObject(j.engines) && j.engines.vscode);
 }
 // A workspace pattern as a test of a directory relative to its root ("/" separators): *, **, ?, {a,b}; "./" and a
 // trailing "/" are dropped. Patterns name directories (npm, yarn, pnpm, bun, lerna).
@@ -65,7 +66,7 @@ function pnpmPackages(yaml) {
 }
 
 // JSON with // and /* */ comments (rush.json), strings left alone
-/** @param {string} text @returns {any} */
+/** @param {string} text @returns {unknown} */
 function parseJsonc(text) {
   let out = '';
   for (let i = 0; i < text.length; i++) {
@@ -75,7 +76,7 @@ function parseJsonc(text) {
     if (c === '/' && text[i + 1] === '*') { const end = text.indexOf('*/', i + 2); i = end < 0 ? text.length : end + 1; continue; }
     out += c;
   }
-  try { return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1')); } catch { return null; }
+  try { return parseJson(out.replace(/,(\s*[}\]])/g, '$1')); } catch { return null; }
 }
 
 // The monorepo definitions in directory d: tests of member directories relative to d
@@ -86,14 +87,14 @@ function membersOf(d) {
   const add = (/** @type {unknown} */ patterns) => { for (const p of /** @type {unknown[]} */ (patterns || [])) if (typeof p === 'string') (p.startsWith('!') ? excludes : tests).push(globTest(p.replace(/^!/, ''))); };
   const pj = readManifest(d);
   const ws = pj && pj.workspaces;
-  add(Array.isArray(ws) ? ws : ws && ws.packages);
+  add(isArray(ws) ? ws : isObject(ws) ? ws.packages : undefined);
   try { add(pnpmPackages(fs.readFileSync(path.join(d, 'pnpm-workspace.yaml'), 'utf8'))); } catch { /* none */ }
   const lerna = readJson(path.join(d, 'lerna.json'));
-  if (lerna) add(Array.isArray(lerna.packages) && lerna.packages.length ? lerna.packages : ['packages/*']); // Nx's reading of a lerna.json without them
-  /** @type {any} */
+  if (isObject(lerna)) add(isArray(lerna.packages) && lerna.packages.length ? lerna.packages : ['packages/*']); // Nx's reading of a lerna.json without them
+  /** @type {unknown} */
   let rush = null;
   try { rush = parseJsonc(fs.readFileSync(path.join(d, 'rush.json'), 'utf8')); } catch { /* none */ }
-  const folders = new Set(rush && Array.isArray(rush.projects) ? rush.projects.map((/** @type {any} */ p) => p && typeof p.projectFolder === 'string' && posix(path.normalize(p.projectFolder))).filter(Boolean) : []);
+  const folders = new Set(isObject(rush) && isArray(rush.projects) ? rush.projects.flatMap(p => (isObject(p) && typeof p.projectFolder === 'string' ? [posix(path.normalize(p.projectFolder))] : [])) : []);
   const nx = fs.existsSync(path.join(d, 'nx.json'));
   if (!tests.length && !folders.size && !nx) return null;
   return (/** @type {string} */ dir) => {
@@ -108,9 +109,14 @@ function membersOf(d) {
 // Yarn Plug'n'Play: the directory is a workspace, portal or link of the project (its locator says so)
 /** @param {string} dir */
 function pnpFirstParty(dir) {
-  /** @type {any} */
+  /** @typedef {{ reference: string }} Locator */
+  /** @typedef {{ findPackageLocator(p: string): Locator | null, getPackageInformation(l: Locator): { packageLocation: string } }} PnpApi */
+  /** @type {PnpApi | null} */
   let api;
-  try { const m = require('module'); api = typeof (/** @type {any} */ (m)).findPnpApi === 'function' && (/** @type {any} */ (m)).findPnpApi(path.join(dir, 'x')); } catch { return false; }
+  try {
+    const m = /** @type {{ findPnpApi?: (p: string) => PnpApi | null }} */ (require('module'));
+    api = typeof m.findPnpApi === 'function' ? m.findPnpApi(path.join(dir, 'x')) : null;
+  } catch { return false; }
   if (!api) return false;
   try {
     const loc = api.findPackageLocator(dir + path.sep);
@@ -180,9 +186,9 @@ function scope({ context = process.cwd(), entries = [] } = {}) {
   /** @param {string} dir @returns {boolean} */
   const isFirstParty = (dir) => {
     if (states.has(dir)) return /** @type {boolean} */ (states.get(dir));
-    const j = manifest(dir);
+    const j = manifest(dir), name = j && j.name;
     const yes = boundary.has(dir) || monorepos.some(m => m(dir)) || firstParty.some(t => t(posix(dir)))
-      || (!!j && typeof j.name === 'string' && [...boundary].some(a => linkedAs(path.join(a, 'node_modules', j.name), dir)))
+      || (typeof name === 'string' && [...boundary].some(a => linkedAs(path.join(a, 'node_modules', name), dir)))
       || (!!j && pnpFirstParty(dir));
     states.set(dir, yes);
     return yes;
