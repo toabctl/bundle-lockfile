@@ -2,10 +2,11 @@
 // Values whose shape the type check cannot know: parsed JSON, thrown errors, state that the modules of a process share
 // through globalThis. Each is unknown until checked. No dependencies: anything may use it.
 
-// A JSON object (or any object but an array): its fields are unknown, each checked where it is read
+// A JSON object (or any object but an array: a bundler's, a module's exports): its fields are unknown, each checked
+// where it is read
 /**
  * @param {unknown} v
- * @returns {v is Record<string, unknown>}
+ * @returns {v is Record<PropertyKey, unknown>}
  */
 function isObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 

@@ -163,12 +163,13 @@ export interface Adapter {
   name: string;
   /** several bundlers, for BUNDLE_LOCKFILE_DISABLE */
   names?: string[];
-  onCjsLoad?(exports: any, request: string, resolve: () => string): void | { exports: any } | undefined;
+  /** exports: the module's, of any shape (each adapter checks them); a replacement for them, or nothing */
+  onCjsLoad?(exports: unknown, request: string, resolve: () => string): void | { exports: unknown } | undefined;
   cjsFiles?: RegExp[];
   cjsPackages?: string[];
   esmEntries?: EsmEntry[];
   esmPackages?: string[];
-  esmWrap?(id: string, name: string, fn: any, url: string): any;
+  esmWrap?(id: string, name: string, fn: unknown, url: string): unknown;
   esmCompanions?: EsmCompanion[];
 }
 
