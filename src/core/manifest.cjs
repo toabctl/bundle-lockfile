@@ -1,11 +1,12 @@
 'use strict';
 // A package directory's package.json: its name, version and license; and lists of packages, each once. Shared by the
 // modules that map files to packages (packages.cjs, vendored.cjs, nested.cjs), the ones that check a recorded package is
-// still where it was (outputs.cjs) and the adapters. No dependencies but Node's: the ESM loader thread uses it too
-// (core/layout.cjs).
+// still where it was (outputs.cjs) and the adapters. No dependencies but Node's and core/values.cjs (which has none):
+// the ESM loader thread uses it too (core/layout.cjs).
 /** @import { LocatedPackage, Manifest, Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
+const { isObject, isArray, strings, parseJson } = require('./values.cjs');
 
 // "license": "MIT", the legacy {"type": "MIT"} or "licenses": [{"type": "MIT"}, "ISC"]
 /**
@@ -13,11 +14,11 @@ const path = require('path');
  * @returns {string | string[] | undefined}
  */
 function licenseOf(j) {
-  /** @type {(l: any) => string | undefined} */
-  const one = (l) => (typeof l === 'string' ? l : l && typeof l.type === 'string' ? l.type : undefined);
+  /** @type {(l: unknown) => string | undefined} */
+  const one = (l) => (typeof l === 'string' ? l : isObject(l) && typeof l.type === 'string' ? l.type : undefined);
   if (j.license !== undefined) return one(j.license);
-  if (!Array.isArray(j.licenses)) return undefined;
-  const all = /** @type {string[]} */ (j.licenses.map(one).filter(Boolean));
+  if (!isArray(j.licenses)) return undefined;
+  const all = strings(j.licenses.map(one)).filter(l => l);
   return all.length ? all : undefined;
 }
 
@@ -28,7 +29,9 @@ function licenseOf(j) {
  * @returns {Manifest | null}
  */
 function readManifest(dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return null; }
+  let j;
+  try { j = parseJson(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return null; }
+  return isObject(j) ? j : null;
 }
 
 // { name, version, path: dir, license } of package.json content j, or null without name and version

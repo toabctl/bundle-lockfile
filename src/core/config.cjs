@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const util = require('util');
+const { codeOf, isObject, parseJson } = require('./values.cjs');
 const env = process.env;
 
 // Every BUNDLE_LOCKFILE_* variable bundle-lockfile reads. A name that is not one of them is a mistake (a typo such as
@@ -52,18 +53,17 @@ const fromFile = new Set(); // the settings the settings file set (not the envir
 // values: any other key or value is invalid. Only from bundle-lockfile's own directory or the file
 // BUNDLE_LOCKFILE_CONFIG names: never from the project, which must not redirect a package build's lockfiles.
 // Returns { file, error } (error: the file could not be used; core/problems.cjs reports it, see register.cjs).
-/** @returns {{ file: string | null, error: any }} */
+/** @returns {{ file: string | null, error: unknown }} */
 function readSettingsFile() {
   const named = env.BUNDLE_LOCKFILE_CONFIG && env.BUNDLE_LOCKFILE_CONFIG.trim();
   if (named && !path.isAbsolute(named)) invalid.push(`BUNDLE_LOCKFILE_CONFIG is not an absolute path: ${named} (each process would look for it in its own working directory)`);
   const file = named ? path.resolve(named) : path.join(__dirname, '..', 'config.json');
-  /** @type {any} */
   let settings;
-  try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
-    if (e.code === 'ENOENT' && !named) return { file: null, error: null }; // no settings file: none
+  try { settings = parseJson(fs.readFileSync(file, 'utf8')); } catch (e) {
+    if (codeOf(e) === 'ENOENT' && !named) return { file: null, error: null }; // no settings file: none
     return { file, error: e };
   }
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return { file, error: new Error('not a JSON object') };
+  if (!isObject(settings)) return { file, error: new Error('not a JSON object') };
   for (const [k, v] of Object.entries(settings)) {
     if (!FROM_FILE.includes(k)) {
       invalid.push(`the settings file ${file} sets ${k}, which ${NAMES.includes(k) ? 'only the environment can set' : 'is no setting of bundle-lockfile'}`);
@@ -183,7 +183,7 @@ const settingsProblems = () => [
 
 // To stderr itself, not through console: a bundler may have replaced console's methods (Parcel's command line sends
 // them to its logger, whose reporters print nothing of a reporter's own warnings, nor anything at the process's exit)
-/** @type {(prefix: string, a: any[]) => void} */
+/** @type {(prefix: string, a: unknown[]) => void} */
 const print = (prefix, a) => { process.stderr.write(`${util.format(prefix, ...a)}\n`); };
 
 module.exports = {

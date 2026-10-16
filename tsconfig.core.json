@@ -1,7 +1,0 @@
-{
-  // src/core with no implicit any as well: the shapes the core hands around are all typed (the adapters handle the
-  // bundlers' objects, which have no types here)
-  "extends": "./tsconfig.json",
-  "compilerOptions": { "noImplicitAny": true },
-  "include": ["src/core/*.cjs", "src/**/*.d.ts"]
-}

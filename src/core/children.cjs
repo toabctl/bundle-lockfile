@@ -13,6 +13,7 @@ const path = require('path');
 const config = require('./config.cjs');
 const { isNextBuild } = require('./unsupported.cjs');
 const { real } = require('./paths.cjs');
+const { isObject, isArray } = require('./values.cjs');
 
 const S = Symbol.for('bundle-lockfile.children.v1');
 /** @typedef {{ [S]?: { warned: boolean } }} Global */
@@ -78,12 +79,12 @@ const nextBuild = () => (isNext === undefined ? (isNext = isNextBuild()) : isNex
 // env (an options.env) as the child gets it: unchanged, or with our --require put back (shim mode). what: for the
 // warning.
 /**
- * @param {any} env
+ * @param {unknown} env
  * @param {string} what
- * @returns {any}
+ * @returns {unknown}
  */
 function checked(env, what) {
-  if (!env || typeof env !== 'object' || !ourRequire()) return env;
+  if (!isObject(env) || !ourRequire()) return env;
   if (String(env.NODE_OPTIONS || '').includes(/** @type {string} */ (ourRequire())) || ours(env.NODE_OPTIONS).length) return env;
   if (process.env.BUNDLE_LOCKFILE_NODE_SHIM || nextBuild()) {
     config.debug('the --require put back for', what);
@@ -100,14 +101,14 @@ function checked(env, what) {
 
 // options is the argument at index i of args (or absent): a copy of args with its env checked
 /**
- * @param {any[]} args
+ * @param {unknown[]} args
  * @param {number} i
  * @param {string} what
- * @returns {any[]}
+ * @returns {unknown[]}
  */
 function withEnv(args, i, what) {
   const opts = args[i];
-  if (!opts || typeof opts !== 'object' || Array.isArray(opts) || !('env' in opts)) return args;
+  if (!isObject(opts) || !('env' in opts)) return args;
   const env = checked(opts.env, what);
   if (env === opts.env) return args;
   const out = [...args];
@@ -136,32 +137,34 @@ function like(wrapper, orig) {
 function install() {
   if (/** @type {Global} */ (globalThis)[S]) return;
   /** @type {Global} */ (globalThis)[S] = { warned: false };
-  /** @type {Record<string, any>} */
+  /** @typedef {(this: unknown, ...args: unknown[]) => unknown} Fn */
+  /** @type {Record<string, unknown>} */
   const cp = require('child_process');
   // spawn(cmd, [args], [options]), execFile(cmd, [args], [options], [cb]) and their sync versions; fork(module, [args],
   // [options]) always starts a node (options.execPath: another one); exec(command, [options], [cb]) runs a shell
-  /** @type {(args: any[]) => number} */
+  /** @type {(args: unknown[]) => number} */
   const optionsAt = (args) => (Array.isArray(args[1]) ? 2 : 1);
   for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync']) {
-    const orig = cp[name];
+    const orig = /** @type {Fn} */ (cp[name]);
     if (typeof orig !== 'function') continue;
-    cp[name] = like(/** @this {unknown} @param {any} cmd @param {any[]} rest */ function (cmd, ...rest) {
+    cp[name] = like(/** @this {unknown} @param {unknown} cmd @param {unknown[]} rest */ function (cmd, ...rest) {
       const args = [cmd, ...rest];
-      return orig.apply(this, isNode(cmd) ? withEnv(args, optionsAt(args), `node (${name} ${[].concat(rest[0] || []).slice(0, 1).join(' ') || cmd})`) : args);
+      const arg = isArray(rest[0]) ? rest[0][0] : undefined; // (the first argument, for the warning)
+      return orig.apply(this, isNode(cmd) ? withEnv(args, optionsAt(args), `node (${name} ${String(arg || cmd)})`) : args);
     }, orig);
   }
   if (typeof cp.fork === 'function') {
-    const fork = cp.fork;
-    cp.fork = like(/** @this {unknown} @param {any[]} args */ function (...args) {
-      return fork.apply(this, withEnv(args, optionsAt(args), `node (fork ${args[0]})`));
+    const fork = /** @type {Fn} */ (cp.fork);
+    cp.fork = like(/** @this {unknown} @param {unknown[]} args */ function (...args) {
+      return fork.apply(this, withEnv(args, optionsAt(args), `node (fork ${String(args[0])})`));
     }, fork);
   }
   for (const name of ['exec', 'execSync']) {
-    const orig = cp[name];
+    const orig = /** @type {Fn} */ (cp[name]);
     if (typeof orig !== 'function') continue;
-    cp[name] = like(/** @this {unknown} @param {any} command @param {any[]} rest */ function (command, ...rest) {
+    cp[name] = like(/** @this {unknown} @param {unknown} command @param {unknown[]} rest */ function (command, ...rest) {
       const first = typeof command === 'string' ? command.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '') : '';
-      return orig.apply(this, isNode(first) ? withEnv([command, ...rest], 1, `node (${name} ${command.slice(0, 80)})`) : [command, ...rest]);
+      return orig.apply(this, isNode(first) ? withEnv([command, ...rest], 1, `node (${name} ${String(command).slice(0, 80)})`) : [command, ...rest]);
     }, orig);
   }
   const wt = require('worker_threads');
@@ -170,12 +173,12 @@ function install() {
     const Checked = class extends Worker {
       /**
        * @param {string | URL} file
-       * @param {any} options
+       * @param {import('worker_threads').WorkerOptions} [options]
        */
       constructor(file, options) {
         // (SHARE_ENV: the worker shares this process's environment)
         const opts = options && typeof options === 'object' && options.env && options.env !== wt.SHARE_ENV
-          ? { ...options, env: checked(options.env, `a worker thread (${file})`) } : options;
+          ? { ...options, env: /** @type {NodeJS.Dict<string>} */ (checked(options.env, `a worker thread (${String(file)})`)) } : options;
         super(file, opts);
       }
     };

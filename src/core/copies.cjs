@@ -12,6 +12,7 @@ const { fileURLToPath } = require('url');
 const lru = require('./lru.cjs');
 const { inTree } = require('./tree.cjs');
 const { ancestors, packageRoot, realish } = require('./paths.cjs');
+const { perProcess } = require('./values.cjs');
 /** @typedef {(src: string, dest: string, isDirectory: boolean) => void} CopyListener */
 /**
  * @typedef {{ files: Map<string, string>, dirs: Map<string, string>, installed: boolean, listeners: CopyListener[], warned?: boolean }} State
@@ -21,8 +22,8 @@ const S = Symbol.for('bundle-lockfile.copies.v2'); // v2: listeners; a copy of v
 const MAX = 50000; // entries; a long-running process must not grow them forever
 // files: destination file -> source file; dirs: destination dir -> source dir (fs.cp of a directory)
 /** @type {State} */
-const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { files: new Map(), dirs: new Map(), installed: false });
-if (!state.listeners) state.listeners = []; // fn(src, dest, isDirectory) after a copy that worked
+const state = perProcess(S, () => ({ files: new Map(), dirs: new Map(), installed: false, listeners: [] }));
+if (!state.listeners) state.listeners = []; // fn(src, dest, isDirectory) after a copy that worked (a state an earlier release made)
 
 // fn(src, dest, isDirectory): called after every copy that worked (absolute paths), before the copy returns to its
 // caller (its callback, its promise); what fn throws is ignored.
@@ -129,31 +130,34 @@ function install() {
   if (state.installed) return;
   state.installed = true;
   // kind: 'sync' (returns when done), 'callback' (the last argument is called when done), 'promise'
-  /** @type {(obj: any, name: string, dirAware: boolean, kind: 'sync' | 'callback' | 'promise') => void} */
+  /** @typedef {(this: unknown, ...args: unknown[]) => unknown} Fn */
+  /** @type {(obj: object, name: string, dirAware: boolean, kind: 'sync' | 'callback' | 'promise') => void} */
   const wrap = (obj, name, dirAware, kind) => {
-    const orig = obj[name];
+    const fns = /** @type {Record<string, unknown>} */ (obj);
+    const orig = /** @type {Fn} */ (fns[name]);
     if (typeof orig !== 'function') return;
-    /** @type {(this: unknown, src: any, dest: any, ...rest: any[]) => any} */
+    /** @type {(this: unknown, src: unknown, dest: unknown, ...rest: unknown[]) => unknown} */
     const wrapped = function (src, dest, ...rest) {
       let dir = false;
       try {
-        if (dirAware) { try { dir = fs.statSync(src).isDirectory(); } catch { /* the copy reports it */ } }
+        if (dirAware) { try { dir = fs.statSync(/** @type {import('fs').PathLike} */ (src)).isDirectory(); } catch { /* the copy reports it */ } }
         record(src, dest, dir);
       } catch { /* never in the way */ }
       const done = () => copied(src, dest, dir);
-      if (kind === 'callback' && typeof rest[rest.length - 1] === 'function') {
-        const cb = rest[rest.length - 1];
-        /** @type {(this: unknown, err: unknown, ...more: any[]) => any} */
-        rest[rest.length - 1] = function (err, ...more) { if (!err) done(); return cb.call(this, err, ...more); };
+      const cb = rest.at(-1);
+      if (kind === 'callback' && typeof cb === 'function') {
+        const callback = /** @type {Fn} */ (cb);
+        /** @type {Fn} */
+        rest[rest.length - 1] = function (err, ...more) { if (!err) done(); return callback.call(this, err, ...more); };
         return orig.call(this, src, dest, ...rest);
       }
-      const result = orig.call(this, src, dest, ...rest);
-      if (kind === 'promise' && result && typeof result.then === 'function') return result.then((/** @type {unknown} */ v) => { done(); return v; });
+      const result = /** @type {{ then?: unknown } | null | undefined} */ (orig.call(this, src, dest, ...rest));
+      if (kind === 'promise' && result && typeof result.then === 'function') return /** @type {Promise<unknown>} */ (result).then((v) => { done(); return v; });
       if (kind === 'sync') done();
       return result;
     };
     Object.defineProperty(wrapped, 'name', { value: orig.name });
-    obj[name] = wrapped;
+    fns[name] = wrapped;
   };
   wrap(fs, 'copyFile', false, 'callback'); wrap(fs, 'copyFileSync', false, 'sync');
   wrap(fs, 'cp', true, 'callback'); wrap(fs, 'cpSync', true, 'sync');

@@ -1,0 +1,8 @@
+{
+  // src/core with no implicit any as well: the shapes the core hands around are all typed (the adapters handle the
+  // bundlers' objects, which have no types here), and what it catches is unknown (core/values.cjs codeOf). Next to the
+  // files, so that the lint with types (.oxlintrc.json) checks them with it too.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "noImplicitAny": true, "useUnknownInCatchVariables": true },
+  "include": ["*.cjs", "../**/*.d.ts"]
+}

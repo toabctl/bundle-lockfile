@@ -12,6 +12,7 @@ const config = require('./config.cjs');
 const { hex } = require('./hashes.cjs');
 const lru = require('./lru.cjs');
 const problems = require('./problems.cjs');
+const { perProcess } = require('./values.cjs');
 
 const S = Symbol.for('bundle-lockfile.generated.v1');
 const MAX = 10000; // entries of each map; a long dev or watch session must not grow them forever
@@ -30,7 +31,8 @@ const MAX = 10000; // entries of each map; a long dev or watch session must not 
  */
 /** @typedef {{ hash: string | null, at: number, kind: string, what: string, hint: string }} Destined */
 /** @type {State} */
-const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { content: new Map(), entries: new Map() });
+const state = perProcess(S, () => ({ content: new Map(), entries: new Map(), assets: new Map(), unmatched: new Map(), destined: new Map() }));
+// (a state an earlier release made has only some of them)
 if (!state.assets) state.assets = new Map();
 // content hash -> packages of the generate-only chunks no written output had the bytes of (yet): looked at when the
 // process ends (see unlanded)

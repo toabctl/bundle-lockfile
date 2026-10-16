@@ -6,11 +6,12 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const lru = require('./lru.cjs');
+const { perProcess } = require('./values.cjs');
 
 const S = Symbol.for('bundle-lockfile.hashes.v1');
 const MAX = 10000;
 /** @type {{ files: Map<string, { key: string, hash: string }> }} */
-const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { files: new Map() }); // file -> { key, hash }
+const state = perProcess(S, () => ({ files: new Map() })); // file -> { key, hash }
 
 // The hex SHA-256 of a string or Buffer; "sha256-<hex>" (as the lockfile records outputs); its first 16 hex digits,
 // the ids the lockfile records (writers, remnants, a tree's packages, a context's)

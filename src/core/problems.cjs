@@ -13,6 +13,7 @@
 // that no build takes make the process exit with code 1.
 const { AsyncLocalStorage } = require('async_hooks');
 const config = require('./config.cjs');
+const { isObject, perProcess } = require('./values.cjs');
 
 const KEY = Symbol.for('bundle-lockfile.problems.v2'); // v2: pending problems with their owners
 /**
@@ -20,8 +21,7 @@ const KEY = Symbol.for('bundle-lockfile.problems.v2'); // v2: pending problems w
  *   checks?: (() => void)[], scope: AsyncLocalStorage<object> }} State
  */
 /** @type {State} */
-const state = /** @type {any} */ (globalThis)[KEY]
-  || (/** @type {any} */ (globalThis)[KEY] = { pending: [], warned: new Set(), atExit: false, scope: new AsyncLocalStorage() });
+const state = perProcess(KEY, () => ({ pending: [], warned: new Set(), atExit: false, scope: new AsyncLocalStorage() }));
 
 // Runs fn(...) as part of the build `owner` (any object that stands for it): the problems recorded meanwhile, and in
 // what fn starts asynchronously, are that build's (see failIfAny).
@@ -127,8 +127,8 @@ function failure(list) {
   err.stack = `Error: ${msg}\n`;
   return err;
 }
-/** @type {(e: any) => boolean} */
-const isFailure = (e) => !!(e && Array.isArray(e.problems));
+/** @type {(e: unknown) => boolean} */
+const isFailure = (e) => isObject(e) && Array.isArray(e.problems);
 
 // The problems of exactly the build `owner`, removed (see within)
 /**

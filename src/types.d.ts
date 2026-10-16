@@ -57,8 +57,8 @@ export interface ViaCollector {
 /** The bundler that ran, as it reports itself (a writer's "bundler"). */
 export interface BundlerId { name: string; version?: string }
 
-/** A package.json's content, as read (core/manifest.cjs readManifest): anything JSON can be. */
-export type Manifest = { [key: string]: any };
+/** A package.json's content, as read (core/manifest.cjs readManifest): a JSON object, each field unknown until checked. */
+export type Manifest = Record<string, unknown>;
 
 /** Where a build is, for vendored copies outside node_modules (core/vendored.cjs scope). */
 export interface BuildScope { context: string; /** entry modules' files; scope() skips what is no absolute path */ entries?: Iterable<unknown> }

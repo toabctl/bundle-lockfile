@@ -508,6 +508,7 @@ src/core/nested.cjs     packages of bundled files another build wrote (output ha
 src/core/hashes.cjs     SHA-256 of output files, cached by inode, size, mtime and ctime; the short ids the record has
 src/core/lru.cjs        bounded maps for the caches above
 src/core/maps.cjs       Map helpers (an entry made on first use)
+src/core/values.cjs     values of unknown shape: parsed JSON, errors' codes, the state the copies in a process share
 src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
 src/core/lock.cjs       lock across processes (waiting for it lets the event loop run), atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record

@@ -22,6 +22,7 @@ const { createRequire } = require('module');
 const config = require('./config.cjs');
 const { readPackage } = require('./manifest.cjs');
 const { packageRoot, realRoot } = require('./paths.cjs');
+const { isObject, isArray } = require('./values.cjs');
 /** @import { Package } from '../types' */
 /** @typedef {'babel' | 'swc' | 'typescript'} Transpiler */
 /** @typedef {Transpiler | 'either'} Family */
@@ -104,7 +105,7 @@ function resolveFrom(from, request) {
 /**
  * @param {Transpiler} fam
  * @param {string} loader
- * @param {any} options
+ * @param {unknown} options
  * @returns {Package | null}
  */
 function fromLoader(fam, loader, options) {
@@ -115,7 +116,7 @@ function fromLoader(fam, loader, options) {
   }
   if (fam === 'swc') { const f = resolveFrom(loader, '@swc/core'); return f ? packageAtFile(f) : null; }
   if (fam === 'typescript') {
-    const compiler = options && typeof options === 'object' && typeof options.compiler === 'string' ? options.compiler : 'typescript';
+    const compiler = isObject(options) && typeof options.compiler === 'string' ? options.compiler : 'typescript';
     const f = resolveFrom(loader, compiler);
     return f ? packageAtFile(f) : null;
   }
@@ -149,16 +150,19 @@ const note = (msg) => { if (!noted.has(msg)) { noted.add(msg); config.debug(msg)
 // webpack and rspack: the transpiler packages whose helpers are inlined into `modules` (modules of shipped chunks,
 // also the inner modules of concatenated ones). sourceOf(module): its file (absolute) or null.
 /**
- * @param {Iterable<any>} modules
- * @param {(m: any) => string | null | undefined} sourceOf
+ * What is read of a webpack or rspack module (its loaders: checked, a plugin's module may have others)
+ * @typedef {{ loaders?: unknown, originalSource?: () => ({ source?: () => unknown } | null), identifier: () => string }} WebpackModule
+ */
+/**
+ * @param {Iterable<WebpackModule>} modules
+ * @param {(m: WebpackModule) => string | null | undefined} sourceOf
  * @returns {Package[]}
  */
 function ofWebpackModules(modules, sourceOf) {
   /** @type {Map<string, Package>} */
   const out = new Map();
   for (const m of modules) {
-    /** @type {any[]} */
-    const loaders = Array.isArray(m.loaders) ? m.loaders.filter(/** @param {any} l */ l => l && typeof l.loader === 'string') : [];
+    const loaders = isArray(m.loaders) ? m.loaders.flatMap(l => (isObject(l) && typeof l.loader === 'string' ? [{ loader: l.loader, options: l.options }] : [])) : [];
     const used = /** @type {Transpiler[]} */ (Object.keys(LOADERS)).filter(fam => loaders.some(l => LOADERS[fam].test(l.loader)));
     if (!used.length) continue;
     /** @type {unknown} */
@@ -174,6 +178,7 @@ function ofWebpackModules(modules, sourceOf) {
       for (const fam of familiesOf(f)) {
         if (!used.includes(fam)) continue;
         const l = loaders.find(x => LOADERS[fam].test(x.loader));
+        if (!l) continue; // (none: fam is not in used)
         const p = fromLoader(fam, l.loader, l.options);
         if (p) out.set(p.path, p);
         else note(`helpers of ${fam} in ${file || m.identifier()}: ${l.loader} resolves no ${PACKAGES[fam].join(' or ')}`);
@@ -189,7 +194,7 @@ function ofWebpackModules(modules, sourceOf) {
 // directory.
 /**
  * @param {Iterable<string>} ids
- * @param {(id: string) => any} infoOf
+ * @param {(id: string) => unknown} infoOf
  * @param {(id: string) => string | null | undefined} fileOf
  * @param {string} cwd
  * @returns {Package[]}
@@ -198,10 +203,9 @@ function ofModuleIds(ids, infoOf, fileOf, cwd) {
   /** @type {Map<Transpiler, boolean>} */
   const fams = new Map(); // family -> whether only one-word names (Babel's or swc's) brought it
   for (const id of ids) {
-    /** @type {any} */
     let info;
     try { info = infoOf(id); } catch { info = null; }
-    const code = info && typeof info.code === 'string' ? info.code : null;
+    const code = isObject(info) && typeof info.code === 'string' ? info.code : null;
     if (!code) continue;
     for (const f of inlined(code, fileOf(id))) for (const fam of familiesOf(f)) fams.set(fam, f === 'either' && fams.get(fam) !== false);
   }
