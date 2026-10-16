@@ -2,7 +2,7 @@
 'use strict';
 // Writes the lockfile of an output from an esbuild metafile, for builds bundle-lockfile cannot hook: the esbuild
 // command line and Go API (--metafile), and other tools that write a metafile of esbuild's shape.
-//   bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>]
+//   bundle-lockfile-from-metafile <metafile.json> [--working-dir <dir>] [--out <dir>] [--bundler <package dir>|none]
 // --working-dir: the build's working directory (esbuild's absWorkingDir), which the metafile's paths are relative to
 // (default: the current directory); --out: the output directory, where <BUNDLE_LOCKFILE_FILE> goes (default: the
 // directory of the metafile's outputs, the deepest one they all are in). The same rules as for a hooked build (see

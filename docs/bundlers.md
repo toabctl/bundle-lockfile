@@ -7,32 +7,31 @@ What is supported and tested, which processes are hooked, and what is particular
 
 | Bundler | Versions | Tested (matrix) | Hooked through | Notes |
 |---|---|---|---|---|
-| webpack | 4, 5 | 4.0, 4.47, 5.0, 5.60, 5.111 | CommonJS: webpack's `Compiler` | webpack < 4 is not hooked |
-| Next.js | 12 – 16 | 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | Next 16 only with `next build --webpack`; [details](#nextjs) |
+| webpack | 4, 5 | 4.0, 4.47, 5.0, 5.60, 5.111 | CommonJS: webpack's `Compiler` | also copies vendored into other packages (umi's `@umijs/bundler-webpack`); webpack < 4 fails the build |
+| Next.js | 12 – 16 | 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | not with Turbopack (Next 16's default, `--turbopack` before): `next build --webpack`; [details](#nextjs) |
 | Next.js with next-rspack | 15, 16 | 15.5 (rspack 1.4), 16.4 (rspack 2.0) | as rspack | the same lockfiles as with webpack |
-| rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 fails the build, 0.x is not hooked; [details](#rspack-rsbuild) |
-| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.6, 1.7, 2.2; Rslib 1.0 | as rspack | `rsbuild dev` serves the lockfile from memory |
+| rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 (1.0: the failure) | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 and 0.x fail the build; [details](#rspack-rsbuild) |
+| Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.6, 1.7, 2.2; Rslib 1.0 | as rspack | one lockfile per environment's output (web and node: 1.7, 2.2); `rsbuild dev` serves the lockfile from memory |
 | Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; [details](#vite-rollup-rolldown) |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
 | Nuxt | 4 (Vite 8, Nitro 2) | 4.6 | as Vite | `nuxt build`, `nuxi build`; [details](#nuxt) |
-| Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | |
+| Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | 2.78 – 3 are hooked, not tested; older ones fail the build |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
-| esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; 0.16 and older fail the build; [details](#esbuild) |
-| Parcel | 2 | 2.8, 2.16 | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, its JavaScript API; [details](#parcel) |
+| esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; tsup fails the process (it writes esbuild's output itself); 0.16 and older fail the build; [details](#esbuild) |
+| Parcel | 2 | 2.8, 2.16 (the earliest 2.x releases do not run on the tested Node.js versions) | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, `parcel serve`, its JavaScript API (tested: `build()`, `watch()`); [details](#parcel) |
 | Angular | 20 – 22 (application builder) | 20.3, 21.2, 22.2 | CommonJS: its `executeBuild()` | `ng build`; the lockfile in `<outputPath>/browser/` (SSR: also `server/`; i18n: each locale's directory); `ng serve` writes none; [details](#angular) |
 
 - **Hooked through:** CommonJS bundlers are hooked in every process. ES modules need Node.js's ESM hook, which on
   older Node.js versions only some processes get ([which processes](#which-processes-are-hooked)).
-- **Watch mode** (webpack, rspack, Rollup, Rolldown, `vite build --watch`, esbuild's `watch()`) writes the lockfile
-  after every rebuild.
-  The dev servers of rspack (`rspack serve`, `rsbuild dev`) serve it from memory (webpack's dev server goes the same
-  way, through its in-memory output file system, but is not tested).
+- **Watch mode** (webpack, rspack, Rollup, Rolldown, `vite build --watch`, esbuild's `watch()`, Parcel, `ng build
+  --watch`) writes the lockfile after every rebuild. The dev servers of rspack (`rspack serve`, `rsbuild dev`) serve it
+  from memory (webpack's dev server goes the same way, through its in-memory output file system, but is not tested).
 - **Node.js:** 20.18 or later, the oldest that is tested (Vite 7 and 8, Rolldown, rspack 2 and Rsbuild 2 need 20.19).
   Builds are tested on 24 and 26, and on 22 for the bundlers hooked as ES modules (Vite, Rollup, Rolldown, SvelteKit,
-  rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn Plug'n'Play; a few on 20. The
-  unit tests and a few builds per kind of hook also run on the releases at which the hooks behave differently, from
-  20.18.2 to 26.4.0 ([which](../test/node-versions.json)). Node.js 25 and Linux distributions other than Wolfi are not
-  tested. Next.js 12 does not build on Node.js 25 and later.
+  Nuxt, rspack 2, Rsbuild 2, Rslib, next-rspack 16) and for webpack 5 and rspack 1.7 under Yarn Plug'n'Play; a few on
+  20. The unit tests and a few builds per kind of hook also run on the releases at which the hooks behave differently,
+  from 20.18.2 to 26.4.0 ([which](../test/node-versions.json)). Node.js 25 and Linux distributions other than Wolfi are
+  not tested. Next.js 12 does not build on Node.js 25 and later.
 - **SBOM tools:** every lockfile of the matrix is read by syft and Trivy (Wolfi's current versions; [which
   scans](../README.md#sbom-tools)).
 
@@ -44,21 +43,22 @@ Package managers tested ([details](../test/README.md#environments)):
 | rspack | npm, npx, pnpm 10 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules, pnpm), bun, npm workspaces |
 | Rsbuild | npm, bun, yarn 4 (Plug'n'Play) |
 | Vite | npm, npx, pnpm 9 – 11, yarn 1, yarn 4 (Plug'n'Play, node-modules, pnpm), bun, npm workspaces |
-| Next.js, SvelteKit, Rollup, Rolldown, Rslib | npm (the `rollup` command line also yarn 4 Plug'n'Play and pnpm) |
+| Next.js | npm, pnpm 10 (standalone output) |
+| SvelteKit, Rollup, Rolldown, Rslib | npm (the `rollup` command line also yarn 4 with Plug'n'Play and with its pnpm linker) |
 | esbuild | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 | Nuxt | pnpm 10 |
 | Parcel | npm, pnpm 10, yarn 4 (Plug'n'Play) |
 | Angular | npm, pnpm 10, yarn 4 (Plug'n'Play) |
-| Angular | npm |
 
 Real builds of seven Chainguard packages with rspack and Rsbuild are compared with rspack's own stats in
 [test/README.md](../test/README.md#rspack-on-real-projects).
 
 Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile of the bundle; a
-Turbopack build still gets [Next.js' runtime lockfile](#nextjs)): Turbopack (Next.js 16's default build; known when
-`next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a webpack of its own), webpack
-< 4 and rspack 0.x (when a compiler compiles). `BUNDLE_LOCKFILE_DISABLE` with the bundler such a build stands in for
-(`webpack` for Turbopack and ncc, `rolldown` for its command line) turns the failure off.
+Turbopack build still gets [Next.js' runtime lockfile](#nextjs)): Turbopack (Next.js 16's default build, `next build
+--turbopack` before; known when `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a
+webpack of its own), webpack < 4 and rspack 0.x (when a compiler compiles). Versions that are hooked but cannot run the
+plugin fail too: rspack 1.0, Rollup before 2.78, esbuild 0.16 and older. `BUNDLE_LOCKFILE_DISABLE` with the bundler such
+a build stands in for (`webpack` for Turbopack and ncc, `rolldown` for its command line) turns the failure off.
 
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Bun's own
 runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed).
@@ -66,17 +66,20 @@ runtime (`bun --bun`, `Bun.build`, and `bun run` where Node.js is not installed)
 ## Which processes are hooked
 
 The CommonJS bundlers — webpack (also Next.js' copy), rspack 1, Rollup's CommonJS build (`require('rollup')`, the
-`rollup` command line), esbuild's API (also through `import`), Parcel's `@parcel/core` — are hooked in every process
+`rollup` command line), esbuild's API (also through `import`), Parcel's `@parcel/core`, Angular's builder — are hooked
+in every process
 that preloads bundle-lockfile. The ES-module bundlers — Vite,
 which imports Rollup and Rolldown as ES modules, Rolldown, rspack 2, Rollup through `import` — need a Node.js ESM
 hook:
-- Node.js 22.22.3, 24.11.1, 25.1 and later: hooked in every process.
+- Node.js 22.22.3 and later 22.x, 24.11.1 and later 24.x, 25.1 and later: hooked in every process (not 23.x).
 - Older versions: hooked only in processes (their main thread and worker threads)
   - whose main script belongs to a package that is or depends on `vite`, `rollup`, `rolldown`, `rolldown-vite`,
     `@rspack/core`, `@rspack/cli` or `@rsbuild/core` (the `vite` command, a build script of a project using Vite), or
-  - whose project has one of them installed (in `node_modules` of the working directory or above: `nuxi`, `storybook`,
-    which load Vite through a dependency), or
-  - that have another loader hook (e.g. Yarn Plug'n'Play's).
+  - whose project has one of them installed (in `node_modules` of the working directory or above, also pnpm's and
+    bun's hidden `node_modules/.pnpm/node_modules` and `node_modules/.bun/node_modules`: `nuxi`, `storybook`, which
+    load Vite through a dependency), or
+  - that have another loader hook: any `--import`, `--loader` or `--experimental-loader` in `NODE_OPTIONS` or the
+    command line (e.g. Yarn Plug'n'Play's).
 
   A programmatic build from elsewhere needs `BUNDLE_LOCKFILE_ESM_HOOKS=async` (without, it fails the build). A
   `require('@rspack/core')` anywhere in the process (a CommonJS config) hooks rspack 2 anyway. The loader thread these
@@ -105,8 +108,9 @@ tools build what ships (Nuxt's `.nuxt`).
 - The files Vite's and other plugins inline into a module (style sheets `@import`ed from packages, images inlined as
   `data:` URLs): Rollup's watch files (Vite 5 - 7), and in Rolldown builds (Vite 8, rolldown-vite) the plugins'
   `this.addWatchFile` calls, recorded per build and module - also in Rolldown's `build()` and `watch()` (`vite build
-  --watch` on Vite 8), which provide no watch files. A Rolldown whose plugin contexts are of another shape fails a
-  build with style sheets ([troubleshooting](troubleshooting.md)).
+  --watch` on Vite 8), which provide no watch files. In those two, a Rolldown whose plugin contexts are of another
+  shape fails a build with style sheets ([troubleshooting](troubleshooting.md)); `rolldown()` builds get the files
+  from the build object it returns.
 - A build that only generates (Rollup's and Rolldown's `generate()`, Vite's `build.write: false`) writes no lockfile:
   its packages are listed where its output's bytes end up in a written output ([coverage](coverage.md#also-listed)).
   If it names where its output goes (`dir` or `file`) and a file of it is written there after the build, in no
@@ -130,11 +134,11 @@ Rsbuild, Rslib, Next.js with next-rspack).
 - Files `CopyRspackPlugin` copies out of packages are listed, by name and bytes among the files the build depends on.
 - Style sheets loaders inline from packages (Sass partials, Less `@import`s, PostCSS) are listed; before rspack
   1.3.14, rspack does not record them per module, and all such style sheets the build read are listed.
-- rspack inlines small constants: rspack 2 in production (`optimization.inlineExports`), rspack 1.4 – 1.7 with
-  `experiments.inlineConst` (Rsbuild 1.5 and 1.6 set it in production; rspack 1.6 and 1.7 also inline TypeScript enums
-  with `experiments.inlineEnum`). A module whose used exports are all inlined is in no chunk. Its package is listed
-  anyway — its values are in the bundle. rspack 1.4 does not record that such a module is used: there every package
-  module of the build in no chunk is listed, also one that was tree-shaken.
+- rspack inlines small constants: rspack 1.7 and 2 in production by default (`optimization.inlineExports`), rspack 1.4 –
+  1.6 with `experiments.inlineConst` (Rsbuild 1.5 and 1.6 set it in production; rspack 1.6 and 1.7 also inline
+  TypeScript enums with `experiments.inlineEnum`). A module whose used exports are all inlined is in no chunk. Its
+  package is listed anyway — its values are in the bundle. rspack 1.4 does not record that such a module is used: there
+  every package module of the build in no chunk is listed, also one that was tree-shaken.
 - Child compilations count for their parent, as webpack's: the workers monaco-editor-webpack-plugin builds are in
   its lockfile.
 - rspack's `ModuleFederationPlugin` (also `@module-federation/enhanced`'s) bundles the federation runtime, which
@@ -175,12 +179,13 @@ line, nor its Go API: both are esbuild's binary, which Node.js does not run.
 - `write: false` and builds without `outdir` or `outfile` write nothing themselves: no lockfile. Their packages are
   listed where their output's bytes end up in another hooked build's output, or in a file written into an output after
   the build, or where a plugin gives the contents of a module whose file is their entry point (a worker that
-  esbuild-plugin-inline-worker bundles and inlines as a string) ([coverage](coverage.md#also-listed)). Angular's
-  builder builds that way and writes the files itself: its lockfile comes from its own adapter ([Angular](#angular)).
-  An output file of such a build that is written after the build and on disk when the process ends, in no lockfile of
-  the process (tsup and other tools write esbuild's `outputFiles` themselves, also after changing them: tsup's
-  `treeshake` and `minify: 'terser'`), is a problem: it ships without a lockfile (`bundle-lockfile-from-metafile`
-  writes one).
+  esbuild-plugin-inline-worker bundles and inlines as a string) ([coverage](coverage.md#also-listed)). Angular's builder
+  builds that way and writes the files itself: its lockfile comes from its own adapter ([Angular](#angular)). An output
+  file of such a build that is written after the build and on disk when the process ends, in no lockfile of the process
+  (tsup and other tools write esbuild's `outputFiles` themselves, also after changing them: tsup's `treeshake` and
+  `minify: 'terser'`), is a problem: it ships without a lockfile. So every tsup build fails in strict mode. For tsup,
+  turn on its `metafile` option, run it with `BUNDLE_LOCKFILE_STRICT=0`, then `bundle-lockfile-from-metafile` on the
+  metafile (tested with tsup 8.5).
 - Vite 5 – 7's own esbuild builds (dependency pre-bundling, the dependency scan, bundling `vite.config.*`, reading the
   exports of a dependency's entry for `optimizeDeps.extensions`) and outputs below `node_modules` are left alone -
   except below `node_modules/.cache/`, as for Vite (tools build what ships there).
@@ -244,7 +249,7 @@ one its `stats` option writes, turned on for the build and taken out of its outp
   (and the server's in `<outputPath>/server/<locale>/`), with the same packages. With SSR, the server's entry
   (`server.mjs`) and its chunks are written once, in `<outputPath>/server/`: their packages are in a lockfile there,
   those of the locales' copies in each locale's. A locale at `subPath: ''` has its copy in the side's own directory,
-  and one lockfile there.
+  and one lockfile there. With `flatOutput: true`, the side's own directory has the one lockfile (not tested).
 - `ng build --watch` writes the lockfile again with every rebuild that changes it. The builders that build the app for
   output nobody ships write none, nor an export copy: `ng serve` (the dev server serves its builds from memory),
   `ng extract-i18n` (reads the messages only), `ng test` (karma: a temporary directory; unit-test: memory) — known by
@@ -289,9 +294,9 @@ Next runs several compilers, so a build writes one lockfile per compiler output,
   package without a `package.json` with name and version, fails the build. A file Next does not trace (e.g. a
   `require()` of a computed path) is not listed: Next would not copy it into the standalone output either.
 - A static export (`output: 'export'`, and `next export` before Next.js 14) copies the pages and `.next/static` into
-  `out/_next/static`: the client's lockfile is copied along, to `out/_next/bundle-lockfile/package-lock.json`, its record
-  rewritten for where it is (`BUNDLE_LOCKFILE_DISABLE=next` turns that off). In this mode a custom `distDir` names the
-  export destination; the build's lockfiles are in `.next` anyway.
+  `out/_next/static`: the client's lockfile is copied along, to `out/_next/bundle-lockfile/package-lock.json`, its
+  record rewritten for where it is (`BUNDLE_LOCKFILE_DISABLE=next` turns that off). In this mode a custom `distDir`
+  names the export destination; the build's lockfiles are in `.next` anyway.
 - The standalone output (`output: 'standalone'`) gets the runtime packages' lockfile, and copies of the bundles'
   lockfiles where Next copied their outputs (`.next/standalone/.next/server/chunks/` etc.; the client's in
   `.next/standalone/.next/`, for the `.next/static` that is copied there by hand). With Turbopack (not hooked, so with

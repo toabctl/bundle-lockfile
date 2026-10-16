@@ -16,7 +16,13 @@ output directory):
 - Vite, Rollup, Rolldown: one per output of a build that writes, in its `dir`, or the directory of its `file`
   (Rolldown without either: `dist/`). None for builds that write nothing themselves, and none for outputs below
   `node_modules` (e.g. Vite's dependency pre-bundling) - except below `node_modules/.cache/`, where tools build what
-  they ship (Nuxt's build directory for `nuxi build`).
+  they ship (Nuxt's build directory for `nuxi build`). SvelteKit and Nuxt: see [SvelteKit](bundlers.md#sveltekit) and
+  [Nuxt](bundlers.md#nuxt).
+- esbuild: one per output directory, `outdir` or the directory of `outfile`; none for `write: false` builds
+  ([esbuild](bundlers.md#esbuild)).
+- Parcel: one in each target's `distDir` ([Parcel](bundlers.md#parcel)).
+- Angular: `<outputPath>/browser/`, with SSR also `<outputPath>/server/`, with i18n in each locale's directory
+  ([Angular](bundlers.md#angular)).
 - A copy of an output's files elsewhere, made with fs in the build's process: see [copies of
   outputs](#copies-of-outputs).
 
@@ -90,10 +96,8 @@ files named `package-lock.json`, and none below a `node_modules` directory.
 tools to report exactly its packages and licenses. Every matrix case that expects a lockfile checks it with both when
 they are on `PATH`, as in CI (see [test/README.md](../test/README.md)).
 
-Changes to the format are listed in the release notes. Before v0.1.0, keys were the locations (also
-`../node_modules/…` and `.yarn/cache/…`), and there was no `locations`. bundle-lockfile still reads such a record. A
-v0.0.3 or older writing into the same directory reads every key as a location: it keeps every package, some possibly
-at a second key.
+Changes to the format are listed in the release notes. A record of another version, from an older bundle-lockfile,
+is not read: a build writing into its directory replaces it ([the record](#the-record)).
 
 ## Keys
 
@@ -214,9 +218,9 @@ configuration.
   - `id`;
   - `packages` (keys);
   - up to 20 of its output `files`, and the `count` of all of them;
-  - for Vite, Rollup, Rolldown, esbuild and Parcel: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files (with
-    more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its `packages`),
-    for [nested bundles](#nested-bundles);
+  - for Vite, Rollup, Rolldown, esbuild and Parcel: `outputs`, the SHA-256 of up to 500 of its JavaScript and CSS files
+    (with more: their number, `outputCount`), and `contents`, the packages in each of them (indices into its
+    `packages`), for [nested bundles](#nested-bundles);
   - `bundler`: the bundler that ran, `{ "name", "version" }` as it reports itself (`webpack`, `rspack`, `rollup`,
     `rolldown`, `vite`, `esbuild`, `parcel`, `angular`; Vite's version where Vite gives it to plugins), or `next` for
     the runtime packages of Next.js' server (the version of that copy of Next). It is the bundler that wrote the
@@ -308,14 +312,13 @@ Builds that write to the same directory share its lockfile: it lists the package
   the files it left that the new run did not write again (other hashes in their names, no clean): as a writer of its
   own.
 
-Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one.
-The lock is `package-lock.json.lock` next to the lockfile (next to the export copy with `BUNDLE_LOCKFILE_INLINE=0`,
-or when the output directory was removed). A
-lock older than a minute - by this machine's clock and by the file system's (a network file system has the server's
-time) - is taken over; one that cannot be removed (another user's directory, a read-only file system) is waited for.
-After 30 s of waiting the write goes ahead without it, and the build fails (another process's packages may be
-missing; with `BUNDLE_LOCKFILE_STRICT=0`: a warning). So does a lock that cannot be created at all, and a lockfile
-that is there but cannot be read.
+Each read-merge-write runs under a lock and replaces the file atomically, so no process reads a partly written one. The
+lock is `package-lock.json.lock` (with `BUNDLE_LOCKFILE_TREE=only`: `record.json.lock`) next to the lockfile (next to
+the export copy with `BUNDLE_LOCKFILE_INLINE=0`, or when the output directory was removed). A lock older than a minute -
+by this machine's clock and by the file system's (a network file system has the server's time) - is taken over; one that
+cannot be removed (another user's directory, a read-only file system) is waited for. After 30 s of waiting the write
+goes ahead without it, and the build fails (another process's packages may be missing; with `BUNDLE_LOCKFILE_STRICT=0`:
+a warning). So does a lock that cannot be created at all, and a lockfile that is there but cannot be read.
 
 - A writer's packages count once its output is written: a rebuild that fails and is not emitted (webpack's default in
   production) leaves the packages of its previous output in the lockfile - also when the build that failed is the

@@ -2,8 +2,8 @@
 
 Records which npm packages end up in a JavaScript bundle and writes them as a `package-lock.json` next to the build
 output, without changing the project's build config. Supports webpack 4 and 5 (also the copy inside Next.js), rspack
-1.1+ and 2 (also inside Rsbuild), Vite, Rollup and Rolldown (also inside SvelteKit), esbuild's JavaScript API, and
-Parcel 2.
+1.1+ and 2 (also inside Rsbuild), Vite, Rollup and Rolldown (also inside SvelteKit and Nuxt), esbuild's JavaScript
+API, Parcel 2, and Angular's application builder ([all versions](#supported)).
 
 It is for whoever builds and ships a bundled JavaScript application and needs its SBOM to list what is shipped:
 distribution packagers and image builders (it is developed for [melange](https://github.com/chainguard-dev/melange)
@@ -42,9 +42,10 @@ webpack processed, which includes tree-shaken packages and build-time loaders, a
 
 ## How it works
 
-1. `register.cjs`, preloaded with `NODE_OPTIONS="--require ..."`, hooks Node.js's module loading. When the build
-   loads webpack, rspack, Rollup, Rolldown, esbuild or Parcel, it patches the bundler so that every build gets
-   bundle-lockfile's plugin. The project's config and dependencies stay as they are.
+1. `register.cjs` is *preloaded* into every Node.js process of the build with `NODE_OPTIONS="--require ..."`: Node.js
+   runs it before the build's own code. It hooks Node.js's module loading. When the build loads webpack, rspack,
+   Rollup, Rolldown, esbuild, Parcel or Angular's builder, it patches the bundler so that every build gets
+   bundle-lockfile's plugin ("hooked" below). The project's config and dependencies stay as they are.
 2. After the bundler has decided what goes into the output, the plugin takes the source files of the modules in the
    chunks the build writes, and the package files that reach the output otherwise: shipped workers, copied files,
    style sheets `@import`ed from packages ([what is listed](docs/coverage.md)).
@@ -54,15 +55,17 @@ webpack processed, which includes tree-shaken packages and build-time loaders, a
    ([format and an example](docs/format.md)).
 
 If bundle-lockfile cannot write a correct lockfile for a build it is attached to, that build fails with the reason
-([troubleshooting](#troubleshooting)): an SBOM that silently misses packages is worse than a failed build.
+([troubleshooting](#troubleshooting)). An SBOM that silently misses packages is worse than a failed build. This is
+*strict mode*, on by default; `BUNDLE_LOCKFILE_STRICT=0` turns failures into warnings.
 
 The details are in [docs/internals.md](docs/internals.md).
 
 ## Quick start
 
 Requirements:
-- Node.js 20.18 or later, the oldest that is tested (builds are tested on Linux with Node.js 20, 22, 24 and 26;
-  [details](docs/bundlers.md#supported));
+- Node.js 20.18 or later, the oldest that is tested; Vite 7 and 8, Rolldown, rspack 2 and Rsbuild 2 need 20.19
+  (builds are tested with Node.js 20, 22, 24 and 26; [details](docs/bundlers.md#supported));
+- Linux: tested on Wolfi; macOS and Windows are not tested;
 - a [supported bundler](#supported), started by Node.js.
 
 There is no npm or Wolfi package yet: use a git checkout. Nothing is installed into the project.
@@ -78,9 +81,14 @@ test -f dist/bundle-lockfile/package-lock.json   # a bundler it does not hook wr
 syft scan dir:dist -q            # or: trivy fs --format cyclonedx --output sbom.cdx.json dist
 ```
 
-Every supported bundler in that process, or in a process it starts (which inherits `NODE_OPTIONS`), is hooked. On
-Node.js 20, 22 before 22.22.3 and 24 before 24.11.1, Vite, Rollup, Rolldown and rspack 2 are hooked only in some
-processes ([which ones](docs/bundlers.md#which-processes-are-hooked)).
+Every supported bundler in that process, or in a process it starts (which inherits `NODE_OPTIONS`), is hooked. Each
+output directory gets `bundle-lockfile/package-lock.json`: `dist/` above, `.next/` and its subdirectories for Next.js,
+`<outputPath>/browser/` for Angular, `.output/public/` and `.output/server/` for Nuxt ([where, per
+bundler](docs/format.md#where-it-is-written)). `BUNDLE_LOCKFILE_DEBUG=1` logs which bundlers were hooked and which
+lockfiles were written ([example](docs/troubleshooting.md#debug-output)).
+
+Directory scans (`syft scan dir:`, `trivy fs`) read the lockfile. Image scans need `BUNDLE_LOCKFILE_TREE=on`, or a
+syft option ([SBOM tools](#sbom-tools)).
 
 The test app `test/apps/webpack5` uses `lodash-es`, `debug` 2.6.9 (with its own `ms` 2.0.0), `ms` 2.1.3, `yallist`
 and, in a lazily loaded chunk, `nanoid`; it imports `uuid` without using it. Built with webpack 5, syft reports:
@@ -97,7 +105,10 @@ yallist    5.0.0    npm
 ```
 
 `webpack` is listed because its runtime and chunk loading code is in the bundle: advisories about that code, such as
-CVE-2024-43788, name webpack. Every bundler is listed so ([what is listed](docs/coverage.md#also-listed)).
+CVE-2024-43788, name webpack. Every bundler is listed so ([what is listed](docs/coverage.md#also-listed)). The
+lockfile itself is npm's format, with a `packages` entry per package, e.g.
+`"node_modules/debug/node_modules/ms": { "name": "ms", "version": "2.0.0", "license": "MIT" }`, and a record of
+bundle-lockfile's own, which SBOM tools ignore ([format and a full example](docs/format.md#example)).
 
 ## Usage
 
@@ -115,7 +126,8 @@ Next.js 15.0 – 16.3 break with more than one `--require` in `NODE_OPTIONS` ([d
 
 A script that sets `NODE_OPTIONS` itself keeps the `--require` only if it passes the old value on.
 `NODE_OPTIONS="${NODE_OPTIONS:=--max-old-space-size=10240}" webpack` does; `NODE_OPTIONS=--max-old-space-size=10240
-webpack` and `cross-env NODE_OPTIONS=... webpack` drop it. For such projects, also put the node shim first in `PATH`:
+webpack` and `cross-env NODE_OPTIONS=... webpack` drop it. For such projects, also put the *node shim* first in
+`PATH`, a wrapper script named `node`:
 
 ```sh
 export PATH="/opt/bundle-lockfile/bin:$PATH"
@@ -130,7 +142,7 @@ POSIX `sh` with `readlink -f` and `head -c`. How it finds `register.cjs` and the
 ### Outputs that do not ship as files
 
 When the output does not ship as the files the bundler wrote — embedded into a Go binary (`go:embed`), packed into a
-jar, gzipped, or copied away without its `bundle-lockfile/` directory (Next.js' static export) —
+jar, gzipped, or copied away without its `bundle-lockfile/` directory (a `cp` of some of its files) —
 also write the lockfiles to an export directory, and ship that:
 
 ```sh
@@ -147,10 +159,10 @@ with the rest of it (e.g. from `public/assets`). Where lockfiles outside the exp
 
 ### Build tools that drop the variables
 
-turbo's strict env mode (its default) passes `NODE_OPTIONS` and `PATH` to its tasks, but not `BUNDLE_LOCKFILE_*`;
-other builds start with an environment of their own (Metabase's passes only `PATH` and `HOME`, so only the node shim
-gets the preload back). Put the settings into a settings file instead: `config.json` next to `register.cjs` (`src/` in
-a checkout), which the preload finds next to itself:
+turbo's strict env mode (its default) passes `NODE_OPTIONS` and `PATH` to its tasks, but not `BUNDLE_LOCKFILE_*`.
+Other builds start with an environment of their own: Metabase's passes only `PATH` and `HOME`, so only the node shim
+gets the preload back. For both, put the settings into a settings file: `config.json` next to `register.cjs` (`src/`
+in a checkout), which the preload finds next to itself:
 
 ```sh
 cat > /opt/bundle-lockfile/src/config.json <<'EOF'
@@ -175,6 +187,7 @@ environment:
     packages:
       - bundle-lockfile
   environment:
+    # with a checkout instead of the package: --require /opt/bundle-lockfile/src/register.cjs
     NODE_OPTIONS: "--max-old-space-size=16384 --require /usr/lib/bundle-lockfile/register.cjs"
 
 pipeline:
@@ -189,9 +202,16 @@ pipeline:
 
 `syft scan dir:` on the package then finds the bundled packages in
 `usr/share/myapp/dist/bundle-lockfile/package-lock.json`. If the package also ships the project's own lockfile
-(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), syft reports the packages of both. For image scans, see [SBOM
-tools](#sbom-tools). Real builds that do all this, with their numbers, are in
+(`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), syft reports the packages of both. Scans of the image the
+package is installed into do not read the lockfile by default: set `BUNDLE_LOCKFILE_TREE=on` for them ([SBOM
+tools](#sbom-tools)). Real builds that do all this, with their numbers, are in
 [test/README.md](test/README.md#rspack-on-real-projects).
+
+### Turning it off
+
+Leave out the `--require` (and the node shim in `PATH`), or set `BUNDLE_LOCKFILE_DISABLE=all`: bundle-lockfile then
+patches nothing and checks nothing. `BUNDLE_LOCKFILE_DISABLE=vite,esbuild` skips only those bundlers
+([names](docs/configuration.md#settings)).
 
 ### The plugin in the config
 
@@ -222,9 +242,11 @@ const { bundleLockfile } = createRequire(import.meta.url)('/opt/bundle-lockfile/
 export default { plugins: [bundleLockfile('vite')] };
 ```
 
-With `NODE_OPTIONS` set too, such a build does not get the plugin a second time. The plugin from the Vite config adds
-itself to `worker.plugins`, so Vite's workers count. Without the preload:
-- files copied out of packages with fs are not recorded;
+In a Vite config, pass `'vite'`: only then does the plugin list `vite` and add itself to `worker.plugins`, so that
+Vite's workers count (the argument is not checked; it defaults to `'rollup'`). With `NODE_OPTIONS` set too, such a
+build does not get the plugin a second time. Without the preload:
+- files copied out of packages with fs are not recorded, unless the copy's path still contains
+  `node_modules/<package>/`;
 - builds with plugins of their own (workbox-build's service worker, and on Vite 8 @vitejs/plugin-legacy's polyfills)
   and processes the build starts do not get the plugin;
 - the settings are not checked.
@@ -232,7 +254,7 @@ itself to `worker.plugins`, so Vite's workers count. Without the preload:
 ## Configuration
 
 Settings are environment variables, or the same names in a [settings file](#build-tools-that-drop-the-variables); a
-variable that is set wins. The defaults need no configuration.
+variable that is set, also to an empty value, wins over the file. The defaults need no configuration.
 
 | Setup | Settings |
 |---|---|
@@ -246,64 +268,42 @@ variable that is set wins. The defaults need no configuration.
 |---|---|---|
 | `BUNDLE_LOCKFILE_FILE` | `bundle-lockfile/package-lock.json` | the lockfile's path below each output directory; must be named `package-lock.json` |
 | `BUNDLE_LOCKFILE_EXPORT_DIR` | unset | an absolute path: also write every lockfile below it |
-| `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | an absolute path: lockfiles below it keep their path relative to it in the export directory |
+| `BUNDLE_LOCKFILE_EXPORT_BASE` | unset | an absolute path, with `BUNDLE_LOCKFILE_EXPORT_DIR`: lockfiles below it keep their path relative to it in the export directory |
 | `BUNDLE_LOCKFILE_INLINE` | on | off: write the lockfiles only into the export directory |
 | `BUNDLE_LOCKFILE_STRICT` | on | off: warn instead of failing a build whose lockfile would be missing or incomplete |
 | `BUNDLE_LOCKFILE_DEBUG` | off | on: log what gets patched and written to stderr |
-| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are never listed as vendored copies |
-| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated bundlers to skip: `webpack`, `rspack`, `vite`, `rollup`, `rolldown`, `esbuild`, `parcel`, `angular`, `next` (Next.js' runtime lockfile), or `all` |
-| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | `sync`, `async` or `off`: how ES-module bundlers are hooked, instead of choosing by Node.js version |
-| `BUNDLE_LOCKFILE_TREE` | `off` | `on`: also a `package.json` per package next to the lockfile, for image scans; `only`: instead of the lockfile |
+| `BUNDLE_LOCKFILE_FIRST_PARTY` | unset | comma-separated absolute globs of directories that are never listed as [vendored copies](docs/format.md#which-package-a-file-belongs-to) (a package copied into another package or outside `node_modules`, with its `package.json`) |
+| `BUNDLE_LOCKFILE_DISABLE` | unset | comma-separated bundlers to skip: `webpack`, `rspack`, `vite`, `rollup`, `rolldown`, `esbuild`, `parcel`, `angular`, `next` (Next.js' runtime lockfile), or `all` (nothing is patched or checked) |
+| `BUNDLE_LOCKFILE_ESM_HOOKS` | `auto` | `sync`, `async` or `off`: how ES-module bundlers are hooked, instead of choosing by Node.js version; `off`: Vite, Rolldown, rspack 2 and Rollup through `import` write no lockfile, and nothing fails |
+| `BUNDLE_LOCKFILE_TREE` | `off` | `on`: also a `package.json` per package next to the lockfile, for image scans; `only`: the tree instead of the `package-lock.json`, which is then named `record.json` (no SBOM tool reads it) |
 | `BUNDLE_LOCKFILE_REGISTER` | found by the shim | an absolute path: the `register.cjs` the node shim preloads (environment only) |
 | `BUNDLE_LOCKFILE_CONFIG` | `config.json` next to `register.cjs` | an absolute path: the settings file (environment only) |
 
-On/off settings take `1`, `true`, `on` and `0`, `false`, `off`. A setting that bundle-lockfile does not recognize (a
-misspelled `BUNDLE_LOCKFILE_EXPORTDIR`) or that cannot work (a relative export directory) fails the build: a build
-must not go on without doing what was asked of it. Every setting in full, and what is invalid, is in
-[docs/configuration.md](docs/configuration.md).
+On/off settings take `1`, `true`, `on` and `0`, `false`, `off`, in any case (as do the values of
+`BUNDLE_LOCKFILE_DISABLE`, `BUNDLE_LOCKFILE_ESM_HOOKS` and `BUNDLE_LOCKFILE_TREE`). The names are upper case. A setting
+that bundle-lockfile does not recognize (a misspelled `BUNDLE_LOCKFILE_EXPORTDIR`) or that cannot work (a relative
+export directory) fails the build: a build must not go on without doing what was asked of it. Every setting in full, and
+what is invalid, is in [docs/configuration.md](docs/configuration.md).
 
 ## Supported
 
 | Bundler | Versions | Notes |
 |---|---|---|
 | webpack | 4, 5 | |
-| Next.js | 12 – 16 | Next 16 only with `next build --webpack` or next-rspack ([details](docs/bundlers.md#nextjs)) |
+| Next.js | 12 – 16 | not with Turbopack (Next 16's default build, `next build --turbopack` before): use `next build --webpack` or next-rspack ([details](docs/bundlers.md#nextjs)) |
 | rspack | 1.1 – 1.7, 2 | also Rsbuild 1.1+ and 2, Rslib 1; rspack 1.0 fails the build ([details](docs/bundlers.md#rspack-rsbuild)) |
 | Vite | 5 – 8, rolldown-vite 7 | `vite dev`, `vite preview` and Vitest write no lockfile ([details](docs/bundlers.md#vite-rollup-rolldown)) |
 | SvelteKit | 2, 3 | adapter-static, adapter-node, adapter-netlify ([details](docs/bundlers.md#sveltekit)) |
 | Nuxt | 4 | `.output/public` and `.output/server` ([details](docs/bundlers.md#nuxt)) |
-| Rollup | 4 | also `@rollup/wasm-node` |
+| Rollup | 4 | also `@rollup/wasm-node`; 2.78 – 3 are hooked but not tested, older ones fail the build |
 | Rolldown | 1 | not the `rolldown` command line |
-| esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line ([details](docs/bundlers.md#esbuild)) |
-| Parcel | 2 | `parcel build`, `parcel watch`, its JavaScript API ([details](docs/bundlers.md#parcel)) |
+| esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line, and not tsup, which writes esbuild's output itself ([details](docs/bundlers.md#esbuild)) |
+| Parcel | 2 (tested: 2.8 and later) | `parcel build`, `parcel watch`, its JavaScript API ([details](docs/bundlers.md#parcel)) |
 | Angular | 20 – 22 | its application builder (`ng build`, `@angular/build`), also SSR and i18n; `ng serve` writes no lockfile ([details](docs/bundlers.md#angular)) |
 
 Watch mode writes the lockfile after every rebuild; rspack's dev servers serve it from memory. The tested versions,
-Node.js versions and package managers (npm, pnpm, yarn 1–4 with Plug'n'Play, bun, turbo, workspaces) are in
+Node.js versions and package managers (npm, pnpm, yarn 1, 3 and 4, also with Plug'n'Play, bun, turbo, workspaces) are in
 [docs/bundlers.md](docs/bundlers.md#supported).
-
-## Limitations
-
-- **Recognized, not hooked** — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warning, and no lockfile of the bundle;
-  a Turbopack build still gets Next.js' runtime lockfile): Turbopack (Next.js 16's default build: use
-  `next build --webpack`), the `rolldown` command line, `@vercel/ncc`, webpack < 4, rspack 0.x.
-- **Not hooked** — no lockfile, and no failure: the `esbuild` command line and Go API (their metafile gives one:
-  [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Bun's own runtime (`bun --bun`, `Bun.build`, and
-  `bun run` where Node.js is not installed), and a bundler in a process that `NODE_OPTIONS` (or the node shim) does
-  not reach. Check in CI that every lockfile the package should ship exists.
-- **Older Node.js:** on 20, 22 before 22.22.3 and 24 before 24.11.1, ES-module bundlers (Vite, Rolldown, rspack 2,
-  Rollup through `import`) are hooked only in some processes, and through a loader thread that costs time (8.7 % on
-  one Rsbuild build; [which processes](docs/bundlers.md#which-processes-are-hooked)).
-- **Not in the lockfile:** packages a server loads from `node_modules` at runtime (except Next.js'), files put into the
-  output without the bundler (a shell `cp`, another process), vendored code without a `package.json`, and in webpack
-  5.108+ a package of which only inlined constants are used ([what is listed](docs/coverage.md)).
-- **Shipped, not executed:** a lazily loaded chunk that is never opened, and a package of which one function is used,
-  are listed.
-- **Dev servers** list what they compiled so far: not the packages of lazily compiled dynamic imports.
-- **Outputs that move:** an output whose files the build process copies elsewhere with fs (Nitro's `.output/public`)
-  gets a copy of its lockfile there, and Next.js' standalone output gets copies of the lockfiles. Next.js' static
-  export, and copies made otherwise (`cp`, another process), leave the lockfiles behind: use an
-  [export directory](#outputs-that-do-not-ship-as-files).
 
 ## SBOM tools
 
@@ -323,6 +323,34 @@ reads the lockfile but matches no vulnerabilities to its packages: it counts an 
 URL as a local package, and bundle-lockfile writes none ([format](docs/format.md#fields)).
 
 The format, keys, licenses and bundle-lockfile's own record are described in [docs/format.md](docs/format.md).
+
+## Limitations
+
+- **Recognized, not hooked: the build fails.** With `BUNDLE_LOCKFILE_STRICT=0` it gets a warning and no lockfile of
+  the bundle. These are Turbopack (Next.js' runtime lockfile is still written), the `rolldown` command line,
+  `@vercel/ncc`, webpack < 4, rspack 0.x and 1.0, Rollup before 2.78, and esbuild 0.16 and older.
+- **Output written by the build tool itself: the process fails** when it ends, because a file of the output is in no
+  lockfile. tsup is such a tool: it writes esbuild's output itself. Its metafile gives the lockfile
+  ([bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)).
+- **Not hooked: no lockfile, and no failure.** This covers the `esbuild` command line and Go API (their metafile gives
+  a lockfile: [bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)), Bun's own runtime (`bun --bun`, `Bun.build`,
+  and `bun run` where Node.js is not installed), and a bundler in a process that `NODE_OPTIONS` (or the node shim)
+  does not reach. Check in CI that every lockfile the package should ship exists, as the `test -f` in the
+  [melange example](#in-a-melange-package-build) does.
+- **Older Node.js:** on 20, 22 before 22.22.3, 23, 24 before 24.11.1 and 25.0, ES-module bundlers (Vite, Rolldown,
+  rspack 2, Rollup through `import`) are hooked only in some processes. They are hooked through a loader thread that
+  costs time (8.7 % on one Rsbuild build; [which processes](docs/bundlers.md#which-processes-are-hooked)).
+- **Not in the lockfile:** packages a server loads from `node_modules` at runtime (except Next.js'), files put into the
+  output without the bundler (a shell `cp`, another process), vendored code without a `package.json`, and in webpack
+  5.108+ a package of which only inlined constants are used ([what is listed](docs/coverage.md)).
+- **Shipped, not executed:** a lazily loaded chunk that is never opened, and a package of which one function is used,
+  are listed.
+- **Dev servers** list what they compiled so far: not the packages of lazily compiled dynamic imports.
+- **Outputs that move:** when the build process copies an output's files elsewhere with fs (Nitro's `.output/public`),
+  the copy gets its lockfile too. Next.js' standalone output gets copies of the lockfiles, its static export the
+  client's. Copies
+  made otherwise (`cp`, another process) leave the lockfiles behind: use an
+  [export directory](#outputs-that-do-not-ship-as-files).
 
 ## Troubleshooting
 
