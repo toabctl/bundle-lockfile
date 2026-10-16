@@ -9,8 +9,8 @@ const copies = require('./copies.cjs');
 const nested = require('./nested.cjs');
 const vendored = require('./vendored.cjs');
 const via = require('./via.cjs');
-const { readPackage, readManifest } = require('./manifest.cjs');
-const { packageRoot, realRoot, unvirtual } = require('./paths.cjs');
+const { readPackage, readManifest, unique, uniqueOf } = require('./manifest.cjs');
+const { packageRoot, realRoot } = require('./paths.cjs');
 
 // Style sheets (CSS, Sass, Less, Stylus, PostCSS): those a style sheet @imports are inlined into it by the bundler's
 // CSS handling (Vite's CSS plugin, sass-loader, less-loader, postcss-import, Tailwind) and are no modules of their own
@@ -69,9 +69,6 @@ function unlisted(root, container) {
   config.warn(msg);
 }
 
-// The real path of a file (symbolic links and Yarn PnP's virtual paths resolved), or the file as it is
-const realFile = (/** @type {string} */ file) => { try { return unvirtual(fs.realpathSync(file)); } catch { return unvirtual(file); } };
-
 // A function that gives the packages a bundled source file (absolute, query strings allowed) belongs to ([] if none):
 // - in node_modules: the package directory below its last node_modules, at its real location - a package root
 //   without a usable package.json counts as the package around it (VS Code's stripped node_modules inside
@@ -125,7 +122,7 @@ function resolver(where = null, collector = null) {
     }
     const found = (/** @type {Package[]} */ pkgs) => (copied ? tell('fs-copy', pkgs) : pkgs);
     const owner = (/** @type {string} */ real) => { const o = where && where.ownerOf(real); return o ? tell('vendored', [o]) : []; };
-    if (!linked) return owner(realFile(file));
+    if (!linked) return owner(realRoot(file)); // (the file's real path, as for a package root)
     if (!byLinked.has(linked)) byLinked.set(linked, { root: realRoot(linked) });
     const entry = /** @type {{ root: string, told?: boolean }} */ (byLinked.get(linked)), { root } = entry;
     if (root !== linked && packageRoot(path.join(root, 'x')) !== root) {
@@ -142,22 +139,13 @@ function resolver(where = null, collector = null) {
   };
 }
 
-// Packages ({ name, version, license, path }) of any number of lists, one per path (the first one).
-/** @param {...Iterable<Package>} lists @returns {Package[]} */
-function unique(...lists) {
-  /** @type {Map<string, Package>} */
-  const m = new Map();
-  for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p);
-  return [...m.values()];
-}
-
 // files: absolute paths of source files that ended up in the bundle (query strings allowed); build (optional): the
 // build's { context, entries }, for vendored copies outside node_modules (see core/vendored.cjs). Returns one entry
 // per real package directory (see resolver).
 /** @param {Iterable<string>} files @param {BuildScope | null} [build] @returns {Package[]} */
 function packagesForFiles(files, build) {
   const of = resolver(build ? vendored.scope(build) : null);
-  return unique(Array.from(files, of).flat());
+  return uniqueOf(Array.from(files, of));
 }
 
 // The packages of bundled source files (absolute paths, query strings allowed): those the files belong to (see
@@ -172,18 +160,19 @@ function packagesOfFiles(files, build) {
   const found = via.collector();
   const of = resolver(build ? vendored.scope(build) : null, found);
   const nestedOf = nested.nestedByFile(files);
-  const own = /** @type {Package[]} */ ([]), inner = /** @type {Package[][]} */ ([]);
+  // (one list per file: the own ones first, then those inside other builds' output)
+  const own = /** @type {Package[][]} */ ([]), inner = /** @type {Package[][]} */ ([]);
   const byFile = /** @type {Map<string, Package[]>} */ (new Map()), ownByFile = /** @type {Map<string, Package[]>} */ (new Map());
   for (const f of files) {
     const p = nestedOf.has(f) ? [] : of(f), n = nestedOf.get(f) || [];
-    own.push(...p);
+    own.push(p);
     inner.push(n);
     found.add('nested', n);
     const pkgs = unique(p, n);
     if (pkgs.length) byFile.set(f, pkgs);
     if (p.length) ownByFile.set(f, p);
   }
-  return { all: unique(own, ...inner), byFile, ownByFile, via: found };
+  return { all: uniqueOf([...own, ...inner]), byFile, ownByFile, via: found };
 }
 
-module.exports = { STYLE, CODE, inlinedFile, unique, packagesForFiles, packagesOfFiles };
+module.exports = { STYLE, CODE, inlinedFile, unique, uniqueOf, packagesForFiles, packagesOfFiles };

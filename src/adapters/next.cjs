@@ -19,6 +19,7 @@ const problems = require('../core/problems.cjs');
 const traces = require('../core/traces.cjs');
 const via = require('../core/via.cjs');
 const { readPackage } = require('../core/manifest.cjs');
+const { real } = require('../core/paths.cjs');
 
 const BUILD = /[\\/]next[\\/]dist[\\/]build[\\/]index\.js$/;
 const CONFIG = /[\\/]next[\\/]dist[\\/]server[\\/]config\.js$/;
@@ -28,8 +29,6 @@ const PHASE_EXPORT = 'phase-export';
 const loaded = new Map(); // project directory -> the config its production build loaded (Next.js 12)
 const WRAPPED = Symbol.for('bundle-lockfile.next.wrapped');
 const WRITER = JSON.stringify(['next', 'runtime']);
-
-const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 
 // { distDir, dir, root } of the build that has just run, from Next's build context, or null (Next.js 12)
 function placeOf(buildFile, dir) {
@@ -90,17 +89,10 @@ async function runtime(buildFile, dir) {
 // copy's record is rewritten for where it is (core/outputs.cjs copied, through core/copies.cjs).
 function copyLockfiles(distDir, inStandalone) {
   const depth = config.file.split('/').length;
-  const lockfiles = [];
-  const walk = (d, top) => {
-    let entries;
-    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) { if (!(top && ['cache', 'standalone', 'runtime', 'static', 'node_modules', 'diagnostics'].includes(e.name))) walk(p, false); }
-      else if (e.isFile() && p.endsWith(path.join(...config.file.split('/')))) lockfiles.push(p);
-    }
-  };
-  walk(distDir, true);
+  // (not in Next's caches and copies, nor this adapter's own runtime lockfile's directory)
+  const name = path.join(...config.file.split('/'));
+  const skip = new Set(['cache', 'standalone', 'runtime', 'static', 'node_modules', 'diagnostics']);
+  const lockfiles = traces.filesBelow(distDir, skip, (p) => p.endsWith(name));
   for (const f of lockfiles) {
     const outDir = path.join(f, ...Array(depth).fill('..'));
     const there = inStandalone(real(outDir));

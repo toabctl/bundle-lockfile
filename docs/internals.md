@@ -491,21 +491,23 @@ bin/bundle-lockfile-from-metafile  the lockfile from an esbuild metafile (the co
 src/adapters/parcel.cjs   Parcel: adds the reporter (parcel-reporter/) to every Parcel; the assets of its bundles
 src/adapters/angular.cjs  Angular's application builder: wraps executeBuild(), the lockfile from its stats metafile
 src/core/packages.cjs   source files -> packages (package.json), also those inside files another build wrote
-src/core/manifest.cjs   a package directory's package.json: name, version, license
+src/core/manifest.cjs   a package directory's package.json: name, version, license; lists of packages, each once
 src/core/via.cjs        how each package was found (the record's "via")
 src/core/bundler.cjs    the bundler package whose code is in an output: the copy that ran (patched file, caller frame)
 src/core/helpers.cjs    transpilers whose helpers are inlined into shipped modules (Babel, swc, TypeScript) and their copies
 src/core/tree.cjs       BUNDLE_LOCKFILE_TREE: a package.json per lockfile entry, for image scans
 src/core/vendored.cjs   vendored copies inside packages and outside node_modules, the first-party boundaries
-src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path, writer-id paths
+src/core/paths.cjs      package directory of a file by its path (real location, Yarn PnP virtual paths), export path, writer-id paths,
+                          a path within another, output files by their names
 src/core/layout.cjs     Yarn's pnpm linker (node_modules/.store/<slug>/package): package roots, paths as node_modules/<name>
 src/core/late.cjs       files other plugins write into an output after the build, and their packages
 src/core/copies.cjs     files copied with fs in this process: out of packages, and copies of lockfiles
 src/core/children.cjs   node processes and workers started with an environment that drops the --require
 src/core/generated.cjs  packages of builds that write nothing themselves, by content and entry file
 src/core/nested.cjs     packages of bundled files another build wrote (output hashes in its lockfile)
-src/core/hashes.cjs     SHA-256 of output files, cached by inode, size, mtime and ctime
+src/core/hashes.cjs     SHA-256 of output files, cached by inode, size, mtime and ctime; the short ids the record has
 src/core/lru.cjs        bounded maps for the caches above
+src/core/maps.cjs       Map helpers (an entry made on first use)
 src/core/outputs.cjs    writers of each lockfile, in this process and others; writes, export copies
 src/core/lock.cjs       lock across processes (waiting for it lets the event loop run), atomic writes
 src/core/lockfile.cjs   package-lock.json (lockfileVersion 3, see format.md) and its "bundle-lockfile" record

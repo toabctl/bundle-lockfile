@@ -7,23 +7,22 @@
 // toPackageLock), and a writer keeps the others' packages as long as their files are there.
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
 const { cmp, toPackageLock, readMeta, unreadableRecord, NOT_JSON, reanchor, unknownPackage, located } = require('./lockfile.cjs');
 const { readManifest } = require('./manifest.cjs');
-const { exportPath, posix } = require('./paths.cjs');
+const { exportPath, posix, within } = require('./paths.cjs');
 const { lock, writeAtomic } = require('./lock.cjs');
 const { writeTree } = require('./tree.cjs');
+const { shortHash } = require('./hashes.cjs');
+const { getOr } = require('./maps.cjs');
 const copies = require('./copies.cjs');
 const lru = require('./lru.cjs');
 
-/** @import { Build, BundlerId, LockRecord, Manifest, Package, RecordedWriter, ViaCollector, Via, Writer } from '../types' */
+/** @import { Build, BundlerId, LockRecord, Manifest, Package, ViaCollector, Via, Writer, WriterRecord } from '../types' */
 /**
  * A build as render() merges it: one of this process's writers' (Build), or another process's record (foreign).
- * @typedef {{ id: string, pkgs: Package[], context: string | null, files: string[], count?: number, outputs: Record<string, string>,
- *   outputCount?: number, contents: Record<string, string[]>, bundler: BundlerId | null | undefined, via: Via | null,
- *   anchored?: boolean | null }} RenderBuild
+ * @typedef {WriterRecord & { id: string, context: string | null, anchored?: boolean | null }} RenderBuild
  */
 /** @typedef {(content: string) => void | Promise<void>} WriteFile */
 
@@ -102,7 +101,7 @@ function there(file) {
  * @param {boolean} [all]
  * @param {Set<string>} [ownFiles]
  * @param {Set<string>} [fresh]
- * @returns {(Omit<RecordedWriter, 'contents'> & { contents: Record<string, string[]>, context: string | null, anchored: boolean | null })[]}
+ * @returns {RenderBuild[]}
  */
 function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set()) {
   const file = outputs.disk.get(target) && stateFile(target);
@@ -129,8 +128,7 @@ function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set
   const left = (f) => !ownFiles.has(f) && there(f);
   const out = outputDirOf(target);
   return m.writers.flatMap((w) => {
-    let { id, files, count, outputs: outs, outputCount } = w;
-    let contents = Object.fromEntries(Object.entries(w.contents).map(([f, pkgs]) => [f, pkgs.map(p => p.path)]));
+    let { id, files, count, outputs: outs, outputCount, contents } = w;
     if (own.has(w.id)) {
       if (all || !fresh.has(w.id)) return [];
       const rest = files.filter(f => within(out, f) && left(f)); // (files in the output: not traced node_modules files)
@@ -159,7 +157,7 @@ function remnantOf(target, id, b, rest) {
   /** @type {<V>(o: Record<string, V>) => Record<string, V>} */
   const only = (o) => Object.fromEntries(Object.entries(o).filter(([f]) => keep.has(f)));
   const rel = b.files.map(f => posix(path.relative(path.dirname(target), f))).sort(cmp); // (no machine's paths in the id)
-  return { ...b, id: crypto.createHash('sha256').update(JSON.stringify([id, ...rel])).digest('hex').slice(0, 16), files: rest, outputs: only(b.outputs), contents: only(b.contents) };
+  return { ...b, id: shortHash(JSON.stringify([id, ...rel])), files: rest, outputs: only(b.outputs), contents: only(b.contents) };
 }
 
 // A build with its packages checked (seen: package directory -> its package, read once per render): a package's path
@@ -187,9 +185,8 @@ const stillThere = (seen) => (b) => {
   /** @type {Via} */
   const via = new Map();
   for (const [x, classes] of b.via || []) {
-    const to = ids.get(x) || x;
-    if (!via.has(to)) via.set(to, new Set());
-    for (const c of classes) /** @type {Set<string>} */ (via.get(to)).add(c);
+    const to = getOr(via, ids.get(x) || x, () => new Set());
+    for (const c of classes) to.add(c);
   }
   return { ...b, pkgs, contents, via };
 };
@@ -242,8 +239,7 @@ function render(target, own) {
   const valid = checked.filter(b => b.anchored === undefined || (b.anchored !== false && b.pkgs.some(located)));
   // (a record of another project, without its paths, has none: its packages' locations are not known, see readMeta)
   const context = /** @type {string[]} */ ((valid.length ? valid : checked).map(b => b.context).filter(Boolean)).sort(cmp)[0] || path.dirname(target);
-  const writers = checked.map(b => ({ id: b.id, files: b.files, count: b.count, outputs: b.outputs, outputCount: b.outputCount, contents: b.contents,
-    paths: b.pkgs.map(p => p.path), bundler: b.bundler, via: b.via }));
+  const writers = checked.map(b => ({ ...b, paths: b.pkgs.map(p => p.path) }));
   return toPackageLock([...byPath.values()], context, { dir: path.dirname(target), writers });
 }
 
@@ -266,9 +262,8 @@ function render(target, own) {
  * @returns {string}
  */
 function record(target, writer, pkgs, context, files = [], opts = {}) {
-  let writers = outputs.files.get(target);
-  if (!writers) outputs.files.set(target, (writers = new Map()));
-  const id = opts.id || crypto.createHash('sha256').update(writer).digest('hex').slice(0, 16);
+  const writers = getOr(outputs.files, target, () => new Map());
+  const id = opts.id || shortHash(writer);
   /** @type {Writer} */
   const w = writers.get(writer) || { id, building: null, landed: null, remnants: [], run: opts.run, wrote: false, landings: 0 };
   // its landed build of another run (another compiler or build for the same config: the configs of `rollup -c`),
@@ -387,8 +382,6 @@ function copied(src, dest, isDirectory) {
 // The output directory of a lockfile (target): the directory BUNDLE_LOCKFILE_FILE is below
 /** @param {string} target */
 const outputDirOf = (target) => path.join(target, ...config.file.split('/').map(() => '..'));
-/** @type {(dir: string, p: string) => boolean} */
-const within = (dir, p) => p === dir || p.startsWith(dir + path.sep);
 
 // A file of an output (one its writers in this process emit) or a directory in it copied with fs to a place outside
 // every output, without the lockfile: Nitro copies Nuxt's client output's _nuxt/ files one by one into
@@ -597,8 +590,8 @@ function filesOf(target) {
 }
 
 // Whether a writer of target emits file: as filesOf(target).has(file), without a new Set per call - every file an fs
-// copy writes is looked up (outputCopy). Each build's file list as a Set, made again when the list grew (an adapter
-// adds the files written after its build to it).
+// copy writes is looked up (outputCopy). Each build's file list as a Set, made again when the list grew: an adapter may
+// add to the list it gave record() (none does now; a stale Set would leave a copy of the output without its lockfile).
 /** @type {WeakMap<string[], { n: number, set: Set<string> }>} */
 const fileSets = new WeakMap(); // files array -> { n: its length then, set }
 /**
@@ -609,7 +602,6 @@ function hasFile(target, file) {
   for (const w of (outputs.files.get(target) || new Map()).values()) {
     for (const b of [w.building, w.landed]) {
       if (!b) continue;
-      if (!Array.isArray(b.files)) { for (const f of b.files) if (f === file) return true; continue; }
       let c = fileSets.get(b.files);
       if (!c || c.n !== b.files.length) fileSets.set(b.files, (c = { n: b.files.length, set: new Set(b.files) }));
       if (c.set.has(file)) return true;

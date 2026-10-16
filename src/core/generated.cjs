@@ -8,8 +8,8 @@
 /** @import { Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const config = require('./config.cjs');
+const { hex } = require('./hashes.cjs');
 const lru = require('./lru.cjs');
 const problems = require('./problems.cjs');
 
@@ -123,7 +123,7 @@ function hash(code) {
     const buf = Buffer.from(code.buffer, code.byteOffset, code.byteLength), text = buf.toString('utf8');
     data = Buffer.from(text, 'utf8').equals(buf) ? text.replace(SOURCE_MAP, '') : buf;
   }
-  return data == null ? null : crypto.createHash('sha256').update(data).digest('hex');
+  return data == null ? null : hex(data);
 }
 
 // A chunk of a generate-only build with its packages ([{ name, version, license, path }]).

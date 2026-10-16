@@ -11,16 +11,15 @@
 // BUNDLE_LOCKFILE_DISABLE as the adapter of what it stands in for: the rolldown command line `rolldown`, Turbopack and ncc
 // `webpack` (the bundler of Next.js, and ncc's) - a disabled bundler is not expected to write a lockfile.
 /** @import { Adapter } from '../types' */
-const fs = require('fs');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
 const { logical } = require('./layout.cjs');
+const { real } = require('./paths.cjs');
 
 const ROLLDOWN_CLI = /[\\/]rolldown[\\/]bin[\\/]cli\.mjs$/;
 const NEXT_BIN = /[\\/]next[\\/]dist[\\/]bin[\\/]next$/;
 const NCC = /[\\/]@vercel[\\/]ncc[\\/]dist[\\/]ncc[\\/](?:cli|index)\.js$/;
 
-const real = (/** @type {string} */ f) => { try { return fs.realpathSync(f); } catch { return f; } };
 // The process's main script by its real path, a package in Yarn's store as node_modules/<name> (core/layout.cjs)
 /** @param {string[]} argv */
 const mainOf = (argv) => (argv[1] ? logical(real(argv[1])) : '');

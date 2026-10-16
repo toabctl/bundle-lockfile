@@ -12,12 +12,15 @@ const path = require('path');
 // the traces), the client output, Turbopack's diagnostics and its links to external packages
 const SKIP = new Set(['cache', 'standalone', 'static', 'diagnostics', 'node_modules', 'trace']);
 
-// The trace files below distDir
+// The files below distDir for which test(path) holds, sorted, but those in its directories `skip` (also adapters/next.cjs:
+// the lockfiles of the build's bundles). Throws if a directory cannot be read (that is not gone).
 /**
  * @param {string} distDir
+ * @param {Set<string>} skip
+ * @param {(file: string) => boolean} test
  * @returns {string[]}
  */
-function traceFiles(distDir) {
+function filesBelow(distDir, skip, test) {
   /** @type {string[]} */
   const out = [];
   /** @type {(d: string, top: boolean) => void} */
@@ -26,12 +29,16 @@ function traceFiles(distDir) {
     try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT') return; throw e; }
     for (const e of entries) {
       const p = path.join(d, e.name);
-      if (e.isDirectory()) { if (!(top && SKIP.has(e.name))) walk(p, false); } else if (e.isFile() && e.name.endsWith('.nft.json')) out.push(p);
+      if (e.isDirectory()) { if (!(top && skip.has(e.name))) walk(p, false); } else if (e.isFile() && test(p)) out.push(p);
     }
   };
   walk(distDir, true);
   return out.sort();
 }
+
+// The trace files below distDir
+/** @type {(distDir: string) => string[]} */
+const traceFiles = (distDir) => filesBelow(distDir, SKIP, (f) => f.endsWith('.nft.json'));
 
 // The absolute paths of the files one trace lists; throws an Error saying what is wrong with it
 /**
@@ -50,4 +57,4 @@ function filesOf(traceFile) {
   return j.files.map(/** @param {string} f */ f => path.resolve(dir, f));
 }
 
-module.exports = { traceFiles, filesOf };
+module.exports = { filesBelow, traceFiles, filesOf };

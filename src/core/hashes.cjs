@@ -12,9 +12,14 @@ const MAX = 10000;
 /** @type {{ files: Map<string, { key: string, hash: string }> }} */
 const state = /** @type {any} */ (globalThis)[S] || (/** @type {any} */ (globalThis)[S] = { files: new Map() }); // file -> { key, hash }
 
-// "sha256-<hex>" of a string or Buffer
+// The hex SHA-256 of a string or Buffer; "sha256-<hex>" (as the lockfile records outputs); its first 16 hex digits,
+// the ids the lockfile records (writers, remnants, a tree's packages, a context's)
 /** @type {(data: string | Buffer) => string} */
-const sha256 = (data) => `sha256-${crypto.createHash('sha256').update(data).digest('hex')}`;
+const hex = (data) => crypto.createHash('sha256').update(data).digest('hex');
+/** @type {(data: string | Buffer) => string} */
+const sha256 = (data) => `sha256-${hex(data)}`;
+/** @type {(data: string | Buffer) => string} */
+const shortHash = (data) => hex(data).slice(0, 16);
 
 // The file's hash, or null if it cannot be read.
 /**
@@ -33,4 +38,4 @@ function hashOf(file) {
   return hash;
 }
 
-module.exports = { hashOf, sha256, MAX, state };
+module.exports = { hashOf, sha256, hex, shortHash, MAX, state };

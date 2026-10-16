@@ -5,7 +5,7 @@
 // listing the packages in its output.
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
-const { APPLIED, BUNDLER_FILE, BundleLockfilePlugin, bundledFiles, sourceFile, isRspack, attach } = require('./webpack-family.cjs');
+const { APPLIED, BundleLockfilePlugin, bundledFiles, sourceFile, isRspack, patchCompile } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
 const SEEN = Symbol.for('bundle-lockfile.webpack.seen');       // compiler: listeners have run
@@ -28,22 +28,9 @@ function patchCompiler(Compiler, where) {
   if (!p || !['compile', 'run', 'watch', 'newCompilation', 'isChild'].every(k => typeof p[k] === 'function')) return false;
   if (p[PATCHED]) return true;
   p[PATCHED] = true;
-  p[BUNDLER_FILE] = where; // the bundler's package is the one around it (core/bundler.cjs)
-  const orig = p.compile;
-  p.compile = function (...args) {
-    // compile() runs for run(), watch() and child compilers
-    if (!this[SEEN] && !this.isChild()) {
-      this[SEEN] = true;
-      if (this.hooks && this.hooks.thisCompilation) {
-        if (attach(this, listeners, where, args, 'webpack')) return undefined;
-      } else {
-        // webpack before 4 (plugin() instead of hooks): its build writes no lockfile - the process fails at exit
-        problems.problem(`webpack before 4 is not supported (a Compiler without hooks, from ${where}): its builds write no lockfile`);
-      }
-    }
-    return orig.apply(this, args);
-  };
-  config.debug('webpack: patched Compiler from', where);
+  // webpack before 4 (plugin() instead of hooks): its build writes no lockfile - the process fails at exit
+  patchCompile(p, where, 'webpack', listeners, SEEN,
+    () => problems.problem(`webpack before 4 is not supported (a Compiler without hooks, from ${where}): its builds write no lockfile`));
   return true;
 }
 

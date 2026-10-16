@@ -14,11 +14,11 @@ const SRC = path.join(__dirname, '../src');
 const config = require(path.join(SRC, 'core/config.cjs'));
 const problems = require(path.join(SRC, 'core/problems.cjs'));
 const packages = require(path.join(SRC, 'core/packages.cjs'));
-const via = require(path.join(SRC, 'core/via.cjs'));
 const outputs = require(path.join(SRC, 'core/outputs.cjs'));
 const { hashOf } = require(path.join(SRC, 'core/hashes.cjs'));
-const { portable } = require(path.join(SRC, 'core/paths.cjs'));
-const { filesOfOutputs, fileOfInput } = require(path.join(SRC, 'adapters/esbuild.cjs'));
+const { readManifest } = require(path.join(SRC, 'core/manifest.cjs'));
+const { portable, real, within, JS, JS_CSS } = require(path.join(SRC, 'core/paths.cjs'));
+const { filesOfOutputs, collect, entryFiles, packagesOfInputs } = require(path.join(SRC, 'adapters/esbuild.cjs'));
 const { bundlerPackage } = require(path.join(SRC, 'core/bundler.cjs'));
 const { createRequire } = require('module');
 
@@ -36,8 +36,7 @@ const wdArg = opt('--working-dir'), outArg = opt('--out'), bundlerArg = opt('--b
 if (args.length !== 1 || args[0].startsWith('-')) { console.error(usage); process.exit(2); }
 // what is wrong with the settings (unless the preload, through the node shim, reported it already)
 if (!globalThis[Symbol.for('bundle-lockfile.settings-reported')]) for (const [what, cause] of config.settingsProblems()) problems.problem(what, cause);
-const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
-const wd = real(wdArg || process.cwd());
+const wd = real(path.resolve(wdArg || process.cwd()));
 const metaFile = path.resolve(args[0]);
 
 let metafile;
@@ -51,7 +50,7 @@ if (metafile && (typeof metafile !== 'object' || !metafile.outputs || typeof met
 function commonDir(files) {
   if (!files.length) return null;
   let dir = path.dirname(files[0]);
-  for (const f of files) while (dir !== path.dirname(dir) && !f.startsWith(dir + path.sep)) dir = path.dirname(dir);
+  for (const f of files) while (dir !== path.dirname(dir) && !within(dir, f)) dir = path.dirname(dir);
   return dir;
 }
 
@@ -61,9 +60,7 @@ function done() {
 
 if (!metafile) done();
 else {
-  const kinds = new Map(); // (how each file was found, see src/core/via.cjs: inlined files; the rest are modules)
-  const byOutput = filesOfOutputs(metafile, wd, undefined, kinds);
-  const files = [...byOutput.keys()];
+  const files = [...filesOfOutputs(metafile, wd).keys()];
   const dir = outArg ? path.resolve(outArg) : commonDir(files);
   if (!dir) { problems.problem(`${metaFile} lists no output files`); done(); } else if (path.dirname(dir) === dir) {
     problems.problem(`the outputs of ${metaFile} are in no directory but the root: name the output directory with --out`); done();
@@ -72,30 +69,28 @@ else {
     // not there, and the packages of none)
     problems.problem(`none of the output files of ${metaFile} is there (its paths relative to ${wd}): run it in the build's working directory, or name that with --working-dir`); done();
   } else {
-    const entries = Object.values(metafile.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
-    const result = packages.packagesOfFiles([...new Set([...byOutput.values()].flat())], { context: wd, entries });
-    const { byFile } = result;
+    // (how each file was found, see src/core/via.cjs: inlined files; the rest are modules)
+    const { byOutput, all: own, byFile, found } = collect(metafile, wd, entryFiles(metafile, wd));
     // the bundler whose code is in the JavaScript outputs (its runtime helpers, see src/core/bundler.cjs): the package
     // --bundler names (its directory), else the esbuild the working directory resolves; --bundler none: none (Bun's
     // metafile: Bun is no npm package). Neither: a problem
-    const found = via.ofFiles(result, kinds);
     let runtime = [];
-    if (files.some(f => /\.[cm]?js$/i.test(f)) && bundlerArg !== 'none') {
+    if (files.some(f => JS.test(f)) && bundlerArg !== 'none') {
       let pj = null;
       if (bundlerArg) pj = path.join(path.resolve(bundlerArg), 'package.json');
       else try { pj = createRequire(path.join(wd, 'x')).resolve('esbuild/package.json'); } catch { /* none */ }
       if (pj && fs.existsSync(pj)) {
-        const name = (() => { try { return JSON.parse(fs.readFileSync(pj, 'utf8')).name; } catch { return null; } })();
+        const j = readManifest(path.dirname(pj)), name = j && typeof j.name === 'string' ? j.name : null;
         runtime = [bundlerPackage('metafile', pj, [name || 'esbuild'])].filter(Boolean);
       } else problems.problem(`${bundlerArg ? `${bundlerArg} has no package.json` : `${wd} resolves no esbuild`}: the bundler that wrote ${metaFile} is not known - name its package directory with --bundler (or --bundler none)`);
     }
     found.add('runtime', runtime);
-    const all = packages.unique(result.all, runtime);
+    const all = packages.unique(own, runtime);
     const hashes = {}, contents = {};
     for (const [file, inputs] of byOutput) {
-      if (!/\.([cm]?js|css)$/i.test(file)) continue;
+      if (!JS_CSS.test(file)) continue;
       const h = hashOf(file);
-      if (h) { hashes[file] = h; contents[file] = packages.unique(...inputs.map(f => byFile.get(f) || []), /\.[cm]?js$/i.test(file) ? runtime : []).map(p => p.path); }
+      if (h) { hashes[file] = h; contents[file] = packages.unique(packagesOfInputs(inputs, byFile), JS.test(file) ? runtime : []).map(p => p.path); }
     }
     const target = path.join(dir, config.file);
     const writer = JSON.stringify(['metafile', portable(wd, metaFile)]);

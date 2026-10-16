@@ -6,7 +6,6 @@
 // (buildSuccess); they are no part of Parcel's cache. The reporter lists the packages of the assets of every bundle,
 // except those the scope-hoisting packager leaves out (no side effects, no used symbols, not referenced), and writes
 // <target's distDir>/<BUNDLE_LOCKFILE_FILE>. A problem is thrown from the reporter: Parcel fails the build with it.
-const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
@@ -14,7 +13,8 @@ const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const { hashOf } = require('../core/hashes.cjs');
-const { portable, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache, real, JS, JS_CSS } = require('../core/paths.cjs');
+const { versionIn } = require('../core/manifest.cjs');
 const { createRequire } = require('module');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
@@ -22,9 +22,9 @@ const PATCHED = Symbol.for('bundle-lockfile.parcel.patched');
 const PARCEL = /[\\/]@parcel[\\/]core[\\/]lib[\\/]Parcel\.js$/;
 const TRACKER = /[\\/]@parcel[\\/]core[\\/]lib[\\/]RequestTracker\.js$/;
 const REPORTER = path.join(__dirname, 'parcel-reporter');
-const JS_CSS = /\.([cm]?js|css)$/i;
 const CODE_TYPES = new Set(['js', 'jsx', 'ts', 'tsx', 'css', 'html', 'json']); // Parcel's asset types that are code
 // @parcel/core's version, as the patched copy's package.json says (the record's bundler)
+/** @type {string | null} */
 let version = null;
 
 // Files a transformer inlines into an asset - a Sass partial, a Less @import - are no assets of their own: the
@@ -181,8 +181,7 @@ const report = (opts) => problems.within({}, () => reportBuild(opts));
 async function reportBuild({ event, options }) {
   if (!event || event.type !== 'buildSuccess') return;
   const projectRoot = (options && options.projectRoot) || process.cwd();
-  let context = projectRoot;
-  try { context = fs.realpathSync(projectRoot); } catch { /* as it is */ }
+  const context = real(projectRoot);
   let writes = [];
   try { writes = collect(event.bundleGraph, projectRoot); } catch (e) { problems.problem('parcel: could not collect the bundled packages of the build', e); }
   for (const w of writes) {
@@ -200,7 +199,7 @@ async function reportBuild({ event, options }) {
       const result = packages.packagesOfFiles([...w.sources], { context, entries: [...w.entries] });
       const { byFile } = result;
       // (also a bundle inlined into one of them: a <script type="module"> in the HTML has Parcel's code around it too)
-      const js = w.bundles.some(b => /\.[cm]?js$/i.test(b.filePath)) || w.inlineJs;
+      const js = w.bundles.some(b => JS.test(b.filePath)) || w.inlineJs;
       const runtime = js ? [packagerOf(projectRoot)].filter(p => p !== null) : [];
       const all = packages.unique(result.all, runtime);
       const found = via.ofFiles(result, w.kinds);
@@ -211,15 +210,16 @@ async function reportBuild({ event, options }) {
         const h = hashOf(b.filePath);
         if (!h) continue;
         hashes[b.filePath] = h;
-        const own = [];
+        const own = []; // the packages of each asset's file (one list each)
         const into = new Set();
         b.traverseAssets((a) => {
           if (typeof a.filePath !== 'string' || skipped(event.bundleGraph, b, a)) return;
           into.add(a.filePath);
-          own.push(...(byFile.get(a.filePath) || []));
+          own.push(byFile.get(a.filePath) || []);
         });
-        for (const [f, src] of inlined) if (into.has(src)) own.push(...(byFile.get(f) || []));
-        contents[b.filePath] = packages.unique(own, /\.[cm]?js$/i.test(b.filePath) ? runtime : []).map(p => p.path);
+        for (const [f, src] of inlined) if (into.has(src)) own.push(byFile.get(f) || []);
+        if (JS.test(b.filePath)) own.push(runtime);
+        contents[b.filePath] = packages.uniqueOf(own).map(p => p.path);
       }
       // run: the Parcel's plugin options, one object per Parcel (its ReporterRunner's), the same in its rebuilds: another
       // Parcel of the process that wrote into the directory before is another run of the writer (core/outputs.cjs)
@@ -262,7 +262,7 @@ module.exports = {
       parcelFile = resolve();
       if (exp.Parcel === Parcel) exp.Parcel = BundleLockfileParcel;
       exp[PATCHED] = true;
-      try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+      version = versionIn(path.join(path.dirname(resolve()), '..'));
       config.debug('parcel: patched', resolve(), version || '');
     } catch (e) { problems.problem(`parcel: could not patch ${resolve()}`, e); }
   },

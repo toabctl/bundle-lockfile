@@ -12,9 +12,8 @@ const generated = require('./generated.cjs');
 const { inTree } = require('./tree.cjs');
 const copies = require('./copies.cjs');
 const lru = require('./lru.cjs');
-const { ancestors, packageRoot, posix } = require('./paths.cjs');
+const { ancestors, packageRoot, posix, within, JS } = require('./paths.cjs');
 
-const JS = /\.[cm]?js$/i;
 const MAX_SCAN = 20000;           // entries of an output directory looked at
 const MAX_LATE = 20 * 1024 * 1024; // larger files are not compared
 // what was not checked is said (a warning, once per directory or file): a package it would add may be missing
@@ -69,7 +68,7 @@ function copiedFrom(file, rel, cwd) {
 function filesWrittenAfter(dir, { since, known, skip, cwd, roots = [] }) {
   /** @type {LateFile[]} */
   const found = [];
-  for (const r of [cwd, ...roots]) if (r && (dir === r || r.startsWith(dir + path.sep))) return found;
+  for (const r of [cwd, ...roots]) if (r && within(dir, r)) return found;
   let seen = 0;
   /** @param {string} d */
   const walk = (d) => {

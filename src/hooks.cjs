@@ -28,6 +28,7 @@ const problems = require('./core/problems.cjs');
 const helpers = require('./core/helpers.cjs');
 const esmWrap = require('./esm-wrap.cjs');
 const { ancestors } = require('./core/paths.cjs');
+const { readManifest } = require('./core/manifest.cjs');
 const { logical } = require('./core/layout.cjs');
 
 const INSTALLED = Symbol.for('bundle-lockfile.hooks-installed');
@@ -219,11 +220,9 @@ function mainUses(packages, main) {
   let start;
   try { start = path.dirname(fs.realpathSync(main)); } catch { return false; }
   for (const dir of ancestors(start)) {
-    const file = path.join(dir, 'package.json');
-    if (fs.existsSync(file)) {
-      let j;
-      try { j = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { j = {}; }
-      if (j && (j.name || j.dependencies || j.devDependencies)) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) {
+      const j = readManifest(dir) || {}; // (not JSON: as one without a name)
+      if (j.name || j.dependencies || j.devDependencies) {
         const deps = Object.assign({}, j.dependencies, j.devDependencies, j.optionalDependencies, j.peerDependencies);
         return packages.includes(j.name) || packages.some(p => Object.prototype.hasOwnProperty.call(deps, p));
       }

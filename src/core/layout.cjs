@@ -1,10 +1,9 @@
 'use strict';
 // Package directories that are not node_modules/<name>: Yarn's pnpm linker (nodeLinker: pnpm) puts every package into
 // node_modules/.store/<slug>/package/ and links node_modules/<name> to it - the package's files are below
-// .store/<slug>/package/, which bundlers and Node.js see (they resolve links). No dependencies of its own: the ESM loader
-// thread uses it too (esm-wrap.cjs).
-const fs = require('fs');
-const path = require('path');
+// .store/<slug>/package/, which bundlers and Node.js see (they resolve links). Of bundle-lockfile's modules it needs only
+// core/manifest.cjs, which needs none: the ESM loader thread uses it too (esm-wrap.cjs).
+const { readManifest } = require('./manifest.cjs');
 
 // .../node_modules/.store/<slug>/package (the last one in a path), either separator
 const STORE = /([\\/])node_modules\1\.store\1[^\\/]+\1package(?=[\\/]|$)/g;
@@ -39,9 +38,8 @@ function logical(file) {
   for (const hit of found.reverse()) { // from the end: the indices before it stay valid
     const dir = file.slice(0, hit.index + hit[0].length);
     if (!names.has(dir)) {
-      let name = null;
-      try { const j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); if (typeof j.name === 'string' && j.name) name = j.name; } catch { /* none */ }
-      names.set(dir, name);
+      const j = readManifest(dir);
+      names.set(dir, j && typeof j.name === 'string' && j.name ? j.name : null);
     }
     const name = names.get(dir);
     if (!name) continue;

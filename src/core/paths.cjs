@@ -1,6 +1,6 @@
 'use strict';
-// Path helpers shared by the core modules and the adapters: directories up to the root, the package directory of a
-// file by its path, the export path of a lockfile.
+// Path helpers shared by the core modules and the adapters: directories up to the root, a path inside another, real
+// paths, the package directory of a file by its path, the export path of a lockfile, output files by their names.
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
@@ -19,6 +19,26 @@ function* ancestors(dir) {
 
 // A relative path with "/" separators, as the lockfile records paths (the same on every platform).
 const posix = (/** @type {string} */ p) => p.split(path.sep).join('/');
+
+// p is dir or a path inside it
+/** @type {(dir: string, p: string) => boolean} */
+const within = (dir, p) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+
+// The real path of p (symbolic links resolved), or p as it is if it cannot be resolved (not there)
+/** @type {(p: string) => string} */
+const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+
+// A file path that may end with a fragment ("#..."), as module ids and metafile keys have them: a "#" in the last part
+// of the path is a fragment only if the file with it is not there (directories and files can have one: ~/c#/app).
+/** @param {string} f @returns {string} */
+function withoutFragment(f) {
+  const hash = f.lastIndexOf('#');
+  return hash > Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) && !fs.existsSync(f) ? f.slice(0, hash) : f;
+}
+
+// Output files by their names: JavaScript; JavaScript and CSS, the files another build may bundle (core/nested.cjs)
+const JS = /\.[cm]?js$/i;
+const JS_CSS = /\.([cm]?js|css)$/i;
 
 // The package a file belongs to is the directory directly below its LAST node_modules segment:
 // node_modules/<name> or node_modules/@scope/<name>. That is how npm, yarn (incl. PnP zip paths
@@ -45,11 +65,7 @@ function packageRoot(file) {
 // package (-> packages/ui) or node_modules/foo for pnpm (-> node_modules/.pnpm/foo@1/node_modules/foo).
 // Paths fs cannot resolve (e.g. Yarn PnP zip paths without the PnP fs patch) stay as they are.
 /** @param {string} root @returns {string} */
-function realRoot(root) {
-  let real = root;
-  try { real = fs.realpathSync(root); } catch { /* keep root */ }
-  return unvirtual(real);
-}
+const realRoot = (root) => unvirtual(real(root));
 
 // Yarn PnP gives packages with peer dependencies one virtual path per dependent set, and its fs keeps them as
 // real paths: <dir>/__virtual__/<name>-virtual-<hash>/<depth>/<subpath> is <dir>/(../ x depth)<subpath>
@@ -111,14 +127,15 @@ function below(dir, p) {
   const rel = path.relative(dir, p);
   return rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel) ? rel : null;
 }
-// the real path of p, as far as it exists (a lockfile's directory, a copy's destination may not be there yet)
+// The real path of p (absolute), also of one that is not there (yet): of its nearest ancestor that is, and the rest as it
+// is (a lockfile's directory, a copy's destination)
 /** @param {string} p @returns {string} */
 function realish(p) {
   /** @type {string[]} */
   const rest = [];
-  for (let d = p; ; d = path.dirname(d)) {
+  for (let d = path.resolve(p); ; d = path.dirname(d)) {
     try { return path.join(fs.realpathSync(d), ...rest.reverse()); } catch { /* not there */ }
-    if (path.dirname(d) === d) return p;
+    if (path.dirname(d) === d) return path.resolve(p);
     rest.push(path.basename(d));
   }
 }
@@ -134,4 +151,6 @@ function inToolCache(dir) {
   return i >= 0 && parts[i + 1] !== '.cache';
 }
 
-module.exports = { ancestors, posix, packageRoot, realRoot, unvirtual, portable, exportPath, inToolCache, realish, OUTSIDE_BASE };
+module.exports = {
+  ancestors, posix, within, real, withoutFragment, JS, JS_CSS, packageRoot, realRoot, unvirtual, portable, exportPath, inToolCache, realish, OUTSIDE_BASE,
+};

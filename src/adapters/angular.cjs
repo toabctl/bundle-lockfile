@@ -9,16 +9,16 @@
 // added to the build's output files: <outputPath>/<browser>/<BUNDLE_LOCKFILE_FILE>, and with SSR
 // <outputPath>/<server>/<BUNDLE_LOCKFILE_FILE>, which Angular writes with the rest (after it cleaned the output path).
 // A problem is an error of the build.
-const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
-const via = require('../core/via.cjs');
 const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
-const { portable, exportPath } = require('../core/paths.cjs');
+const { portable, exportPath, real, JS } = require('../core/paths.cjs');
+const { versionIn } = require('../core/manifest.cjs');
+const { getOr } = require('../core/maps.cjs');
 const { createRequire } = require('module');
-const { filesOfOutputs, fileOfInput } = require('./esbuild.cjs');
+const { collect: collectMetafile, entryFiles } = require('./esbuild.cjs');
 const { bundlerPackage } = require('../core/bundler.cjs');
 const { stubsOf } = require('../core/tree.cjs');
 
@@ -31,7 +31,6 @@ const TYPE = { Browser: 0, Media: 1, ServerApplication: 2, ServerRoot: 3, Root: 
 const sideOfType = (t) => (t === TYPE.Browser || t === TYPE.Media ? 'browser' : t === TYPE.ServerApplication || t === TYPE.ServerRoot ? 'server' : null);
 // its metafiles with the stats option: one per side (22 and later), or both sides in one (stats.json: 17 - 21)
 const STATS = { browser: 'browser-stats.json', server: 'server-stats.json', both: 'stats.json' };
-const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 // the version of the builder whose executeBuild() was wrapped (@angular/build, or @angular-devkit/build-angular 17), as
 // its package.json says: the record's bundler
 /** @type {string | null} */
@@ -117,8 +116,7 @@ function complete(options, result, forced, lands) {
       const side = sideOfType(f.type);
       if (!side) continue;
       const key = unlocalized(f.path); // (with i18n: <subPath>/main.js is main.js of the metafile)
-      if (!sideOf.has(key)) sideOf.set(key, new Set());
-      sideOf.get(key).add(side);
+      getOr(sideOf, key, () => new Set()).add(side);
     }
     const ssr = [...sideOf.values()].some(s => s.has('server'));
     const split = { browser: {}, server: {} };
@@ -131,7 +129,7 @@ function complete(options, result, forced, lands) {
     if (Object.keys(split.server).length) stats.server = { outputs: split.server };
   }
   if (!stats.browser) { problems.problem('angular: a build without its stats metafile (the stats option): its packages are unknown'); return; }
-  const context = realOr(wd);
+  const context = real(wd);
   const assets = (Array.isArray(result.assetFiles) ? result.assetFiles : []).map(a => a && a.source).filter(s => typeof s === 'string' && path.isAbsolute(s));
   for (const side of ['browser', 'server']) {
     const metafile = stats[side];
@@ -147,16 +145,11 @@ function complete(options, result, forced, lands) {
     // The packages, via and all of the outputs `keys` of the side's metafile (with its asset copies: browser)
     const collect = (keys, withAssets) => {
       const sub = { ...metafile, outputs: Object.fromEntries(Object.entries(metafile.outputs || {}).filter(([k]) => keys.has(k))) };
-      const kinds = new Map();
-      const sources = [...new Set([...filesOfOutputs(sub, wd, undefined, kinds).values()].flat())];
-      if (withAssets) for (const a of assets) { sources.push(a); kinds.set(a, 'asset'); }
-      const entries = Object.values(sub.outputs).map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
-      const collected = packages.packagesOfFiles(sources, { context, entries });
-      const found = via.ofFiles(collected, kinds);
+      const { all, found } = collectMetafile(sub, wd, entryFiles(sub, wd), undefined, withAssets ? assets : []);
       // the bundler's own code (esbuild's runtime helpers) in every output that has JavaScript (see core/bundler.cjs)
-      const runtime = [...keys].some(k => /\.[cm]?js$/.test(k)) ? [esbuildOf(wd)].filter(p => p !== null) : [];
+      const runtime = [...keys].some(k => JS.test(k)) ? [esbuildOf(wd)].filter(p => p !== null) : [];
       found.add('runtime', runtime);
-      return { all: packages.unique(collected.all, runtime), found };
+      return { all: packages.unique(all, runtime), found };
     };
     const file = config.file.split(path.sep).join('/');
     const write = (label, dir, writer, own, { all, found }, locale) => {
@@ -265,7 +258,7 @@ module.exports = {
     try {
       exp.executeBuild = wrap(exp.executeBuild);
       exp[PATCHED] = true;
-      try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../../../package.json'), 'utf8')).version || null; } catch { /* unknown */ }
+      version = versionIn(path.join(path.dirname(resolve()), '../../..'));
       try { esbuildFile = createRequire(resolve()).resolve('esbuild/package.json'); } catch { /* reported when a build writes JavaScript */ }
       config.debug('angular: wrapped executeBuild() of', resolve(), version || '');
     } catch (e) { problems.problem(`angular: could not wrap ${resolve()}`, e); }
