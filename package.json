@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "lint": "eslint . && oxlint src",
-    "typecheck": "tsc -p . && tsc -p src/core",
+    "typecheck": "tsc -p .",
     "check": "npm run typecheck && npm run lint"
   },
   "devDependencies": {

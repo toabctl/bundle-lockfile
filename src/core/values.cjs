@@ -35,17 +35,21 @@ const codeOf = (e) => (isObject(e) && typeof e.code === 'string' ? e.code : unde
 
 // The state of a module that the copies of it in this process share (another release's, or this one loaded through
 // another path): made by make() if no copy made it first. Its key names the version of its shape
-// (Symbol.for('bundle-lockfile.<module>.v<n>')): copies of another shape keep their own.
+// (Symbol.for('bundle-lockfile.<module>.v<n>')): copies of another shape keep their own. A state an earlier release made
+// under the same key may lack the fields added since: those are filled in from make().
 /**
- * @template T
+ * @template {object} T
  * @param {symbol} key
  * @param {() => T} make
  * @returns {T}
  */
 function perProcess(key, make) {
   const g = /** @type {Record<symbol, unknown>} */ (/** @type {unknown} */ (globalThis));
-  if (!g[key]) g[key] = make();
-  return /** @type {T} */ (g[key]);
+  const made = make();
+  const state = g[key];
+  if (!isObject(state)) { g[key] = made; return made; }
+  for (const [k, v] of Object.entries(made)) if (state[k] == null) state[k] = v;
+  return /** @type {T} */ (state);
 }
 
 module.exports = { isObject, isObjectOrFunction, isArray, strings, parseJson, codeOf, perProcess };
