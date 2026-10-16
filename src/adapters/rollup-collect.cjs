@@ -11,21 +11,20 @@ const via = require('../core/via.cjs');
 const helpers = require('../core/helpers.cjs');
 const generated = require('../core/generated.cjs');
 const { sha256 } = require('../core/hashes.cjs');
+const { hasBytes } = require('../core/copies.cjs');
+const { getOr } = require('../core/maps.cjs');
+const { withoutFragment, JS } = require('../core/paths.cjs');
 
-const JS = /\.[cm]?js$/i;
 const { STYLE } = packages;
 
 const moduleIds = (chunk) => chunk.moduleIds || Object.keys(chunk.modules || {});
 
 // Source file of a module id: virtual modules (\0vite/..., \0commonjsHelpers.js, virtual:...) have none; a
 // \0-prefixed absolute id (rollup's commonjs proxies) and ids with queries (?vue&type=style, ?inline, ?worker) are
-// the file before them. Directories and files can have a "#" in their name (~/c#/app): a "#" in the last part of the
-// path is a fragment only if the file with it is not there.
+// the file before them, and without a fragment (see core/paths.cjs withoutFragment).
 function fileOf(id) {
   if (typeof id !== 'string') return null;
-  let f = id.replace(/^\0/, '').split('?')[0];
-  const hash = f.lastIndexOf('#');
-  if (hash > Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) && !fs.existsSync(f)) f = f.slice(0, hash);
+  const f = withoutFragment(id.replace(/^\0/, '').split('?')[0]);
   return path.isAbsolute(f) ? path.normalize(f) : null;
 }
 
@@ -87,16 +86,17 @@ function outputContents(bundle, dir, ids, originals, inlined, byFile) {
   const add = (into, pkgs) => { if (pkgs) for (const p of pkgs) into.add(p.path); };
   const ofFiles = (into, list) => { for (const f of list) add(into, byFile.get(f)); };
   const inChunks = new Set(all.filter(f => f.type === 'chunk').flatMap(moduleIds));
+  const cssFiles = new Set(css), inlinedCode = inlined.filter(i => !STYLE.test(i)); // (the same for every chunk)
   for (const f of all) {
     const file = path.join(dir, f.fileName);
     const into = new Set();
     if (f.type === 'chunk') {
       const own = moduleIds(f).filter(id => !extracted(id));
       ofFiles(into, own.map(fileOf).filter(Boolean));
-      ofFiles(into, inlined.filter(i => !STYLE.test(i)));
+      ofFiles(into, inlinedCode);
       for (const p of generatedIn({ [f.fileName]: f }, own).values()) into.add(p.path);
       hashes[file] = sha256(f.code);
-    } else if (css.includes(f)) {
+    } else if (cssFiles.has(f)) {
       const importers = all.filter(c => c.type === 'chunk' && c.viteMetadata && c.viteMetadata.importedCss && c.viteMetadata.importedCss.has(f.fileName));
       // and the style modules of chunks no longer in the bundle (Vite removes a chunk of style only, and hands its CSS
       // files to the chunks that imported it, not its modules)
@@ -123,15 +123,6 @@ function entryDirs(bundle) {
     for (let d = entry && path.dirname(entry); d && !dirs.has(d); d = path.dirname(d) === d ? null : path.dirname(d)) dirs.add(d);
   }
   return [...dirs];
-}
-
-// The file has these bytes (a string as Rollup writes it, or a Buffer / Uint8Array).
-function hasBytes(file, data) {
-  if (data == null) return false;
-  try {
-    const buf = Buffer.from(data);
-    return fs.statSync(file).size === buf.length && fs.readFileSync(file).equals(buf);
-  } catch { return false; }
 }
 
 const once = (fn) => { let v; return () => (v === undefined ? (v = fn()) : v); };
@@ -192,7 +183,7 @@ function keepGenerated(ctx, bundle, { cwd, bundlers, watched = [] }) {
     }
     all.push(pkgs);
   }
-  const pkgs = packages.unique(...all);
+  const pkgs = packages.uniqueOf(all);
   for (const f of Object.values(bundle)) if (f.type === 'chunk' && f.isEntry) generated.addEntry(fileOf(f.facadeModuleId), pkgs);
   return pkgs;
 }
@@ -226,12 +217,11 @@ function collectOutput(ctx, bundle, { dir, cwd, ids, watched, bundlers }) {
   // file a plugin inlined (style, inlined)
   /** @type {Map<string, Set<string>>} */
   const kinds = new Map();
-  const mark = (f, cls) => { if (!kinds.has(f)) kinds.set(f, new Set()); /** @type {Set<string>} */ (kinds.get(f)).add(cls); };
+  const mark = (f, cls) => { getOr(kinds, f, () => new Set()).add(cls); };
   for (const f of sources) mark(f, 'asset');
   for (const id of ids) { const file = fileOf(id); if (file) { sources.push(file); mark(file, 'chunk'); } }
   const inlined = inlinedFiles(watched, ctx);
-  sources.push(...inlined);
-  for (const f of inlined) mark(f, STYLE.test(f) ? 'style' : 'inlined');
+  for (const f of inlined) { sources.push(f); mark(f, STYLE.test(f) ? 'style' : 'inlined'); }
   const result = packages.packagesOfFiles(sources, buildOf(bundle, cwd));
   const { all, byFile } = result;
   const gen = [...generatedIn(bundle, ids).values()];

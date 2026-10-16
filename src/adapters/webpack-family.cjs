@@ -4,7 +4,7 @@
 // webpack-collect.cjs's part, what differs between the compilers webpack-compat.cjs's. The adapters (webpack.cjs,
 // rspack.cjs) only hook the bundler and apply the plugin.
 /** @import { Package } from '../types' */
-/** @import { CopiedInEmit } from './webpack-collect.cjs' */
+/** @import { Copies } from './webpack-collect.cjs' */
 const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
@@ -14,7 +14,7 @@ const outputs = require('../core/outputs.cjs');
 const problems = require('../core/problems.cjs');
 const via = require('../core/via.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
-const { portable, exportPath, inToolCache, ancestors } = require('../core/paths.cjs');
+const { portable, exportPath, inToolCache, ancestors, real, JS } = require('../core/paths.cjs');
 const { bundlerPackage, packageOnStack } = require('../core/bundler.cjs');
 const { readManifest } = require('../core/manifest.cjs');
 const {
@@ -39,7 +39,6 @@ const LATE = Symbol('bundle-lockfile.webpack.late');           // compilation: i
 const SKIP = Symbol('bundle-lockfile.webpack.skip');           // compilation: writes into a tool's cache, no lockfile
 const READING = Symbol.for('bundle-lockfile.webpack.reading.v1'); // input file system: the sets readsOf notes its reads in
 const BUNDLER_FILE = Symbol.for('bundle-lockfile.webpack.bundler-file'); // Compiler.prototype: the file it was patched in
-const JS = /\.[cm]?js$/i;
 
 // Compilers that write the same files are one writer of a shared lockfile: a new compiler for the same config
 // (a build restarted in the same process, or run again by another process) replaces the previous one's packages
@@ -217,7 +216,7 @@ class BundleLockfilePlugin {
   // the build
   /**
    * @param {any} compilation
-   * @param {CopiedInEmit} [copied]
+   * @param {Copies} [copied]
    * @param {{ generated?: Package[], late?: Package[] }} [late]
    * @returns {string}
    */
@@ -227,14 +226,15 @@ class BundleLockfilePlugin {
     const kinds = new Map(compilation[KINDS] || []);
     // the files copied while the assets were processed (copiedLate; still assets: not deleted in the emit hook), and in
     // the emit hook
-    /** @type {CopiedInEmit} */
+    /** @type {Copies} */
     const lateCopies = compilation[LATE] || new Map();
+    /** @type {Copies} */
     const all = new Map([...[...lateCopies].filter(([name]) => hasAsset(compilation, name)), ...copied]);
-    const bytes = new Set([...(lateCopies.bytes || []), ...(copied.bytes || [])]);
-    for (const [name, f] of all) kinds.set(f, new Set([...(kinds.get(f) || []), bytes.has(name) ? 'copy-bytes' : 'copy-source']));
+    const copiedFiles = [...all.values()].flatMap(c => c.files);
+    for (const { files, bytes } of all.values()) for (const f of files) kinds.set(f, new Set([...(kinds.get(f) || []), bytes ? 'copy-bytes' : 'copy-source']));
     const build = { context: compiler.context, entries: entryFiles(compilation) }; // for vendored copies
     const gen = compilation[GENERATED] || (compilation[GENERATED] = generatedAssets(compilation));
-    const result = packages.packagesOfFiles([...bundled, ...all.values()], build);
+    const result = packages.packagesOfFiles([...bundled, ...copiedFiles], build);
     const found = via.ofFiles(result, kinds);
     found.add('generated', gen); found.add('generated', late.generated); found.add('late', late.late);
     // the bundler, whose runtime and chunk wrappers are in the JavaScript it writes (see bundlerOf)
@@ -361,7 +361,7 @@ class BundleLockfilePlugin {
     const compiler = compilation.compiler, kind = kindOf(compiler);
     const dir = outputDir(compilation), file = path.join(dir, this.file);
     const writer = compilerWriter(compiler);
-    /** @type {CopiedInEmit} */
+    /** @type {Copies} */
     let copied = new Map();
     /** @type {Package[]} */
     let late = [];
@@ -384,7 +384,7 @@ class BundleLockfilePlugin {
     if (disk && compilation[STARTED] && fs.existsSync(dir)) {
       try {
         const known = new Set([...assetFiles(dir, assetNames(compilation)), ...outputs.filesOf(file)]);
-        after = filesWrittenAfter(dir, { since: compilation[STARTED], cwd: realCwd(), roots: [compiler.context], skip: path.dirname(file), known });
+        after = filesWrittenAfter(dir, { since: compilation[STARTED], cwd: real(process.cwd()), roots: [compiler.context], skip: path.dirname(file), known });
         if (after.length) config.debug(`${kind}: files written into`, dir, 'after the build:', after.map(l => path.relative(dir, l.file)).join(' '));
       } catch (e) { problems.problem(`${kind}: could not check the files written into ${dir} after the build`, e); }
     }
@@ -415,9 +415,34 @@ class BundleLockfilePlugin {
   }
 }
 
-const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { return process.cwd(); } };
+// Patches Compiler.prototype.compile (webpack.cjs, rspack.cjs: of a Compiler of the shape they know) of the bundler
+// file `where`: every top-level compiler (not child compilers such as html-webpack-plugin's) runs the listeners on its
+// first compile() (see attach), which run() and watch() call. seen: the compiler property that marks it as done;
+// noHooks(): what a compiler without the hooks the plugin needs (webpack before 4) records, as a problem.
+/**
+ * @param {any} proto
+ * @param {string} where
+ * @param {string} kind
+ * @param {((compiler: any, where: string) => void)[]} listeners
+ * @param {symbol} seen
+ * @param {() => void} noHooks
+ */
+function patchCompile(proto, where, kind, listeners, seen, noHooks) {
+  proto[BUNDLER_FILE] = where; // the bundler's package is the one around it (core/bundler.cjs)
+  const orig = proto.compile;
+  proto.compile = function (...args) {
+    if (!this[seen] && !this.isChild()) {
+      this[seen] = true;
+      if (this.hooks && this.hooks.thisCompilation) {
+        if (attach(this, listeners, where, args, kind)) return undefined;
+      } else noHooks();
+    }
+    return orig.apply(this, args);
+  };
+  config.debug(`${kind}: patched Compiler from`, where);
+}
 
-// On a top-level compiler's first compile (see webpack.cjs, rspack.cjs): runs the listeners (the default one applies
+// On a top-level compiler's first compile (see patchCompile): runs the listeners (the default one applies
 // BundleLockfilePlugin). Without the plugin the compiler would write no lockfile, so if one fails, its compilations
 // fail (strict mode, core/problems.cjs): an error in each of them (see failCompilation) - or, if not even that can be
 // tapped, compile()'s callback gets it, and true is returned: the compiler must not compile. Runs as part of the
@@ -439,4 +464,4 @@ function attachListeners(compiler, listeners, where, args, kind) {
   return failed;
 }
 
-module.exports = { NAME, APPLIED, BUNDLER_FILE, BundleLockfilePlugin, bundledFiles, sourceFile, compilationError, isRspack, attach, versionOf };
+module.exports = { NAME, APPLIED, BUNDLER_FILE, BundleLockfilePlugin, bundledFiles, sourceFile, compilationError, isRspack, attach, patchCompile, versionOf };

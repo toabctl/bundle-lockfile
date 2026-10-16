@@ -90,6 +90,20 @@ function sameBytes(a, b) {
   } catch { return false; }
 }
 
+// The file has these bytes (a string as a bundler writes it, a Buffer or a Uint8Array): the adapters' test of which file
+// an asset was copied or emitted from.
+/**
+ * @param {string} file
+ * @param {string | Uint8Array | null | undefined} data
+ */
+function hasBytes(file, data) {
+  if (data == null) return false;
+  try {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(/** @type {any} */ (data));
+    return fs.statSync(file).size === buf.length && fs.readFileSync(file).equals(buf);
+  } catch { return false; }
+}
+
 // The package file `file` is a copy of, if it still has its bytes; else null.
 /**
  * @param {string} file
@@ -147,4 +161,4 @@ function install() {
   try { require('module').syncBuiltinESMExports(); } catch { /* named ESM imports keep the originals */ }
 }
 
-module.exports = { install, sourceOf, record, sameBytes, onCopy };
+module.exports = { install, sourceOf, record, sameBytes, hasBytes, onCopy };

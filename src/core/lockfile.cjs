@@ -1,11 +1,12 @@
 'use strict';
 // Serializes packages as package-lock.json (lockfileVersion 3, npm's format: docs.npmjs.com/cli/configuring-npm/
 // package-lock-json), in the subset that syft's javascript-lock-cataloger and Trivy's npm analyzer both read.
-/** @import { BundlerId, LocatedPackage, LockRecord, OutsidePackage, Package, UnknownPackage, Via } from '../types' */
-const crypto = require('crypto');
+/** @import { BundlerId, LocatedPackage, LockRecord, MetaWriter, OutsidePackage, Package, RecordedWriter, UnknownPackage, Via } from '../types' */
 const fs = require('fs');
 const path = require('path');
-const { posix } = require('./paths.cjs');
+const { posix, within, realish } = require('./paths.cjs');
+const { hex } = require('./hashes.cjs');
+const { getOr } = require('./maps.cjs');
 const { CLASSES, KNOWN } = require('./via.cjs');
 
 // Code-unit order, not localeCompare: the output must not depend on the build machine's locale
@@ -83,64 +84,65 @@ function licenseString(l) {
 const VERSION = 2; // of the record: 2 has "bundler" and "via"; a record of another version is not read (see readMeta)
 const MAX_FILES = 20; // enough to tell whether the writer's output is still there
 const MAX_OUTPUTS = 500;
-/**
- * A writer as toPackageLock's meta has it (core/outputs.cjs render).
- * @typedef {{ id: string, files: string[], count?: number, outputs?: Record<string, string>, outputCount?: number,
- *   contents?: Record<string, string[]>, paths: Iterable<string>, bundler?: BundlerId | null, via?: Via | null }} MetaWriter
- */
 /** @typedef {{ name: string, version: string, license?: string }} Entry */
 /** @type {(p: Package) => Entry} */
 const entry = (p) => { const license = licenseString(p.license); return { name: p.name, version: p.version, ...(license ? { license } : {}) }; };
-// A writer's "packages", "outputs" and "contents" (see toPackageLock).
+// A writer's "packages" (sorted keys) and, for each package path, its index there (see toPackageLock)
 /**
  * @param {MetaWriter} w
  * @param {Map<string, string>} keyOf
- * @param {(p: string) => string} rel
- * @returns {{ packages: string[], outputs?: Record<string, string>, outputCount?: number, contents?: Record<string, number[]> }}
+ * @returns {{ packages: string[], indexOf: (p: string) => number | undefined }}
  */
-function outputsOf(w, keyOf, rel) {
+function packagesOf(w, keyOf) {
   const packages = /** @type {string[]} */ ([...new Set([...w.paths].map(p => keyOf.get(p)).filter(Boolean))]).sort(cmp);
-  const all = Object.entries(w.outputs || {});
-  const files = all.map(([f, h]) => [f, rel(f), h]).sort((a, b) => cmp(a[1], b[1])).slice(0, MAX_OUTPUTS);
-  if (!files.length) return { packages };
-  // (a writer of another process: its record had only some of them already)
-  const total = Math.max(all.length, typeof w.outputCount === 'number' ? w.outputCount : 0);
   /** @type {Map<string | undefined, number>} */
   const index = new Map(packages.map((k, i) => [k, i]));
+  return { packages, indexOf: (p) => index.get(keyOf.get(p)) };
+}
+// A writer's "outputs" and "contents" (see toPackageLock). indexOf: see packagesOf.
+/**
+ * @param {MetaWriter} w
+ * @param {(p: string) => number | undefined} indexOf
+ * @param {(p: string) => string} rel
+ * @returns {{ outputs?: Record<string, string>, outputCount?: number, contents?: Record<string, number[]> }}
+ */
+function outputsOf(w, indexOf, rel) {
+  const all = Object.entries(w.outputs || {});
+  const files = all.map(([f, h]) => [f, rel(f), h]).sort((a, b) => cmp(a[1], b[1])).slice(0, MAX_OUTPUTS);
+  if (!files.length) return {};
+  // (a writer of another process: its record had only some of them already)
+  const total = Math.max(all.length, typeof w.outputCount === 'number' ? w.outputCount : 0);
   /** @type {[string, number[]][]} */
   const contents = [];
   for (const [f, r] of files) {
     const paths = w.contents && w.contents[f];
     if (!paths) continue;
-    contents.push([r, [...new Set(paths.map(p => index.get(keyOf.get(p))).filter(i => i !== undefined))].sort((a, b) => a - b)]);
+    contents.push([r, [...new Set(paths.map(indexOf).filter(i => i !== undefined))].sort((a, b) => a - b)]);
   }
-  return { packages, outputs: Object.fromEntries(files.map(([, r, h]) => [r, h])), ...(total > files.length ? { outputCount: total } : {}),
+  return { outputs: Object.fromEntries(files.map(([, r, h]) => [r, h])), ...(total > files.length ? { outputCount: total } : {}),
     ...(contents.length ? { contents: Object.fromEntries(contents) } : {}) };
 }
 // A writer's "bundler" and "via" (see toPackageLock): the classes in core/via.cjs order, each with the sorted indices
-// of its packages in "packages".
+// of its packages in "packages" (indexOf: see packagesOf).
 /**
  * @param {MetaWriter} w
- * @param {Map<string, string>} keyOf
- * @param {string[]} packages
+ * @param {(p: string) => number | undefined} indexOf
  * @returns {{ bundler?: BundlerId, via?: Record<string, number[]> }}
  */
-function provenanceOf(w, keyOf, packages) {
+function provenanceOf(w, indexOf) {
   /** @type {{ bundler?: BundlerId, via?: Record<string, number[]> }} */
   const out = {};
   const bid = w.bundler;
   if (bid && typeof bid.name === 'string' && bid.name) out.bundler = { name: bid.name, ...(typeof bid.version === 'string' && bid.version ? { version: bid.version } : {}) };
   if (!w.via) return out;
-  /** @type {Map<string | undefined, number>} */
-  const index = new Map(packages.map((k, i) => [k, i]));
   /** @type {Map<string, Set<number>>} */
   const by = new Map();
   for (const [p, classes] of w.via) {
-    const i = index.get(keyOf.get(p));
+    const i = indexOf(p);
     if (i === undefined) continue;
-    for (const c of classes) if (KNOWN.has(c)) { if (!by.has(c)) by.set(c, new Set()); /** @type {Set<number>} */ (by.get(c)).add(i); }
+    for (const c of classes) if (KNOWN.has(c)) getOr(by, c, () => new Set()).add(i);
   }
-  const via = CLASSES.filter(c => by.has(c)).map(c => [c, [.../** @type {Set<number>} */ (by.get(c))].sort((a, b) => a - b)]);
+  const via = CLASSES.flatMap((c) => { const s = by.get(c); return s ? [[c, [...s].sort((a, b) => a - b)]] : []; });
   if (via.length) out.via = Object.fromEntries(via);
   return out;
 }
@@ -198,9 +200,7 @@ function toPackageLock(pkgs, context, meta) {
   const outside = new Map(); // name@version -> { real: [package], listed: [package] }
   for (const [p, location] of named) {
     if (location) { set(p, nextKey(p), location); continue; }
-    const id = `${p.name}@${p.version}`;
-    if (!outside.has(id)) outside.set(id, { real: [], listed: [] });
-    /** @type {{ real: Package[], listed: Package[] }} */ (outside.get(id))[p.outside ? 'listed' : 'real'].push(p);
+    getOr(outside, `${p.name}@${p.version}`, () => ({ real: [], listed: [] }))[p.outside ? 'listed' : 'real'].push(p);
   }
   // One key per real copy outside the project; a copy another writer listed is one of those (the same package, seen
   // from another process), not one more
@@ -220,11 +220,7 @@ function toPackageLock(pkgs, context, meta) {
   // writes last
   /** @type {Map<string, Set<string>>} */
   const keysOf = new Map(); // name@version -> keys
-  for (const [p] of keyed) {
-    const id = `${p.name}@${p.version}`;
-    if (!keysOf.has(id)) keysOf.set(id, new Set());
-    /** @type {Set<string>} */ (keysOf.get(id)).add(/** @type {string} */ (keyOf.get(p.path)));
-  }
+  for (const [p] of keyed) getOr(keysOf, `${p.name}@${p.version}`, () => new Set()).add(/** @type {string} */ (keyOf.get(p.path)));
   /** @type {string[]} */
   const unknownKeys = [];
   const unknown = sorted.filter(p => p.unknown);
@@ -254,13 +250,14 @@ function toPackageLock(pkgs, context, meta) {
       ...(outsideKeys.length ? { outside: outsideKeys.sort(cmp) } : {}),
       ...(unknownKeys.length ? { unknown: unknownKeys.sort(cmp) } : {}),
       writers: meta.writers.map((w) => {
-        const out = outputsOf(w, keyOf, rel);
+        const { packages: keys, indexOf } = packagesOf(w, keyOf);
         return {
           id: w.id,
           count: typeof w.count === 'number' ? w.count : w.files.length, // other processes: only a sample of files
           files: w.files.map(rel).sort(cmp).slice(0, MAX_FILES),
-          ...out,
-          ...provenanceOf(w, keyOf, out.packages),
+          packages: keys,
+          ...outputsOf(w, indexOf, rel),
+          ...provenanceOf(w, indexOf),
         };
       }).sort((a, b) => cmp(a.id, b.id)),
     };
@@ -286,24 +283,6 @@ function anchorOf(context, dir) {
   const secret = secretOf(context);
   return secret ? { contextId: contextIdOf(secret), selfId: selfIdOf(secret, context, dir) } : plain;
 }
-/** @type {(dir: string, p: string) => boolean} */
-const within = (dir, p) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
-/** @type {(s: string) => string} */
-const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
-// The real path of p, also of one that is not there (yet): of its nearest ancestor that is, and the rest as it is
-/**
- * @param {string} p
- * @returns {string}
- */
-function realish(p) {
-  /** @type {string[]} */
-  const rest = [];
-  for (let d = path.resolve(p); ; d = path.dirname(d)) {
-    try { return path.join(fs.realpathSync(d), ...rest.reverse()); } catch { /* not there */ }
-    if (path.dirname(d) === d) return path.resolve(p);
-    rest.push(path.basename(d));
-  }
-}
 // The outermost directory with a package.json among dir and those above it, else dir
 /**
  * @param {string} dir
@@ -321,12 +300,12 @@ function projectOf(dir) {
  * @returns {string | null}
  */
 function secretOf(context) {
-  try { const real = fs.realpathSync(context), st = fs.statSync(real); return sha256(`bundle-lockfile\0${real}\0${st.dev}\0${st.ino}`); } catch { return null; }
+  try { const real = fs.realpathSync(context), st = fs.statSync(real); return hex(`bundle-lockfile\0${real}\0${st.dev}\0${st.ino}`); } catch { return null; }
 }
 /** @type {(secret: string) => string} */
-const contextIdOf = (secret) => sha256(`context\0${secret}`).slice(0, 16);
+const contextIdOf = (secret) => hex(`context\0${secret}`).slice(0, 16);
 /** @type {(secret: string, context: string, dir: string) => string} */
-const selfIdOf = (secret, context, dir) => sha256(`self\0${secret}\0${posix(path.relative(realish(context), realish(dir)))}`).slice(0, 16);
+const selfIdOf = (secret, context, dir) => hex(`self\0${secret}\0${posix(path.relative(realish(context), realish(dir)))}`).slice(0, 16);
 
 // The record was written where it is read: "self" from its "context" leads back to dir. Both are as the writer had
 // them (through the same symbolic links), so this holds where the lockfile was written, also in a project moved as a
@@ -337,7 +316,7 @@ const selfIdOf = (secret, context, dir) => sha256(`self\0${secret}\0${posix(path
 const anchoredAt = (dir, context, self) => path.resolve(dir, context, self) === path.resolve(dir);
 
 // The "bundle-lockfile" field of a lockfile's content (see toPackageLock), with absolute paths again (dir: the
-// lockfile's directory): { context, anchored, writers: [{ id, files, count, outputs, contents: { file: [package] },
+// lockfile's directory): { context, anchored, writers: [{ id, files, count, outputs, contents: { file: [package path] },
 // pkgs: [{ name, version, license, path }], bundler, via: Map(package path -> Set(class)) }] }, or null (also for a record
 // of another version than VERSION). anchored: true if the record was written in dir, false for
 // a copy of one written elsewhere - its packages' locations are then not known (p.unknown) -, null for a record without
@@ -396,31 +375,32 @@ function readMeta(json, dir, contexts = []) {
     if (unknown.has(k) || anchored === false || !context) return unknownPackage({ ...base, path: path.resolve(dir, locationOf(k)) });
     return { ...base, path: path.resolve(context, locationOf(k)) };
   };
+  /** @type {Map<string, Package | null>} */
+  const byKey = new Map(); // key -> pkgOf(key), made once
   return {
     context,
     anchored,
     writers: m.writers.filter((/** @type {any} */ w) => isObject(w) && typeof w.id === 'string').map((/** @type {any} */ w) => {
+      // the writer's packages, one object per key (also of any other writer's), and the one an index names, or null
       const keys = strings(w.packages);
-      /** @type {Record<string, Package[]>} */
+      const byIndex = keys.map(k => getOr(byKey, k, () => pkgOf(k)));
+      /** @type {(i: unknown) => Package | null} */
+      const at = (i) => (Number.isInteger(i) && /** @type {number} */ (i) >= 0 ? byIndex[/** @type {number} */ (i)] || null : null);
+      /** @type {Record<string, string[]>} */
       const contents = {};
       for (const [f, list] of Object.entries(isObject(w.contents) ? w.contents : {})) {
         if (!Array.isArray(list)) continue;
-        contents[path.resolve(dir, f)] = /** @type {Package[]} */ (
-          list.filter(i => Number.isInteger(i) && i >= 0 && i < keys.length).map(i => pkgOf(keys[i])).filter(Boolean));
+        contents[path.resolve(dir, f)] = list.map(at).filter(p => p !== null).map(p => p.path);
       }
       /** @type {Via} */
       const via = new Map(); // package path -> Set(class)
       for (const [c, list] of Object.entries(isObject(w.via) ? w.via : {})) {
         if (!KNOWN.has(c) || !Array.isArray(list)) continue;
-        for (const i of list) {
-          const p = Number.isInteger(i) && i >= 0 && i < keys.length && pkgOf(keys[i]);
-          if (!p) continue;
-          if (!via.has(p.path)) via.set(p.path, new Set());
-          /** @type {Set<string>} */ (via.get(p.path)).add(c);
-        }
+        for (const i of list) { const p = at(i); if (p) getOr(via, p.path, () => new Set()).add(c); }
       }
       const b = w.bundler;
-      return {
+      /** @type {RecordedWriter} */
+      const out = {
         id: w.id,
         bundler: isObject(b) && typeof b.name === 'string' ? { name: b.name, ...(typeof b.version === 'string' ? { version: b.version } : {}) } : undefined,
         via,
@@ -430,8 +410,9 @@ function readMeta(json, dir, contexts = []) {
           ? Object.fromEntries(Object.entries(w.outputs).filter(([, h]) => typeof h === 'string').map(([f, h]) => [path.resolve(dir, f), h])) : {},
         outputCount: typeof w.outputCount === 'number' ? w.outputCount : undefined,
         contents,
-        pkgs: /** @type {Package[]} */ (keys.map(pkgOf).filter(Boolean)),
+        pkgs: byIndex.filter(p => p !== null),
       };
+      return out;
     }),
   };
 }

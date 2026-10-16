@@ -12,18 +12,17 @@ const packages = require('../core/packages.cjs');
 const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const helpers = require('../core/helpers.cjs');
-const { posix, packageRoot } = require('../core/paths.cjs');
+const { hasBytes } = require('../core/copies.cjs');
+const { getOr } = require('../core/maps.cjs');
+const { posix, packageRoot, within, real, JS } = require('../core/paths.cjs');
 const {
-  kindOf, isRspack, versionOf, chunkModules, entryModules, issuers, outputDir, hasAsset, assetNames, assetOf,
+  kindOf, isRspack, versionOf, chunkModules, entryModules, issuers, outputDir, hasAsset, assetNames, assetOf, assetBytes,
 } = require('./webpack-compat.cjs');
 
 /**
- * Asset name -> the package files it is a copy of; bytes: the names matched by their bytes alone (see core/via.cjs)
- * @typedef {Map<string, string[]> & { bytes: Set<string> }} CopiedAssets
- */
-/**
- * Asset name -> the file it was copied from, in the emit hook (copiedInEmit); bytes: as for CopiedAssets
- * @typedef {Map<string, string> & { bytes?: Set<string> }} CopiedInEmit
+ * Asset name -> the files it is a copy of: files (package files, or a first-party one, which lists nothing), and bytes:
+ * whether it was matched by its bytes alone (copy-bytes, else copy-source: see core/via.cjs)
+ * @typedef {Map<string, { files: string[], bytes: boolean }>} Copies
  */
 /**
  * How sourcesOf found the files: modules walked, whether a style module recorded no file dependencies, mark(file, class)
@@ -33,7 +32,31 @@ const {
 const KINDS = Symbol('bundle-lockfile.webpack.kinds');         // compilation: how bundledFiles() found each file (see core/via.cjs)
 const HELPERS = Symbol('bundle-lockfile.webpack.helpers');     // compilation: transpilers whose helpers are in its shipped modules
 const UNNAMED = Symbol('bundle-lockfile.webpack.unnamed');     // compilation: copiedUnnamed() before the assets were optimized
-const JS = /\.[cm]?js$/i;
+
+// The names of the files of the compilation's chunks (with auxiliary: also their auxiliary files - source maps, the
+// assets of their modules)
+/** @param {any} compilation @param {boolean} auxiliary @returns {Set<string>} */
+function chunkFiles(compilation, auxiliary) {
+  const own = new Set();
+  for (const chunk of compilation.chunks || []) {
+    for (const f of chunk.files || []) own.add(f);
+    if (auxiliary) for (const f of chunk.auxiliaryFiles || []) own.add(f);
+  }
+  return own;
+}
+
+// Files by their size, for a lookup by an asset's bytes (see sameAs): bySize gets f, if it is a file in a package and
+// not empty (an empty file would equal every empty asset)
+/** @param {Map<number, string[]>} bySize @param {unknown} f */
+function addBySize(bySize, f) {
+  if (typeof f !== 'string') return;
+  let size;
+  try { size = packageRoot(f) && fs.statSync(f).size; } catch { return; }
+  if (size) getOr(bySize, size, () => []).push(f);
+}
+// The file among bySize's that has the bytes buf, or undefined
+/** @param {Map<number, string[]>} bySize @param {Buffer | null} buf @returns {string | undefined} */
+const sameAs = (bySize, buf) => (buf ? (bySize.get(buf.length) || []).find(f => hasBytes(f, buf)) : undefined);
 
 // Source file of a module: nameForCondition(), webpack's own answer to "which file is this module" (the path
 // module.rules match it against; also used for splitChunks tests, rules' issuer condition and webpack 5's stats). For
@@ -207,7 +230,7 @@ function inlining(compiler, options) {
 function bundledFiles(compilation) {
   const files = new Set();
   const kinds = new Map();
-  const mark = (f, cls) => { if (!kinds.has(f)) kinds.set(f, new Set()); kinds.get(f).add(cls); };
+  const mark = (f, cls) => { getOr(kinds, f, () => new Set()).add(cls); };
   compilation[KINDS] = kinds;
   const rspack = isRspack(compilation.compiler);
   const shippedModules = new Map(); // module -> its compilation's issuerOf
@@ -247,9 +270,9 @@ function bundledFiles(compilation) {
     mark(f, 'copy-source');
   }
   const copies = compilation[UNNAMED] || (rspack ? copiedRspack(compilation) : copiedUnnamed(compilation));
-  for (const [name, list] of copies) {
+  for (const [name, copy] of copies) {
     if (!hasAsset(compilation, name)) continue;
-    for (const f of list) { files.add(f); mark(f, copies.bytes && copies.bytes.has(name) ? 'copy-bytes' : 'copy-source'); }
+    for (const f of copy.files) { files.add(f); mark(f, copy.bytes ? 'copy-bytes' : 'copy-source'); }
   }
   return files;
 }
@@ -262,13 +285,12 @@ const MAX_CONTEXT_FILES = 20000;
 const warnedContext = new WeakSet(); // compilers warned about MAX_CONTEXT_FILES (once each, not on every rebuild)
 
 function packageFilesBySize(compilation) {
+  /** @type {Map<number, string[]>} */
   const bySize = new Map(), seen = new Set();
   const add = (f) => {
     if (typeof f !== 'string' || seen.has(f)) return;
     seen.add(f);
-    let size;
-    try { size = packageRoot(f) && fs.statSync(f).size; } catch { return; }
-    if (size) bySize.set(size, [...(bySize.get(size) || []), f]);
+    addBySize(bySize, f);
   };
   for (const f of compilation.fileDependencies || []) add(f);
   let entries = 0;
@@ -294,11 +316,12 @@ function packageFilesBySize(compilation) {
 // only info.copied; 6.3 names it). An asset that is no chunk's file and no module's, whose bytes are those of a
 // package file the compilation depends on (see packageFilesBySize), is a copy of it. webpack 5 then minimizes such
 // copies like any asset (they are not marked as minimized): the plugin looks at them before the optimize stages.
-// Returns Map(asset name -> [package file]). The modules (a webpack 4 module's emitFile assets are its own) are looked at
-// only if there are such assets: compilation.modules is costly in rspack.
+// Returns the copies (Copies: each matched by its bytes). The modules (a webpack 4 module's emitFile assets are its own)
+// are looked at only if there are such assets: compilation.modules is costly in rspack.
+/** @returns {Copies} */
 function copiedUnnamed(compilation) {
-  /** @type {CopiedAssets} */
-  const files = Object.assign(new Map(), { bytes: new Set() }); // (bytes: all of them, matched by their bytes)
+  /** @type {Copies} */
+  const files = new Map();
   let unnamed = [];
   for (const name of assetNames(compilation)) {
     const a = assetOf(compilation, name);
@@ -308,8 +331,7 @@ function copiedUnnamed(compilation) {
     if (size) unnamed.push({ a, size });
   }
   if (!unnamed.length) return files;
-  const own = new Set();
-  for (const chunk of compilation.chunks || []) for (const f of [...(chunk.files || []), ...(chunk.auxiliaryFiles || [])]) own.add(f);
+  const own = chunkFiles(compilation, true);
   for (const m of compilation.modules || []) { // webpack 4: emitFile
     if (m && m.buildInfo && m.buildInfo.assets) for (const n of Object.keys(m.buildInfo.assets)) own.add(n);
   }
@@ -317,12 +339,9 @@ function copiedUnnamed(compilation) {
   if (!unnamed.length) return files;
   const bySize = packageFilesBySize(compilation);
   for (const { a, size } of unnamed) {
-    const candidates = bySize.get(size);
-    if (!candidates) continue;
-    let buf;
-    try { const s = a.source.source(); buf = Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { continue; }
-    const copy = candidates.find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
-    if (copy) { files.set(a.name, [copy]); files.bytes.add(a.name); config.debug('webpack: asset', a.name, 'is a copy of', copy); }
+    if (!bySize.has(size)) continue;
+    const copy = sameAs(bySize, assetBytes(compilation, a.name));
+    if (copy) { files.set(a.name, { files: [copy], bytes: true }); config.debug('webpack: asset', a.name, 'is a copy of', copy); }
   }
   return files;
 }
@@ -340,10 +359,11 @@ function copiedUnnamed(compilation) {
 // missing. A copy whose name no file ends with is matched by its bytes alone, as copiedUnnamed does. The candidates are
 // looked up by their file name, so the cost is that of one pass over the dependencies (OHIF copies hundreds of files,
 // and depends on thousands).
-// Returns Map(asset name -> [package files]), with .bytes: the names of the copies matched by their bytes alone.
+// Returns the copies (Copies).
+/** @returns {Copies} */
 function copiedRspack(compilation) {
-  /** @type {CopiedAssets} */
-  const files = Object.assign(new Map(), { bytes: new Set() });
+  /** @type {Copies} */
+  const files = new Map();
   const copied = [];
   for (const name of assetNames(compilation)) {
     const a = assetOf(compilation, name);
@@ -355,11 +375,8 @@ function copiedRspack(compilation) {
   for (const f of new Set(compilation.fileDependencies || [])) {
     if (typeof f !== 'string') continue;
     const p = posix(f), name = p.slice(p.lastIndexOf('/') + 1);
-    if (!byName.has(name)) byName.set(name, []);
-    byName.get(name).push({ file: f, path: p });
+    getOr(byName, name, () => []).push({ file: f, path: p });
   }
-  const realOf = (f) => { try { return fs.realpathSync(f); } catch { return f; } };
-  const bytesOf = (a) => { try { const s = a.source.source(); return Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { return null; } };
   /** @type {Map<number, string[]> | null} */
   let bySize = null; // packageFilesBySize, if needed
   for (const a of copied) {
@@ -367,20 +384,20 @@ function copiedRspack(compilation) {
     const byReal = new Map();
     for (const { file: f, path: p } of byName.get(rel.slice(rel.lastIndexOf('/') + 1)) || []) {
       if (!p.endsWith(tail)) continue;
-      const r = realOf(f), prev = byReal.get(r);
-      if (!prev || (!prev.startsWith(context + path.sep) && f.startsWith(context + path.sep))) byReal.set(r, f);
+      const r = real(f), prev = byReal.get(r);
+      if (!prev || (!within(context, prev) && within(context, f))) byReal.set(r, f);
     }
     const candidates = [...byReal.values()];
-    const buf = bytesOf(a);
-    const same = (f) => { try { return buf && fs.statSync(f).size === buf.length && buf.equals(fs.readFileSync(f)); } catch { return false; } };
-    const sources = candidates.filter(same), at = byReal.get(realOf(path.join(context, rel)));
+    const buf = assetBytes(compilation, a.name);
+    const sources = candidates.filter(f => hasBytes(f, buf)), at = byReal.get(real(path.join(context, rel)));
     let list = (sources.length ? sources : at ? [at] : candidates).filter(f => packageRoot(f));
+    let bytes = false;
     if (!candidates.length && buf && buf.length) {
       if (!bySize) bySize = packageFilesBySize(compilation);
-      const copy = (bySize.get(buf.length) || []).find(f => same(f));
-      if (copy) { list = [copy]; files.bytes.add(a.name); }
+      const copy = sameAs(bySize, buf);
+      if (copy) { list = [copy]; bytes = true; }
     }
-    if (list.length) { files.set(a.name, list); config.debug('rspack: asset', a.name, 'is a copy of', list.join(' ')); }
+    if (list.length) { files.set(a.name, { files: list, bytes }); config.debug('rspack: asset', a.name, 'is a copy of', list.join(' ')); }
   }
   return files;
 }
@@ -399,37 +416,36 @@ function entryFiles(compilation) {
 // On watch rebuilds, copy-webpack-plugin 5 does not add unchanged files again: they stay in the output from
 // an earlier build, as long as the plugin still copies them (they are still file dependencies).
 // early: asset names when the lockfile was emitted; previous: what this returned for the compiler's previous
-// build; readAsset(name) resolves the asset's bytes (or null). Resolves Map(asset name -> absolute path of the file).
+// build; readAsset(name) resolves the asset's bytes (or null). Resolves the copies (Copies, one file each).
 /**
  * @param {any} compilation
  * @param {Set<string>} early
- * @param {CopiedInEmit} previous
+ * @param {Copies} previous
  * @param {(name: string) => Promise<Buffer | null>} readAsset
- * @returns {Promise<CopiedInEmit>}
+ * @returns {Promise<Copies>}
  */
 async function copiedInEmit(compilation, early, previous, readAsset) {
-  /** @type {CopiedInEmit & { bytes: Set<string> }} */
-  const files = Object.assign(new Map(), { bytes: new Set() }); // bytes: the names matched by their bytes (see core/via.cjs)
+  /** @type {Copies} */
+  const files = new Map();
   const unnamed = [];
   for (const name of assetNames(compilation).filter(n => !early.has(n))) {
     const a = assetOf(compilation, name), info = (a && a.info) || {};
-    if (typeof info.sourceFilename === 'string') files.set(name, path.resolve(compilation.compiler.context, info.sourceFilename));
+    if (typeof info.sourceFilename === 'string') files.set(name, { files: [path.resolve(compilation.compiler.context, info.sourceFilename)], bytes: false });
     else unnamed.push(name);
   }
   if (!unnamed.length && !previous.size) return files;
   const deps = new Set(compilation.fileDependencies || []);
-  for (const [name, f] of previous) {
-    if (hasAsset(compilation, name) || !deps.has(f)) continue;
-    files.set(name, f);
-    if (previous.bytes && previous.bytes.has(name)) files.bytes.add(name);
+  for (const [name, copy] of previous) {
+    if (hasAsset(compilation, name) || !copy.files.every(f => deps.has(f))) continue;
+    files.set(name, copy);
   }
+  /** @type {Map<number, string[]>} */
   const bySize = unnamed.length ? packageFilesBySize(compilation) : new Map();
   if (!bySize.size) return files;
   const bufs = await Promise.all(unnamed.map(readAsset));
   unnamed.forEach((name, i) => {
-    const buf = bufs[i];
-    const copy = ((buf && bySize.get(buf.length)) || []).find((f) => { try { return !!buf && buf.equals(fs.readFileSync(f)); } catch { return false; } });
-    if (copy) { files.set(name, copy); files.bytes.add(name); }
+    const copy = sameAs(bySize, bufs[i]);
+    if (copy) files.set(name, { files: [copy], bytes: true });
   });
   return files;
 }
@@ -440,34 +456,27 @@ async function copiedInEmit(compilation, early, previous, readAsset) {
 // files read meanwhile (see webpack-family.cjs readsOf) and those such plugins name in their options; an asset that is
 // no chunk's file and has the bytes of one of them in a package is a copy of it. Assets emitted after the optimize
 // stages are not minimized: a copy has the file's bytes. done: the assets copiedUnnamed or copiedRspack matched.
-// Returns Map(asset name -> package file), each matched by its bytes.
+// Returns the copies (Copies, each matched by its bytes).
 /**
  * @param {any} compilation
  * @param {Iterable<string>} read
  * @param {Map<string, unknown>} [done]
- * @returns {CopiedInEmit & { bytes: Set<string> }}
+ * @returns {Copies}
  */
 function copiedLate(compilation, read, done = new Map()) {
-  /** @type {CopiedInEmit & { bytes: Set<string> }} */
-  const files = Object.assign(new Map(), { bytes: new Set() });
+  /** @type {Copies} */
+  const files = new Map();
   /** @type {Map<number, string[]>} */
   const bySize = new Map();
-  for (const f of new Set(read)) {
-    let size;
-    try { size = packageRoot(f) && fs.statSync(f).size; } catch { continue; }
-    if (size) bySize.set(size, [...(bySize.get(size) || []), f]);
-  }
+  for (const f of new Set(read)) addBySize(bySize, f);
   if (!bySize.size) return files;
-  const own = new Set();
-  for (const chunk of compilation.chunks || []) for (const f of [...(chunk.files || []), ...(chunk.auxiliaryFiles || [])]) own.add(f);
+  const own = chunkFiles(compilation, true);
   for (const name of assetNames(compilation)) {
     if (own.has(name) || done.has(name)) continue;
     const a = assetOf(compilation, name);
     if (!a || (a.info && typeof a.info.sourceFilename === 'string')) continue;
-    let buf;
-    try { const s = a.source.source(); buf = Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { continue; }
-    const copy = (bySize.get(buf.length) || []).find((f) => { try { return buf.equals(fs.readFileSync(f)); } catch { return false; } });
-    if (copy) { files.set(name, copy); files.bytes.add(name); config.debug(`${kindOf(compilation.compiler)}: asset`, name, 'is a copy of', copy); }
+    const copy = sameAs(bySize, assetBytes(compilation, name));
+    if (copy) { files.set(name, { files: [copy], bytes: true }); config.debug(`${kindOf(compilation.compiler)}: asset`, name, 'is a copy of', copy); }
   }
   return files;
 }
@@ -479,8 +488,7 @@ function copiedLate(compilation, read, done = new Map()) {
 function generatedAssets(compilation) {
   const out = [];
   if (generated.any()) { // (else nothing generated in this process: nothing to look up)
-    const own = new Set();
-    for (const chunk of compilation.chunks || []) for (const f of chunk.files || []) own.add(f);
+    const own = chunkFiles(compilation, false);
     for (const name of assetNames(compilation)) {
       if (own.has(name) || !JS.test(name.split('?')[0])) continue;
       let src;

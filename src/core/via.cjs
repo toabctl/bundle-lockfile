@@ -20,6 +20,8 @@
 // - runtime: the bundler itself, whose code (runtime, chunk wrappers, helpers) is in the JavaScript it writes
 // - helpers: a transpiler whose helpers it inlined into a shipped module (Babel's, swc's, TypeScript's: core/helpers.cjs)
 /** @import { FilePackages, ViaCollector } from '../types' */
+const { getOr } = require('./maps.cjs');
+
 const CLASSES = ['chunk', 'child', 'asset', 'copy-source', 'copy-bytes', 'style', 'inlined', 'inlined-exports', 'generated',
   'late', 'fs-copy', 'nested', 'vendored', 'traced', 'runtime', 'helpers'];
 const KNOWN = new Set(CLASSES);
@@ -32,11 +34,7 @@ function collector() {
   /** @type {ViaCollector['add']} */
   const add = (cls, pkgs) => {
     if (!KNOWN.has(cls)) throw new Error(`unknown via class ${cls}`);
-    for (const p of pkgs || []) {
-      let s = byPath.get(p.path);
-      if (!s) byPath.set(p.path, (s = new Set()));
-      s.add(cls);
-    }
+    for (const p of pkgs || []) getOr(byPath, p.path, () => new Set()).add(cls);
   };
   // the classes of another collector (or a Map(path -> iterable of classes))
   /** @type {ViaCollector['merge']} */

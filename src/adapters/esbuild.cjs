@@ -20,7 +20,7 @@ const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { hashOf } = require('../core/hashes.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
-const { portable, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache, real, withoutFragment, JS } = require('../core/paths.cjs');
 const { bundlerPackage } = require('../core/bundler.cjs');
 
 const NAME = 'bundle-lockfile';
@@ -40,8 +40,7 @@ const VITE_EXPORTS = /^\s*at (?:async )?extractExportsData \(.*[\\/]vite[\\/]dis
 /** @param {BuildOptions} options */
 const vitesExports = (options) => options.write === false && Array.isArray(options.entryPoints) && options.entryPoints.length === 1
   && typeof options.outdir !== 'string' && typeof options.outfile !== 'string' && VITE_EXPORTS.test(String(new Error().stack));
-const JS = /\.[cm]?js$/i, CSS = /\.css$/i;
-const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+const CSS = /\.css$/i;
 // esbuild's inner exports object (its "default", a plugin's build.esbuild) -> the wrapped copy of its exports
 /** @type {WeakMap<object, object>} */
 const copies = new WeakMap();
@@ -69,12 +68,7 @@ function fileOfInput(key, wd) {
       if (!p || !fs.existsSync(abs)) return null;
     }
   }
-  let f = path.resolve(wd, p);
-  const q = f.indexOf('?');
-  if (q >= 0) f = f.slice(0, q);
-  const hash = f.lastIndexOf('#');
-  if (hash > Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\')) && !fs.existsSync(f)) f = f.slice(0, hash);
-  return f;
+  return withoutFragment(path.resolve(wd, p).split('?')[0]);
 }
 
 // The output files of a metafile, absolute, with the files of their inputs: Map(output -> [file]). Inputs with no
@@ -213,22 +207,38 @@ function writerOf(options, wd) {
   return JSON.stringify(['esbuild', entriesOf(options, wd), ...out]);
 }
 
-// The packages of a build's outputs, and the record of each JavaScript and CSS output for nested bundles: hashes
-// { file: "sha256-<hex>" } and contents { file: [package paths] }.
-function collect(metafile, wd, entries, inlined) {
+// The packages of the outputs of a metafile (a build's, Angular's, bundle-lockfile-from-metafile's): byOutput (see
+// filesOfOutputs), all, byFile (see core/packages.cjs packagesOfFiles) and how each was found (found, core/via.cjs).
+// entries: see entryFiles; inlined: see filesOfOutputs; assets: other files the output has (Angular's asset copies).
+/**
+ * @param {any} metafile
+ * @param {string} wd
+ * @param {string[]} entries
+ * @param {(key: string, file: string | null) => Iterable<string>} [inlined]
+ * @param {string[]} [assets]
+ */
+function collect(metafile, wd, entries, inlined, assets = []) {
+  /** @type {Map<string, string>} */
   const kinds = new Map();
   const byOutput = filesOfOutputs(metafile, wd, inlined, kinds);
-  const sources = [...new Set([...byOutput.values()].flat())];
-  const result = packages.packagesOfFiles(sources, { context: realOr(wd), entries });
   // (a file that is an input of an output is a module of it: chunk, also if a plugin inlined it elsewhere)
   for (const info of Object.values((metafile && metafile.outputs) || {})) {
-    for (const key of Object.keys((info && info.inputs) || {})) kinds.delete(fileOfInput(key, wd));
+    for (const key of Object.keys((info && info.inputs) || {})) kinds.delete(/** @type {string} */ (fileOfInput(key, wd)));
   }
+  for (const a of assets) kinds.set(a, 'asset');
+  const sources = [...new Set([...[...byOutput.values()].flat(), ...assets])];
+  const result = packages.packagesOfFiles(sources, { context: real(wd), entries });
   return { byOutput, all: result.all, byFile: result.byFile, found: via.ofFiles(result, kinds) };
 }
 
+// The entry modules' files of a metafile's outputs (first-party, see core/vendored.cjs)
+/** @param {any} metafile @param {string} wd @returns {string[]} */
 const entryFiles = (metafile, wd) => Object.values((metafile && metafile.outputs) || {})
   .map(o => o && o.entryPoint && fileOfInput(o.entryPoint, wd)).filter(Boolean);
+
+// The packages of an output's input files (byFile: see collect)
+/** @param {string[]} inputs @param {Map<string, Package[]>} byFile @returns {Package[]} */
+const packagesOfInputs = (inputs, byFile) => packages.uniqueOf(inputs.map(f => byFile.get(f) || []));
 
 // The packages of write: false builds whose output a plugin inlined into a module it loaded, per output (absolute):
 // a module whose contents a plugin gave (pluginLoaded, see watched), whose file is the entry of such a build - the
@@ -255,7 +265,7 @@ function generatedIn(metafile, wd, entries, pluginLoaded) {
       const pkgs = generated.byEntry(f);
       if (pkgs) found.push(pkgs);
     }
-    if (found.length) out.set(path.resolve(wd, o), packages.unique(...found));
+    if (found.length) out.set(path.resolve(wd, o), packages.uniqueOf(found));
   }
   return out;
 }
@@ -291,8 +301,8 @@ async function finish(options, result, state = {}) {
     found.add('runtime', runtime);
     const inlinedBuilds = generatedIn(metafile, wd, entries, state.pluginLoaded);
     for (const g of inlinedBuilds.values()) found.add('generated', g);
-    const all = packages.unique(own, runtime, ...inlinedBuilds.values());
-    const pkgsOf = (files) => packages.unique(...files.map(f => byFile.get(f) || []));
+    const all = packages.uniqueOf([own, runtime, ...inlinedBuilds.values()]);
+    const pkgsOf = (files) => packagesOfInputs(files, byFile);
     // written by esbuild? Not with write: false (nor without outdir and outfile)
     const written = dir && [...byOutput.keys()].some(f => fs.existsSync(f));
     // written, and none of it there: moved away by another plugin's onEnd (which runs before this one)
@@ -336,16 +346,16 @@ async function finish(options, result, state = {}) {
     // which run before this one: it is the last), see core/late.cjs - not those of the other writers there
     if (state.since !== undefined) {
       const known = new Set([...files, ...[...outputs.filesOf(target)].filter(f => !(state.late || new Set()).has(f))]);
-      const late = filesWrittenAfter(dir, { since: state.since, cwd: realOr(wd), skip: path.dirname(target), known, roots: [realOr(wd)] });
+      const late = filesWrittenAfter(dir, { since: state.since, cwd: real(wd), skip: path.dirname(target), known, roots: [real(wd)] });
       state.late = new Set(late.map(l => l.file));
       if (late.length) {
         config.debug('esbuild: files written into', dir, 'after the build:', late.map(l => path.relative(dir, l.file)).join(' '));
-        pkgs = packages.unique(pkgs, ...late.map(l => l.pkgs));
+        pkgs = packages.uniqueOf([pkgs, ...late.map(l => l.pkgs)]);
         for (const l of late) found.add('late', l.pkgs);
         files.push(...state.late);
       }
     }
-    outputs.record(target, writer, pkgs, realOr(wd), files, { disk: true, outputs: hashes, contents,
+    outputs.record(target, writer, pkgs, real(wd), files, { disk: true, outputs: hashes, contents,
       bundler: { name: 'esbuild', ...(typeof state.version === 'string' ? { version: state.version } : {}) }, via: found, run: state });
     await outputs.land(target, writer, 'esbuild'); // (never rejects)
   } catch (e) {
@@ -511,9 +521,12 @@ module.exports = {
     config.debug(`esbuild: wrapped ${exp.version} from`, resolve());
     return { exports: copy };
   },
-  // for tests and the metafile importer
+  // for Angular's builder, the metafile importer and tests
   fileOfInput,
   filesOfOutputs,
+  collect,
+  entryFiles,
+  packagesOfInputs,
   writerOf,
   attach,
 };

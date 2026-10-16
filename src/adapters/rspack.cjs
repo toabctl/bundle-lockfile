@@ -12,12 +12,12 @@
 //   loads rspack 1 and 2) gets its own patch.
 // rspack 1.0 lacks what the plugin needs (the inner modules of concatenated modules): its builds fail (strict mode,
 // core/problems.cjs). rspack 0.x fails its builds too.
-const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
-const { APPLIED, BUNDLER_FILE, BundleLockfilePlugin, attach, versionOf } = require('./webpack-family.cjs');
+const { versionIn } = require('../core/manifest.cjs');
+const { APPLIED, BundleLockfilePlugin, patchCompile, versionOf } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.rspack.patched'); // Compiler.prototype
 const SEEN = Symbol.for('bundle-lockfile.rspack.seen');       // compiler: listeners have run
@@ -43,27 +43,15 @@ function patchCompiler(Compiler, where) {
   if (!p || !['compile', 'run', 'watch', 'isChild', 'runAsChild', 'createChildCompiler'].every(k => typeof p[k] === 'function')) return false;
   if (p[PATCHED]) return true;
   p[PATCHED] = true;
-  p[BUNDLER_FILE] = where; // the bundler's package is the one around it (core/bundler.cjs)
-  const orig = p.compile;
-  p.compile = function (...args) {
-    if (!this[SEEN] && this.hooks && !this.isChild()) {
-      this[SEEN] = true;
-      if (attach(this, listeners, where, args, 'rspack')) return undefined;
-    }
-    return orig.apply(this, args);
-  };
-  config.debug('rspack: patched Compiler from', where);
+  patchCompile(p, where, 'rspack', listeners, SEEN,
+    () => problems.problem(`rspack: a Compiler without the hooks bundle-lockfile needs (from ${where}): its builds write no lockfile`));
   return true;
 }
 
-// The version in dir/package.json, or null
 // rspack 0.x that is not patched (of a shape bundle-lockfile does not know): a problem when it loads
 /** @param {string} version @param {string} where */
 function unsupported(version, where) {
   problems.problem(`rspack ${version} (${where}) is not supported (it needs 1.1 or later): its builds write no lockfile`);
-}
-function versionIn(dir) {
-  try { const v = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version; return typeof v === 'string' ? v : null; } catch { return null; }
 }
 
 // @rspack/core's Compiler, of a version from 1.0 on, that is not of the shape rspack.cjs knows: its builds would write no

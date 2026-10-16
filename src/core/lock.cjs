@@ -77,7 +77,7 @@ function isStale(l, st, staleAfter) {
   } catch { return true; }
 }
 
-// a part of a file name no other process or call uses (no name another user could make in advance)
+// a part of a file name no other process or call uses (no name another user could make in advance): also core/tree.cjs's
 const unique = () => `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
 
 // What a lock says about its holder: this machine (its host name, and the PID namespace: containers on one host may
@@ -147,4 +147,4 @@ function writeAtomic(file, content) {
   } catch (e) { try { fs.unlinkSync(tmp); } catch {} throw e; }
 }
 
-module.exports = { lock, takeStale, writeAtomic };
+module.exports = { lock, takeStale, writeAtomic, unique };

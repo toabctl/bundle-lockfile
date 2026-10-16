@@ -21,12 +21,11 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
-const { ancestors, posix, packageRoot } = require('./paths.cjs');
+const { ancestors, posix, packageRoot, real, within } = require('./paths.cjs');
 const { readManifest, packageOf } = require('./manifest.cjs');
 
 const NAME = /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/; // as Trivy reads names, plus npm's ~
 const readJson = (/** @type {string} */ file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
-const real = (/** @type {string} */ p) => { try { return fs.realpathSync(p); } catch { return p; } };
 
 // package.json content that says it is an npm package another one could be a copy of
 /** @param {Manifest | null | undefined} j */
@@ -229,7 +228,7 @@ function nestedIn(pkg, root, file, manifest) {
   /** @type {Found[]} */
   const chain = [];
   for (const d of ancestors(path.dirname(file))) {
-    if (d === root || !d.startsWith(root + path.sep)) break;
+    if (d === root || !within(root, d)) break;
     const j = manifest(d);
     if (j) chain.push({ dir: d, j });
   }

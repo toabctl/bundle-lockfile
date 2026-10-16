@@ -14,14 +14,15 @@
 // A first-party package linked into node_modules (a workspace package that another build wrote, e.g. a library built
 // by Vite) is looked at where it really is, also when the bundler reached it through the link (webpack's
 // resolve.symlinks: false, Vite's resolve.preserveSymlinks).
-/** @import { LockRecord, Package } from '../types' */
+/** @import { LockRecord, Package, RecordedWriter } from '../types' */
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
 const { readMeta, unreadableRecord } = require('./lockfile.cjs');
 const { hashOf } = require('./hashes.cjs');
-const { ancestors, packageRoot, realRoot, exportPath } = require('./paths.cjs');
+const { unique } = require('./manifest.cjs');
+const { ancestors, packageRoot, realRoot, exportPath, JS_CSS } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.nested.v1');
 /** @type {{ metas: Map<string, LockRecord | null>, changed: Set<string> }} */
@@ -96,12 +97,23 @@ function ownFile(file, roots) {
   return real && path.join(real, path.relative(root, file));
 }
 
+// The packages a writer's record has for its output file `file` (its contents, by package path), else all of its packages
+/** @type {WeakMap<RecordedWriter, Map<string, Package>>} */
+const byPathOf = new WeakMap(); // writer -> its packages by their paths
+/** @param {RecordedWriter} w @param {string} file @returns {Package[]} */
+function packagesIn(w, file) {
+  const paths = w.contents[file];
+  if (!paths) return w.pkgs;
+  let byPath = byPathOf.get(w);
+  if (!byPath) byPathOf.set(w, (byPath = new Map(w.pkgs.map(p => [p.path, p]))));
+  return paths.map(p => byPath.get(p)).filter(p => p !== undefined);
+}
+
 // files: absolute paths of bundled source files. Returns Map(file -> [packages]) ({ name, version, license, path }) of
 // the ones another build produced: the packages that build recorded for that file, or - recorded by a version without
 // them - all packages of its output. A JavaScript or CSS file in the output of a writer whose record has only some of
 // its outputs (outputCount) that is none of those it has may be one of the others: all packages of the writers whose
 // record was cut - one package too many rather than the packages inlined into it missing.
-const OUTPUT = /\.([cm]?js|css)$/i;
 /**
  * @template F
  * @param {Iterable<F>} files
@@ -126,27 +138,21 @@ function nestedByFile(files) {
           state.changed.add(file);
           config.warn(`${file} changed after the build that wrote it into ${dir}: listed with that build's packages`);
         }
-        out.set(f, writer.contents[file] || writer.pkgs);
+        out.set(f, packagesIn(writer, file));
         break;
       }
       // a writer that records no hashes (webpack, rspack, Angular) but the file among its files (or only some of its
       // files, see count): all its packages
-      const by = OUTPUT.test(file) && meta.writers.filter(w => !Object.keys(w.outputs).length
+      const by = JS_CSS.test(file) && meta.writers.filter(w => !Object.keys(w.outputs).length
         && (w.files.includes(file) || /** @type {number} */ (w.count) > w.files.length));
       if (by && by.length) {
-        /** @type {Map<string, Package>} */
-        const pkgs = new Map();
-        for (const w of by) for (const p of w.pkgs) if (!pkgs.has(p.path)) pkgs.set(p.path, p);
-        out.set(f, [...pkgs.values()]);
+        out.set(f, unique(...by.map(w => w.pkgs)));
         break;
       }
       const cut = meta.writers.filter(w => /** @type {number} */ (w.outputCount) > Object.keys(w.outputs).length);
-      if (cut.length && OUTPUT.test(file)) {
-        /** @type {Map<string, Package>} */
-        const pkgs = new Map();
-        for (const w of cut) for (const p of w.pkgs) if (!pkgs.has(p.path)) pkgs.set(p.path, p);
+      if (cut.length && JS_CSS.test(file)) {
         config.debug('maybe built by another build whose record has only some of its outputs:', file);
-        out.set(f, [...pkgs.values()]);
+        out.set(f, unique(...cut.map(w => w.pkgs)));
         break;
       }
     }

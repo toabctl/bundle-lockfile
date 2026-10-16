@@ -5,18 +5,14 @@
 // package (webpack's AutoPublicPathRuntimeModule, CVE-2024-43788; Rollup's document.currentScript code, CVE-2024-47068;
 // Vite's, CVE-2024-45812): the lockfile lists it, at the copy that ran - the file the adapter patched or wrapped, or
 // for Vite the caller of rollup()/rolldown() (see viteOf).
-const fs = require('fs');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const config = require('./config.cjs');
 const problems = require('./problems.cjs');
-const { readManifest } = require('./manifest.cjs');
-const { ancestors, unvirtual } = require('./paths.cjs');
+const { readManifest, licenseOf } = require('./manifest.cjs');
+const { ancestors, realRoot, within } = require('./paths.cjs');
 
-const real = (/** @type {string} */ p) => { try { return unvirtual(fs.realpathSync(p)); } catch { return unvirtual(p); } };
 const fileOf = (/** @type {unknown} */ f) => (typeof f === 'string' && f.startsWith('file:') ? fileURLToPath(f.split('?')[0]) : f);
-// "license": "MIT", the legacy {"type": "MIT"} (see core/manifest.cjs)
-const licenseOf = (/** @type {Manifest} */ j) => (typeof j.license === 'string' ? j.license : j.license && typeof j.license.type === 'string' ? j.license.type : undefined);
 
 // The package of one of `names` that `file` (a path or file: URL) belongs to: the innermost directory around it whose
 // package.json has one of the names - its package root (node_modules/webpack for lib/Compiler.js), or a copy inside
@@ -45,7 +41,7 @@ function bundlerPackage(kind, file, names, version) {
   /** @type {{ dir: string, j: Manifest } | null} */
   let found = null;
   if (typeof f === 'string' && path.isAbsolute(f)) {
-    for (const d of ancestors(path.dirname(real(f)))) {
+    for (const d of ancestors(path.dirname(realRoot(f)))) {
       const j = readManifest(d);
       if (j && typeof j.name === 'string' && names.includes(j.name)) { found = { dir: d, j }; break; }
     }
@@ -88,7 +84,7 @@ function callerFiles() {
     const out = [];
     for (const s of sites) {
       const f = fileOf(typeof s.getFileName === 'function' ? s.getFileName() : null);
-      if (typeof f !== 'string' || !path.isAbsolute(f) || f.startsWith(SRC + path.sep)) continue;
+      if (typeof f !== 'string' || !path.isAbsolute(f) || within(SRC, f)) continue;
       out.push(f);
     }
     return out;
@@ -105,7 +101,7 @@ function callerFiles() {
 /** @param {string[]} names @param {string[]} [files] @returns {string | null} */
 function packageOnStack(names, files = callerFiles()) {
   for (const f of files) {
-    for (const d of ancestors(path.dirname(real(f)))) {
+    for (const d of ancestors(path.dirname(realRoot(f)))) {
       const j = readManifest(d);
       if (!j || typeof j.name !== 'string') continue;
       if (names.includes(j.name)) return path.join(d, 'package.json');

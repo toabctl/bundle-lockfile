@@ -5,7 +5,6 @@
 // <output dir>/<BUNDLE_LOCKFILE_FILE> for every output the build writes (which packages are in an output is
 // rollup-collect.cjs's part). Rollup's CommonJS build (require('rollup'):
 // workbox-build, the rollup command line, tools in CommonJS) is patched when it loads (onCjsLoad).
-const fs = require('fs');
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
@@ -14,7 +13,8 @@ const problems = require('../core/problems.cjs');
 const generated = require('../core/generated.cjs');
 const { filesWrittenAfter } = require('../core/late.cjs');
 const rolldownWatch = require('./rolldown-watch.cjs');
-const { portable, inToolCache } = require('../core/paths.cjs');
+const { portable, inToolCache, real } = require('../core/paths.cjs');
+const { versionIn } = require('../core/manifest.cjs');
 const { createRequire } = require('module');
 const { fileURLToPath } = require('url');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
@@ -31,7 +31,6 @@ const { STYLE } = packages;
 
 /** @type {(plugins: unknown) => any[]} */
 const flat = (plugins) => /** @type {any[]} */ ([]).concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
-const realCwd = () => { try { return fs.realpathSync(process.cwd()); } catch { return process.cwd(); } };
 
 // The writer of one output (see core/outputs.cjs): the same input, format, position in the build's outputs, file names
 // and output file (separate builds of one input, e.g. the configs of `rollup -c`, can write their own output.file into
@@ -97,7 +96,7 @@ function bundlersOf(kind, from, ctx, cwd) {
 // kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler
 // the plugin is added to (undefined: not known, a plugin from a config); from: where the bundler packages are (bundlersOf)
 function createPlugin(kind, inputOptions, engine, from = {}) {
-  const cwd = realCwd();
+  const cwd = real(process.cwd());
   const run = {}; // this build, across its watch rebuilds (see core/outputs.cjs record)
   const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
   /** @type {string | null} */
@@ -230,7 +229,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           const watched = [...await watchFilesOf(this, build)];
           if (isRolldown(this)) {
             const recorded = unreadable ? null : rolldownWatch.filesOf(this, ids);
-            if (recorded) watched.push(...recorded);
+            if (recorded) for (const f of recorded) watched.push(f); // (any number: no spread)
             const style = [...ids].some(id => STYLE.test(fileOf(id) || '')) || Object.values(bundle).some(f => f.type !== 'chunk' && /\.css$/i.test(f.fileName));
             if (!recorded && !build && style) {
               problems.problem(`${kind}: Rolldown ${this.meta.rolldownVersion}: could not read the files its plugins inlined (${unreadable || 'the build was not seen starting'}): style sheets @imported from packages would be missing from ${generateOnly ? 'the output of a build that writes nothing itself' : path.join(dir, config.file)}`);
@@ -289,7 +288,8 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           if (!w.landed) continue;
           try {
             const late = filesWrittenAfter(w.dir, { since, cwd, skip: path.dirname(w.target), known: new Set([...w.files, ...outputs.filesOf(w.target)]) });
-            const add = packages.unique(...late.map(l => l.pkgs)).filter(p => !w.pkgs.some(q => q.path === p.path));
+            const had = new Set(w.pkgs.map(p => p.path));
+            const add = packages.uniqueOf(late.map(l => l.pkgs)).filter(p => !had.has(p.path));
             if (!add.length) continue;
             config.debug(`${kind}: files written into`, w.dir, 'after the build:', late.map(l => path.relative(w.dir, l.file)).join(' '), '- adding', add.map(p => `${p.name}@${p.version}`).join(' '));
             w.pkgs = packages.unique(w.pkgs, add);
@@ -373,11 +373,8 @@ const esmVersions = new Map();
 function esmVersion(url) {
   if (!esmVersions.has(url)) {
     /** @type {string | null} */
-    let version = null;
-    try {
-      const v = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(url.split(/[?#]/)[0])), '../../package.json'), 'utf8')).version;
-      if (typeof v === 'string') version = v;
-    } catch { /* unknown: wrapped */ }
+    let version = null; // (unknown: wrapped)
+    try { version = versionIn(path.join(path.dirname(fileURLToPath(url.split(/[?#]/)[0])), '../..')); } catch { /* not a file: URL */ }
     esmVersions.set(url, version);
   }
   return esmVersions.get(url) || null;
@@ -432,7 +429,7 @@ module.exports = {
     // without a lockfile - a problem (in strict mode its require() fails, see hooks.cjs)
     // (the version: exports.version in early 4.x releases, exports.package_ in later ones; else the package's package.json)
     let version = typeof exp.version === 'string' ? exp.version : exp.package_ && typeof exp.package_.version === 'string' ? exp.package_.version : null;
-    if (!version) try { version = JSON.parse(fs.readFileSync(path.join(path.dirname(resolve()), '../../package.json'), 'utf8')).version; } catch { /* unknown */ }
+    if (!version) version = versionIn(path.join(path.dirname(resolve()), '../..'));
     if (typeof exp.rollupInternal !== 'function' || (version && !hookable(version))) {
       problems.problem(`rollup: ${resolve()} (Rollup ${version || 'of an unknown version'}) is no Rollup bundle-lockfile can hook (2.78 or later, with rollupInternal): its builds would write no lockfile`);
       return;

@@ -9,28 +9,58 @@
 // program gets the environment it was given, and the node it starts the node shim's help (PATH) or none.
 // `next build` (Next.js 15.0 - 16.3) rewrites NODE_OPTIONS for its build workers and keeps only the last of several
 // `--require=` (vercel/next.js#96582): the --require is put back there too - those workers build.
-const fs = require('fs');
 const path = require('path');
 const config = require('./config.cjs');
 const { isNextBuild } = require('./unsupported.cjs');
+const { real } = require('./paths.cjs');
 
 const S = Symbol.for('bundle-lockfile.children.v1');
 /** @typedef {{ [S]?: { warned: boolean } }} Global */
 const own = path.join(__dirname, '..', 'register.cjs');
-/** @type {(f: string) => string} */
-const real = (f) => { try { return fs.realpathSync(f); } catch { return f; } };
 
-// The words of NODE_OPTIONS that name this preload's register.cjs (also through a symbolic link)
+// The files preloaded with --require / -r: in NODE_OPTIONS (split as Node does: spaces, "..." quoting a value with
+// spaces, backslash escapes inside it) and in execArgv (register.cjs: other copies of bundle-lockfile)
+/**
+ * @param {string} nodeOptions
+ * @param {string[]} [execArgv]
+ * @returns {string[]}
+ */
+function preloads(nodeOptions, execArgv = []) {
+  /** @type {string[]} */
+  const words = [];
+  /** @type {string | null} */
+  let w = null;
+  let quoted = false;
+  for (let i = 0; i < nodeOptions.length; i++) {
+    const c = nodeOptions[i];
+    if (quoted && c === '\\' && i + 1 < nodeOptions.length) { w = (w || '') + nodeOptions[++i]; continue; }
+    if (c === '"') { quoted = !quoted; w = w || ''; continue; }
+    if (!quoted && /\s/.test(c)) { if (w !== null) words.push(w); w = null; continue; }
+    w = (w || '') + c;
+  }
+  if (w !== null) words.push(w);
+  /** @type {string[]} */
+  const out = [];
+  for (const args of [words, execArgv]) {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if ((a === '--require' || a === '-r') && i + 1 < args.length) out.push(args[++i]);
+      else if (a.startsWith('--require=')) out.push(a.slice('--require='.length));
+    }
+  }
+  return out;
+}
+
+// The preloads of NODE_OPTIONS that are this preload's register.cjs (also through a symbolic link)
 /**
  * @param {unknown} opts
  * @returns {string[]}
  */
 function ours(opts) {
-  return String(opts || '').split(/\s+/).map(w => w.replace(/^--require=/, '').replace(/^["']|["']$/g, ''))
-    .filter(w => w.endsWith('register.cjs') && real(w) === real(own));
+  return preloads(String(opts || '')).filter(w => w.endsWith('register.cjs') && real(w) === real(own));
 }
 // The --require of this preload as this process's NODE_OPTIONS holds it, or null when this process did not get it from
-// NODE_OPTIONS (a --require on the command line reaches no child anyway). (Paths with spaces: in quotes, not split.)
+// NODE_OPTIONS (a --require on the command line reaches no child anyway).
 /** @type {string | null | undefined} */
 let mine;
 /** @type {() => string | null} */
@@ -154,4 +184,4 @@ function install() {
   }
 }
 
-module.exports = { install, checked, isNode };
+module.exports = { install, checked, isNode, preloads };

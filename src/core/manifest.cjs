@@ -1,7 +1,9 @@
 'use strict';
-// A package directory's package.json: its name, version and license. Shared by the modules that map files to packages
-// (packages.cjs, vendored.cjs) and the ones that check a recorded package is still where it was (outputs.cjs).
-/** @import { LocatedPackage, Manifest } from '../types' */
+// A package directory's package.json: its name, version and license; and lists of packages, each once. Shared by the
+// modules that map files to packages (packages.cjs, vendored.cjs, nested.cjs), the ones that check a recorded package is
+// still where it was (outputs.cjs) and the adapters. No dependencies but Node's: the ESM loader thread uses it too
+// (core/layout.cjs).
+/** @import { LocatedPackage, Manifest, Package } from '../types' */
 const fs = require('fs');
 const path = require('path');
 
@@ -43,4 +45,20 @@ function packageOf(j, dir) {
 /** @type {(dir: string) => LocatedPackage | null} */
 const readPackage = (dir) => packageOf(readManifest(dir), dir);
 
-module.exports = { readPackage, readManifest, packageOf };
+// The "version" of dir/package.json, or null
+/** @type {(dir: string) => string | null} */
+const versionIn = (dir) => { const j = readManifest(dir); return j && typeof j.version === 'string' && j.version ? j.version : null; };
+
+// The packages of any number of lists, each once (by path: the first one). lists: an iterable of them, of any length -
+// unique(...lists) for a few; uniqueOf(lists) for one per file, which as arguments would exceed what a call can take.
+/** @param {Iterable<Iterable<Package>>} lists @returns {Package[]} */
+function uniqueOf(lists) {
+  /** @type {Map<string, Package>} */
+  const m = new Map();
+  for (const l of lists) for (const p of l) if (!m.has(p.path)) m.set(p.path, p);
+  return [...m.values()];
+}
+/** @param {...Iterable<Package>} lists @returns {Package[]} */
+const unique = (...lists) => uniqueOf(lists);
+
+module.exports = { readPackage, readManifest, packageOf, licenseOf, versionIn, unique, uniqueOf };

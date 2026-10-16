@@ -7,12 +7,12 @@
 // name, version and license. Never resolved by Node.js or a bundler: no output file is below it.
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const { shortHash } = require('./hashes.cjs');
+const { unique } = require('./lock.cjs');
 
 const DIR = 'packages';
 // a file of a tree: <lockfile dir>/packages/<id>/node_modules/... (see copies.cjs, late.cjs: no package's file)
 const IN_TREE = /[\\/]packages[\\/][0-9a-f]{16}[\\/]node_modules[\\/]/;
-const unique = () => `${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
 
 // The directories of a package's name below node_modules: <name>, or @<scope> and <name>. The name is a bundled
 // package's package.json says, which can be any string: one that is no such path (.., another /, a \, an empty part)
@@ -41,7 +41,7 @@ function stubsOf(json) {
   for (const [key, p] of Object.entries(/** @type {Record<string, any>} */ ((doc && doc.packages) || {}))) {
     if (!key || !p || typeof p.name !== 'string' || typeof p.version !== 'string') continue;
     const dirs = nameDirs(p.name);
-    const id = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
+    const id = shortHash(key);
     const stub = { name: p.name, version: p.version, ...(typeof p.license === 'string' ? { license: p.license } : {}) };
     out.push([[DIR, id, 'node_modules', ...dirs, 'package.json'].join('/'), JSON.stringify(stub, null, 2) + '\n']);
   }

@@ -80,19 +80,39 @@ export interface FilePackages {
   via: ViaCollector;
 }
 
-/** One build of a writer, as core/outputs.cjs keeps it (building, landed). */
-export interface Build {
+/**
+ * What a lockfile records of a writer's build, with absolute paths: one build of this process (Build), one another
+ * process recorded (RecordedWriter), and what core/outputs.cjs render() merges of both.
+ */
+export interface WriterRecord {
   pkgs: Package[];
-  /** the directory package locations are relative to */
-  context: string;
-  /** absolute paths of the files the writer emits into the output */
+  /** absolute paths of the files the writer emits into the output (a record: at most core/lockfile.cjs MAX_FILES) */
   files: string[];
+  /** how many files the writer has, if `files` is only some of them (a record of another process) */
+  count?: number;
   /** absolute path -> "sha256-<hex>" of its JavaScript and CSS output files */
   outputs: Record<string, string>;
-  /** absolute path -> the package paths in that output file */
+  /** how many such output files the writer has, if `outputs` is only some of them */
+  outputCount?: number;
+  /** absolute path -> the paths of the packages (in pkgs) in that output file */
   contents: Record<string, string[]>;
-  bundler: BundlerId | null;
+  bundler?: BundlerId | null;
   via: Via | null;
+}
+
+/** One build of a writer, as core/outputs.cjs keeps it (building, landed). */
+export interface Build extends WriterRecord {
+  /** the directory package locations are relative to */
+  context: string;
+}
+
+/** A writer as toPackageLock (core/lockfile.cjs) writes it: its packages by their paths, the packages themselves given apart. */
+export interface MetaWriter extends Omit<WriterRecord, 'pkgs' | 'via' | 'outputs' | 'contents'> {
+  id: string;
+  paths: Iterable<string>;
+  outputs?: Record<string, string>;
+  contents?: Record<string, string[]>;
+  via?: Via | null;
 }
 
 /** A writer of a lockfile in this process (core/outputs.cjs): one compiler or build, across its rebuilds. */
@@ -112,16 +132,9 @@ export interface Writer {
 }
 
 /** A writer as a lockfile on disk records it (core/lockfile.cjs readMeta). */
-export interface RecordedWriter {
+export interface RecordedWriter extends WriterRecord {
   id: string;
-  bundler: BundlerId | undefined;
   via: Via;
-  files: string[];
-  count: number | undefined;
-  outputs: Record<string, string>;
-  outputCount: number | undefined;
-  contents: Record<string, Package[]>;
-  pkgs: Package[];
 }
 
 /** The "bundle-lockfile" record of a lockfile, with absolute paths (core/lockfile.cjs readMeta). */

@@ -297,6 +297,18 @@ test('toPackageLock: a writer\'s bundler and how it found its packages (via), re
   assert.equal(plain.via, undefined);
 });
 
+test('packagesOfFiles: any number of files - none is an argument of its own of a call (V8 takes about 125000)', () => {
+  const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
+  // first-party files, one list of packages each (none), and one file of a package
+  const files = [...Array.from({ length: 200000 }, (_, i) => J(root, `src/f${i}.js`)), J(root, 'node_modules/a/i.js')];
+  const result = packages.packagesOfFiles(files);
+  assert.deepEqual(result.all.map(p => `${p.name}@${p.version}`), ['a@1.0.0']);
+  assert.deepEqual(packages.packagesForFiles(files).map(p => p.name), ['a']);
+  // the packages of an esbuild output (and bundle-lockfile-from-metafile's) with that many inputs
+  const { packagesOfInputs } = require('../src/adapters/esbuild.cjs');
+  assert.deepEqual(packagesOfInputs(files, result.byFile).map(p => p.name), ['a']);
+});
+
 test('packagesOfFiles: how each file\'s packages were found - modules by the class the adapter gives, copies made with fs, vendored copies', () => {
   const via = require('../src/core/via.cjs');
   const copies = require('../src/core/copies.cjs');
@@ -3216,7 +3228,7 @@ test('lockfile: a lockfile of another shape is no record, and never stops the lo
   ] }, { 'node_modules/a': { name: 'a', version: '1.0.0' }, 'node_modules/noversion': { name: 'n' } }), '/d');
   const pa = { name: 'a', version: '1.0.0', path: J('/d/node_modules/a') };
   assert.deepEqual(meta.writers, [{ id: 'w', bundler: { name: 'webpack' }, via: new Map([[pa.path, new Set(['chunk'])]]), files: [], count: undefined, outputs: {},
-    outputCount: undefined, contents: { [J('/d/dist/a.js')]: [pa] }, pkgs: [pa] }]);
+    outputCount: undefined, contents: { [J('/d/dist/a.js')]: [pa.path] }, pkgs: [pa] }]); // (contents: package paths, as every writer record has them)
   // such a file on disk: replaced by a lockfile of this build
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } });
   const target = J(root, 'dist', LOCK);
