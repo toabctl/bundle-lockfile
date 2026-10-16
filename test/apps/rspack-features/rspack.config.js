@@ -12,8 +12,9 @@ const pkg = (name) => path.join(__dirname, 'node_modules', name);
 // production by default in rspack 2)
 const experiments = { css: true, ...(major === 1 && minor >= 4 && minor <= 6 && { inlineConst: true }) };
 const persistent = { type: 'persistent', storage: { type: 'filesystem', directory: path.join(__dirname, '.cache-test') } };
+// RSPACK_MODE=development: no usage analysis (optimization.usedExports), no minimizer
 module.exports = {
-  mode: 'production', entry: './src/index.js', output: { path: path.join(__dirname, 'dist'), filename: 'main.js' },
+  mode: process.env.RSPACK_MODE || 'production', entry: './src/index.js', output: { path: path.join(__dirname, 'dist'), filename: 'main.js' },
   module: { rules: [
     { test: /\.css$/, type: 'css' },
     // (CssExtractRspackPlugin's modules are JavaScript, also with rspack 1's experiments.css)

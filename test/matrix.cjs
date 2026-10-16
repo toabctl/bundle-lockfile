@@ -413,6 +413,8 @@ const fixtures = {
   'rspack2.2-pnpm10-global-store': rspack('2.2.8', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
   'rspack-features1.2': rspackFeatures('1.2.8'),
   'rspack-features1.4': rspackFeatures('1.4.11'),
+  'rspack-features1.5.0': rspackFeatures('1.5.0'),
+  'rspack-features1.5': rspackFeatures('1.5.8'),
   'rspack-features1.6': rspackFeatures('1.6.8'),
   'rspack-features1.7': rspackFeatures('1.7.12'),
   'rspack-features2.2': rspackFeatures('2.2.8'),
@@ -1866,9 +1868,14 @@ const cases = [
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
   // what reaches the output besides the chunks' JavaScript modules (test/apps/rspack-features); the oracle builds without
   // inlining exports, so the modules of consts-only and consts-default are in its chunks, and matches the copies by bytes
-  ...[['1.2.8', '1.2'], ['1.4.11', '1.4'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+  ...[['1.2.8', '1.2'], ['1.4.11', '1.4'], ['1.5.0', '1.5.0'], ['1.5.8', '1.5'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
     { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports`, fixture: `rspack-features${line}`,
       cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
+  // a development build (no usage analysis): rspack 1.5.0 - 1.5.2 inline constants with experiments.inlineConst also
+  // without it (their defaults set the parser option from the experiment alone; 1.5.3 and later only with usedExports)
+  ...[['1.5.0', '1.5.0'], ['1.5.8', '1.5'], ['1.6.8', '1.6']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, development build`, fixture: `rspack-features${line}`,
+      env: { RSPACK_MODE: 'development' }, cmd: `${RSPACK_CONSTS} && npm run -s build`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
   // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages), and the
   // modules whose exports were inlined stay listed
   ...[['1.2.8', '1.2'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
