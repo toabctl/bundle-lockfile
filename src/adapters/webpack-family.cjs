@@ -21,7 +21,7 @@ const { readManifest } = require('../core/manifest.cjs');
 const { isObject, isArray, perProcess } = require('../core/values.cjs');
 const {
   hook, kindOf, isRspack, versionOf, outputDir, hasAsset, assetNames, readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn,
-  onDisk,
+  onDisk, optimizeStage,
 } = require('./webpack-compat.cjs');
 const {
   KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, copiedLate,
@@ -317,10 +317,10 @@ class BundleLockfilePlugin {
       const marks = /** @type {const} */ ([BUNDLED, KINDS, HELPERS, UNNAMED, SOURCE, GENERATED, LATE]);
       if (unseal) unseal.tap(NAME, () => { for (const k of marks) delete compilation[k]; });
       // webpack 5 and rspack: copied files, before the optimize stages change their bytes (copiedUnnamed, copiedRspack)
-      const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');
-      if (processAssets && C && typeof C.PROCESS_ASSETS_STAGE_OPTIMIZE === 'number') {
-        own(processAssets).tap({ name: NAME, stage: C.PROCESS_ASSETS_STAGE_OPTIMIZE - 1 }, () => {
+      const optimize = optimizeStage(compiler, compilation);
+      if (processAssets && optimize !== undefined) {
+        own(processAssets).tap({ name: NAME, stage: optimize - 1 }, () => {
           try { compilation[UNNAMED] = isRspack(compiler) ? copiedRspack(compilation) : copiedUnnamed(compilation); } catch (e) {
             problems.problem(`${kindOf(compiler)}: could not check the files copied into ${outputDir(compilation)}`, e);
           }

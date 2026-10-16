@@ -215,32 +215,37 @@ test('webpack adapter: more than 20,000 files below a copied directory in node_m
   assert.match(seen[0], /^more than 20000 files below the directories in node_modules that \S+'s build depends on: assets copied from them without naming their source were not all compared$/);
 });
 
-test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched before the optimize stages', () => {
+test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched before the optimize stages (also on 5.0, without compiler.webpack)', () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/file/package.json': { name: 'file', version: '1.0.0' },
     'node_modules/file/f.css': 'body {  margin: 0  }' });
-  const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'dist') });
-  compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
-  const p = new webpackAdapter.BundleLockfilePlugin(LOCK);
-  p.apply(compiler);
-  const build = (beforeOptimize) => {
-    const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
-    const assets = new Map([['main.js', { name: 'main.js', source: src('main'), info: {} }],
-      ['css/f.css', { name: 'css/f.css', source: src('body {  margin: 0  }'), info: { copied: true } }]]);
-    let stage, optimize;
-    const comp = {
-      compiler, chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }], children: [],
-      fileDependencies: new Set([J(root, 'node_modules/a/i.js'), J(root, 'node_modules/file/f.css')]),
-      getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()], emitAsset: () => {},
-      hooks: { processAssets: { tap: (o, fn) => { assert.equal(o.stage, 99); optimize = fn; } }, afterProcessAssets: { tap: (o, fn) => (stage = fn) } },
+  // webpack 5.0.0 has no compiler.webpack (5.1.0 adds it): the stages are its Compilation class's
+  class Compilation { static PROCESS_ASSETS_STAGE_OPTIMIZE = 100; }
+  for (const shape of ['webpack >= 5.1', 'webpack 5.0']) {
+    const { compiler, taps } = fakeCompiler5({ outputPath: J(root, `dist-${shape.replace(/\W/g, '')}`), withWebpack: shape !== 'webpack 5.0' });
+    if (compiler.webpack) compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
+    const p = new webpackAdapter.BundleLockfilePlugin(LOCK);
+    p.apply(compiler);
+    const build = (beforeOptimize) => {
+      const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
+      const assets = new Map([['main.js', { name: 'main.js', source: src('main'), info: {} }],
+        ['css/f.css', { name: 'css/f.css', source: src('body {  margin: 0  }'), info: { copied: true } }]]);
+      let stage, optimize;
+      const comp = Object.assign(new Compilation(), {
+        compiler, chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }], children: [],
+        fileDependencies: new Set([J(root, 'node_modules/a/i.js'), J(root, 'node_modules/file/f.css')]),
+        getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()], emitAsset: () => {},
+        hooks: { processAssets: { tap: (o, fn) => { assert.equal(o.stage, 99); optimize = fn; } }, afterProcessAssets: { tap: (o, fn) => (stage = fn) } },
+      });
+      taps.thisCompilation(comp);
+      assert.ok(optimize, `${shape}: a tap before the optimize stages`);
+      if (beforeOptimize) optimize();
+      assets.get('css/f.css').source = src('body{margin:0}'); // a minimizer at the optimize stages
+      stage();
+      return lockedNames(p.lockfile(comp));
     };
-    taps.thisCompilation(comp);
-    if (beforeOptimize) optimize();
-    assets.get('css/f.css').source = src('body{margin:0}'); // a minimizer at the optimize stages
-    stage();
-    return lockedNames(p.lockfile(comp));
-  };
-  assert.deepEqual(build(true), ['a', 'file']);
-  assert.deepEqual(build(false), ['a']); // after minimizing, the bytes are no package file's
+    assert.deepEqual(build(true), ['a', 'file'], shape);
+    assert.deepEqual(build(false), ['a'], shape); // after minimizing, the bytes are no package file's
+  }
 });
 
 test('webpack adapter: style sheets a shipped style module\'s loaders inlined from packages (Sass, Less, PostCSS)', () => {

@@ -366,6 +366,8 @@ const fixtures = {
   // as a context dependency
   'edge-copy60-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.0.4', ...COPIED } },
   'edge-copy62': edge('edge-copy', { 'copy-webpack-plugin': '6.2.1', ...COPIED }),
+  // webpack 5.0.0: no compiler.webpack yet (5.1.0), the stages of processAssets are its Compilation class's
+  'edge-copy62-wp5.0': { app: 'edge-copy', installer: { type: 'npm' }, deps: { webpack: '5.0.0', 'webpack-cli': '4.10.0', 'copy-webpack-plugin': '6.2.1', ...COPIED } },
   'edge-shared-output': edge('edge-shared-output', { debug: '2.6.9', ms: '2.1.3' }),
   // the build script overwrites NODE_OPTIONS with cross-env, as superset's, headlamp's, pgadmin4's (needs the node shim)
   'edge-crossenv': { app: 'webpack5', installer: { type: 'npm' }, deps: { ...WEBPACK, ...APP_DEPS, 'cross-env': '7.0.3' },
@@ -985,6 +987,11 @@ const cases = [
   // oracle compares the output's bytes and so sees left-pad by its files that are not minimized, normalize.css not
   { name: 'edge: package file and directory copied by copy-webpack-plugin 6.2', fixture: 'edge-copy62', cmd: 'npm run -s build', expect: COPIED_EXPECT,
     oracleMissing: ['normalize.css@8.0.1'] },
+  // only left-pad's index.js copied, which the minimizer changes: matched before the optimize stages, also on webpack
+  // 5.0.0 (no compiler.webpack); the oracle, which compares the output's bytes, does not see it
+  ...[['edge-copy62', '5.111.1'], ['edge-copy62-wp5.0', '5.0.0']].map(([fixture, v]) => (
+    { name: `edge: a package's JavaScript file copied by copy-webpack-plugin 6.2 and minimized, webpack ${v}`, fixture, cmd: 'npm run -s build',
+      env: { EDGE_COPY: 'one-js' }, expect: ['left-pad@1.3.0', 'lodash-es@4.18.1'], oracleMissing: ['left-pad@1.3.0'], expectVia: { 'copy-bytes': ['left-pad@1.3.0'] } })),
   // two compilers write to dist/ in parallel: one lockfile with the packages of both
   { name: 'edge: two compilers, one output dir', fixture: 'edge-shared-output', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
   // the first compiler's asset names carry a query string ([name].js?[contenthash]): its files are still there

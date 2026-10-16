@@ -57,6 +57,17 @@ const versionOf = (v) => String(v || '').split('.').map(Number);
  */
 function isRspack(compiler) { return !!(compiler && compiler.webpack && typeof compiler.webpack.rspackVersion === 'string'); }
 
+// processAssets' first stage that optimizes the assets (the minimizers'), from webpack's Compilation class:
+// compiler.webpack.Compilation (webpack >= 5.1, rspack), else the compilation's own (webpack 5.0, which has no
+// compiler.webpack); undefined: none (webpack 4)
+/** @param {Compiler} compiler @param {Compilation} compilation @returns {number | undefined} */
+function optimizeStage(compiler, compilation) {
+  /** @type {{ PROCESS_ASSETS_STAGE_OPTIMIZE?: unknown } | undefined} */
+  const C = (compiler.webpack && compiler.webpack.Compilation) || /** @type {{ PROCESS_ASSETS_STAGE_OPTIMIZE?: unknown }} */ (compilation.constructor);
+  const stage = C && C.PROCESS_ASSETS_STAGE_OPTIMIZE;
+  return typeof stage === 'number' ? stage : undefined;
+}
+
 // The class webpack-sources' RawSource, for an asset: compiler.webpack.sources (webpack >= 5.1, rspack), else the
 // webpack-sources next to the Compiler module (webpack 4: compilerFile), else null (an asset of a plain object then).
 /** @param {Compiler} compiler @param {string | undefined} compilerFile @returns {RawSourceClass | null | undefined} */
@@ -131,5 +142,5 @@ const writeIn = (fsys, file) => (content) => new Promise((resolve, reject) => {
 
 module.exports = {
   hook, kindOf, isRspack, versionOf, chunkModules, entryModules, issuers, outputDir, hasAsset, assetNames, assetOf, assetBytes,
-  readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn, onDisk,
+  readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn, onDisk, optimizeStage,
 };
