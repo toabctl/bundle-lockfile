@@ -12,10 +12,14 @@ npm run check   # tsc over src/ (JSDoc types, strict), then ESLint, then oxlint 
                 # the types - no promise left unhandled, no any)
 ```
 
-The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26):
+The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26). One file per area (core,
+lockfile, outputs, config, strict, hooks, and one per adapter), each in a process of its own, in parallel; what they
+share is in `test/unit/helpers.cjs`:
 
 ```sh
-node --test test/unit.cjs
+node --test test/unit/*.test.cjs
+node --test test/unit/webpack.test.cjs                      # one area
+node --test --test-name-pattern='^strict:' test/unit/*.test.cjs   # tests by name
 ```
 
 The contract tests check the [format](../docs/format.md#fields) against syft and Trivy (both on `PATH`; CI: Wolfi's):
@@ -439,7 +443,7 @@ tool is named. In the last run (2026-10-13, 31 fixtures) every difference was ex
 The manifest survey of the matrix fixtures (3,223 package.json files inside packages, ~100 fixtures): every one the
 rule takes as a vendored copy is one (`next/dist/compiled/*`, `@rspack/core/compiled/*`), except `needle`'s
 `examples/stream-multiple` (`express-needle@1.0.0`), which no build bundles. The other shapes - no name, a name
-without a version, private, a name with a slash - are the ones `test/unit.cjs` tests.
+without a version, private, a name with a slash - are the ones `test/unit/core.test.cjs` tests.
 
 `test/bigproject/superset.sh` runs the same comparison on Apache Superset's frontend, measures the build cost and
 compares syft's counts on the output with those on the project's lockfile.
