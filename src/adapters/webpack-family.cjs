@@ -21,6 +21,7 @@ const { readManifest } = require('../core/manifest.cjs');
 const { isObject, isArray, perProcess } = require('../core/values.cjs');
 const {
   hook, kindOf, isRspack, versionOf, outputDir, hasAsset, assetNames, readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn,
+  onDisk,
 } = require('./webpack-compat.cjs');
 const {
   KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, copiedLate,
@@ -88,18 +89,6 @@ function compilerWriter(compiler) {
   const shutdown = hook(compiler.hooks, 'shutdown');
   if (shutdown) shutdown.tap(NAME, () => { compiler[CLOSED] = true; });
   return (compiler[WRITER] = id);
-}
-
-// The output is on the real disk, where other processes may write the same lockfile: webpack's own Node file system
-// (webpack 5: graceful-fs, in whatever copy - webpack's dependency, the one Next.js bundles; webpack 4:
-// NodeOutputFileSystem), or Node's fs; not e.g. webpack-dev-middleware's in-memory one (memfs). graceful-fs is known
-// by its gracefulify(): a plugin configured by hand does not know where webpack is to resolve webpack's graceful-fs.
-/** @param {Compiler} compiler */
-function onDisk(compiler) {
-  const fsys = compiler.outputFileSystem;
-  if (!fsys) return false;
-  if (fsys.constructor && fsys.constructor.name === 'NodeOutputFileSystem') return true;
-  return fsys === fs || typeof fsys.gracefulify === 'function';
 }
 
 // The files webpack writes assets to: the name without a query string. webpack >= 5.104 also cuts at a

@@ -21,7 +21,10 @@ class CopyAfterEmit {
     });
   }
 }
+// EDGE_COPY_FUTURE=1 (webpack 4): output.futureEmitAssets, as react-scripts 4 sets it - webpack keeps only the sizes of
+// the assets it emitted, as webpack 5 does
 module.exports = {
-  mode: 'production', entry: './src/index.js', output: { path: path.join(__dirname, 'dist'), filename: 'main.js' },
+  mode: 'production', entry: './src/index.js',
+  output: { path: path.join(__dirname, 'dist'), filename: 'main.js', ...(process.env.EDGE_COPY_FUTURE && { futureEmitAssets: true }) },
   plugins: [process.env.EDGE_COPY === 'after-emit' ? new CopyAfterEmit() : v5 ? new CopyPlugin(patterns) : new CopyPlugin({ patterns })],
 };

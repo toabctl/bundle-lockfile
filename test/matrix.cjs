@@ -753,6 +753,8 @@ const cases = [
     expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package (emitted in the emit hook)', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
     nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
+  { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package, output.futureEmitAssets', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
+    nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON, EDGE_FUTURE_EMIT: '1' }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
     lockfile: 'sbom/package-lock.json', expect: W5 },
   // build modes
@@ -973,6 +975,10 @@ const cases = [
   // copies that do not name their source are matched by content to the package file they were copied from
   { name: 'edge: package file and directory copied by copy-webpack-plugin 5, webpack 4', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: COPIED_EXPECT, expectVia: { 'copy-bytes': ['left-pad@1.3.0', 'normalize.css@8.0.1'], 'copy-source': [] } },
+  // with output.futureEmitAssets (react-scripts 4) the copies' sources are gone after the emit: their bytes are read from
+  // the output (webpack 4's output file system has no readFile)
+  { name: 'edge: copy-webpack-plugin 5, webpack 4 with output.futureEmitAssets', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    env: { EDGE_COPY_FUTURE: '1' }, expectIncludes: COPIED_EXPECT, expectVia: { 'copy-bytes': ['left-pad@1.3.0', 'normalize.css@8.0.1'], 'copy-source': [] } },
   { name: 'edge: package file and directory copied by copy-webpack-plugin 6.0, webpack 4', fixture: 'edge-copy60-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: COPIED_EXPECT },
   // webpack 5 minimizes those copies (6.2 does not mark them as copied for the minimizers): matched before that; the

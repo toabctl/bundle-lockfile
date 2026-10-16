@@ -3,6 +3,7 @@
 // copy), rspack 1 and 2 -, each in one place, named after what it asks: the rest of the webpack adapter asks these
 // instead of testing versions or the shape of an object itself.
 /** @import { Asset, Chunk, Compilation, Compiler, Hook, Module, OutputFileSystem, RawSourceClass, Source } from './webpack-types' */
+const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
 const { codeOf } = require('../core/values.cjs');
@@ -82,15 +83,30 @@ function emitAsset(compilation, name, src) {
 function assetBytes(compilation, name) {
   try { const s = /** @type {Asset} */ (assetOf(compilation, name)).source.source(); return Buffer.isBuffer(s) ? s : Buffer.from(s); } catch { return null; }
 }
+// The output is on the real disk, where other processes may write the same lockfile: webpack's own Node file system
+// (webpack 5: graceful-fs, in whatever copy - webpack's dependency, the one Next.js bundles; webpack 4:
+// NodeOutputFileSystem), or Node's fs; not e.g. webpack-dev-middleware's in-memory one (memfs). graceful-fs is known
+// by its gracefulify(): a plugin configured by hand does not know where webpack is to resolve webpack's graceful-fs.
+/** @param {Compiler} compiler */
+function onDisk(compiler) {
+  const fsys = compiler.outputFileSystem;
+  if (!fsys) return false;
+  if (fsys.constructor && fsys.constructor.name === 'NodeOutputFileSystem') return true;
+  return fsys === fs || typeof fsys.gracefulify === 'function';
+}
+
 // The bytes of an asset, also after the emit: from its source, else from the output file system (the file webpack wrote:
-// the name without a query string). null if neither has them.
+// the name without a query string) - webpack 4's on the real disk (NodeOutputFileSystem) has no readFile, and with
+// output.futureEmitAssets (react-scripts 4) keeps only the sizes of emitted assets, as webpack 5 does: from the disk
+// there. null if neither has them.
 /** @param {Compilation} compilation @param {string} dir @param {string} name @returns {Promise<Buffer | null>} */
 async function readAsset(compilation, dir, name) {
   const buf = assetBytes(compilation, name);
   if (buf) return buf;
-  const fsys = compilation.compiler.outputFileSystem;
-  if (!fsys || typeof fsys.readFile !== 'function') return null;
-  const readFile = fsys.readFile;
+  const own = compilation.compiler.outputFileSystem;
+  const fsys = own && typeof own.readFile === 'function' ? own : onDisk(compilation.compiler) ? fs : null;
+  if (!fsys) return null;
+  const readFile = /** @type {NonNullable<OutputFileSystem['readFile']>} */ (fsys.readFile);
   return new Promise((resolve) => {
     try { readFile.call(fsys, path.join(dir, name.split('?')[0]), (err, b) => resolve(err ? null : b)); } catch { resolve(null); }
   });
@@ -115,5 +131,5 @@ const writeIn = (fsys, file) => (content) => new Promise((resolve, reject) => {
 
 module.exports = {
   hook, kindOf, isRspack, versionOf, chunkModules, entryModules, issuers, outputDir, hasAsset, assetNames, assetOf, assetBytes,
-  readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn,
+  readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn, onDisk,
 };

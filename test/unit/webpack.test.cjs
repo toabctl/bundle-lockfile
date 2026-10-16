@@ -702,10 +702,14 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
     'node_modules/copied/x.css': 'body{}', 'node_modules/other/z.css': 'BODY{}', 'node_modules/empty/e.css': '', 'src/robots.txt': 'x' });
   const dep = (f) => J(root, f);
   const DEPS = [dep('node_modules/a/i.js'), dep('node_modules/copied/x.css'), dep('node_modules/other/z.css'), dep('node_modules/empty/e.css'), dep('src/robots.txt')];
-  for (const shape of ['webpack 4', 'webpack 5']) {
-    const outputPath = J(root, shape === 'webpack 4' ? 'dist4' : 'dist5');
+  // webpack 4 with output.futureEmitAssets (react-scripts 4 sets it) keeps only the sizes of emitted assets, as webpack 5
+  // does, and its output file system (NodeOutputFileSystem) has no readFile: the bytes are read from the disk
+  for (const shape of ['webpack 4', 'webpack 4 futureEmitAssets', 'webpack 5']) {
+    const outputPath = J(root, shape === 'webpack 5' ? 'dist5' : shape === 'webpack 4' ? 'dist4' : 'dist4-future');
     const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: shape === 'webpack 5' });
-    compiler.outputFileSystem.readFile = fs.readFile;
+    if (shape === 'webpack 5') compiler.outputFileSystem.readFile = fs.readFile;
+    else compiler.outputFileSystem = Object.assign(new (class NodeOutputFileSystem {})(), compiler.outputFileSystem);
+    const sizeOnly = shape !== 'webpack 4';
     new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
     // late: assets the emit hook adds (name -> [content, info]); deps: the compilation's file dependencies
     const build = async (late, deps = DEPS) => {
@@ -715,7 +719,7 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
         hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) }, afterOptimizeAssets: { tap: (o, fn) => (comp.stage = fn) } },
       };
       let add, sourceOf;
-      if (shape === 'webpack 4') { // assets: an object of sources, no asset info (webpack < 4.40), no emitAsset
+      if (shape !== 'webpack 5') { // assets: an object of sources, no asset info (webpack < 4.40), no emitAsset
         comp.assets = {};
         add = (name, source) => { comp.assets[name] = source; };
         sourceOf = (name) => comp.assets[name];
@@ -729,13 +733,16 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
       taps.thisCompilation(comp);
       comp.stage();
       for (const [name, [content, info]] of Object.entries(late)) {
-        // webpack 5 keeps only the size of emitted assets: the content is read from the output
-        add(name, shape === 'webpack 5' ? { source() { throw new Error('size only'); } } : { source: () => content }, info);
+        // webpack 5 (and 4 with futureEmitAssets) keeps only the size of emitted assets: the content is read from the output
+        add(name, sizeOnly ? { source() { throw new Error('size only'); } } : { source: () => content }, info);
         fs.mkdirSync(path.dirname(J(outputPath, name)), { recursive: true });
         fs.writeFileSync(J(outputPath, name), content);
       }
-      fs.mkdirSync(J(outputPath, 'bundle-lockfile'), { recursive: true });
-      fs.writeFileSync(J(outputPath, LOCK), sourceOf(LOCK).source()); // webpack writes the lockfile asset
+      // webpack writes the lockfile asset (on the real disk, NodeOutputFileSystem, there is none: the plugin writes it)
+      if (sourceOf(LOCK)) {
+        fs.mkdirSync(J(outputPath, 'bundle-lockfile'), { recursive: true });
+        fs.writeFileSync(J(outputPath, LOCK), sourceOf(LOCK).source());
+      }
       await new Promise(resolve => taps.afterEmit(comp, resolve));
       return lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8'));
     };
