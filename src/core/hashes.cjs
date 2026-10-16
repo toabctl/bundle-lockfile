@@ -15,9 +15,9 @@ const state = perProcess(S, () => ({ files: new Map() })); // file -> { key, has
 
 // The hex SHA-256 of a string or Buffer; "sha256-<hex>" (as the lockfile records outputs); its first 16 hex digits,
 // the ids the lockfile records (writers, remnants, a tree's packages, a context's)
-/** @type {(data: string | Buffer) => string} */
+/** @type {(data: string | Uint8Array) => string} */
 const hex = (data) => crypto.createHash('sha256').update(data).digest('hex');
-/** @type {(data: string | Buffer) => string} */
+/** @type {(data: string | Uint8Array) => string} */
 const sha256 = (data) => `sha256-${hex(data)}`;
 /** @type {(data: string | Buffer) => string} */
 const shortHash = (data) => hex(data).slice(0, 16);
