@@ -6,8 +6,9 @@
 // modules through the project's resolver (Yarn Plug'n'Play's resolves nothing outside the project): the adapter, which
 // added this reporter, is reached through the global it registers, not with require().
 const API = Symbol.for('bundle-lockfile.parcel');
-module.exports = { default: { [Symbol.for('parcel-plugin-config')]: { report(opts) {
-  const api = globalThis[API];
+module.exports = { default: { [Symbol.for('parcel-plugin-config')]: { report(/** @type {unknown} */ opts) {
+  const registry = /** @type {Record<symbol, unknown>} */ (/** @type {unknown} */ (globalThis));
+  const api = /** @type {{ report: (opts: unknown) => unknown } | undefined} */ (registry[API]); // (what the adapter registers there)
   if (!api) throw new Error('bundle-lockfile: its Parcel reporter runs without bundle-lockfile preloaded');
   return api.report(opts);
 } } } };

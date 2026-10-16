@@ -13,19 +13,12 @@
     "typescript/no-misused-promises": "error",
     "typescript/await-thenable": "error",
     // a promise returned in a try block without await skips its catch and finally
-    "typescript/return-await": ["error", "in-try-catch"]
-  },
-  "overrides": [
-    {
-      // the core has no any: what it reads (JSON, errors, other copies' state) is unknown until checked
-      "files": ["src/core/**"],
-      "rules": {
-        "typescript/no-unsafe-argument": "error",
-        "typescript/no-unsafe-assignment": "error",
-        "typescript/no-unsafe-call": "error",
-        "typescript/no-unsafe-member-access": "error",
-        "typescript/no-unsafe-return": "error"
-      }
-    }
-  ]
+    "typescript/return-await": ["error", "in-try-catch"],
+    // no any: what comes from outside (JSON, errors, a bundler's objects, other copies' state) is unknown until checked
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-return": "error"
+  }
 }

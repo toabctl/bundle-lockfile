@@ -31,14 +31,9 @@ const MAX = 10000; // entries of each map; a long dev or watch session must not 
  */
 /** @typedef {{ hash: string | null, at: number, kind: string, what: string, hint: string }} Destined */
 /** @type {State} */
+// unmatched: content hash -> packages of the generate-only chunks no written output had the bytes of (yet): looked at
+// when the process ends (see unlanded); destined: file -> what generate-only builds made for that path (see addDestined)
 const state = perProcess(S, () => ({ content: new Map(), entries: new Map(), assets: new Map(), unmatched: new Map(), destined: new Map() }));
-// (a state an earlier release made has only some of them)
-if (!state.assets) state.assets = new Map();
-// content hash -> packages of the generate-only chunks no written output had the bytes of (yet): looked at when the
-// process ends (see unlanded)
-if (!state.unmatched) state.unmatched = new Map();
-// file -> what generate-only builds made for that path (see addDestined)
-if (!state.destined) state.destined = new Map();
 
 // Every bounded map that drops its oldest entries warns once per process: their packages are no longer listed where
 // their bytes end up

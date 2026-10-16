@@ -8,8 +8,8 @@ dependencies):
 
 ```sh
 npm ci --ignore-scripts
-npm run check   # tsc over src/ (JSDoc types; src/core without implicit any), then ESLint, then oxlint (.oxlintrc.json:
-                # the rules that need the types - no promise left unhandled, no any in src/core)
+npm run check   # tsc over src/ (JSDoc types, strict), then ESLint, then oxlint (.oxlintrc.json: the rules that need
+                # the types - no promise left unhandled, no any)
 ```
 
 The unit tests run anywhere, in a few seconds (CI: on Node.js 20, 22, 24 and 26):

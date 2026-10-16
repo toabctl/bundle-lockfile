@@ -13,6 +13,7 @@ const config = require('./core/config.cjs'); // (also applies the settings file 
 const wt = require('worker_threads');
 const internalThread = wt.isInternalThread || (!wt.isMainThread && !wt.parentPort);
 
+/** @import { Adapter } from './types' */
 const ADAPTERS = ['./adapters/webpack.cjs', './adapters/rollup.cjs', './adapters/rspack.cjs', './adapters/esbuild.cjs', './adapters/parcel.cjs', './adapters/angular.cjs', './adapters/next.cjs'];
 // yarn's own entry point (process.argv[1]): yarn 1's bin/yarn.js (npm's and distributions' package, corepack's copy
 // <COREPACK_HOME>/v1/yarn/1.x/bin/yarn.js) or a bin/yarn link to it, a yarn 2+ release (.yarn/releases/yarn-4.x.cjs),
@@ -25,13 +26,16 @@ const YARN = /[\\/]bin[\\/]yarn(pkg)?(\.c?js)?$|[\\/]yarn-\d[^\\/]*\.c?js$|[\\/]
 // The same file through another path (a symlinked install directory) is this one.
 function otherCopies() {
   const { preloads } = require('./core/children.cjs');
-  const own = real(__filename), out = new Set();
+  const own = real(__filename);
+  /** @type {Set<string>} */
+  const out = new Set();
   for (const f of preloads(process.env.NODE_OPTIONS || '', process.execArgv)) {
     if (path.basename(f) !== 'register.cjs' || real(f) === own) continue;
     try { if (fs.readFileSync(f, 'utf8').slice(0, 512).includes('bundle-lockfile')) out.add(real(f)); } catch { /* not there: Node fails to start then */ }
   }
   return [...out];
 }
+/** @param {string} f */
 const real = (f) => require('./core/paths.cjs').real(path.resolve(f));
 
 // the scripts the node shim passed through to start this process (see bin/node): processes this one starts look anew
@@ -43,7 +47,7 @@ if (!internalThread && !config.isDisabled('all')) {
   if (require('worker_threads').isMainThread) {
     const problems = require('./core/problems.cjs');
     for (const [what, cause] of config.settingsProblems()) problems.problem(what, cause);
-    /** @type {any} */ (globalThis)[Symbol.for('bundle-lockfile.settings-reported')] = true; // (bin/bundle-lockfile-from-metafile)
+    /** @type {Record<symbol, unknown>} */ (/** @type {unknown} */ (globalThis))[Symbol.for('bundle-lockfile.settings-reported')] = true; // (bin/bundle-lockfile-from-metafile)
     if (config.settingsFile.file && !config.settingsFile.error) config.debug('settings from', config.settingsFile.file);
     // another copy of bundle-lockfile preloaded too: only the first one runs (hooks.cjs), whose settings and version
     // may not be the ones meant. Each new copy reports the others, whichever comes first.
@@ -60,7 +64,7 @@ if (!internalThread && !config.isDisabled('all')) {
   const hooks = require('./hooks.cjs');
   let enabled = 0;
   for (const file of ADAPTERS) {
-    const adapter = require(file);
+    const adapter = /** @type {Adapter} */ (require(file)); // (the files above)
     // an adapter for several bundlers (rollup: rollup, rolldown, vite) is skipped only if all of them are disabled
     if ((adapter.names || [adapter.name]).every(n => config.isDisabled(n))) { config.debug('adapter disabled:', adapter.name); continue; }
     hooks.register(adapter);

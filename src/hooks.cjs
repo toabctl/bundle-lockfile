@@ -34,6 +34,8 @@ const { logical } = require('./core/layout.cjs');
 const INSTALLED = Symbol.for('bundle-lockfile.hooks-installed');
 const ESM = Symbol.for('bundle-lockfile.esm');
 /** @import { Adapter, EsmCompanion, EsmEntry } from './types' */
+// globalThis, where the copies of bundle-lockfile in a process and the wrappers of entry modules (esm-wrap.cjs) meet
+const shared = /** @type {Record<symbol, unknown>} */ (/** @type {unknown} */ (globalThis));
 /** @type {Adapter[]} */
 const adapters = [];
 
@@ -42,8 +44,8 @@ function register(adapter) { adapters.push(adapter); }
 
 function install() {
   // another copy of bundle-lockfile at a different path can be preloaded too (the same path loads once: require caches it)
-  if (globalThis[INSTALLED]) return;
-  globalThis[INSTALLED] = true;
+  if (shared[INSTALLED]) return;
+  shared[INSTALLED] = true;
   if (adapters.some(a => a.onCjsLoad)) installCjs();
   const entries = adapters.flatMap(a => a.esmEntries || []);
   const cjsFiles = adapters.flatMap(a => (a.onCjsLoad && a.cjsFiles) || []);
@@ -67,9 +69,15 @@ function loading(fn) {
 
 const failedOn = new Set(); // adapters whose inspection failed: warned once per process
 // The exports an adapter returned ({ exports }) to replace the module's, or undefined: none did.
+/**
+ * @param {unknown} exp
+ * @param {string} filename
+ * @returns {unknown}
+ */
 function onCjsLoad(exp, filename) {
   const request = logical(filename), resolve = () => filename;
   helpers.seen(request); // the transpilers this process loaded (core/helpers.cjs)
+  /** @type {unknown} */
   let replaced;
   for (const a of adapters) {
     const onLoad = a.onCjsLoad;
@@ -104,24 +112,28 @@ function onCjsLoad(exp, filename) {
 // the hooks (a loader that compiles modules itself): the bundler in it was not patched - a problem. So are hook points
 // this Node.js does not have, in a process that builds with a CommonJS bundler (elsewhere there is nothing to miss).
 function installCjs() {
+  /** @type {WeakSet<Module>} */
   const seen = new WeakSet();
-  const report = (module, filename) => {
-    if (!module || seen.has(module)) return;
-    seen.add(module);
+  // (mod, not module: `module.exports =` would read as this file's own exports to the type check)
+  /** @type {(mod: Module | null | undefined, filename: string) => void} */
+  const report = (mod, filename) => {
+    if (!mod || seen.has(mod)) return;
+    seen.add(mod);
     // (only exports an adapter replaced: some modules' exports are a getter, e.g. of an ES module require() loaded)
-    const exp = onCjsLoad(module.exports, filename);
+    const exp = onCjsLoad(mod.exports, filename);
     if (exp === undefined) return;
     loading(() => {
-      try { module.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
+      try { mod.exports = exp; } catch (e) { problems.problem(`could not replace the exports of ${filename}: its builds would write no lockfile`, e); }
     });
   };
+  /** @type {string[]} */
   const missing = [];
   const compile = Module.prototype._compile;
   if (typeof compile === 'function') {
     Module.prototype._compile = function (content, filename) {
       const file = typeof filename === 'string' ? filename : this.filename;
       entered.add(file);
-      const r = Reflect.apply(compile, this, arguments);
+      const r = /** @type {unknown} */ (Reflect.apply(compile, this, arguments));
       report(this, file);
       return r;
     };
@@ -133,7 +145,7 @@ function installCjs() {
     Module._extensions[ext] = function (module, filename) {
       entered.add(filename);
       companion(module, filename);
-      const r = Reflect.apply(handler, this, arguments);
+      const r = /** @type {unknown} */ (Reflect.apply(handler, this, arguments));
       report(module, filename);
       return r;
     };
@@ -148,7 +160,7 @@ function installCjs() {
     };
   }
   // a cjsFiles module Node evaluated without the CommonJS hook reports itself here once it has run (esm-wrap.cjs cjsSource)
-  globalThis[Symbol.for('bundle-lockfile.cjs-loaded')] = report;
+  shared[Symbol.for('bundle-lockfile.cjs-loaded')] = report;
   if (missing.length) {
     const msg = `Node.js ${process.versions.node} has no ${missing.join(', ')}: CommonJS bundlers (webpack, rspack 1, Rollup's CommonJS build, esbuild, Parcel, Angular's builder, Next.js' build) are not hooked`;
     if (bundlerProcess(cjsPackages())) problems.problem(msg); else config.debug(msg);
@@ -176,10 +188,13 @@ const cjsPackages = () => [...new Set(adapters.flatMap(a => [...(a.cjsPackages |
 // CommonJS file of its own (the adapters' esmCompanions: Rollup's native parser, Rolldown's binding, rspack 2's
 // binding) from a module that did not come through the CommonJS hook - its CommonJS build loads the same file from one
 // that did. Loading it then is a problem: in strict mode it fails, and the bundler's import with it.
+/** @type {Set<string>} */
 const entered = new Set(); // files of CommonJS modules the CommonJS hook loaded or compiled (before they ran)
 /** @type {EsmCompanion[] | null} */
 let companions = null; // the esmCompanions to check, in a thread without ESM hooks
+/** @type {Set<string>} */
 const tripped = new Set();
+/** @param {Module} module @param {string} filename */
 function companion(module, filename) {
   if (!companions || typeof filename !== 'string') return;
   const c = companions.find(x => x.file.test(logical(filename))); // (a package in Yarn's store as node_modules/<name>)
@@ -197,6 +212,7 @@ function companion(module, filename) {
 // nodejs/node#59929: Node 22.22.3, 24.11.1, 25.1. From those versions on they are used in every process. (A
 // registerHooks call in Node's own loader thread - a --require preload that calls it, which Node 22-24.11 runs there
 // too - crashes the process, "this[#customizations].loadSync is not a function"; register.cjs does nothing there.)
+/** @param {string} version */
 function syncHooksSafe(version) {
   const [major, minor, patch] = version.replace(/^v/, '').split('.').map(Number);
   return major >= 26 || (major === 25 && minor >= 1) || (major === 24 && (minor > 11 || (minor === 11 && patch >= 1)))
@@ -212,24 +228,32 @@ function syncHooksSafe(version) {
 //   or above (a command line that loads its bundler through another package: nuxi, storybook's builder-vite), also
 //   only in the hidden directory where pnpm and bun's isolated linker link every package (node_modules/.pnpm/node_modules,
 //   node_modules/.bun/node_modules): there a dependency of a dependency is in no other node_modules of the project.
+/**
+ * @param {string[]} packages
+ * @param {string | undefined} [main]
+ * @param {string} [cwd]
+ */
 function bundlerProcess(packages, main = process.argv[1], cwd = process.cwd()) {
   return mainUses(packages, main) || installedAround(packages, cwd);
 }
+/** @param {string[]} packages @param {string | undefined} main */
 function mainUses(packages, main) {
   if (!main) return false;
+  /** @type {string} */
   let start;
   try { start = path.dirname(fs.realpathSync(main)); } catch { return false; }
   for (const dir of ancestors(start)) {
     if (fs.existsSync(path.join(dir, 'package.json'))) {
       const j = readManifest(dir) || {}; // (not JSON: as one without a name)
       if (j.name || j.dependencies || j.devDependencies) {
-        const deps = Object.assign({}, j.dependencies, j.devDependencies, j.optionalDependencies, j.peerDependencies);
-        return packages.includes(j.name) || packages.some(p => Object.prototype.hasOwnProperty.call(deps, p));
+        const deps = /** @type {object} */ (Object.assign({}, j.dependencies, j.devDependencies, j.optionalDependencies, j.peerDependencies));
+        return (typeof j.name === 'string' && packages.includes(j.name)) || packages.some(p => Object.prototype.hasOwnProperty.call(deps, p));
       }
     }
   }
   return false;
 }
+/** @param {string[]} packages @param {string} cwd */
 function installedAround(packages, cwd) {
   if (!cwd) return false;
   for (const dir of ancestors(cwd)) {
@@ -242,6 +266,7 @@ function installedAround(packages, cwd) {
 
 // sync | async | off, see syncHooksSafe and bundlerProcess. BUNDLE_LOCKFILE_ESM_HOOKS=sync|async|off forces one
 // (async: also outside bundler processes, e.g. for a programmatic build in a project without a dependency on one).
+/** @param {string[]} packages @returns {'sync' | 'async' | 'off'} */
 function esmMode(packages) {
   // Node's own loader thread, which runs --require preloads too (register.cjs returns there before this)
   if (wt.isInternalThread || (!wt.isMainThread && !wt.parentPort)) return 'off';
@@ -265,8 +290,11 @@ function otherLoader(argv = [process.env.NODE_OPTIONS || '', ...process.execArgv
   return /(^|\s)--(?:experimental-loader|loader|import)(?:[=\s]|$)/.test(argv.join(' '));
 }
 
+/** @param {EsmEntry[]} entries @param {RegExp[]} cjsFiles */
 function installEsm(entries, cjsFiles) {
-  globalThis[ESM] = {
+  // what the wrappers of entry modules call (esm-wrap.cjs source)
+  /** @type {{ wrap(id: string, name: string, fn: unknown, url: string): unknown, found(id: string, url: string, names: string[], ok: boolean): void }} */
+  const api = {
     wrap(id, name, fn, url) {
       for (const a of adapters) {
         const esmWrapOf = a.esmWrap;
@@ -286,6 +314,7 @@ function installEsm(entries, cjsFiles) {
       loading(() => problems.problem(`${url} exports none of ${names.join(', ')}: a version of ${id} bundle-lockfile does not know, whose builds would write no lockfile`));
     },
   };
+  shared[ESM] = api;
   const packages = [...new Set(adapters.flatMap(a => a.esmPackages || []))];
   const mode = esmMode(packages);
   config.debug('ESM hooks:', mode, `(Node ${process.versions.node})`);

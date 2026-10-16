@@ -22,8 +22,8 @@ const S = Symbol.for('bundle-lockfile.copies.v2'); // v2: listeners; a copy of v
 const MAX = 50000; // entries; a long-running process must not grow them forever
 // files: destination file -> source file; dirs: destination dir -> source dir (fs.cp of a directory)
 /** @type {State} */
+// listeners: fn(src, dest, isDirectory) after a copy that worked
 const state = perProcess(S, () => ({ files: new Map(), dirs: new Map(), installed: false, listeners: [] }));
-if (!state.listeners) state.listeners = []; // fn(src, dest, isDirectory) after a copy that worked (a state an earlier release made)
 
 // fn(src, dest, isDirectory): called after every copy that worked (absolute paths), before the copy returns to its
 // caller (its callback, its promise); what fn throws is ignored.

@@ -5,6 +5,17 @@
 // <output dir>/<BUNDLE_LOCKFILE_FILE> for every output the build writes (which packages are in an output is
 // rollup-collect.cjs's part). Rollup's CommonJS build (require('rollup'):
 // workbox-build, the rollup command line, tools in CommonJS) is patched when it loads (onCjsLoad).
+/** @import { Adapter, BundlerId, Package, ViaCollector } from '../types' */
+/** @import { OutputBundle, OutputChunk, OutputOptions, PluginContext, PluginMeta } from './rollup-types' */
+// rollup(), rolldown(), watch(), build() and Rollup's rollupInternal(), as their callers call them
+/** @typedef {(this: unknown, options: unknown, ...rest: unknown[]) => unknown} Fn */
+// where the bundler packages of a build are (see bundlersOf)
+/** @typedef {{ id?: string, file?: string, vite?: string | null, runner?: Record<string, string | null> }} From */
+/**
+ * The lockfile of one output of a build, from its generateBundle to its closeBundle
+ * @typedef {{ target: string, writer: string, dir: string, pkgs: Package[], files: Set<string>, hashes: Record<string, string>,
+ *   contents: Record<string, string[]>, bundler: BundlerId, via: ViaCollector, landed: boolean }} Written
+ */
 const path = require('path');
 const config = require('../core/config.cjs');
 const packages = require('../core/packages.cjs');
@@ -19,6 +30,7 @@ const { createRequire } = require('module');
 const { fileURLToPath } = require('url');
 const { bundlerPackage, callerFiles, packageOnStack, viteOf, VITE_NAMES } = require('../core/bundler.cjs');
 const { moduleIds, fileOf, watchFilesOf, keepGenerated, collectOutput } = require('./rollup-collect.cjs');
+const { isObject, isArray } = require('../core/values.cjs');
 
 const NAME = 'bundle-lockfile';
 // A build Vite makes has Vite's own JavaScript plugins (vite:css, vite:build-html, ..., in every version, also in its
@@ -29,22 +41,35 @@ const VITE = /^vite:/;
 const PRE_BUNDLE = 'vite:dep-pre-bundle';
 const { STYLE } = packages;
 
-/** @type {(plugins: unknown) => any[]} */
-const flat = (plugins) => /** @type {any[]} */ ([]).concat(plugins == null ? [] : plugins).flat(Infinity).filter(p => p && typeof p === 'object' && !(typeof p.then === 'function'));
+// A plugin object of an options' plugins (not a promise of one: Rollup and Rolldown await those)
+/** @param {unknown} p @returns {p is Record<PropertyKey, unknown>} */
+function isPlugin(p) { return isObject(p) && !(typeof p.then === 'function'); }
+/** @type {(plugins: unknown) => Record<PropertyKey, unknown>[]} */
+const flat = (plugins) => /** @type {unknown[]} */ ([]).concat(plugins == null ? [] : plugins).flat(Infinity).filter(isPlugin);
 
 // The writer of one output (see core/outputs.cjs): the same input, format, position in the build's outputs, file names
 // and output file (separate builds of one input, e.g. the configs of `rollup -c`, can write their own output.file into
 // one directory), without paths of this machine (see core/paths.cjs portable).
+/**
+ * @param {string} kind
+ * @param {unknown} input
+ * @param {OutputOptions} out
+ * @param {number} ordinal
+ * @param {string} cwd
+ * @returns {string}
+ */
 function outputWriter(kind, input, out, ordinal, cwd) {
+  /** @param {unknown} v */
   const rel = (v) => portable(cwd, v);
-  const inputs = typeof input === 'string' ? rel(input) : Array.isArray(input) ? input.map(rel)
-    : input && typeof input === 'object' ? Object.fromEntries(Object.entries(input).map(([k, v]) => [k, rel(v)])) : null;
+  const inputs = typeof input === 'string' ? rel(input) : isArray(input) ? input.map(rel)
+    : isObject(input) ? Object.fromEntries(Object.entries(input).map(/** @returns {[string, unknown]} */ ([k, v]) => [k, rel(v)])) : null;
   const file = typeof out.file === 'string' ? portable(cwd, path.resolve(cwd, out.file)) : null;
   return JSON.stringify([kind, inputs, out.format || null, ordinal, typeof out.entryFileNames === 'string' ? out.entryFileNames : null, ...(file ? [file] : [])]);
 }
 
 // { name, version } of the bundler that runs a build (core/lockfile.cjs), from the plugin context's meta: Vite's version
 // where Vite gives it, Rolldown's, Rollup's
+/** @param {string} kind @param {PluginMeta | undefined} meta @returns {BundlerId} */
 function bundlerOf(kind, meta) {
   const m = meta || {};
   const version = kind === 'vite' ? m.viteVersion : kind === 'rolldown' ? m.rolldownVersion : m.rollupVersion;
@@ -54,6 +79,7 @@ function bundlerOf(kind, meta) {
 // closeBundle's failure (strict mode): thrown, which fails the build - except in watch mode, where a throw there
 // crashes `vite build --watch` (Vite 5 - 8) and Rolldown's watch() unless its caller catches result.close(): printed
 // then, and the next rebuild tries again.
+/** @param {PluginContext | undefined} ctx @param {Error} err */
 function failClose(ctx, err) {
   if (ctx && ctx.meta && ctx.meta.watchMode) { config.error(err.message); return; }
   throw err;
@@ -67,12 +93,20 @@ function failClose(ctx, err) {
 // of the version the build runs - else a problem. ctx: a hook's plugin context (meta.rollupVersion,
 // meta.rolldownVersion - Rolldown sets rollupVersion too, to a compatible value -, meta.viteVersion from Vite 7 on).
 const ROLLUP_NAMES = ['rollup', '@rollup/wasm-node'];
+/**
+ * @param {string} kind
+ * @param {From} from
+ * @param {PluginContext | undefined} ctx
+ * @param {string} cwd
+ * @returns {Package[]}
+ */
 function bundlersOf(kind, from, ctx, cwd) {
   const meta = (ctx && ctx.meta) || {};
   const rolldown = typeof meta.rolldownVersion === 'string';
   const id = from.id || (rolldown ? 'rolldown' : 'rollup');
   const names = id === 'rolldown' ? ['rolldown'] : ROLLUP_NAMES;
   const version = id === 'rolldown' ? meta.rolldownVersion : rolldown ? undefined : meta.rollupVersion;
+  /** @type {(pkgNames: string[], v: unknown, what: string) => Package | null} */
   const resolved = (pkgNames, v, what) => {
     /** @type {string | null} */
     let found = null;
@@ -95,9 +129,16 @@ function bundlersOf(kind, from, ctx, cwd) {
 
 // kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler
 // the plugin is added to (undefined: not known, a plugin from a config); from: where the bundler packages are (bundlersOf)
+/**
+ * @param {string} kind
+ * @param {Record<PropertyKey, unknown>} [inputOptions]
+ * @param {string} [engine]
+ * @param {From} [from]
+ */
 function createPlugin(kind, inputOptions, engine, from = {}) {
   const cwd = real(process.cwd());
   const run = {}; // this build, across its watch rebuilds (see core/outputs.cjs record)
+  /** @param {PluginContext | undefined} ctx */
   const isRolldown = (ctx) => !!(ctx && ctx.meta && ctx.meta.rolldownVersion);
   /** @type {string | null} */
   let unreadable = null; // what keeps the files Rolldown's plugins inlined from being recorded (see rolldown-watch.cjs)
@@ -106,56 +147,67 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
   // there: a style sheet's @imports would leave the lockfile on every rebuild that does not change it. So the cache's
   // modules' transform dependencies (from the options hook: Rollup drops the cache before buildStart) are taken for the
   // modules this build did not transform (bundle-lockfile's transform hook did not see them).
+  /** @type {Map<string, unknown[]>} */
   let cachedDependencies = new Map(); // module id -> its transform dependencies, in the cache the build started from
+  /** @type {Set<string>} */
   let transformed = new Set();        // module ids this build transformed
   // per output of the build, by its output options object: Rollup and Rolldown pass the same one to every hook of an
   // output, and outputs written at the same time (Promise.all of write()s, as the rollup command line does) can share
   // their directory and format. Kept until the build is closed (closeBundle): Rolldown runs buildStart again for every
   // write() of one build, Rollup once per build.
+  /** @type {Map<OutputOptions, Set<string>>} */
   const modulesOf = new Map(); // output -> Set(module id), from renderChunk
+  /** @type {Map<OutputOptions, Written>} */
   const written = new Map();   // output -> { target, writer, dir, pkgs, files, hashes, landed }
+  /** @type {Map<OutputOptions, number>} */
   const ordinals = new Map();  // output -> its position among the build's outputs (part of its writer id)
   let closed = true;           // no build since the last closeBundle
+  /** @type {unknown} */
   let build = null; // the RolldownBuild of this plugin's rolldown() call (see esmWrap)
   // the build's input, part of its writer ids: from the options of the rollup()/rolldown() call the plugin was added to
   // (as given, see attach), else - a plugin configured by hand - from the options Rollup and Rolldown pass to buildStart
-  let input = inputOptions && inputOptions.input;
+  let input = inputOptions ? inputOptions.input : undefined;
   let since = 0;
   let outCwd = cwd; // what the output's dir and file are relative to
   // writes the lockfile of an output; in strict mode rejects with what went wrong (core/problems.cjs), which fails the
   // build: a hook's rejection is the build's error
+  /** @param {Written} w */
   const write = async (w) => {
     await outputs.land(w.target, w.writer, kind);
     problems.failIfAny((err) => { throw err; });
   };
   return withinBuild({
     name: NAME,
-    api: { setBuild(b) { build = b; } },
+    api: { setBuild(/** @type {unknown} */ b) { build = b; } },
     // Vite bundles workers with the plugins of worker.plugins, not with the config's (the preload adds this plugin to
     // every build itself): a plugin from the config adds a copy of itself there. Vite 5 and later take a function.
     ...(kind === 'vite' && {
+      /** @param {unknown} cfg */
       config(cfg) {
         // Vite calls this hook (also when the plugin is in the config, without the preload): its caller is Vite
         if (!from.vite) from.vite = viteOf(callerFiles());
-        if (!cfg || typeof cfg !== 'object') return;
-        const prev = cfg.worker && cfg.worker.plugins;
-        const user = typeof prev === 'function' ? prev : Array.isArray(prev) ? () => prev : () => [];
-        cfg.worker = { ...cfg.worker, plugins(...args) {
-          const list = [].concat(user(...args) || []);
+        if (!isObject(cfg)) return;
+        const worker = isObject(cfg.worker) ? cfg.worker : undefined;
+        const prev = worker && worker.plugins;
+        /** @type {(...args: unknown[]) => unknown} */
+        const user = typeof prev === 'function' ? /** @type {(...args: unknown[]) => unknown} */ (prev) : isArray(prev) ? () => prev : () => [];
+        cfg.worker = { ...worker, plugins(/** @type {unknown[]} */ ...args) {
+          const list = /** @type {unknown[]} */ ([]).concat(user(...args) || []);
           return flat(list).some(p => p.name === NAME) ? list : [...list, createPlugin(kind, undefined, undefined, { vite: from.vite })];
         } };
       },
     }),
     // (Rollup: the options of the build, before Rollup takes the cache out of them)
     ...(engine !== 'rolldown' && {
+      /** @param {unknown} raw */
       options(raw) {
         cachedDependencies = new Map();
-        const modules = raw && raw.cache && Array.isArray(raw.cache.modules) ? raw.cache.modules : [];
-        for (const m of modules) if (m && typeof m.id === 'string' && Array.isArray(m.transformDependencies)) cachedDependencies.set(m.id, m.transformDependencies);
+        const modules = isObject(raw) && isObject(raw.cache) && isArray(raw.cache.modules) ? raw.cache.modules : [];
+        for (const m of modules) if (isObject(m) && typeof m.id === 'string' && isArray(m.transformDependencies)) cachedDependencies.set(m.id, m.transformDependencies);
         return null;
       },
     }),
-    /** @this {any} a plugin context */
+    /** @this {PluginContext} @param {unknown} options */
     buildStart(options) {
       // a plugin configured by hand: the bundler that runs this hook (see bundlersOf)
       if (!from.file && !from.runner) from.runner = { rollup: packageOnStack(ROLLUP_NAMES), rolldown: packageOnStack(['rolldown']) };
@@ -167,9 +219,9 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
       closed = false;
       transformed = new Set();
       if (isRolldown(this)) unreadable = rolldownWatch.start(this);
-      if (!inputOptions || inputOptions.input === undefined) input = options && options.input;
+      if (!inputOptions || inputOptions.input === undefined) input = isObject(options) ? options.input : undefined;
       // Rolldown resolves the output's dir and file against its cwd option
-      outCwd = isRolldown(this) && options && typeof options.cwd === 'string' && path.isAbsolute(options.cwd) ? options.cwd : cwd;
+      outCwd = isRolldown(this) && isObject(options) && typeof options.cwd === 'string' && path.isAbsolute(options.cwd) ? options.cwd : cwd;
     },
     // Rolldown: the load and transform hooks' plugin contexts, whose addWatchFile records the files plugins inline (see
     // rolldown-watch.cjs); before every other plugin's normal hooks (Vite's CSS plugin: a transform). Rollup: the
@@ -177,6 +229,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     ...(engine !== 'rollup' && {
       load: {
         order: 'pre',
+        /** @this {PluginContext} @param {string} id */
         handler(id) {
           if (!isRolldown(this)) return null;
           const problem = rolldownWatch.wrap(this);
@@ -188,6 +241,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     }),
     transform: {
       order: 'pre',
+      /** @this {PluginContext} @param {string} code @param {string} id */
       handler(code, id) {
         if (!isRolldown(this)) { transformed.add(id); return null; }
         const problem = rolldownWatch.wrap(this);
@@ -195,11 +249,13 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
         return null;
       },
     },
+    /** @param {OutputOptions} out */
     renderStart(out) {
       if (!ordinals.has(out)) ordinals.set(out, ordinals.size);
       modulesOf.set(out, new Set());
     },
     // before generateBundle: plugins that remove chunks there (vite-plugin-singlefile) cannot hide their modules
+    /** @param {string} code @param {OutputChunk} chunk @param {OutputOptions} out */
     renderChunk(code, chunk, out) {
       const ids = modulesOf.get(out);
       if (ids) for (const id of moduleIds(chunk)) ids.add(id);
@@ -207,6 +263,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     },
     generateBundle: {
       order: 'post',
+      /** @this {PluginContext} @param {OutputOptions} out @param {OutputBundle} bundle @param {boolean} isWrite */
       async handler(out, bundle, isWrite) {
         try {
           // generate-only builds (Vite's workers and legacy polyfills, write: false, workbox-build, Vite 8 bundling its
@@ -236,9 +293,10 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
             }
           }
           if (!isRolldown(this) && cachedDependencies.size) {
+            /** @type {string[]} */
             let all = [];
             try { all = [...this.getModuleIds()]; } catch { /* none */ }
-            for (const id of all) if (!transformed.has(id) && cachedDependencies.has(id)) watched.push(...cachedDependencies.get(id));
+            for (const id of all) { const deps = cachedDependencies.get(id); if (!transformed.has(id) && deps) watched.push(...deps); }
           }
           if (generateOnly) {
             const pkgs = keepGenerated(this, bundle, { cwd, bundlers, watched });
@@ -268,6 +326,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     },
     writeBundle: {
       order: 'post',
+      /** @param {OutputOptions} out */
       handler(out) {
         const w = written.get(out);
         if (!w) return undefined;
@@ -281,6 +340,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
     closeBundle: {
       order: 'post',
       sequential: true,
+      /** @this {PluginContext} @param {unknown} error */
       async handler(error) {
         closed = true;
         if (error) return;
@@ -299,7 +359,7 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
               { disk: true, outputs: w.hashes, contents: w.contents, bundler: w.bundler, via: w.via, run });
             await write(w);
           } catch (e) {
-            if (problems.isFailure(e)) { failClose(this, e); return; } // from write()
+            if (problems.isFailure(e)) { failClose(this, /** @type {Error} */ (e)); return; } // from write() (a failure is an Error)
             problems.problem(`${kind}: could not add the files written into ${w.dir} after the build`, e);
           }
         }
@@ -314,12 +374,15 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
 // rebuilds. Not the hooks that run for every module or chunk (load, transform, renderChunk), which record none: an
 // AsyncLocalStorage context costs time there (on Node.js before 24, every promise of the process once it is used).
 const SCOPED = new Set(['config', 'options', 'buildStart', 'generateBundle', 'writeBundle', 'closeBundle']);
+/** @typedef {(this: unknown, ...args: unknown[]) => unknown} Hook */
+/** @param {Record<string, unknown>} plugin */
 function withinBuild(plugin) {
-  const scoped = (fn) => /** @this {unknown} */ function (...args) { return problems.within(plugin, () => fn.apply(this, args)); };
+  /** @type {(fn: Hook) => Hook} */
+  const scoped = (fn) => function (...args) { return problems.within(plugin, () => fn.apply(this, args)); };
   for (const [k, v] of Object.entries(plugin)) {
     if (!SCOPED.has(k)) continue;
-    if (typeof v === 'function') plugin[k] = scoped(v);
-    else if (v && typeof v === 'object' && typeof v.handler === 'function') plugin[k] = { ...v, handler: scoped(v.handler) };
+    if (typeof v === 'function') plugin[k] = scoped(/** @type {Hook} */ (v));
+    else if (isObject(v) && typeof v.handler === 'function') plugin[k] = { ...v, handler: scoped(/** @type {Hook} */ (v.handler)) };
   }
   return plugin;
 }
@@ -327,8 +390,9 @@ function withinBuild(plugin) {
 // One more plugin for the options of a rollup()/rolldown() call (also each config of watch()/build()), unless it
 // has one already (configured by hand, or build() calling rolldown()) or its kind is disabled.
 // file: the entry module of the Rollup or Rolldown copy whose function was called (see bundlersOf).
+/** @param {string} id @param {unknown} options @param {string} file @returns {unknown} */
 function attach(id, options, file) {
-  if (!options || typeof options !== 'object' || Array.isArray(options)) return options;
+  if (!isObject(options)) return options;
   const plugins = flat(options.plugins);
   if (plugins.some(p => p.name === NAME)) return options;
   // Vite 8's dependency pre-bundling (dev server): its output, in Vite's cache directory, is never shipped - wherever
@@ -343,16 +407,22 @@ function attach(id, options, file) {
   return { ...options, plugins: [...own, createPlugin(kind, options, id, from)] };
 }
 
-const each = (id, v, file) => (Array.isArray(v) ? v.map(o => attach(id, o, file)) : attach(id, v, file));
+/** @type {(id: string, v: unknown, file: string) => unknown} */
+const each = (id, v, file) => (isArray(v) ? v.map(o => attach(id, o, file)) : attach(id, v, file));
 
 // rollup()/rolldown() with the plugin; the plugin gets the build the call returns (Rolldown's watch files, see
 // watchFilesOf) - also one that was in the options already (configured by hand): only the caller of rolldown() has it.
+/** @param {string} id @param {Fn} fn @param {string} file @returns {Fn} */
 function wrapBuild(id, fn, file) {
-  return /** @this {unknown} */ function (options, ...rest) {
+  return function (options, ...rest) {
     const o = attach(id, options, file);
     const result = fn.call(this, o, ...rest);
-    const plugin = o && typeof o === 'object' && !Array.isArray(o) && flat(o.plugins).find(p => p.name === NAME && p.api && p.api.setBuild);
-    if (plugin && result && typeof result.then === 'function') result.then(b => plugin.api.setBuild(b), () => {});
+    // the api of bundle-lockfile's plugin (see createPlugin)
+    /** @typedef {{ setBuild(b: unknown): void }} Api */
+    /** @type {(p: Record<PropertyKey, unknown>) => Api | null} */
+    const apiOf = (p) => (p.name === NAME && isObject(p.api) && p.api.setBuild ? /** @type {Api} */ (p.api) : null);
+    const api = isObject(o) ? flat(o.plugins).map(apiOf).find(a => a !== null) : undefined;
+    if (api && isObject(result) && typeof result.then === 'function') void /** @type {Promise<unknown>} */ (/** @type {unknown} */ (result)).then(b => api.setBuild(b), () => {});
     return result;
   };
 }
@@ -387,7 +457,7 @@ const PATCHED = Symbol.for('bundle-lockfile.rollup.cjs');
 // cannot be hooked.
 const CJS_ROLLUP = /[\\/](rollup|@rollup[\\/]wasm-node)[\\/]dist[\\/]shared[\\/](?:rollup|node-entry)\.js$/;
 
-module.exports = {
+module.exports = /** @satisfies {Adapter & Record<string, unknown>} */ ({
   name: 'rollup',
   names: ['rollup', 'rolldown', 'vite'],
   esmEntries: [
@@ -404,8 +474,9 @@ module.exports = {
     { id: 'rolldown', names: ['rolldown', 'vite'], file: /[\\/]node_modules[\\/]@rolldown[\\/]binding-[^\\/]+[\\/](?:package\.json|[^\\/]+\.node)$/ },
   ],
 
-  esmWrap(id, name, fn, url) {
-    if (typeof fn !== 'function') return null;
+  esmWrap(id, name, wrapped, url) {
+    if (typeof wrapped !== 'function') return null;
+    const fn = /** @type {Fn} */ (wrapped);
     // Rollup's ES build of a version older than the object hooks the plugin has: left as it is (see esmVersion; the
     // entry module dist/es/rollup.js is Rollup 2's and later's)
     if (id === 'rollup') {
@@ -416,19 +487,22 @@ module.exports = {
       }
     }
     if (name === 'rollup' || name === 'rolldown') return wrapBuild(id, fn, url);
-    if (name === 'watch' || name === 'build') return /** @this {unknown} */ function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
+    /** @type {Fn} */
+    const withPlugin = function (options, ...rest) { return fn.call(this, each(id, options, url), ...rest); };
+    if (name === 'watch' || name === 'build') return withPlugin;
     return null;
   },
   onCjsLoad(exp, request, resolve) {
     // the path first: reading a missing property of a module in a circular require() makes Node warn. request: the path
     // Rollup's files are recognized by (see hooks.cjs)
-    if (!(request.endsWith('rollup.js') || request.endsWith('node-entry.js')) || !CJS_ROLLUP.test(request) || !exp || typeof exp !== 'object' || exp[PATCHED]) return;
+    if (!(request.endsWith('rollup.js') || request.endsWith('node-entry.js')) || !CJS_ROLLUP.test(request) || !isObject(exp) || exp[PATCHED]) return;
     // (Rollup 4 has a dist/shared/node-entry.js of its own, a part of its command line: only Rollup 1's counts)
     if (request.endsWith('node-entry.js') && !(typeof exp.version === 'string' && Number(exp.version.split('.')[0]) < 2)) return;
     // Rollup's: a version without rollupInternal(), or older than the object hooks the plugin has (2.78), would build
     // without a lockfile - a problem (in strict mode its require() fails, see hooks.cjs)
     // (the version: exports.version in early 4.x releases, exports.package_ in later ones; else the package's package.json)
-    let version = typeof exp.version === 'string' ? exp.version : exp.package_ && typeof exp.package_.version === 'string' ? exp.package_.version : null;
+    const pkg = exp.package_;
+    let version = typeof exp.version === 'string' ? exp.version : isObject(pkg) && typeof pkg.version === 'string' ? pkg.version : null;
     if (!version) version = versionIn(path.join(path.dirname(resolve()), '../..'));
     if (typeof exp.rollupInternal !== 'function' || (version && !hookable(version))) {
       problems.problem(`rollup: ${resolve()} (Rollup ${version || 'of an unknown version'}) is no Rollup bundle-lockfile can hook (2.78 or later, with rollupInternal): its builds would write no lockfile`);
@@ -436,8 +510,8 @@ module.exports = {
     }
     try {
       exp[PATCHED] = true;
-      const rollup = exp.rollup, internal = exp.rollupInternal;
-      if (typeof rollup === 'function') exp.rollup = wrapBuild('rollup', rollup, resolve());
+      const rollup = exp.rollup, internal = /** @type {Fn} */ (exp.rollupInternal);
+      if (typeof rollup === 'function') exp.rollup = wrapBuild('rollup', /** @type {Fn} */ (rollup), resolve());
       exp.rollupInternal = wrapBuild('rollup', internal, resolve()); // (options, watcher hooks)
       config.debug('rollup: patched its CommonJS build', resolve());
     } catch (e) { problems.problem(`rollup: could not patch ${resolve()}`, e); } // its builds would write no lockfile
@@ -445,4 +519,4 @@ module.exports = {
   bundleLockfile: (kind = 'rollup', options = {}) => createPlugin(kind, options), // for a rollup/vite config, without injection
   attach,
   fileOf,
-};
+});

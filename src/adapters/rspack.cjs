@@ -12,17 +12,22 @@
 //   loads rspack 1 and 2) gets its own patch.
 // rspack 1.0 lacks what the plugin needs (the inner modules of concatenated modules): its builds fail (strict mode,
 // core/problems.cjs). rspack 0.x fails its builds too.
+/** @import { Adapter } from '../types' */
+/** @import { Compiler } from './webpack-family.cjs' */
+/** @typedef {(compiler: Compiler, where: string) => void} Listener */
 const path = require('path');
 const { fileURLToPath } = require('url');
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
 const { versionIn } = require('../core/manifest.cjs');
+const { isObjectOrFunction } = require('../core/values.cjs');
 const { APPLIED, BundleLockfilePlugin, patchCompile, versionOf } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.rspack.patched'); // Compiler.prototype
 const SEEN = Symbol.for('bundle-lockfile.rspack.seen');       // compiler: listeners have run
 
 // Called once for every top-level compiler, before its first compilation. Tools can add their own (onCompiler).
+/** @type {Listener[]} */
 const listeners = [(compiler, where) => {
   const version = compiler.webpack && compiler.webpack.rspackVersion;
   const [major] = versionOf(version);
@@ -33,13 +38,15 @@ const listeners = [(compiler, where) => {
   config.debug('rspack: applying to compiler', compiler.name || '(unnamed)', 'rspack', version, 'output', compiler.outputPath, 'via', where);
   new BundleLockfilePlugin(config.file, where).apply(compiler);
 }];
+/** @param {Listener} fn */
 const onCompiler = (fn) => { listeners.push(fn); };
 
 // Returns whether Compiler looks like rspack's Compiler (it has no newCompilation, which webpack.cjs requires), patched
 // now or before.
+/** @param {unknown} Compiler @param {string} where */
 function patchCompiler(Compiler, where) {
   if (typeof Compiler !== 'function') return false;
-  const p = Compiler.prototype;
+  const p = /** @type {Record<PropertyKey, unknown> | undefined} */ (Compiler.prototype);
   if (!p || !['compile', 'run', 'watch', 'isChild', 'runAsChild', 'createChildCompiler'].every(k => typeof p[k] === 'function')) return false;
   if (p[PATCHED]) return true;
   p[PATCHED] = true;
@@ -56,13 +63,14 @@ function unsupported(version, where) {
 
 // @rspack/core's Compiler, of a version from 1.0 on, that is not of the shape rspack.cjs knows: its builds would write no
 // lockfile - a problem (in strict mode loading it fails, see hooks.cjs). rspack 0.x fails when it compiles.
+/** @param {unknown} Compiler @param {string} version @param {string} where */
 function patchRspack(Compiler, version, where) {
   if (patchCompiler(Compiler, where)) return;
   if (!(versionOf(version)[0] >= 1)) { unsupported(version, where); return; }
   problems.problem(`rspack: the Compiler of rspack ${version} (${where}) is not one bundle-lockfile knows (compile, run, watch, isChild, runAsChild, createChildCompiler): its builds would write no lockfile`);
 }
 
-module.exports = {
+module.exports = /** @satisfies {Adapter & Record<string, unknown>} */ ({
   name: 'rspack',
   // rspack 1's dist/index.js, when Node.js evaluates it without the CommonJS hook (a loader hook provided its source: Yarn
   // Plug'n'Play on recent Node.js versions); rspack 2's is an ES module, which esm-wrap.cjs's cjsSource leaves alone
@@ -89,13 +97,13 @@ module.exports = {
     // or, for require() of rspack 2's ES module on a Node.js that does not take its "module.exports" export, its namespace
     // (the path first: reading a missing property of a module in a circular require() makes Node warn)
     const own = module.exports.cjsFiles[0].test(request);
-    const api = typeof exp === 'function' || (own && exp && exp[Symbol.toStringTag] === 'Module') ? exp : null;
+    const api = isObjectOrFunction(exp) && (typeof exp === 'function' || (own && exp[Symbol.toStringTag] === 'Module')) ? exp : null;
     if (!api || typeof api.rspackVersion !== 'string' || typeof api.Compiler !== 'function') {
       // @rspack/core's own dist/index.js of another shape, from 1.0 on (its package.json says which): its builds would
       // write no lockfile - a problem (in strict mode its require() fails, see hooks.cjs). rspack 0.x fails when it
       // compiles (listeners).
       if (!own) return;
-      const version = exp && typeof exp.rspackVersion === 'string' ? exp.rspackVersion : versionIn(path.join(path.dirname(resolve()), '..'));
+      const version = isObjectOrFunction(exp) && typeof exp.rspackVersion === 'string' ? exp.rspackVersion : versionIn(path.join(path.dirname(resolve()), '..'));
       if (version && versionOf(version)[0] >= 1) {
         problems.problem(`rspack: ${resolve()} (rspack ${version}) exports no rspack() with rspackVersion and Compiler, as bundle-lockfile knows it: its builds would write no lockfile`);
       } else if (version) unsupported(version, resolve()); // (0.x of another shape: never patched, so it would not fail when it compiles)
@@ -103,4 +111,4 @@ module.exports = {
     }
     try { patchRspack(api.Compiler, api.rspackVersion, resolve()); } catch (e) { problems.problem(`rspack: could not patch ${resolve()}`, e); }
   },
-};
+});

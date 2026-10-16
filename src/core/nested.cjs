@@ -28,7 +28,6 @@ const { codeOf, perProcess } = require('./values.cjs');
 const S = Symbol.for('bundle-lockfile.nested.v1');
 /** @type {{ metas: Map<string, LockRecord | null>, changed: Set<string> }} */
 const state = perProcess(S, () => ({ metas: new Map(), changed: new Set() })); // dir -> meta | null; files warned about
-if (!state.changed) state.changed = new Set();
 
 // The record's file below an output dir, under both names it can have: package-lock.json, and record.json next to it
 // (BUNDLE_LOCKFILE_TREE=only) - the inner build may have run with another setting than this one.

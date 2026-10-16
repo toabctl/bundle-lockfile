@@ -4,10 +4,9 @@
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
+    // strict, all of it: what comes from outside (a bundler's objects, JSON, errors) is unknown until checked
+    // (core/values.cjs), what every supported version of a bundler has is typed (src/adapters/*-types.d.ts)
     "strict": true,
-    "noImplicitAny": false,
-    // errors from fs and child_process are Node.js errors (e.code): typed as such where it matters
-    "useUnknownInCatchVariables": false,
     "target": "es2022",
     "module": "nodenext",
     "moduleResolution": "nodenext",

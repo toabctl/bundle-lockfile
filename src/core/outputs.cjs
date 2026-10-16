@@ -43,10 +43,8 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies
  *   read: Map<string, LockRecord | null>, copies: Map<string, { target: string | null, content: string | null }>,
  *   exports: Map<string, string>, listening?: boolean }}
  */
+// exports: export copy -> the lockfile this process writes there (see exportOf)
 const outputs = perProcess(KEY, () => ({ files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map(), exports: new Map() }));
-// exports: export copy -> the lockfile this process writes there (see exportOf); a copy of this module of a release
-// before it made none
-if (!outputs.exports) outputs.exports = new Map();
 // The writers of a lockfile path in this process (none: a new, empty map)
 /** @type {(target: string) => Map<string, Writer>} */
 const writersOf = (target) => outputs.files.get(target) || /** @type {Map<string, Writer>} */ (new Map());

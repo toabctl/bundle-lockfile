@@ -3471,6 +3471,35 @@ test('lock: a lock of a process of this machine that is gone is taken at once; o
   }
 });
 
+test('values: unknown values checked (objects, arrays, strings, error codes)', () => {
+  const { isObject, isArray, strings, parseJson, codeOf } = require('../src/core/values.cjs');
+  assert.deepEqual([{}, [], null, 'x', () => {}, new Map()].map(isObject), [true, false, false, false, false, true]);
+  assert.deepEqual([[], {}, 'ab'].map(isArray), [true, false, false]);
+  assert.deepEqual(strings(['a', 1, null, 'b', '']), ['a', 'b', '']);
+  assert.deepEqual(strings('a'), []);
+  assert.deepEqual(parseJson('{"a":[1]}'), { a: [1] });
+  assert.throws(() => parseJson('{'));
+  assert.equal(codeOf(Object.assign(new Error('x'), { code: 'ENOENT' })), 'ENOENT');
+  assert.deepEqual([new Error('x'), null, 'ENOENT', { code: 1 }].map(codeOf), [undefined, undefined, undefined, undefined]);
+});
+
+test('values: perProcess shares a state across copies, and fills in the fields a state of an earlier release lacks', () => {
+  const { perProcess } = require('../src/core/values.cjs');
+  const key = Symbol.for(`bundle-lockfile.unit-test.${process.pid}.v1`);
+  try {
+    const first = perProcess(key, () => ({ files: new Map(), count: 0 }));
+    first.files.set('a', 1);
+    // another copy (the same key): the same object, not a new one
+    assert.equal(perProcess(key, () => ({ files: new Map(), count: 0 })), first);
+    // a release that added a field under the same key: the state keeps what it has and gets the new field
+    const later = perProcess(key, () => ({ files: new Map(), count: 5, listeners: [] }));
+    assert.equal(later, first);
+    assert.equal(later.files.get('a'), 1);
+    assert.equal(later.count, 0);
+    assert.deepEqual(later.listeners, []);
+  } finally { delete globalThis[key]; }
+});
+
 test('hashes: one cache entry per file, recomputed when the file changes', () => {
   const hashes = require('../src/core/hashes.cjs');
   const root = project({ 'out.js': 'one' });

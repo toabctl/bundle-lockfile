@@ -3,8 +3,12 @@
 // Patches Compiler.prototype.compile so every top-level compiler (not child compilers such as
 // html-webpack-plugin's) gets BundleLockfilePlugin (webpack-family.cjs), which emits <output>/<BUNDLE_LOCKFILE_FILE>
 // listing the packages in its output.
+/** @import { Adapter } from '../types' */
+/** @import { Compiler } from './webpack-family.cjs' */
+/** @typedef {(compiler: Compiler, where: string) => void} Listener */
 const config = require('../core/config.cjs');
 const problems = require('../core/problems.cjs');
+const { isObject, isObjectOrFunction } = require('../core/values.cjs');
 const { APPLIED, BundleLockfilePlugin, bundledFiles, sourceFile, isRspack, patchCompile } = require('./webpack-family.cjs');
 
 const PATCHED = Symbol.for('bundle-lockfile.webpack.patched');
@@ -12,19 +16,22 @@ const SEEN = Symbol.for('bundle-lockfile.webpack.seen');       // compiler: list
 const NEXT_WEBPACK = /[\\/]next[\\/]dist[\\/]compiled[\\/]webpack[\\/]webpack(\.js)?$/;
 
 // Called once for every top-level compiler, before its first compilation. Tools can add their own (test/compare).
+/** @type {Listener[]} */
 const listeners = [(compiler, where) => {
   if (isRspack(compiler)) return; // rspack.cjs's (Next.js with next-rspack also loads its webpack, with rspack's exports)
   if (compiler[APPLIED]) { config.debug('webpack: plugin already in the config of compiler', compiler.name || '(unnamed)'); return; }
   config.debug('webpack: applying to compiler', compiler.name || '(unnamed)', 'output', compiler.outputPath, 'via', where);
   new BundleLockfilePlugin(config.file, where).apply(compiler);
 }];
+/** @param {Listener} fn */
 const onCompiler = (fn) => { listeners.push(fn); };
 
 // Returns whether Compiler looks like webpack's Compiler (and is patched now, or was already), not any class called
 // "Compiler" (e.g. snapdragon's).
+/** @param {unknown} Compiler @param {string} where */
 function patchCompiler(Compiler, where) {
   if (typeof Compiler !== 'function') return false; // check first: reading props of a circular partial export warns
-  const p = Compiler.prototype;
+  const p = /** @type {Record<PropertyKey, unknown> | undefined} */ (Compiler.prototype);
   if (!p || !['compile', 'run', 'watch', 'newCompilation', 'isChild'].every(k => typeof p[k] === 'function')) return false;
   if (p[PATCHED]) return true;
   p[PATCHED] = true;
@@ -36,6 +43,7 @@ function patchCompiler(Compiler, where) {
 
 // The Compiler of a module that is webpack's (its lib/Compiler.js, Next.js' copy) but not of the shape webpack.cjs
 // knows: a version whose builds would write no lockfile - a problem (in strict mode its require() fails, see hooks.cjs)
+/** @param {string} where */
 function unknownCompiler(where) {
   problems.problem(`webpack: ${where} has no Compiler bundle-lockfile knows (compile, run, watch, newCompilation, isChild): its builds would write no lockfile`);
 }
@@ -44,24 +52,28 @@ function unknownCompiler(where) {
 // in exports.webpack (Object.assign(exports, require('./bundle5')())). Next 16 fills the exports when the module
 // is loaded (no init()). Patch an already filled copy right away, and otherwise right after init().
 // With next-rspack, Next.js fills its webpack with rspack's exports (rspackVersion): rspack.cjs hooks that Compiler.
+/** @param {Record<PropertyKey, unknown>} exp @param {string} where */
 function patchNext(exp, where) {
   const patch = () => {
     const w = exp.webpack;
-    if (!w || !w.Compiler || typeof w.rspackVersion === 'string') return;
+    if (!isObjectOrFunction(w) || !w.Compiler || typeof w.rspackVersion === 'string') return;
     if (!patchCompiler(w.Compiler, where)) unknownCompiler(where);
   };
   patch();
-  if (typeof exp.init !== 'function' || exp.init[PATCHED]) return;
-  const init = exp.init;
-  exp.init = function (...args) {
+  /** @typedef {((this: unknown, ...args: unknown[]) => unknown) & { [PATCHED]?: boolean }} Init */
+  const init = /** @type {Init} */ (exp.init);
+  if (typeof init !== 'function' || init[PATCHED]) return;
+  /** @type {Init} */
+  const patched = function (...args) {
     const r = init.apply(this, args);
     try { patch(); } catch (e) { problems.problem(`webpack: could not patch Next.js' webpack (${where})`, e); }
     return r;
   };
-  exp.init[PATCHED] = true;
+  exp.init = patched;
+  patched[PATCHED] = true;
 }
 
-module.exports = {
+module.exports = /** @satisfies {Adapter & Record<string, unknown>} */ ({
   name: 'webpack',
   // the modules onCjsLoad patches: webpack's Compiler and Next's vendored webpack
   cjsFiles: [/[\\/]webpack[\\/]lib[\\/]Compiler\.js$/, NEXT_WEBPACK],
@@ -76,15 +88,15 @@ module.exports = {
     // recognized by (see hooks.cjs), resolve(): the real one
     /** @type {(() => unknown) | null} */
     let patch = null;
-    if (typeof exp === 'function') {
+    if (typeof exp === 'function' && isObjectOrFunction(exp)) {
       // only probe functions: probing plain objects can trigger circular-dependency warnings
       if (exp.name === 'Compiler') { // webpack/lib/Compiler.js - or another class called Compiler, elsewhere
         patch = () => { if (!patchCompiler(exp, resolve()) && module.exports.cjsFiles[0].test(request)) unknownCompiler(resolve()); };
       } else if (exp.Compiler && exp.Compilation && exp.version && !exp.rspackVersion) { // webpack namespace (not rspack's: rspack.cjs)
         patch = () => patchCompiler(exp.Compiler, resolve());
       }
-    } else if (request.includes('webpack') && exp && typeof exp === 'object' && Object.prototype.hasOwnProperty.call(exp, 'webpack')
-      && typeof exp.webpack === 'function' && !NEXT_WEBPACK.test(request)) {
+    } else if (request.includes('webpack') && isObject(exp) && Object.prototype.hasOwnProperty.call(exp, 'webpack')
+      && typeof exp.webpack === 'function' && isObjectOrFunction(exp.webpack) && !NEXT_WEBPACK.test(request)) {
       // a vendored copy exported as a plain object around webpack's namespace (umi's @umijs/bundler-webpack/compiled/webpack).
       // Only an own property is read: the exports of a module in a require() cycle have a prototype that warns about
       // reading one they do not have ("Accessing non-existent property ... inside circular dependency", webpack 5.0's)
@@ -93,9 +105,9 @@ module.exports = {
         patch = () => { if (!patchCompiler(w.Compiler, resolve())) unknownCompiler(resolve()); };
       }
     } else if (request.includes('webpack')) {
-      if (exp && typeof exp === 'object' && NEXT_WEBPACK.test(request)) patch = () => patchNext(exp, resolve());
+      if (isObject(exp) && NEXT_WEBPACK.test(request)) patch = () => patchNext(exp, resolve());
       else if (module.exports.cjsFiles[0].test(request)) patch = () => unknownCompiler(resolve()); // webpack's lib/Compiler.js exports no class
     }
     if (patch) try { patch(); } catch (e) { problems.problem(`webpack: could not patch ${resolve()}`, e); }
   },
-};
+});
