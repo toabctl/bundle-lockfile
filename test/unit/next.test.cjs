@@ -85,6 +85,10 @@ test('next adapter: no traces (output: export) writes nothing; Next.js 12 (no bu
 }));
 
 test('next adapter: output: standalone - the runtime packages in .next/standalone, keyed where Next copied them; the bundles\' lockfiles copied along', () => withConfig({ strict: true }, async () => {
+  // Next.js 12.1 turns it on with experimental.outputStandalone (12.2 renames it when it loads the config)
+  for (const conf of [{ output: 'standalone' }, { experimental: { outputStandalone: true } }]) await standalone(conf);
+}));
+async function standalone(conf) {
   const { root, build } = fakeNext({
     '.next/standalone/server.js': '',
     '.next/standalone/node_modules/rt/index.js': '',
@@ -93,8 +97,9 @@ test('next adapter: output: standalone - the runtime packages in .next/standalon
     '.next/standalone/.next/server/chunks/1.js': '',
     '.next/server/chunks/bundle-lockfile/package-lock.json': '{"lockfileVersion":3,"packages":{"":{}}}',
     '.next/bundle-lockfile/package-lock.json': '{"lockfileVersion":3,"packages":{"":{}}}',
-  }, () => ({ config: { distDir: '.next', output: 'standalone' } }));
+  }, () => ({ config: { distDir: '.next', ...conf } }));
   await build();
+  assert.equal(fs.existsSync(J(root, '.next/standalone', LOCK)), true, JSON.stringify(conf));
   const lock = runtimeLock(root, '.next/standalone');
   assert.deepEqual(Object.keys(lock.packages).filter(Boolean), ['node_modules/legacy', 'node_modules/next', 'node_modules/rt']);
   assert.equal(lock['bundle-lockfile'].context, '../../..'); // anchored where the packages are installed (the tracing root)
@@ -102,7 +107,7 @@ test('next adapter: output: standalone - the runtime packages in .next/standalon
   assert.equal(fs.existsSync(J(root, '.next/standalone/.next/server/chunks', LOCK)), true);
   assert.equal(fs.existsSync(J(root, '.next/standalone/.next', LOCK)), true);
   assert.equal(fs.existsSync(J(root, '.next/standalone/runtime')), false);
-}));
+}
 
 test('next adapter: a static export gets the client\'s lockfile in <out>/_next/, its record for where it is (output: export, next export)', () => withConfig({ strict: true }, async () => {
   require('../../src/core/copies.cjs').install();

@@ -447,6 +447,7 @@ const fixtures = {
   'rslib1.0-npm': { app: 'rslib', bundler: 'rslib', installer: { type: 'npm' }, deps: { ms: '2.1.3' }, devDeps: { '@rslib/core': '1.0.3', 'lodash-es': '4.18.1' },
     packageJson: { type: 'module', scripts: { build: 'rslib build' } } },
   'next12': next('12.3.7', '18.3.1'),
+  'next12.1': next('12.1.6', '18.3.1'), // (standalone: experimental.outputStandalone)
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
   'next15': next('15.5.27', '19.3.0'),
@@ -1698,6 +1699,10 @@ const cases = [
   // Next 12's own build fails on Node.js >= 25, also without bundle-lockfile: its compiled jsonwebtoken (through
   // buffer-equal-constant-time) reads require('buffer').SlowBuffer.prototype, and Node.js 25 removed SlowBuffer
   { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1'), maxNode: 24 },
+  // Next.js 12.1 turns standalone on with experimental.outputStandalone (12.2: output: 'standalone')
+  { name: "Next.js 12.1.6, experimental.outputStandalone: .next/standalone gets the runtime packages and the bundles' lockfiles", fixture: 'next12.1',
+    cmd: './node_modules/.bin/next build', outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: 'experimental', BLTEST_ORACLE_STANDALONE: '1' },
+    expectIncludes: ['next@12.1.6', 'react@18.3.1', 'ms@2.1.3'], runtimeTrace: { routes: ['/'] }, maxNode: 24 },
   { name: 'Next.js 13.5.11', ...nextCase('next13', '13.5.11', '18.3.1') },
   { name: 'Next.js 14.2.35', ...nextCase('next14', '14.2.35', '18.3.1') },
   { name: 'Next.js 15.5.27', ...nextCase('next15', '15.5.27', '19.3.0') },
