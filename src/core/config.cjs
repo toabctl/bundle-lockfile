@@ -116,15 +116,17 @@ function dir(k) {
 // the lockfile's path below an output directory: relative, inside it, named package-lock.json and not below a
 // node_modules directory - the only files syft and Trivy read. Unset or empty: the default. A backslash separates
 // directories only on Windows: elsewhere it is part of a name (sbom\package-lock.json is no file named package-lock.json).
+// Normalized: "/"-separated, without "." and empty parts (./sbom//package-lock.json is sbom/package-lock.json), as the
+// adapters count its directories to find the output directory of a lockfile (core/outputs.cjs outputDirOf).
 // With BUNDLE_LOCKFILE_TREE=only, the file next to it named record.json instead (see tree).
 /** @returns {string} */
 function lockfilePath() {
   const v = value('BUNDLE_LOCKFILE_FILE') || 'bundle-lockfile/package-lock.json';
-  const parts = path.sep === '\\' ? v.split(/[\\/]/) : v.split('/');
+  const parts = (path.sep === '\\' ? v.split(/[\\/]/) : v.split('/')).filter(p => p !== '' && p !== '.');
   if (path.isAbsolute(v) || parts.includes('..') || parts[parts.length - 1] !== 'package-lock.json' || parts.includes('node_modules')) {
     invalid.push(`BUNDLE_LOCKFILE_FILE=${v}${from('BUNDLE_LOCKFILE_FILE')} is not a relative path inside the output directory to a file named package-lock.json outside node_modules (the only files syft and Trivy read)`);
   }
-  return tree === 'only' ? [...parts.slice(0, -1), 'record.json'].join('/') : v;
+  return (tree === 'only' ? [...parts.slice(0, -1), 'record.json'] : parts).join('/');
 }
 
 // BUNDLE_LOCKFILE_TREE: any case, spaces ignored; unset or empty: off
@@ -150,8 +152,21 @@ if (register && !path.isAbsolute(register)) invalid.push(`BUNDLE_LOCKFILE_REGIST
 const debugOn = flag('BUNDLE_LOCKFILE_DEBUG', false);
 // absolute globs: a relative one would match different directories in each process (turbo's tasks, workspace builds
 // run in their package's directory); one that is not is left out (with BUNDLE_LOCKFILE_STRICT=0: more vendored copies
-// listed, rather than other directories' left out)
-const firstParty = value('BUNDLE_LOCKFILE_FIRST_PARTY').split(',').map(s => s.trim()).filter(Boolean).filter((g) => {
+// listed, rather than other directories' left out). Separated by the commas outside braces: /src/{a,b}/** is one glob
+// (core/vendored.cjs globTest expands the braces)
+/** @type {(v: string) => string[]} */
+const globList = (v) => {
+  const out = [''];
+  let depth = 0;
+  for (const c of v) {
+    if (c === ',' && depth === 0) { out.push(''); continue; }
+    if (c === '{') depth++;
+    else if (c === '}' && depth > 0) depth--;
+    out[out.length - 1] += c;
+  }
+  return out;
+};
+const firstParty = globList(value('BUNDLE_LOCKFILE_FIRST_PARTY')).map(s => s.trim()).filter(Boolean).filter((g) => {
   if (path.isAbsolute(g)) return true;
   invalid.push(`BUNDLE_LOCKFILE_FIRST_PARTY names ${g}${from('BUNDLE_LOCKFILE_FIRST_PARTY')}, which is not an absolute path (each process would match it against its own working directory)`);
   return false;
