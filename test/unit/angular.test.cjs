@@ -12,12 +12,13 @@ const { exportPath } = require('../../src/core/paths.cjs');
 const problems = require('../../src/core/problems.cjs');
 
 // Angular: executeBuild() of a fake application builder, whose result has Angular's shape (ExecutionResult)
-function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors = [], more = [] } = {}) {
+// (main: the name of its one chunk, which Angular hashes)
+function fakeExecuteBuild(root, { stats = 'split', inputs, assets = [], errors = [], more = [], main = 'main.js' } = {}) {
   return async (options) => {
-    const outputFiles = [{ path: 'main.js', type: 0, text: 'x' }, ...more];
+    const outputFiles = [{ path: main, type: 0, text: 'x' }, ...more];
     const result = { outputFiles, assetFiles: assets.map(source => ({ source, destination: 'a' })), errors: [...errors],
       addOutputFile(p, text, type) { outputFiles.push({ path: p, type, text }); }, addError(e) { this.errors.push(e); } };
-    const metafile = { outputs: { 'main.js': { entryPoint: 'src/main.ts', inputs: Object.fromEntries(inputs.map(i => [i, { bytesInOutput: 1 }])) } } };
+    const metafile = { outputs: { [main]: { entryPoint: 'src/main.ts', inputs: Object.fromEntries(inputs.map(i => [i, { bytesInOutput: 1 }])) } } };
     if (options.stats) {
       if (stats === 'split') outputFiles.push({ path: 'browser-stats.json', type: 4, text: JSON.stringify(metafile) });
       else outputFiles.push({ path: 'stats.json', type: 4, text: JSON.stringify(metafile) });
@@ -275,4 +276,24 @@ test('angular adapter: builds of the builders whose output nobody ships (ng serv
       assert.ok(fs.existsSync(exportPath(J(root, 'dist/browser', LOCK))));
     } finally { if (saved === undefined) delete process.env.NG_BUILD_PARTIAL_SSR; else process.env.NG_BUILD_PARTIAL_SSR = saved; }
   });
+}));
+
+test('angular adapter: a build in a new process over the output of an earlier one lists only its own packages when Angular empties the output path first (outputOptions.clean)', () => withConfig({ strict: true }, async () => {
+  const angular = require('../../src/adapters/angular.cjs');
+  const pj = (name) => ({ [`node_modules/${name}/package.json`]: { name, version: '1.0.0' } });
+  const root = project({ ...pj('a'), ...pj('gone'), ...pj('esbuild'), 'src/main.ts': '' });
+  const browser = J(root, 'dist/browser');
+  // Angular writes the files of a build (after it emptied the output path, if it does)
+  const write = (r) => { for (const f of r.outputFiles) { fs.mkdirSync(require('path').dirname(J(browser, f.path)), { recursive: true }); fs.writeFileSync(J(browser, f.path), f.text); } };
+  for (const clean of [true, false]) {
+    fs.rmSync(J(root, 'dist'), { recursive: true, force: true });
+    const options = { workspaceRoot: root, outputOptions: { base: J(root, 'dist'), browser: 'browser', server: 'server', clean } };
+    write(await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js', 'node_modules/gone/i.js'], main: 'main-OLD.js' }))(options));
+    globalThis[Symbol.for('bundle-lockfile.outputs.v5')].files.clear(); // (the next ng build: a new process)
+    // the next build no longer has `gone`, and its chunk another hash: main-OLD.js is still there while it renders the
+    // lockfile - Angular deletes it after (clean); without clean it stays in the output, with its packages
+    const r = await angular.wrap(fakeExecuteBuild(root, { inputs: ['node_modules/a/i.js'], main: 'main-NEW.js' }))(options);
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(lockedNames(r.outputFiles.find(f => f.path === LOCK).text), clean ? ['a', 'esbuild'] : ['a', 'esbuild', 'gone'], `clean=${clean}`);
+  }
 }));

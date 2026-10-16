@@ -1451,6 +1451,14 @@ const cases = [
     // expectVia reads its lockfile)
     { name: `Angular ${v}: ng build`, fixture, cmd: 'npm run -s build', outDir: 'dist/browser', expect: ANGULAR(fixture), oracleArgs: '--browser-as-root',
       oracleMissing: ['bootstrap-icons@1.13.2'], expectVia: { asset: ['bootstrap-icons@1.13.2'], chunk: ANGULAR(fixture).filter(p => p !== 'bootstrap-icons@1.13.2') } })),
+  // a second ng build (a new process) over the first one's output, without the lazy import of nanoid: its chunks have
+  // other hashes, the first one's are still there while the lockfile is rendered - Angular empties the output path only
+  // after (outputOptions.clean): the lockfile lists the second build's packages only. (No oracle: it would build the
+  // app as it is again, with nanoid; the source is put back after the case.) Angular 20: its combined stats.json
+  ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
+    { name: `Angular ${v}: a second ng build without an import, over the first one's output`, fixture,
+      cmd: 'cp src/app/app.ts .app.ts && npm run -s build && sed -i "s/import(.nanoid.).then(m => m.nanoid()), //" src/app/app.ts && npm run -s build; s=$?; mv .app.ts src/app/app.ts; exit $s',
+      outDir: 'dist/browser', expect: ANGULAR(fixture).filter(p => p !== 'nanoid@3.3.20'), oracle: false })),
   // other package managers: pnpm's isolated layout, Yarn Plug'n'Play's zip cache (Angular's builder, its esbuild and the
   // framework's packages from there). With Plug'n'Play there is no node_modules: the app's asset glob
   // (node_modules/bootstrap-icons/font/fonts) copies nothing, no font is shipped, bootstrap-icons is not listed

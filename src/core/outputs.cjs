@@ -27,7 +27,7 @@ const { codeOf, isObject, parseJson, perProcess } = require('./values.cjs');
  */
 /** @typedef {(content: string) => void | Promise<void>} WriteFile */
 
-const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies of another shape keep their own
+const KEY = Symbol.for('bundle-lockfile.outputs.v5'); // v5: shape below; copies of another shape keep their own
 // lockfile path -> Map(writer id -> { building, landed }); a writer is one compiler, across its (re)builds.
 // building: { pkgs, context, files } of its build in progress, recorded before that build is written;
 // landed: the same of its latest build whose output was written. A build that fails is never written
@@ -36,15 +36,19 @@ const KEY = Symbol.for('bundle-lockfile.outputs.v4'); // v4: shape below; copies
 // disk: lockfile path -> its output is on the real disk, where other processes may write it too (not, e.g., a
 // webpack-dev-server's in-memory file system).
 // read: lockfile path -> the record (readMeta) of the lockfile last read from disk, for when it is gone (see foreign).
+// emptied: lockfile paths whose output directory the bundler empties before it writes the build's files (Angular's
+// outputOptions.clean): what the lockfile there records now is gone by then - no record on disk is read (see foreign).
 // copies: copy of a lockfile, made in this process -> { target: the lockfile it is a copy of, content: what was
 // written to the copy last } (see copied).
 /**
  * @type {{ files: Map<string, Map<string, Writer>>, queues: Map<string, Promise<unknown>>, disk: Map<string, boolean>,
- *   read: Map<string, LockRecord | null>, copies: Map<string, { target: string | null, content: string | null }>,
+ *   read: Map<string, LockRecord | null>, emptied: Set<string>, copies: Map<string, { target: string | null, content: string | null }>,
  *   exports: Map<string, string>, listening?: boolean }}
  */
 // exports: export copy -> the lockfile this process writes there (see exportOf)
-const outputs = perProcess(KEY, () => ({ files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), copies: new Map(), exports: new Map() }));
+const outputs = perProcess(KEY, () => ({
+  files: new Map(), queues: new Map(), disk: new Map(), read: new Map(), emptied: new Set(), copies: new Map(), exports: new Map(),
+}));
 // The writers of a lockfile path in this process (none: a new, empty map)
 /** @type {(target: string) => Map<string, Writer>} */
 const writersOf = (target) => outputs.files.get(target) || /** @type {Map<string, Writer>} */ (new Map());
@@ -105,7 +109,7 @@ function there(file) {
  * @returns {RenderBuild[]}
  */
 function foreign(target, own, all = false, ownFiles = new Set(), fresh = new Set()) {
-  const file = outputs.disk.get(target) && stateFile(target);
+  const file = outputs.disk.get(target) && !outputs.emptied.has(target) && stateFile(target);
   if (!file) return [];
   /** @type {LockRecord | null} */
   let meta;
@@ -251,7 +255,7 @@ function render(target, own) {
 // opts.outputs: { absolute path: "sha256-<hex>" } of its JavaScript and CSS output files, opts.contents: { absolute
 // path: [package paths] } the packages in each of them (see core/nested.cjs); opts.bundler: { name, version } of the
 // bundler that ran; opts.via: how it found its packages (a core/via.cjs collector, or Map(package path -> classes));
-// opts.run: the compiler or build (plugin) object, the same across its watch rebuilds.
+// opts.run: the compiler or build (plugin) object, the same across its watch rebuilds; opts.emptied: see outputs.emptied.
 /**
  * @param {string} target
  * @param {string} writer
@@ -259,7 +263,7 @@ function render(target, own) {
  * @param {string} context
  * @param {string[]} [files]
  * @param {{ id?: string, disk?: boolean, outputs?: Record<string, string>, contents?: Record<string, string[]>,
- *   bundler?: BundlerId | null, via?: ViaCollector | Via | null, run?: object }} [opts]
+ *   bundler?: BundlerId | null, via?: ViaCollector | Via | null, run?: object, emptied?: boolean }} [opts]
  * @returns {string}
  */
 function record(target, writer, pkgs, context, files = [], opts = {}) {
@@ -277,6 +281,7 @@ function record(target, writer, pkgs, context, files = [], opts = {}) {
   w.building = { pkgs, context, files, outputs: opts.outputs || {}, contents: opts.contents || {}, bundler: opts.bundler || null, via };
   writers.set(writer, w);
   if (opts.disk) outputs.disk.set(target, true);
+  if (opts.emptied) outputs.emptied.add(target); else outputs.emptied.delete(target);
   // (never null: this writer's build in progress is there)
   return /** @type {string} */ (render(target, writer));
 }
