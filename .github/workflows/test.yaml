@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Unit tests
-        run: node --test test/unit.cjs
+        run: node --test test/unit/*.test.cjs
 
   # the output format against the tools that read it (test/contract.cjs)
   contract:

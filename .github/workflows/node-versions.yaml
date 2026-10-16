@@ -68,7 +68,7 @@ jobs:
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
       - name: Unit tests
-        run: node --test test/unit.cjs
+        run: node --test test/unit/*.test.cjs
       - name: Generate fixtures
         run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="${{ matrix.node.fixtures }}"
       - name: Run matrix
