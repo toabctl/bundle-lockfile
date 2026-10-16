@@ -4807,12 +4807,22 @@ test('config: a setting that is not recognized or cannot work is invalid', () =>
   assert.equal(one({ BUNDLE_LOCKFILE_EXPORT_BASE: '/y' }), 'BUNDLE_LOCKFILE_EXPORT_BASE is set without BUNDLE_LOCKFILE_EXPORT_DIR: it has no effect');
   assert.equal(one({ BUNDLE_LOCKFILE_FIRST_PARTY: '/app/lib/**,tools/**' }), 'BUNDLE_LOCKFILE_FIRST_PARTY names tools/**, which is not an absolute path (each process would match it against its own working directory)');
   assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FIRST_PARTY: '/app/lib/**,tools/**' }).firstParty, ['/app/lib/**']);
+  // the commas in braces are the glob's: /src/{a,b}/** is one glob, not "/src/{a" and "b}/**"
+  assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FIRST_PARTY: '/src/{a,b}/**, /x/{c,{d,e}}' }), { ...invalidFor({}), firstParty: ['/src/{a,b}/**', '/x/{c,{d,e}}'] });
+  const { globTest } = require('../src/core/vendored.cjs');
+  assert.deepEqual(['/src/a/x', '/src/b', '/src/ab', '/x/e'].map(globTest('/src/{a,b}/**')), [true, true, false, false]);
   assert.match(one({ BUNDLE_LOCKFILE_CONFIG: 'config.json' }), /^BUNDLE_LOCKFILE_CONFIG is not an absolute path: config\.json/); // (and the file is missing: settingsFile.error)
   // the lockfile only where syft and Trivy read it
   for (const v of ['sbom/lock.json', '/abs/package-lock.json', '../package-lock.json', 'a/../../package-lock.json', 'node_modules/x/package-lock.json', 'package-lock.json/x']) {
     assert.match(one({ BUNDLE_LOCKFILE_FILE: v }), /^BUNDLE_LOCKFILE_FILE=.* is not a relative path inside the output directory to a file named package-lock\.json outside node_modules/, v);
   }
   for (const v of ['package-lock.json', 'a/b/package-lock.json', 'main.js/package-lock.json']) assert.deepEqual(invalidFor({ BUNDLE_LOCKFILE_FILE: v }).invalid, [], v);
+  // normalized: "." and empty parts dropped, so that counting its directories finds the output directory
+  for (const v of ['./sbom/package-lock.json', 'sbom//package-lock.json', 'sbom/./package-lock.json', './/sbom/package-lock.json']) {
+    assert.deepEqual([invalidFor({ BUNDLE_LOCKFILE_FILE: v }).invalid, invalidFor({ BUNDLE_LOCKFILE_FILE: v }).file], [[], 'sbom/package-lock.json'], v);
+  }
+  assert.equal(invalidFor({ BUNDLE_LOCKFILE_FILE: './package-lock.json', BUNDLE_LOCKFILE_TREE: 'only' }).file, 'record.json');
+  for (const v of ['./', '.', 'sbom/.']) assert.match(one({ BUNDLE_LOCKFILE_FILE: v }), /^BUNDLE_LOCKFILE_FILE=.* is not a relative path inside the output directory/, v);
 });
 
 test('tree: a package.json per lockfile key, rewritten in place only when the packages change; no package\'s files', () => {
