@@ -127,6 +127,28 @@ function bundlersOf(kind, from, ctx, cwd) {
   return out.filter(p => p !== null);
 }
 
+// Vite before 5.4 and Rollup before 4.20 name no file an asset was emitted from (originalFileName): the packages of the
+// files they emit as assets (a package's font or image a style sheet loads by url(), which is no module) would be
+// missing. Vite 5.0 - 5.3 are not supported - a problem; with Rollup before 4.20 (Rolldown names them), an asset that
+// names no file is. vite: Vite's package (where Vite made the build).
+/** @param {string} kind @param {OutputBundle} bundle @param {PluginMeta} meta @param {Package | null} vite */
+function unnamedAssets(kind, bundle, meta, vite) {
+  /** @type {(v: unknown, major: number, minor: number) => boolean} */
+  const before = (v, major, minor) => { const [a, b] = String(v).split('.').map(Number); return a < major || (a === major && b < minor); };
+  if (vite) {
+    if (before(vite.version, 5, 4)) {
+      problems.problem(`vite: Vite ${vite.version} is not supported (it needs 5.4 or later, which names the files of the assets it emits): the packages of its assets would be missing`, null, { once: vite.path });
+    }
+    return;
+  }
+  if (typeof meta.rolldownVersion === 'string' || typeof meta.rollupVersion !== 'string' || !before(meta.rollupVersion, 4, 20)) return;
+  // (a chunk's source map, an asset from Rollup 3 on, is emitted from no file: its chunk has the packages)
+  const unnamed = Object.values(bundle).filter(f => f.type !== 'chunk' && !f.originalFileNames && !f.originalFileName && !/\.map$/i.test(f.fileName)).map(f => f.fileName);
+  if (unnamed.length) {
+    problems.problem(`${kind}: Rollup ${meta.rollupVersion} names no file the assets of its builds were emitted from (4.20 and later do): the packages of ${unnamed.join(', ')} would be missing`);
+  }
+}
+
 // kind: rollup, rolldown or vite (for messages and BUNDLE_LOCKFILE_DISABLE); engine: rollup or rolldown, the bundler
 // the plugin is added to (undefined: not known, a plugin from a config); from: where the bundler packages are (bundlersOf)
 /**
@@ -275,6 +297,10 @@ function createPlugin(kind, inputOptions, engine, from = {}) {
           const dir = path.resolve(outCwd, out.dir || (out.file ? path.dirname(out.file) : this.meta && this.meta.rolldownVersion ? 'dist' : '.'));
           // the bundler's code is in every chunk
           const bundlers = Object.values(bundle).some(f => f.type === 'chunk') ? bundlersOf(kind, from, this, cwd) : [];
+          const meta = (this && this.meta) || {};
+          // (Vite's package: among the bundlers, where the output has chunks)
+          const vite = kind !== 'vite' ? null : bundlers.find(p => VITE_NAMES.includes(p.name)) || (from.vite ? bundlerPackage(kind, from.vite, VITE_NAMES) : null);
+          unnamedAssets(kind, bundle, meta, vite);
           const generateOnly = isWrite === false || inToolCache(dir);
           // the output's modules: those its chunks had when they were rendered (also of chunks a plugin removed since),
           // and those they have now

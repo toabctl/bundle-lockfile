@@ -32,11 +32,11 @@ function project(files) {
   return root;
 }
 // The bundlers of the tests' compilers and builds, in a project of their own: every output with JavaScript lists the
-// bundler (core/bundler.cjs; tests of that in core.test.cjs), at version 0.0.0-unit - which the helpers that compare package lists
-// leave out (ids, entries, lockedNames). The fake webpack compilers are patched ones (BUNDLER_FILE: their webpack's
+// bundler (core/bundler.cjs; tests of that in core.test.cjs), at version 99.0.0-unit - which the helpers that compare package
+// lists leave out (ids, entries, lockedNames); newer than every release, as the adapters' version checks see it. The fake webpack compilers are patched ones (BUNDLER_FILE: their webpack's
 // lib/Compiler.js); the Rollup plugin's hooks run from a file of rollup's or rolldown's (rollupBuild), as in a build of
 // a plugin from the config, and Vite's config hook from one of vite's.
-const UNIT = '0.0.0-unit';
+const UNIT = '99.0.0-unit';
 const BUNDLER_FILE = Symbol.for('bundle-lockfile.webpack.bundler-file');
 const BUNDLERS = (() => {
   const files = {};

@@ -116,7 +116,7 @@ test('rollup adapter: the bundler whose code is in the chunks is listed - Rollup
     assert.deepEqual(problems.take(), []);
     // Vite says it is another version (Vite 7+: meta.viteVersion) than the package its caller is in: a problem
     await assert.rejects(rollupBuild(rollupAdapter.bundleLockfile('vite'), { outDir: J(root, 'vm'), chunks: [chunk], ctx: { meta: { viteVersion: '7.3.7' }, error: (e) => { throw e; } } }),
-      /the build runs Vite 7\.3\.7, its caller is in .*vite \(vite@0\.0\.0-unit\)/);
+      /the build runs Vite 7\.3\.7, its caller is in .*vite \(vite@99\.0\.0-unit\)/);
     problems.take();
     // added by the preload: the copy whose rollup() was called (its entry module), and Vite around the caller
     let opts = null;
@@ -735,3 +735,37 @@ test('rollup adapter: Rollup\'s watch mode - the transform dependencies of the m
     assert.deepEqual(await build({ cache, transform: [app], modules: [app, a], watch: [app, a] }), ['a']);
   } finally { process.chdir(cwd); }
 });
+
+test('rollup adapter: Vite before 5.4 is not supported; with Rollup before 4.20 an asset that names no file fails the build (neither names the files of assets)', async () => withConfig({ strict: true }, async () => {
+  const rollupAdapter = require('../../src/adapters/rollup.cjs');
+  const CALL = 'module.exports = (fn, self, args) => fn.apply(self, args);\n';
+  const viteAt = (version) => ({ 'node_modules/vite/package.json': { name: 'vite', version }, 'node_modules/vite/dist/node/chunks/call.js': CALL });
+  const font = { fileName: 'assets/f-1a2b.woff2', source: 'F' };
+  const chunk = (root) => ({ fileName: 'main.js', code: 'main', modules: [J(root, 'node_modules/a/i.js')] });
+  const a = { 'node_modules/a/package.json': { name: 'a', version: '1.0.0' } };
+  const cwd = process.cwd();
+  try {
+    // Vite's config hook runs from the Vite package of the build (as in a build of Vite's)
+    for (const [version, ok] of [['5.3.5', false], ['5.4.0', true]]) {
+      const root = project({ ...a, ...viteAt(version) });
+      process.chdir(root);
+      problems.take();
+      const plugin = rollupAdapter.bundleLockfile('vite');
+      require(J(root, 'node_modules/vite/dist/node/chunks/call.js'))(plugin.config, {}, [{}]);
+      const build = rollupBuild(plugin, { outDir: J(root, 'dist'), chunks: [chunk(root)], assets: [{ ...font, originalFileNames: [] }], ctx: { error: (e) => { throw e; } } });
+      if (ok) await build; else await assert.rejects(build, /vite: Vite 5\.3\.5 is not supported \(it needs 5\.4 or later/);
+    }
+    // Rollup's own builds: before 4.20 an asset that names no file fails, one without assets does not
+    const root = project(a);
+    process.chdir(root);
+    problems.take();
+    const rollup = (rollupVersion, assets) => rollupBuild(rollupAdapter.bundleLockfile('rollup'), {
+      outDir: J(root, `dist-${rollupVersion}-${assets.length}`), chunks: [chunk(root)], assets, ctx: { meta: { rollupVersion }, error: (e) => { throw e; } } });
+    await assert.rejects(rollup('4.19.2', [font]), /rollup: Rollup 4\.19\.2 names no file the assets of its builds were emitted from \(4\.20 and later do\): the packages of assets\/f-1a2b\.woff2 would be missing/);
+    problems.take();
+    await rollup('4.19.2', []);
+    await rollup('4.19.2', [{ fileName: 'main.js.map', source: '{}' }]); // (a source map: from no file, its chunk has the packages)
+    await rollup('4.20.0', [font]); // (an asset of 4.20 that names none: a plugin emitted it from no file)
+    assert.deepEqual(problems.take(), []);
+  } finally { process.chdir(cwd); }
+}));

@@ -135,6 +135,7 @@ The other cases check that no lockfile is written, or that the build fails with 
 - a failing adapter: webpack 5, Vite 7 and 8, the `rollup` command line, the Rollup and Rolldown APIs, esbuild's
   `build()`, `context()` and `buildSync()`;
 - a lockfile that cannot be written: webpack 5, Vite 8, the `rollup` command line;
+- a bundler that names no file of the assets it emits: Vite 5.2, Rollup 4.0.2 with an asset;
 - an export directory that cannot be written;
 - `BUNDLE_LOCKFILE_INLINE=0` without an export directory: webpack 5, Vite 8;
 - a bundled package without a `package.json` (the unit tests: also one whose `package.json` cannot be parsed).
@@ -192,7 +193,9 @@ process's `locations` (a second build, then the first one again).
   and 5), a workbox service worker (InjectManifest, and GenerateSW's generated one), Sass from a package in a Vue
   single-file component's style block, a package image inlined as a `data:` URL into extracted CSS, a package file
   copied into the output with fs in `afterEmit`, html-webpack-plugin 4 and 5 templates, a package file and a package directory copied
-  by copy-webpack-plugin (5, 6.0 and 6.4 on webpack 4, 6.2 and 14 on webpack 5)
+  by copy-webpack-plugin (5, 6.0 and 6.4 on webpack 4, 6.2 and 14 on webpack 5; 5 and html-webpack-plugin 4's favicon
+  also with `output.futureEmitAssets`, which keeps only the sizes of emitted assets; a package's JavaScript file alone,
+  minimized after the copy, on webpack 5.0 and 5.111)
 - two compilers sharing an output directory (also with query strings in file names, configs that differ only in
   `resolve.alias`, and a failing watch rebuild); two compilers whose `output.path` with `[fullhash]` resolves to
   different directories; compression-webpack-plugin deleting the original assets (webpack 4 and 5, also of two
@@ -218,7 +221,8 @@ process's `locations` (a second build, then the first one again).
   no lockfile ([`lib/vite-servers.cjs`](lib/vite-servers.cjs))
 - `vite build --watch`, `BUNDLE_LOCKFILE_DISABLE=vite` (and `rollup,rolldown`, which leaves Vite hooked; with
   SvelteKit and adapter-node, whose own Rollup build stays hooked), `BUNDLE_LOCKFILE_FILE`, a failing adapter (also in
-  Rollup and Rolldown builds), the export directory, a build script overwriting `NODE_OPTIONS` (without and with the
+  Rollup and Rolldown builds), Vite 5.2 (before 5.4, which names the files of its assets: the build fails), the export
+  directory, a build script overwriting `NODE_OPTIONS` (without and with the
   node shim), the plugin in the config (also with workers, `@import`s and `NODE_OPTIONS`)
 - vite-plugin-singlefile, `build.write: false`, library mode with two formats, SSR builds (dependencies external, and
   bundled with `ssr.noExternal`), `vite build --app` (Vite 6 and 8), two `vite build` processes writing one output
@@ -243,7 +247,8 @@ process's `locations` (a second build, then the first one again).
   `build()`, `watch()` of both; two outputs of one build written into one directory at the same
   time; a project directory with `#` in its name; two builds with the plugin in their options (no `NODE_OPTIONS`) into
   one directory; `BUNDLE_LOCKFILE_DISABLE=rollup` / `rolldown`, each leaving the other hooked
-- Rollup 4.0.2, Rolldown 1.0.0 and `@rollup/wasm-node` (its API and its command line)
+- Rollup 4.0.2, Rolldown 1.0.0 and `@rollup/wasm-node` (its API and its command line); an asset a plugin emits from a
+  package's file (Rollup 4.64; on 4.0.2, which names no file of an asset, the build fails)
 - no lockfile from the `rolldown` command line (not supported yet), and webpack and Vite builds in Bun's own runtime
   (`bun --bun`; the builds are not affected)
 
@@ -269,7 +274,8 @@ the font has none):
 **Angular** (`apps/angular`, an application builder app with three lazy chunks, which turn on Angular's chunk
 optimizer, and an asset glob from `node_modules`; compared with an oracle that builds again with source maps of the
 sources, not the packages' own, and without the chunk optimizer, whose maps name no sources, `oracles/angular.cjs`):
-- `ng build` of Angular 20.3, 21.2, 22.2; without the chunk optimizer; the export directory only;
+- `ng build` of Angular 20.3, 21.2, 22.2; without the chunk optimizer; the export directory only; a second `ng build`
+  (a new process, over the first one's output) without one of the imports (20.3, 22.2);
   `BUNDLE_LOCKFILE_DISABLE=angular`
 
 **rspack** (the `rspack` app is webpack 5's, with `rspack.config.js`) and **Rsbuild**, compared with an oracle that
@@ -283,7 +289,7 @@ and reads the stats:
   that does not depend on rspack, in a project that has it installed (hooked on every version)
 - activation (`BUNDLE_LOCKFILE_DISABLE=rspack`, `=webpack` leaving rspack hooked, existing `NODE_OPTIONS`,
   `BUNDLE_LOCKFILE_FILE`), a failing adapter, a development build, watch-mode rebuilds, warm builds from the persistent
-  cache, externals
+  cache, externals; inlined exports also on 1.5.0 and 1.5.8, and in development builds (1.5.0, 1.5.8, 1.6.8)
 - native CSS and extracted CSS from packages (with a Sass partial and a Less `@import`: per module from rspack 1.3.14,
   from the file dependencies before), an asset from a package, a worker, `CopyRspackPlugin` copying a package file, a
   package directory, a glob in a package, a package file it transforms (the oracle, which matches copies by bytes,
@@ -320,7 +326,7 @@ the adapters bundle again — except SvelteKit 2's edge function (built by esbui
 **Next.js** 12–16 are compared per compiler output with webpack's stats, and the server's runtime packages
 (`.next/runtime/`) with the packages of the oracle build's own `.nft.json` traces (`oracles/next.cjs`, mapped by
 `oracles/owner.cjs`):
-- a Pages Router app on each
+- a Pages Router app on each; on 12.1 its standalone output (`experimental.outputStandalone`)
 - on 15 and 16: an App Router app with server and client components, an edge route handler and middleware
 - with next-rspack (15.5: rspack 1.4; 16.4: rspack 2.0): the Pages Router app on both, the App Router app on 16, with
   exactly the lockfiles of the webpack builds

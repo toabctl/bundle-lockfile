@@ -206,7 +206,7 @@ const fixtures = {
     packageJson: { type: 'module', scripts: { build: 'vite build' } } },
   // Vite's root is not the working directory (test/apps/vite-root): a font from bootstrap-icons, an asset Vite names
   // relative to its root
-  ...Object.fromEntries([['vite8-root', '8.3.3'], ['vite7-root', '7.3.7']].map(([name, version]) => [name, { app: 'vite-root', bundler: 'vite', installer: { type: 'npm' },
+  ...Object.fromEntries([['vite8-root', '8.3.3'], ['vite7-root', '7.3.7'], ['vite5.2-root', '5.2.14']].map(([name, version]) => [name, { app: 'vite-root', bundler: 'vite', installer: { type: 'npm' },
     deps: { vite: version, 'lodash-es': '4.18.1', 'bootstrap-icons': '1.13.2' }, packageJson: { type: 'module', scripts: { build: 'vite build' } } }])),
   'rollup-cli': rollupCli,
   // Rollup's CommonJS build under Yarn Plug'n'Play (on Node 22.22.3+ Node loads it without Module._load, see hooks.cjs)
@@ -1189,6 +1189,12 @@ const cases = [
   // named relative to the root; source maps do not show it
   ...[['Vite 8.3.3', 'vite8-root'], ['Vite 7.3.7', 'vite7-root']].map(([what, fixture]) => ({ name: `${what}, root not the working directory: an asset from a package`,
     fixture, cmd: 'npm run -s build', expect: ['bootstrap-icons@1.13.2', 'lodash-es@4.18.1'], oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  // Vite 5.0 - 5.3 name no file of the assets they emit (Rollup's originalFileName, which Vite passes from 5.4): the
+  // package of the font would be missing - not supported, the build fails (STRICT=0: warns; the lockfile without it)
+  { name: 'strict: Vite 5.2.14 (before 5.4) fails the build', fixture: 'vite5.2-root', cmd: 'npm run -s build',
+    expectError: /vite: Vite 5\.2\.14 is not supported \(it needs 5\.4 or later, which names the files of the assets it emits\)/ },
+  { name: 'STRICT=0: Vite 5.2.14 (before 5.4), a warning', fixture: 'vite5.2-root', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: ['lodash-es@4.18.1'], oracleMissing: [], expectOutput: /WARNING: vite: Vite 5\.2\.14 is not supported/ },
   { name: 'Vite 8.3.3, Tailwind CSS 4 (@tailwindcss/vite)', fixture: 'vite8-tailwind', cmd: 'npm run -s build', expect: ['tailwindcss@4.3.3'],
     oracleMissing: ['tailwindcss@4.3.3'] },
   // Vite 6 and 5 build with Rollup 4 too
@@ -1571,6 +1577,14 @@ const cases = [
     ['Rolldown 1.0.0 JavaScript API: watch(), every rebuild writes the lockfile', 'rolldown-watch']].map(([name, mode]) => (
     { name, fixture: 'rollup-api-floor', cmd: `node build.mjs ${mode}`, expect: ROLLUP_API, ...(mode.endsWith('watch') && { watchBuilds: ROLLUP_WATCH_BUILDS }) })),
   { name: 'Rollup 4.0.2 command line (rollup -c)', fixture: 'rollup-api-floor', cmd: './node_modules/.bin/rollup -c', expect: ROLLUP_API },
+  // an asset a plugin emits from a package's file (lodash-es' LICENSE), naming it: Rollup 4.20 and later keep the name
+  // (its package by the asset), 4.0.2 does not - no asset names its file there, a build with one fails (STRICT=0: warns)
+  { name: 'Rollup 4.64.2 JavaScript API: an asset emitted from a package file', fixture: 'rollup-api', cmd: 'node build.mjs rollup-asset', expect: ROLLUP_API,
+    expectVia: { asset: ['lodash-es@4.18.1'] } },
+  { name: 'strict: Rollup 4.0.2 JavaScript API: an asset that names no file fails the build', fixture: 'rollup-api-floor', cmd: 'node build.mjs rollup-asset',
+    expectError: /rollup: Rollup 4\.0\.2 names no file the assets of its builds were emitted from \(4\.20 and later do\): the packages of LICENSE\.lodash-es\.txt would be missing/ },
+  { name: 'STRICT=0: Rollup 4.0.2 JavaScript API: an asset that names no file, a warning', fixture: 'rollup-api-floor', cmd: 'node build.mjs rollup-asset',
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: ROLLUP_API, expectOutput: /WARNING: rollup: Rollup 4\.0\.2 names no file the assets of its builds/ },
   { name: 'Rollup 4 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rollup-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },

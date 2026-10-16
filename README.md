@@ -292,10 +292,10 @@ what is invalid, is in [docs/configuration.md](docs/configuration.md).
 | webpack | 4, 5 | |
 | Next.js | 12 – 16 | not with Turbopack (Next 16's default build, `next build --turbopack` before): use `next build --webpack` or next-rspack ([details](docs/bundlers.md#nextjs)) |
 | rspack | 1.1 – 1.7, 2 | also Rsbuild 1.1+ and 2, Rslib 1; rspack 1.0 fails the build ([details](docs/bundlers.md#rspack-rsbuild)) |
-| Vite | 5 – 8, rolldown-vite 7 | `vite dev`, `vite preview` and Vitest write no lockfile ([details](docs/bundlers.md#vite-rollup-rolldown)) |
+| Vite | 5.4 – 8, rolldown-vite 7 | `vite dev`, `vite preview` and Vitest write no lockfile; Vite 5.0 – 5.3 fail the build ([details](docs/bundlers.md#vite-rollup-rolldown)) |
 | SvelteKit | 2, 3 | adapter-static, adapter-node, adapter-netlify ([details](docs/bundlers.md#sveltekit)) |
 | Nuxt | 4 | `.output/public` and `.output/server` ([details](docs/bundlers.md#nuxt)) |
-| Rollup | 4 | also `@rollup/wasm-node`; 2.78 – 3 are hooked but not tested, older ones fail the build |
+| Rollup | 4 | also `@rollup/wasm-node`; 2.78 – 3 are hooked but not tested, older ones fail the build; before 4.20 a build with an asset fails |
 | Rolldown | 1 | not the `rolldown` command line |
 | esbuild | 0.17 and later | its JavaScript API: `build()`, `context()`, `buildSync()`, also esbuild-wasm; not the `esbuild` command line, and not tsup, which writes esbuild's output itself ([details](docs/bundlers.md#esbuild)) |
 | Parcel | 2 (tested: 2.8 and later) | `parcel build`, `parcel watch`, its JavaScript API ([details](docs/bundlers.md#parcel)) |
@@ -328,7 +328,7 @@ The format, keys, licenses and bundle-lockfile's own record are described in [do
 
 - **Recognized, not hooked: the build fails.** With `BUNDLE_LOCKFILE_STRICT=0` it gets a warning and no lockfile of
   the bundle. These are Turbopack (Next.js' runtime lockfile is still written), the `rolldown` command line,
-  `@vercel/ncc`, webpack < 4, rspack 0.x and 1.0, Rollup before 2.78, and esbuild 0.16 and older.
+  `@vercel/ncc`, webpack < 4, rspack 0.x and 1.0, Rollup before 2.78, Vite before 5.4, and esbuild 0.16 and older.
 - **Output written by the build tool itself: the process fails** when it ends, because a file of the output is in no
   lockfile. tsup is such a tool: it writes esbuild's output itself. Its metafile gives the lockfile
   ([bundle-lockfile-from-metafile](docs/bundlers.md#esbuild)).
