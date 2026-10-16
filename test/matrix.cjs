@@ -206,7 +206,7 @@ const fixtures = {
     packageJson: { type: 'module', scripts: { build: 'vite build' } } },
   // Vite's root is not the working directory (test/apps/vite-root): a font from bootstrap-icons, an asset Vite names
   // relative to its root
-  ...Object.fromEntries([['vite8-root', '8.3.3'], ['vite7-root', '7.3.7']].map(([name, version]) => [name, { app: 'vite-root', bundler: 'vite', installer: { type: 'npm' },
+  ...Object.fromEntries([['vite8-root', '8.3.3'], ['vite7-root', '7.3.7'], ['vite5.2-root', '5.2.14']].map(([name, version]) => [name, { app: 'vite-root', bundler: 'vite', installer: { type: 'npm' },
     deps: { vite: version, 'lodash-es': '4.18.1', 'bootstrap-icons': '1.13.2' }, packageJson: { type: 'module', scripts: { build: 'vite build' } } }])),
   'rollup-cli': rollupCli,
   // Rollup's CommonJS build under Yarn Plug'n'Play (on Node 22.22.3+ Node loads it without Module._load, see hooks.cjs)
@@ -366,6 +366,8 @@ const fixtures = {
   // as a context dependency
   'edge-copy60-wp4': { app: 'edge-copy', installer: { type: 'npm' }, deps: { ...WEBPACK4, 'copy-webpack-plugin': '6.0.4', ...COPIED } },
   'edge-copy62': edge('edge-copy', { 'copy-webpack-plugin': '6.2.1', ...COPIED }),
+  // webpack 5.0.0: no compiler.webpack yet (5.1.0), the stages of processAssets are its Compilation class's
+  'edge-copy62-wp5.0': { app: 'edge-copy', installer: { type: 'npm' }, deps: { webpack: '5.0.0', 'webpack-cli': '4.10.0', 'copy-webpack-plugin': '6.2.1', ...COPIED } },
   'edge-shared-output': edge('edge-shared-output', { debug: '2.6.9', ms: '2.1.3' }),
   // the build script overwrites NODE_OPTIONS with cross-env, as superset's, headlamp's, pgadmin4's (needs the node shim)
   'edge-crossenv': { app: 'webpack5', installer: { type: 'npm' }, deps: { ...WEBPACK, ...APP_DEPS, 'cross-env': '7.0.3' },
@@ -411,6 +413,8 @@ const fixtures = {
   'rspack2.2-pnpm10-global-store': rspack('2.2.8', { type: 'pnpm', version: '10.34.6', globalVirtualStore: true }),
   'rspack-features1.2': rspackFeatures('1.2.8'),
   'rspack-features1.4': rspackFeatures('1.4.11'),
+  'rspack-features1.5.0': rspackFeatures('1.5.0'),
+  'rspack-features1.5': rspackFeatures('1.5.8'),
   'rspack-features1.6': rspackFeatures('1.6.8'),
   'rspack-features1.7': rspackFeatures('1.7.12'),
   'rspack-features2.2': rspackFeatures('2.2.8'),
@@ -445,6 +449,7 @@ const fixtures = {
   'rslib1.0-npm': { app: 'rslib', bundler: 'rslib', installer: { type: 'npm' }, deps: { ms: '2.1.3' }, devDeps: { '@rslib/core': '1.0.3', 'lodash-es': '4.18.1' },
     packageJson: { type: 'module', scripts: { build: 'rslib build' } } },
   'next12': next('12.3.7', '18.3.1'),
+  'next12.1': next('12.1.6', '18.3.1'), // (standalone: experimental.outputStandalone)
   'next13': next('13.5.11', '18.3.1'),
   'next14': next('14.2.35', '18.3.1'),
   'next15': next('15.5.27', '19.3.0'),
@@ -753,6 +758,8 @@ const cases = [
     expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package (emitted in the emit hook)', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
     nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
+  { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package, output.futureEmitAssets', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
+    nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON, EDGE_FUTURE_EMIT: '1' }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'BUNDLE_LOCKFILE_FILE=sbom/package-lock.json', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_FILE: 'sbom/package-lock.json' },
     lockfile: 'sbom/package-lock.json', expect: W5 },
   // build modes
@@ -973,12 +980,21 @@ const cases = [
   // copies that do not name their source are matched by content to the package file they were copied from
   { name: 'edge: package file and directory copied by copy-webpack-plugin 5, webpack 4', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: COPIED_EXPECT, expectVia: { 'copy-bytes': ['left-pad@1.3.0', 'normalize.css@8.0.1'], 'copy-source': [] } },
+  // with output.futureEmitAssets (react-scripts 4) the copies' sources are gone after the emit: their bytes are read from
+  // the output (webpack 4's output file system has no readFile)
+  { name: 'edge: copy-webpack-plugin 5, webpack 4 with output.futureEmitAssets', fixture: 'edge-copy5-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
+    env: { EDGE_COPY_FUTURE: '1' }, expectIncludes: COPIED_EXPECT, expectVia: { 'copy-bytes': ['left-pad@1.3.0', 'normalize.css@8.0.1'], 'copy-source': [] } },
   { name: 'edge: package file and directory copied by copy-webpack-plugin 6.0, webpack 4', fixture: 'edge-copy60-wp4', cmd: 'npm run -s build', nodeOptions: LEGACY_SSL,
     expectIncludes: COPIED_EXPECT },
   // webpack 5 minimizes those copies (6.2 does not mark them as copied for the minimizers): matched before that; the
   // oracle compares the output's bytes and so sees left-pad by its files that are not minimized, normalize.css not
   { name: 'edge: package file and directory copied by copy-webpack-plugin 6.2', fixture: 'edge-copy62', cmd: 'npm run -s build', expect: COPIED_EXPECT,
     oracleMissing: ['normalize.css@8.0.1'] },
+  // only left-pad's index.js copied, which the minimizer changes: matched before the optimize stages, also on webpack
+  // 5.0.0 (no compiler.webpack); the oracle, which compares the output's bytes, does not see it
+  ...[['edge-copy62', '5.111.1'], ['edge-copy62-wp5.0', '5.0.0']].map(([fixture, v]) => (
+    { name: `edge: a package's JavaScript file copied by copy-webpack-plugin 6.2 and minimized, webpack ${v}`, fixture, cmd: 'npm run -s build',
+      env: { EDGE_COPY: 'one-js' }, expect: ['left-pad@1.3.0', 'lodash-es@4.18.1'], oracleMissing: ['left-pad@1.3.0'], expectVia: { 'copy-bytes': ['left-pad@1.3.0'] } })),
   // two compilers write to dist/ in parallel: one lockfile with the packages of both
   { name: 'edge: two compilers, one output dir', fixture: 'edge-shared-output', cmd: 'npm run -s build', expect: ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'] },
   // the first compiler's asset names carry a query string ([name].js?[contenthash]): its files are still there
@@ -1173,6 +1189,12 @@ const cases = [
   // named relative to the root; source maps do not show it
   ...[['Vite 8.3.3', 'vite8-root'], ['Vite 7.3.7', 'vite7-root']].map(([what, fixture]) => ({ name: `${what}, root not the working directory: an asset from a package`,
     fixture, cmd: 'npm run -s build', expect: ['bootstrap-icons@1.13.2', 'lodash-es@4.18.1'], oracleMissing: ['bootstrap-icons@1.13.2'] })),
+  // Vite 5.0 - 5.3 name no file of the assets they emit (Rollup's originalFileName, which Vite passes from 5.4): the
+  // package of the font would be missing - not supported, the build fails (STRICT=0: warns; the lockfile without it)
+  { name: 'strict: Vite 5.2.14 (before 5.4) fails the build', fixture: 'vite5.2-root', cmd: 'npm run -s build',
+    expectError: /vite: Vite 5\.2\.14 is not supported \(it needs 5\.4 or later, which names the files of the assets it emits\)/ },
+  { name: 'STRICT=0: Vite 5.2.14 (before 5.4), a warning', fixture: 'vite5.2-root', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_STRICT: '0' },
+    expect: ['lodash-es@4.18.1'], oracleMissing: [], expectOutput: /WARNING: vite: Vite 5\.2\.14 is not supported/ },
   { name: 'Vite 8.3.3, Tailwind CSS 4 (@tailwindcss/vite)', fixture: 'vite8-tailwind', cmd: 'npm run -s build', expect: ['tailwindcss@4.3.3'],
     oracleMissing: ['tailwindcss@4.3.3'] },
   // Vite 6 and 5 build with Rollup 4 too
@@ -1445,6 +1467,14 @@ const cases = [
     // expectVia reads its lockfile)
     { name: `Angular ${v}: ng build`, fixture, cmd: 'npm run -s build', outDir: 'dist/browser', expect: ANGULAR(fixture), oracleArgs: '--browser-as-root',
       oracleMissing: ['bootstrap-icons@1.13.2'], expectVia: { asset: ['bootstrap-icons@1.13.2'], chunk: ANGULAR(fixture).filter(p => p !== 'bootstrap-icons@1.13.2') } })),
+  // a second ng build (a new process) over the first one's output, without the lazy import of nanoid: its chunks have
+  // other hashes, the first one's are still there while the lockfile is rendered - Angular empties the output path only
+  // after (outputOptions.clean): the lockfile lists the second build's packages only. (No oracle: it would build the
+  // app as it is again, with nanoid; the source is put back after the case.) Angular 20: its combined stats.json
+  ...[['22.2.2', 'angular22'], ['20.3.39', 'angular20']].map(([v, fixture]) => (
+    { name: `Angular ${v}: a second ng build without an import, over the first one's output`, fixture,
+      cmd: 'cp src/app/app.ts .app.ts && npm run -s build && sed -i "s/import(.nanoid.).then(m => m.nanoid()), //" src/app/app.ts && npm run -s build; s=$?; mv .app.ts src/app/app.ts; exit $s',
+      outDir: 'dist/browser', expect: ANGULAR(fixture).filter(p => p !== 'nanoid@3.3.20'), oracle: false })),
   // other package managers: pnpm's isolated layout, Yarn Plug'n'Play's zip cache (Angular's builder, its esbuild and the
   // framework's packages from there). With Plug'n'Play there is no node_modules: the app's asset glob
   // (node_modules/bootstrap-icons/font/fonts) copies nothing, no font is shipped, bootstrap-icons is not listed
@@ -1547,6 +1577,14 @@ const cases = [
     ['Rolldown 1.0.0 JavaScript API: watch(), every rebuild writes the lockfile', 'rolldown-watch']].map(([name, mode]) => (
     { name, fixture: 'rollup-api-floor', cmd: `node build.mjs ${mode}`, expect: ROLLUP_API, ...(mode.endsWith('watch') && { watchBuilds: ROLLUP_WATCH_BUILDS }) })),
   { name: 'Rollup 4.0.2 command line (rollup -c)', fixture: 'rollup-api-floor', cmd: './node_modules/.bin/rollup -c', expect: ROLLUP_API },
+  // an asset a plugin emits from a package's file (lodash-es' LICENSE), naming it: Rollup 4.20 and later keep the name
+  // (its package by the asset), 4.0.2 does not - no asset names its file there, a build with one fails (STRICT=0: warns)
+  { name: 'Rollup 4.64.2 JavaScript API: an asset emitted from a package file', fixture: 'rollup-api', cmd: 'node build.mjs rollup-asset', expect: ROLLUP_API,
+    expectVia: { asset: ['lodash-es@4.18.1'] } },
+  { name: 'strict: Rollup 4.0.2 JavaScript API: an asset that names no file fails the build', fixture: 'rollup-api-floor', cmd: 'node build.mjs rollup-asset',
+    expectError: /rollup: Rollup 4\.0\.2 names no file the assets of its builds were emitted from \(4\.20 and later do\): the packages of LICENSE\.lodash-es\.txt would be missing/ },
+  { name: 'STRICT=0: Rollup 4.0.2 JavaScript API: an asset that names no file, a warning', fixture: 'rollup-api-floor', cmd: 'node build.mjs rollup-asset',
+    env: { BUNDLE_LOCKFILE_STRICT: '0' }, expect: ROLLUP_API, expectOutput: /WARNING: rollup: Rollup 4\.0\.2 names no file the assets of its builds/ },
   { name: 'Rollup 4 JavaScript API: watch(), every rebuild writes the lockfile, with the packages of that build', fixture: 'rollup-api', cmd: 'node build.mjs rollup-watch',
     expect: ROLLUP_API, watchBuilds: ROLLUP_WATCH_BUILDS },
   { name: 'Rolldown 1 JavaScript API: rolldown()', fixture: 'rollup-api', cmd: 'node build.mjs rolldown', expect: ROLLUP_API },
@@ -1677,6 +1715,10 @@ const cases = [
   // Next 12's own build fails on Node.js >= 25, also without bundle-lockfile: its compiled jsonwebtoken (through
   // buffer-equal-constant-time) reads require('buffer').SlowBuffer.prototype, and Node.js 25 removed SlowBuffer
   { name: 'Next.js 12.3.7', ...nextCase('next12', '12.3.7', '18.3.1'), maxNode: 24 },
+  // Next.js 12.1 turns standalone on with experimental.outputStandalone (12.2: output: 'standalone')
+  { name: "Next.js 12.1.6, experimental.outputStandalone: .next/standalone gets the runtime packages and the bundles' lockfiles", fixture: 'next12.1',
+    cmd: './node_modules/.bin/next build', outDir: '.next/standalone', env: { ...NEXT_ENV, NEXT_STANDALONE: 'experimental', BLTEST_ORACLE_STANDALONE: '1' },
+    expectIncludes: ['next@12.1.6', 'react@18.3.1', 'ms@2.1.3'], runtimeTrace: { routes: ['/'] }, maxNode: 24 },
   { name: 'Next.js 13.5.11', ...nextCase('next13', '13.5.11', '18.3.1') },
   { name: 'Next.js 14.2.35', ...nextCase('next14', '14.2.35', '18.3.1') },
   { name: 'Next.js 15.5.27', ...nextCase('next15', '15.5.27', '19.3.0') },
@@ -1840,9 +1882,14 @@ const cases = [
     expect: W5.filter(p => !p.startsWith('lodash-es@')) },
   // what reaches the output besides the chunks' JavaScript modules (test/apps/rspack-features); the oracle builds without
   // inlining exports, so the modules of consts-only and consts-default are in its chunks, and matches the copies by bytes
-  ...[['1.2.8', '1.2'], ['1.4.11', '1.4'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
+  ...[['1.2.8', '1.2'], ['1.4.11', '1.4'], ['1.5.0', '1.5.0'], ['1.5.8', '1.5'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (
     { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports`, fixture: `rspack-features${line}`,
       cmd: RSPACK_FEATURES_CMD, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
+  // a development build (no usage analysis): rspack 1.5.0 - 1.5.2 inline constants with experiments.inlineConst also
+  // without it (their defaults set the parser option from the experiment alone; 1.5.3 and later only with usedExports)
+  ...[['1.5.0', '1.5.0'], ['1.5.8', '1.5'], ['1.6.8', '1.6']].map(([v, line]) => (
+    { name: `rspack ${v}: native CSS, extracted Sass and Less, an asset, a worker, copies, inlined exports, development build`, fixture: `rspack-features${line}`,
+      env: { RSPACK_MODE: 'development' }, cmd: `${RSPACK_CONSTS} && npm run -s build`, expect: RSPACK_FEATURES, oracleMissing: RSPACK_FEATURES_MISSING })),
   // modules restored from the cache keep the files their loaders read (the style sheets inlined from packages), and the
   // modules whose exports were inlined stay listed
   ...[['1.2.8', '1.2'], ['1.6.8', '1.6'], ['1.7.12', '1.7'], ['2.2.8', '2.2']].map(([v, line]) => (

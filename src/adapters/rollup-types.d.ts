@@ -15,7 +15,7 @@ export interface OutputChunk {
   viteMetadata?: { importedCss?: Set<string> };
 }
 
-/** An asset of a bundle: originalFileName from Rollup 3.29 / 4, originalFileNames from Rollup 4.36 and Rolldown */
+/** An asset of a bundle: originalFileName from Rollup 4.20 (Vite passes it from 5.4), originalFileNames from Rollup 4.36 and Rolldown */
 export interface OutputAsset {
   type: 'asset';
   fileName: string;

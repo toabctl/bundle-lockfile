@@ -221,17 +221,21 @@ function inlinedModules(compilation, shipped) {
 }
 
 // How rspack may have inlined exports in a compiler's builds: null (not at all), 'used' (the modules it inlined count as
-// used) or 'all' (rspack 1.4: they count as unused). From 1.7: optimization.inlineExports (production in rspack 2; in
+// used) or 'all' (rspack 1.4 - 1.5.3: they count as unused). From 1.7: optimization.inlineExports (production in rspack 2; in
 // 1.7 experiments.inlineConst and inlineEnum switch it on), which applies InlineExportsPlugin. 1.4 - 1.6 inline only
-// with experiments.inlineConst (a JavaScript parser option, inlineConst - of a single rule too - fails without it; 1.5
-// and 1.6 set the parser option by default with usage analysis, Rsbuild 1.5 and 1.6 the experiment in production) or,
+// with experiments.inlineConst (a JavaScript parser option, inlineConst - of a single rule too - fails without it; 1.5.3
+// - 1.6 set the parser option by default with usage analysis, 1.5.0 - 1.5.2 from the experiment alone; Rsbuild 1.5 and
+// 1.6 set the experiment in production) or,
 // in 1.6, experiments.inlineEnum (InlineExportsPlugin, for both). Before 1.4 rspack inlines nothing.
 /** @param {Compiler} compiler @param {Options} options @returns {'used' | 'all' | null} */
 function inlining(compiler, options) {
   if ((options.optimization || {}).inlineExports === true) return 'used';
-  const [major, minor] = versionOf(compiler && compiler.webpack && compiler.webpack.rspackVersion);
+  const [major, minor, patch] = versionOf(compiler && compiler.webpack && compiler.webpack.rspackVersion);
   const e = options.experiments || {};
   if (major !== 1 || !(minor >= 4 && minor <= 6) || !(e.inlineConst === true || e.inlineEnum === true)) return null;
+  // 1.5.0 - 1.5.3 record no use of what they inlined either (1.5.4 does); 1.5.0 - 1.5.2 inline also without usage
+  // analysis (their defaults set the parser option from the experiment alone), 1.5.3 only with it
+  if (minor === 5 && patch <= 3) return patch <= 2 || (options.optimization || {}).usedExports ? 'all' : null;
   return minor === 4 ? 'all' : 'used';
 }
 

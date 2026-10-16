@@ -8,14 +8,14 @@ What is supported and tested, which processes are hooked, and what is particular
 | Bundler | Versions | Tested (matrix) | Hooked through | Notes |
 |---|---|---|---|---|
 | webpack | 4, 5 | 4.0, 4.47, 5.0, 5.60, 5.111 | CommonJS: webpack's `Compiler` | also copies vendored into other packages (umi's `@umijs/bundler-webpack`); webpack < 4 fails the build |
-| Next.js | 12 – 16 | 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | not with Turbopack (Next 16's default, `--turbopack` before): `next build --webpack`; [details](#nextjs) |
+| Next.js | 12 – 16 | 12.1 (standalone), 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | not with Turbopack (Next 16's default, `--turbopack` before): `next build --webpack`; [details](#nextjs) |
 | Next.js with next-rspack | 15, 16 | 15.5 (rspack 1.4), 16.4 (rspack 2.0) | as rspack | the same lockfiles as with webpack |
 | rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 (1.0: the failure) | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 and 0.x fail the build; [details](#rspack-rsbuild) |
 | Rsbuild, Rslib | Rsbuild 1.1 – 1.7, 2; Rslib 1 | Rsbuild 1.1, 1.2, 1.6, 1.7, 2.2; Rslib 1.0 | as rspack | one lockfile per environment's output (web and node: 1.7, 2.2); `rsbuild dev` serves the lockfile from memory |
-| Vite | 5, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; [details](#vite-rollup-rolldown) |
+| Vite | 5.4+, 6, 7 (Rollup 4), 8 (Rolldown); rolldown-vite 7 | 5.4, 6.4, 7.3, 8.3; rolldown-vite 7.3 (5.2: the failure) | ESM hook | `vite dev`, `vite preview` and Vitest write no lockfile; Vite 5.0 – 5.3 fail the build: they name no file of the assets they emit; [details](#vite-rollup-rolldown) |
 | SvelteKit | 2 (Vite 7), 3 (Vite 8) | 2.70, 3.0 | as Vite | adapter-static, adapter-node, adapter-netlify; [details](#sveltekit) |
 | Nuxt | 4 (Vite 8, Nitro 2) | 4.6 | as Vite | `nuxt build`, `nuxi build`; [details](#nuxt) |
-| Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | 2.78 – 3 are hooked, not tested; older ones fail the build |
+| Rollup | 4 (also `@rollup/wasm-node`) | 4.0, 4.64 | CommonJS (`require`, the `rollup` command line); ESM hook (`import`) | 2.78 – 3 are hooked, not tested; older ones fail the build; before 4.20 (no asset names its file: `originalFileName`) a build that emits an asset fails |
 | Rolldown | 1 | 1.0, 1.2 | ESM hook | `rolldown()`, `build()`, `watch()`; not the `rolldown` command line |
 | esbuild | 0.17 and later (also esbuild-wasm) | 0.17, 0.19, 0.28 | CommonJS: its API (`lib/main.js`) | `build()`, `context()` (rebuilds, `watch()`), `buildSync()`; not the `esbuild` command line; tsup fails the process (it writes esbuild's output itself); 0.16 and older fail the build; [details](#esbuild) |
 | Parcel | 2 | 2.8, 2.16 (the earliest 2.x releases do not run on the tested Node.js versions) | CommonJS: `@parcel/core`'s `Parcel` | `parcel build`, `parcel watch`, `parcel serve`, its JavaScript API (tested: `build()`, `watch()`); [details](#parcel) |
@@ -57,7 +57,8 @@ Recognized, not hooked — the build fails (`BUNDLE_LOCKFILE_STRICT=0`: a warnin
 Turbopack build still gets [Next.js' runtime lockfile](#nextjs)): Turbopack (Next.js 16's default build, `next build
 --turbopack` before; known when `next build` ends), the `rolldown` command line, `@vercel/ncc` (when it loads: it runs a
 webpack of its own), webpack < 4 and rspack 0.x (when a compiler compiles). Versions that are hooked but cannot run the
-plugin fail too: rspack 1.0, Rollup before 2.78, esbuild 0.16 and older. `BUNDLE_LOCKFILE_DISABLE` with the bundler such
+plugin fail too: rspack 1.0, Rollup before 2.78, esbuild 0.16 and older; and those that cannot say which files their
+assets come from: Vite before 5.4, Rollup before 4.20 (a build that emits an asset). `BUNDLE_LOCKFILE_DISABLE` with the bundler such
 a build stands in for (`webpack` for Turbopack and ncc, `rolldown` for its command line) turns the failure off.
 
 Not hooked — no lockfile, and no failure: the `esbuild` command line and Go API (a binary, not Node.js), Bun's own

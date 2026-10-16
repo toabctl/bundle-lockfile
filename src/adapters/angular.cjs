@@ -55,7 +55,9 @@ let esbuildFile = null;
 
 // The lockfile of one side (browser or server) of a build: its packages, rendered (core/outputs.cjs, the writers of
 // that path); what lands it (its export copy written) added to `lands`, for once the build is known not to fail.
-// Returns the content Angular writes, or null.
+// emptied: Angular empties the output path before it writes the files (outputOptions.clean, deleteOutputPath: the
+// default), after this has rendered the lockfile - the files of an earlier run (other hashes in their names) are still
+// there now, its lockfile's record must not be kept. Returns the content Angular writes, or null.
 /**
  * @param {string} side
  * @param {string} target
@@ -65,9 +67,10 @@ let esbuildFile = null;
  * @param {string[]} files
  * @param {ViaCollector} found
  * @param {(() => Promise<void>)[]} lands
+ * @param {boolean} emptied
  */
-function render(side, target, writer, pkgs, context, files, found, lands) {
-  const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found,
+function render(side, target, writer, pkgs, context, files, found, lands, emptied) {
+  const content = outputs.record(target, writer, pkgs, context, files, { disk: true, via: found, emptied,
     bundler: { name: 'angular', ...(version ? { version } : {}) } });
   // Angular writes the lockfile in the output; bundle-lockfile its export copy
   if (exportPath(target)) lands.push(() => outputs.land(target, writer, 'angular', { writeFile: null, prune: false }));
@@ -194,7 +197,7 @@ function complete(options, result, forced, lands) {
     const file = config.file.split(path.sep).join('/');
     /** @type {(label: string, dir: string, writer: string[], own: string[], collected: { all: Package[], found: ViaCollector }, locale: string) => void} */
     const write = (label, dir, writer, own, { all, found }, locale) => {
-      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found, lands);
+      const content = render(label, path.join(dir, config.file), JSON.stringify(writer), all, context, own, found, lands, out.clean === true);
       // Angular 17 - 21 key the files they write by their path in their side's directory, so a browser and a server
       // file of the same name are one (the one added last): the server's lockfile is a file of the output path's root,
       // at <server>/<file> (written also where Angular skips server files: it is not added for those, see above). With

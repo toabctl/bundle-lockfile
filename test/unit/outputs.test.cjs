@@ -273,7 +273,7 @@ test('outputs: runs of one config into one directory that write other files (oth
     assert.deepEqual(locked(), ['c']);
     // another process ran the same config before, into other files: the lockfile on disk has them, this run keeps them
     const before = JSON.parse(fs.readFileSync(J(dist, LOCK), 'utf8'));
-    const state = globalThis[Symbol.for('bundle-lockfile.outputs.v4')];
+    const state = globalThis[Symbol.for('bundle-lockfile.outputs.v5')];
     state.files.delete(J(dist, LOCK)); // (as a new process)
     fs.writeFileSync(J(dist, LOCK), JSON.stringify(before));
     await run('sel-3.js', 'a');

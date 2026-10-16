@@ -236,6 +236,11 @@ test('rspack 1.4 - 1.6: modules whose exports were inlined with experiments.inli
   assert.deepEqual(lockOf('1.4.11', { inlineConst: true }, { usedExports: true }, new Set([shipped])), ['consts', 'shipped', 'unused']);
   assert.deepEqual(lockOf('1.4.11', { inlineConst: true }, { usedExports: false }, new Set([shipped])), ['consts', 'shipped', 'unused']);
   assert.deepEqual(lockOf('1.4.11', {}, { usedExports: true }, new Set([shipped])), ['shipped']);
+  // 1.5.0 - 1.5.3 as 1.4 (1.5.4 records the use); 1.5.0 - 1.5.2 inline also without usage analysis, 1.5.3 not
+  for (const v of ['1.5.0', '1.5.3']) assert.deepEqual(lockOf(v, { inlineConst: true }, { usedExports: true }, new Set([shipped])), ['consts', 'shipped', 'unused'], v);
+  assert.deepEqual(lockOf('1.5.2', { inlineConst: true }, { usedExports: false }, new Set([shipped, consts, unused])), ['consts', 'shipped', 'unused']);
+  assert.deepEqual(lockOf('1.5.3', { inlineConst: true }, { usedExports: false }, new Set([shipped, consts, unused])), ['shipped']);
+  assert.deepEqual(lockOf('1.5.4', { inlineConst: true }, { usedExports: true }, new Set([shipped])), ['shipped']);
 });
 
 test('rspack: BundleLockfilePlugin in an rspack 1.0 config fails each compilation (it cannot collect every package there)', () => withConfig({ strict: true }, () => {

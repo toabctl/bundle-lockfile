@@ -21,6 +21,7 @@ const { readManifest } = require('../core/manifest.cjs');
 const { isObject, isArray, perProcess } = require('../core/values.cjs');
 const {
   hook, kindOf, isRspack, versionOf, outputDir, hasAsset, assetNames, readAsset, emitAsset, rawSourceOf, sourceOf, existsIn, writeIn,
+  onDisk, optimizeStage,
 } = require('./webpack-compat.cjs');
 const {
   KINDS, HELPERS, UNNAMED, sourceFile, bundledFiles, entryFiles, copiedUnnamed, copiedRspack, copiedInEmit, copiedLate,
@@ -88,18 +89,6 @@ function compilerWriter(compiler) {
   const shutdown = hook(compiler.hooks, 'shutdown');
   if (shutdown) shutdown.tap(NAME, () => { compiler[CLOSED] = true; });
   return (compiler[WRITER] = id);
-}
-
-// The output is on the real disk, where other processes may write the same lockfile: webpack's own Node file system
-// (webpack 5: graceful-fs, in whatever copy - webpack's dependency, the one Next.js bundles; webpack 4:
-// NodeOutputFileSystem), or Node's fs; not e.g. webpack-dev-middleware's in-memory one (memfs). graceful-fs is known
-// by its gracefulify(): a plugin configured by hand does not know where webpack is to resolve webpack's graceful-fs.
-/** @param {Compiler} compiler */
-function onDisk(compiler) {
-  const fsys = compiler.outputFileSystem;
-  if (!fsys) return false;
-  if (fsys.constructor && fsys.constructor.name === 'NodeOutputFileSystem') return true;
-  return fsys === fs || typeof fsys.gracefulify === 'function';
 }
 
 // The files webpack writes assets to: the name without a query string. webpack >= 5.104 also cuts at a
@@ -328,10 +317,10 @@ class BundleLockfilePlugin {
       const marks = /** @type {const} */ ([BUNDLED, KINDS, HELPERS, UNNAMED, SOURCE, GENERATED, LATE]);
       if (unseal) unseal.tap(NAME, () => { for (const k of marks) delete compilation[k]; });
       // webpack 5 and rspack: copied files, before the optimize stages change their bytes (copiedUnnamed, copiedRspack)
-      const C = compiler.webpack && compiler.webpack.Compilation;
       const processAssets = hook(compilation.hooks, 'processAssets');
-      if (processAssets && C && typeof C.PROCESS_ASSETS_STAGE_OPTIMIZE === 'number') {
-        own(processAssets).tap({ name: NAME, stage: C.PROCESS_ASSETS_STAGE_OPTIMIZE - 1 }, () => {
+      const optimize = optimizeStage(compiler, compilation);
+      if (processAssets && optimize !== undefined) {
+        own(processAssets).tap({ name: NAME, stage: optimize - 1 }, () => {
           try { compilation[UNNAMED] = isRspack(compiler) ? copiedRspack(compilation) : copiedUnnamed(compilation); } catch (e) {
             problems.problem(`${kindOf(compiler)}: could not check the files copied into ${outputDir(compilation)}`, e);
           }

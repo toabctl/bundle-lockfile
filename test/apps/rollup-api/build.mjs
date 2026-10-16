@@ -2,6 +2,8 @@
 // line): node build.mjs <mode>
 //   rollup          rollup() + write()
 //   rollup-wasm     the same with @rollup/wasm-node (Rollup's WebAssembly build, for platforms without its native one)
+//   rollup-asset    rollup() + write() with a plugin that emits a package's file (lodash-es' LICENSE) as an asset, naming
+//                   it (originalFileName: Rollup 4.20 and later keep it; before, no asset names its file)
 //   rolldown        rolldown() + write()
 //   rolldown-build  Rolldown's build()
 //   rolldown-nodir  rolldown() + write() without dir or file (Rolldown writes to dist/)
@@ -33,7 +35,14 @@ const rollupOptions = async () => ({ input, plugins: [(await import('@rollup/plu
 const rolldownOptions = { input, platform: 'browser' };
 const output = { dir, format: 'es' };
 
-if (mode === 'rollup' || mode === 'rollup-wasm') {
+if (mode === 'rollup-asset') {
+  const license = path.join(path.dirname(createRequire(import.meta.url).resolve('lodash-es/package.json')), 'LICENSE');
+  const emit = { name: 'emit-license', buildStart() { this.emitFile({ type: 'asset', fileName: 'LICENSE.lodash-es.txt', source: fs.readFileSync(license), originalFileName: license }); } };
+  const options = await rollupOptions();
+  const bundle = await (await import('rollup')).rollup({ ...options, plugins: [...options.plugins, emit] });
+  await bundle.write(output);
+  await bundle.close();
+} else if (mode === 'rollup' || mode === 'rollup-wasm') {
   const bundle = await (await import(mode === 'rollup' ? 'rollup' : '@rollup/wasm-node')).rollup(await rollupOptions());
   await bundle.write(output);
   await bundle.close();

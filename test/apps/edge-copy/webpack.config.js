@@ -1,7 +1,9 @@
 // copy-webpack-plugin copies a package's file and a package's directory into the output verbatim; they are in no chunk
 const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
-const patterns = [
+// EDGE_COPY=one-js: only a package's JavaScript file (left-pad's index.js), which webpack 5's minimizer changes after
+// the copy: nothing else of the package's has its bytes
+const patterns = process.env.EDGE_COPY === 'one-js' ? [{ from: require.resolve('left-pad'), to: 'vendor/left-pad.js' }] : [
   { from: require.resolve('normalize.css/normalize.css'), to: 'css/normalize.css' },
   { from: path.dirname(require.resolve('left-pad/package.json')), to: 'vendor/left-pad' },
   { from: 'static', to: 'static' },  // first-party files: not packages
@@ -21,7 +23,10 @@ class CopyAfterEmit {
     });
   }
 }
+// EDGE_COPY_FUTURE=1 (webpack 4): output.futureEmitAssets, as react-scripts 4 sets it - webpack keeps only the sizes of
+// the assets it emitted, as webpack 5 does
 module.exports = {
-  mode: 'production', entry: './src/index.js', output: { path: path.join(__dirname, 'dist'), filename: 'main.js' },
+  mode: 'production', entry: './src/index.js',
+  output: { path: path.join(__dirname, 'dist'), filename: 'main.js', ...(process.env.EDGE_COPY_FUTURE && { futureEmitAssets: true }) },
   plugins: [process.env.EDGE_COPY === 'after-emit' ? new CopyAfterEmit() : v5 ? new CopyPlugin(patterns) : new CopyPlugin({ patterns })],
 };

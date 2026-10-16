@@ -10,8 +10,9 @@ const distDir = oraclePlugin && !process.env.NEXT_EXPORT ? '.next-oracle' : '.ne
 const config = {
   distDir,
   // NEXT_EXPORT=1: a static export into out/; NEXT_STANDALONE=1: a standalone server in .next/standalone
+  // (NEXT_STANDALONE=experimental: as Next.js 12.1 turns it on, experimental.outputStandalone)
   ...(process.env.NEXT_EXPORT && { output: 'export' }),
-  ...(process.env.NEXT_STANDALONE && { output: 'standalone' }),
+  ...(process.env.NEXT_STANDALONE && (process.env.NEXT_STANDALONE === 'experimental' ? { experimental: { outputStandalone: true } } : { output: 'standalone' })),
   // NEXT_WEBPACK_FN=1: a webpack() that changes nothing, as real apps have - with one, Next.js 14 and later build in
   // next build's own process instead of build workers
   ...(process.env.NEXT_WEBPACK_FN && !oraclePlugin && !process.env.TURBOPACK && { webpack: (c) => c }),

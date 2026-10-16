@@ -215,32 +215,37 @@ test('webpack adapter: more than 20,000 files below a copied directory in node_m
   assert.match(seen[0], /^more than 20000 files below the directories in node_modules that \S+'s build depends on: assets copied from them without naming their source were not all compared$/);
 });
 
-test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched before the optimize stages', () => {
+test('webpack adapter: webpack 5 minimizes unnamed copies; they are matched before the optimize stages (also on 5.0, without compiler.webpack)', () => {
   const root = project({ 'node_modules/a/package.json': { name: 'a', version: '1.0.0' }, 'node_modules/file/package.json': { name: 'file', version: '1.0.0' },
     'node_modules/file/f.css': 'body {  margin: 0  }' });
-  const { compiler, taps } = fakeCompiler5({ outputPath: J(root, 'dist') });
-  compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
-  const p = new webpackAdapter.BundleLockfilePlugin(LOCK);
-  p.apply(compiler);
-  const build = (beforeOptimize) => {
-    const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
-    const assets = new Map([['main.js', { name: 'main.js', source: src('main'), info: {} }],
-      ['css/f.css', { name: 'css/f.css', source: src('body {  margin: 0  }'), info: { copied: true } }]]);
-    let stage, optimize;
-    const comp = {
-      compiler, chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }], children: [],
-      fileDependencies: new Set([J(root, 'node_modules/a/i.js'), J(root, 'node_modules/file/f.css')]),
-      getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()], emitAsset: () => {},
-      hooks: { processAssets: { tap: (o, fn) => { assert.equal(o.stage, 99); optimize = fn; } }, afterProcessAssets: { tap: (o, fn) => (stage = fn) } },
+  // webpack 5.0.0 has no compiler.webpack (5.1.0 adds it): the stages are its Compilation class's
+  class Compilation { static PROCESS_ASSETS_STAGE_OPTIMIZE = 100; }
+  for (const shape of ['webpack >= 5.1', 'webpack 5.0']) {
+    const { compiler, taps } = fakeCompiler5({ outputPath: J(root, `dist-${shape.replace(/\W/g, '')}`), withWebpack: shape !== 'webpack 5.0' });
+    if (compiler.webpack) compiler.webpack.Compilation = { PROCESS_ASSETS_STAGE_OPTIMIZE: 100 };
+    const p = new webpackAdapter.BundleLockfilePlugin(LOCK);
+    p.apply(compiler);
+    const build = (beforeOptimize) => {
+      const src = (content) => ({ size: () => Buffer.byteLength(content), source: () => content });
+      const assets = new Map([['main.js', { name: 'main.js', source: src('main'), info: {} }],
+        ['css/f.css', { name: 'css/f.css', source: src('body {  margin: 0  }'), info: { copied: true } }]]);
+      let stage, optimize;
+      const comp = Object.assign(new Compilation(), {
+        compiler, chunks: [{ files: new Set(['main.js']), modulesIterable: [{ resource: J(root, 'node_modules/a/i.js') }] }], children: [],
+        fileDependencies: new Set([J(root, 'node_modules/a/i.js'), J(root, 'node_modules/file/f.css')]),
+        getAsset: (n) => assets.get(n), getAssets: () => [...assets.values()], emitAsset: () => {},
+        hooks: { processAssets: { tap: (o, fn) => { assert.equal(o.stage, 99); optimize = fn; } }, afterProcessAssets: { tap: (o, fn) => (stage = fn) } },
+      });
+      taps.thisCompilation(comp);
+      assert.ok(optimize, `${shape}: a tap before the optimize stages`);
+      if (beforeOptimize) optimize();
+      assets.get('css/f.css').source = src('body{margin:0}'); // a minimizer at the optimize stages
+      stage();
+      return lockedNames(p.lockfile(comp));
     };
-    taps.thisCompilation(comp);
-    if (beforeOptimize) optimize();
-    assets.get('css/f.css').source = src('body{margin:0}'); // a minimizer at the optimize stages
-    stage();
-    return lockedNames(p.lockfile(comp));
-  };
-  assert.deepEqual(build(true), ['a', 'file']);
-  assert.deepEqual(build(false), ['a']); // after minimizing, the bytes are no package file's
+    assert.deepEqual(build(true), ['a', 'file'], shape);
+    assert.deepEqual(build(false), ['a'], shape); // after minimizing, the bytes are no package file's
+  }
 });
 
 test('webpack adapter: style sheets a shipped style module\'s loaders inlined from packages (Sass, Less, PostCSS)', () => {
@@ -702,10 +707,14 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
     'node_modules/copied/x.css': 'body{}', 'node_modules/other/z.css': 'BODY{}', 'node_modules/empty/e.css': '', 'src/robots.txt': 'x' });
   const dep = (f) => J(root, f);
   const DEPS = [dep('node_modules/a/i.js'), dep('node_modules/copied/x.css'), dep('node_modules/other/z.css'), dep('node_modules/empty/e.css'), dep('src/robots.txt')];
-  for (const shape of ['webpack 4', 'webpack 5']) {
-    const outputPath = J(root, shape === 'webpack 4' ? 'dist4' : 'dist5');
+  // webpack 4 with output.futureEmitAssets (react-scripts 4 sets it) keeps only the sizes of emitted assets, as webpack 5
+  // does, and its output file system (NodeOutputFileSystem) has no readFile: the bytes are read from the disk
+  for (const shape of ['webpack 4', 'webpack 4 futureEmitAssets', 'webpack 5']) {
+    const outputPath = J(root, shape === 'webpack 5' ? 'dist5' : shape === 'webpack 4' ? 'dist4' : 'dist4-future');
     const { compiler, taps } = fakeCompiler5({ outputPath, withWebpack: shape === 'webpack 5' });
-    compiler.outputFileSystem.readFile = fs.readFile;
+    if (shape === 'webpack 5') compiler.outputFileSystem.readFile = fs.readFile;
+    else compiler.outputFileSystem = Object.assign(new (class NodeOutputFileSystem {})(), compiler.outputFileSystem);
+    const sizeOnly = shape !== 'webpack 4';
     new webpackAdapter.BundleLockfilePlugin(LOCK).apply(compiler);
     // late: assets the emit hook adds (name -> [content, info]); deps: the compilation's file dependencies
     const build = async (late, deps = DEPS) => {
@@ -715,7 +724,7 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
         hooks: { afterProcessAssets: { tap: (o, fn) => (comp.stage = fn) }, afterOptimizeAssets: { tap: (o, fn) => (comp.stage = fn) } },
       };
       let add, sourceOf;
-      if (shape === 'webpack 4') { // assets: an object of sources, no asset info (webpack < 4.40), no emitAsset
+      if (shape !== 'webpack 5') { // assets: an object of sources, no asset info (webpack < 4.40), no emitAsset
         comp.assets = {};
         add = (name, source) => { comp.assets[name] = source; };
         sourceOf = (name) => comp.assets[name];
@@ -729,13 +738,16 @@ test('webpack adapter: files copied in the emit hook (copy-webpack-plugin 5) cou
       taps.thisCompilation(comp);
       comp.stage();
       for (const [name, [content, info]] of Object.entries(late)) {
-        // webpack 5 keeps only the size of emitted assets: the content is read from the output
-        add(name, shape === 'webpack 5' ? { source() { throw new Error('size only'); } } : { source: () => content }, info);
+        // webpack 5 (and 4 with futureEmitAssets) keeps only the size of emitted assets: the content is read from the output
+        add(name, sizeOnly ? { source() { throw new Error('size only'); } } : { source: () => content }, info);
         fs.mkdirSync(path.dirname(J(outputPath, name)), { recursive: true });
         fs.writeFileSync(J(outputPath, name), content);
       }
-      fs.mkdirSync(J(outputPath, 'bundle-lockfile'), { recursive: true });
-      fs.writeFileSync(J(outputPath, LOCK), sourceOf(LOCK).source()); // webpack writes the lockfile asset
+      // webpack writes the lockfile asset (on the real disk, NodeOutputFileSystem, there is none: the plugin writes it)
+      if (sourceOf(LOCK)) {
+        fs.mkdirSync(J(outputPath, 'bundle-lockfile'), { recursive: true });
+        fs.writeFileSync(J(outputPath, LOCK), sourceOf(LOCK).source());
+      }
       await new Promise(resolve => taps.afterEmit(comp, resolve));
       return lockedNames(fs.readFileSync(J(outputPath, LOCK), 'utf8'));
     };

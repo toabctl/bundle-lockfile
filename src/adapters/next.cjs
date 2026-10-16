@@ -52,8 +52,10 @@ function placeOf(buildFile, dir) {
   const distDir = text(ctx && ctx.distDir) || (projectDir && text(conf.distDir) && path.join(projectDir, text(conf.distDir)));
   if (!distDir) throw new Error(`no distDir: neither Next.js' build context (${ctxFile}) nor the config its build loaded has one`);
   // the directory .next/standalone mirrors (outputFileTracingRoot, experimental. before Next.js 15)
-  const root = text(conf.outputFileTracingRoot) || (isObject(conf.experimental) && text(conf.experimental.outputFileTracingRoot)) || projectDir;
-  return { distDir, dir: projectDir, root, standalone: conf.output === 'standalone' };
+  const exp = isObject(conf.experimental) ? conf.experimental : {};
+  const root = text(conf.outputFileTracingRoot) || text(exp.outputFileTracingRoot) || projectDir;
+  // output: 'standalone'; Next.js 12.1: experimental.outputStandalone (12.2 renames it when it loads the config)
+  return { distDir, dir: projectDir, root, standalone: conf.output === 'standalone' || exp.outputStandalone === true };
 }
 // a setting that is a string, else ''
 /** @type {(v: unknown) => string} */
