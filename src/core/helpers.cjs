@@ -154,8 +154,9 @@ const note = (msg) => { if (!noted.has(msg)) { noted.add(msg); config.debug(msg)
  * @typedef {{ loaders?: unknown, originalSource?: () => ({ source?: () => unknown } | null), identifier: () => string }} WebpackModule
  */
 /**
- * @param {Iterable<WebpackModule>} modules
- * @param {(m: WebpackModule) => string | null | undefined} sourceOf
+ * @template {WebpackModule} M
+ * @param {Iterable<M>} modules
+ * @param {(m: M) => string | null | undefined} sourceOf
  * @returns {Package[]}
  */
 function ofWebpackModules(modules, sourceOf) {

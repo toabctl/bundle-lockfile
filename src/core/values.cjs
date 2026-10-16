@@ -10,6 +10,13 @@
  */
 function isObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 
+// An object or a function (a module's exports, e.g. webpack's: a function with properties): its properties are unknown
+/**
+ * @param {unknown} v
+ * @returns {v is Record<PropertyKey, unknown>}
+ */
+function isObjectOrFunction(v) { return (typeof v === 'object' || typeof v === 'function') && v !== null; }
+
 // An array, of values that are unknown (Array.isArray makes them any)
 /** @type {(v: unknown) => v is unknown[]} */
 const isArray = (v) => Array.isArray(v);
@@ -41,4 +48,4 @@ function perProcess(key, make) {
   return /** @type {T} */ (g[key]);
 }
 
-module.exports = { isObject, isArray, strings, parseJson, codeOf, perProcess };
+module.exports = { isObject, isObjectOrFunction, isArray, strings, parseJson, codeOf, perProcess };
