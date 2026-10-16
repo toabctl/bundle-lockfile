@@ -3,18 +3,29 @@
 // whose file: URL ends with one of the suffixes is replaced by a generated module that re-exports everything of the
 // real one, except the functions named in `wrap`, which go through globalThis[Symbol.for('bundle-lockfile.esm')].
 // Used by the in-thread hooks (module.registerHooks) and the loader thread (esm-loader.mjs) alike.
+/** @import { EsmEntry } from './types' */
+/** @import { LoadFnOutput, ModuleSource } from 'node:module' */
+// what a load hook gets from the next one: a CommonJS module's source may be null (Node reads the file then)
+/** @typedef {Omit<LoadFnOutput, 'source'> & { source?: ModuleSource | null }} LoadResult */
 const path = require('path');
 const { fileURLToPath } = require('url');
 const { logical } = require('./core/layout.cjs');
+const { isObject } = require('./core/values.cjs');
 
 const MARK = 'bundle-lockfile-real'; // query on the URL of the real module, which is loaded as is
 
 // The path of a file: URL as adapters recognize bundler files by ("/" separators; a package in Yarn's store as
 // node_modules/<name>, see core/layout.cjs), or null
+/** @param {string} url */
 function pathOf(url) {
   try { return logical(fileURLToPath(url.split(/[?#]/)[0])).split(path.sep).join('/'); } catch { return null; }
 }
 
+/**
+ * @param {unknown} url
+ * @param {EsmEntry[]} entries
+ * @returns {EsmEntry | null}
+ */
 function match(url, entries) {
   if (typeof url !== 'string' || !url.startsWith('file:') || url.includes(MARK)) return null;
   const p = pathOf(url);
@@ -33,9 +44,12 @@ function match(url, entries) {
 // The text between comments is copied in runs (slice), not character by character: rspack 2's entry is one 700 KB
 // bundle, which every process that imports it scans.
 const REGEX_AFTER = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await']);
+/** @type {(c: number) => boolean} */
 const isWordChar = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 36 || c === 95 || c > 127;
+/** @type {(c: number) => boolean} */
 const isSpace = (c) => c === 32 || c === 9 || c === 10 || c === 13 || c === 11 || c === 12 || c === 0xa0 || c === 0xfeff || c === 0x2028 || c === 0x2029;
 // the end (index after it) of the regular expression literal at i, or -1 if there is none (a line ends first)
+/** @param {string} src @param {number} i */
 function regexEnd(src, i) {
   let j = i + 1, inClass = false;
   while (j < src.length) {
@@ -49,11 +63,14 @@ function regexEnd(src, i) {
   }
   return -1;
 }
+/** @param {string} src */
 function withoutComments(src, literals = false) {
   let out = '', i = 0, start = 0, from = 0; // from: where the template literal that ends at the top level began
   let last = -1, literal = false; // the last character of code (not space, not in a comment), and whether it ends a literal
+  /** @type {number[]} */
   const braces = []; // for each template literal's ${} the code is in: the depth of the braces opened in it
   // src[a, b) replaced by a space - not in the code of a ${} with literals: the whole template literal goes
+  /** @type {(a: number, b: number) => void} */
   const cut = (a, b) => { if (!(literals && braces.length)) { out += `${src.slice(start, a)} `; start = b; } };
   const regexHere = () => {
     if (last < 0) return true;
@@ -68,6 +85,7 @@ function withoutComments(src, literals = false) {
     return !((p === 43 || p === 45) && src.charCodeAt(last - 1) === p); // x++ / y, x-- / y
   };
   // the rest of a template literal from j (after its ` or the } of a ${}): its end, or the code of a ${} in it
+  /** @param {number} j */
   const template = (j) => {
     while (j < src.length) {
       const c = src.charCodeAt(j);
@@ -79,6 +97,7 @@ function withoutComments(src, literals = false) {
     return j;
   };
   // a template literal, and the rest of one after the } of a ${} in it: ended at the top level if no ${} is open
+  /** @param {number} j */
   const after = (j) => { i = template(j); if (literals && !braces.length) cut(from, i); };
   while (i < src.length) {
     const c = src.charCodeAt(i);
@@ -117,7 +136,9 @@ function withoutComments(src, literals = false) {
 }
 
 // Names a module exports, from `export { a, b as c }` (also `... from '...'`) and `export function|class|const x`.
+/** @param {string} code */
 function exportedNames(code) {
+  /** @type {Set<string>} */
   const names = new Set();
   const src = withoutComments(code, true);
   for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}/g)) {
@@ -139,6 +160,11 @@ function exportedNames(code) {
 // builds would write no lockfile (hooks.cjs found). Only the default export is read from the source. Without the
 // hooks' API in its thread (bundle-lockfile not loaded there) the bundler is not hooked: in strict mode the wrapper
 // throws when it is evaluated, which fails its import; otherwise it warns, and the module is as it is.
+/**
+ * @param {string} url
+ * @param {string} realSrc
+ * @param {EsmEntry} entry
+ */
 function source(url, realSrc, entry, strict = true) {
   const names = exportedNames(realSrc);
   const real = JSON.stringify(`${url}${url.includes('?') ? '&' : '?'}${MARK}`);
@@ -161,8 +187,10 @@ function source(url, realSrc, entry, strict = true) {
 // What a load hook returns for an entry module it cannot wrap, in strict mode: a module that throws when it is
 // evaluated, which fails its import - the build - with the reason (in the bundler's thread also when the loader thread
 // found it).
+/** @param {string} url @param {unknown} e */
 function unwrappable(url, e) {
-  const msg = `bundle-lockfile: could not wrap ${url}: ${e && e.message} (BUNDLE_LOCKFILE_STRICT=0 makes this a warning)`;
+  const message = e && (isObject(e) ? e.message : undefined);
+  const msg = `bundle-lockfile: could not wrap ${url}: ${message} (BUNDLE_LOCKFILE_STRICT=0 makes this a warning)`;
   return { format: 'module', source: `throw new Error(${JSON.stringify(msg)});\n`, shortCircuit: true };
 }
 
@@ -174,17 +202,30 @@ function unwrappable(url, e) {
 // of a CommonJS file an ES module imports (Rsbuild 1 importing rspack 1), which Node then also loads through
 // Module._extensions: such a module is reported twice, and the adapters patch it once.
 const CJS_LOADED = "\n;{ const f = globalThis[Symbol.for('bundle-lockfile.cjs-loaded')]; if (typeof f === 'function') f(module, __filename); }\n";
+/**
+ * @param {unknown} url
+ * @param {LoadResult} result
+ * @param {RegExp[]} files
+ */
 function cjsSource(url, result, files) {
   if (!result || result.format !== 'commonjs' || result.source == null || typeof url !== 'string' || !url.startsWith('file:')) return null;
   const p = pathOf(url);
   if (!p || !files.some(re => re.test(p))) return null;
-  const src = typeof result.source === 'string' ? result.source : Buffer.from(result.source).toString('utf8');
+  const src = typeof result.source === 'string' ? result.source : bytes(result.source).toString('utf8');
   return src.endsWith(CJS_LOADED) ? null : src + CJS_LOADED;
 }
 
 // What the load hooks (in-thread in hooks.cjs, in the loader thread in esm-loader.mjs) return for `url`, given the
 // result of the next hook: the wrapper of an entry module, a cjsFiles module's source with the line appended, or the
 // result as it is.
+/**
+ * @template {LoadResult} R
+ * @param {string} url
+ * @param {R} result
+ * @param {EsmEntry[]} entries
+ * @param {RegExp[]} cjsFiles
+ * @returns {R | { format: 'module', source: string, shortCircuit: true }}
+ */
 function transform(url, result, entries, cjsFiles, strict = true) {
   // only ES modules are wrapped: rspack 1's CommonJS dist/index.js has the path of rspack 2's entry, and must go on to
   // cjsSource (under Yarn Plug'n'Play Node.js evaluates it without the CommonJS hook)
@@ -193,7 +234,10 @@ function transform(url, result, entries, cjsFiles, strict = true) {
     const cjs = cjsSource(url, result, cjsFiles);
     return cjs ? { ...result, source: cjs } : result;
   }
-  return { format: 'module', source: source(url, String(result.source == null ? '' : Buffer.from(result.source)), entry, strict), shortCircuit: true };
+  return { format: 'module', source: source(url, String(result.source == null ? '' : bytes(result.source)), entry, strict), shortCircuit: true };
 }
+// A module's source as a Buffer (Buffer.from takes each form a source has: an ArrayBuffer, a typed array)
+/** @type {(src: ModuleSource) => Buffer} */
+const bytes = (src) => Buffer.from(/** @type {Uint8Array} */ (src));
 
 module.exports = { MARK, match, withoutComments, exportedNames, source, cjsSource, CJS_LOADED, transform, unwrappable };
