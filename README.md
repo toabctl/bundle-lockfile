@@ -24,7 +24,7 @@ it misses shipped ones, because what is shipped depends on the import graph, not
 
 ```json
 "dependencies":    { "lodash-es": "4.18.1", "is-number": "7.0.0" },
-"devDependencies": { "webpack": "5.111.1", "webpack-cli": "7.2.3", "classnames": "2.5.1", "left-pad": "1.3.0" }
+"devDependencies": { "webpack": "5.112.2", "webpack-cli": "7.2.3", "classnames": "2.5.1", "left-pad": "1.3.0" }
 ```
 
 Its source code imports only `lodash-es` and `classnames`:
@@ -100,7 +100,7 @@ lodash-es  4.18.1   npm
 ms         2.0.0    npm
 ms         2.1.3    npm
 nanoid     3.3.20   npm
-webpack    5.111.1  npm
+webpack    5.112.2  npm
 yallist    5.0.0    npm
 ```
 

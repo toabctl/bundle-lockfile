@@ -52,6 +52,28 @@ CI splits the matrix into shards that run as parallel jobs. Both scripts take:
   modules, hooked through the loader thread there; also module federation, Monaco and Next.js 16 with next-rspack on
   rspack 2), the two copies of rspack, and webpack 5 and rspack 1.7 under Yarn Plug'n'Play.
 
+### Versions: pinned, and the newest
+
+The fixtures pin the versions of their dependencies (`deps`, `devDeps` in `matrix.cjs`), and with `pins` those of
+packages their dependencies bring, which a case names or whose newer releases would change the build: `gen.cjs` writes
+them as the installer's overrides (npm and bun `overrides`, yarn `resolutions`, pnpm 8 and 9 `pnpm.overrides`, pnpm 10
+and later `overrides` in `pnpm-workspace.yaml`) and fails unless the install resolved each to exactly that version. A
+pin is only for a package installed at one version: an override replaces every copy. Everything else resolves against
+the registry on every run, so the pull request matrix can still change without a commit (in October 2026 the
+`schema-utils` 4.8 releases broke webpack 5.111.1's own production build).
+
+`.github/workflows/latest.yaml` runs every week on the newest releases: with `BLTEST_LATEST=1`, `gen.cjs` widens every
+exact version to a caret range and leaves the pins out, and `run.cjs` compares the cases' hand-written lists by name
+(`name@*`); the oracle, the canaries, syft and Trivy stay exact. For webpack 5, the "not active without NODE_OPTIONS"
+case builds without bundle-lockfile: when it fails too, the break is upstream. It takes the fixtures of
+each bundler's newest line, not the floors and failures, which a caret range would move off their version. Once it is
+green on new releases, a pull request bumps the pins.
+
+```sh
+BLTEST_LATEST=1 node test/gen.cjs /tmp/fixtures-latest --fixtures='^(wp5-npm|vite8-npm)$'
+BLTEST_LATEST=1 node test/run.cjs /tmp/fixtures-latest --fixtures='^(wp5-npm|vite8-npm)$'
+```
+
 ### Environments
 
 - Node.js 24 and 26 (Wolfi's `nodejs-24`, `nodejs-26`); Node.js 22 for the fixtures above; Node.js 20 for a few
@@ -195,7 +217,7 @@ process's `locations` (a second build, then the first one again).
   copied into the output with fs in `afterEmit`, html-webpack-plugin 4 and 5 templates, a package file and a package directory copied
   by copy-webpack-plugin (5, 6.0 and 6.4 on webpack 4, 6.2 and 14 on webpack 5; 5 and html-webpack-plugin 4's favicon
   also with `output.futureEmitAssets`, which keeps only the sizes of emitted assets; a package's JavaScript file alone,
-  minimized after the copy, on webpack 5.0 and 5.111)
+  minimized after the copy, on webpack 5.0 and 5.112)
 - two compilers sharing an output directory (also with query strings in file names, configs that differ only in
   `resolve.alias`, and a failing watch rebuild); two compilers whose `output.path` with `[fullhash]` resolves to
   different directories; compression-webpack-plugin deleting the original assets (webpack 4 and 5, also of two
