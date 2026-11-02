@@ -174,7 +174,8 @@ const canary = (bundler, deps, packageJson = {}) => ({ app: 'canary', bundler, i
 // deps, devDeps, packageJson (more package.json fields), postInstall (a command run in the fixture after the install,
 // with network), pins ({ name: version }: packages the fixture's dependencies bring, at exactly that version - those a
 // case names, which a newer release in their range would change; gen.cjs writes them as the installer's overrides and
-// checks the install resolved them. Only for a package installed at one version: an override replaces every copy)
+// checks the install resolved them. Only for a package installed at one version: an override replaces every copy.
+// { parent: { name: version } } pins only the parent's copy: npm only)
 const fixtures = {
   'vite8-npm': vite('8.3.3'),
   'vite7-npm': vite('7.3.7'),
@@ -267,11 +268,11 @@ const fixtures = {
   // (nuxt depends on it, the project does not); Nitro copies the client output's _nuxt/ files into .output/public/
   'nuxt4-pnpm10': { app: 'nuxt', bundler: 'nuxt', installer: { type: 'pnpm', version: '10.34.6' },
     deps: { nuxt: '4.6.1', nuxi: '4.0.1', vue: '3.5.44', 'lodash-es': '4.18.1' }, packageJson: { type: 'module', scripts: { build: 'nuxt build' } } },
-  // (pins: the server's packages the adapter-node case names. Not set-cookie-parser, which adapter-netlify takes at ^2.6.0
-  // and kit at ^3.0.0 - an override would replace kit's copy too: a dependency of the fixture's own at 2.7.2 instead, which
-  // npm installs at the top, where adapter-netlify's range finds it; kit keeps its 3.x)
+  // (pins: the server's packages the adapter-node case names; set-cookie-parser only below adapter-netlify, which takes
+  // ^2.6.0 - kit takes ^3.0.0, a pin of every copy would replace kit's. Not a dependency of the fixture's own: adapter-node
+  // leaves those external, the server would not bundle it)
   'sveltekit2': { ...sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7',
-    '@sveltejs/adapter-netlify': '5.2.4', 'set-cookie-parser': '2.7.2' }), pins: { devalue: '5.9.4', clsx: '2.1.1' } },
+    '@sveltejs/adapter-netlify': '5.2.4' }), pins: { devalue: '5.9.4', clsx: '2.1.1', '@sveltejs/adapter-netlify': { 'set-cookie-parser': '2.7.2' } } },
   'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0',
     '@sveltejs/adapter-netlify': '7.0.1' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },

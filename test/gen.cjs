@@ -105,10 +105,12 @@ const widen = (deps) => (!LATEST || !deps ? deps : Object.fromEntries(Object.ent
 // bring, whose versions a case names or whose newer releases break the build), as the installer's overrides: npm and
 // bun `overrides`, yarn `resolutions`, pnpm 8 / 9 `pnpm.overrides` in package.json, pnpm 10 and later `overrides` in
 // pnpm-workspace.yaml (pnpm 11 no longer reads package.json's pnpm field).
+// { parent: { name: version } }: only the parent's copy (npm's nested overrides; npm only).
 function pinFields(fx) {
   const pins = fx.pins;
   if (LATEST || !pins) return {};
   const t = fx.installer.type;
+  if (t !== 'npm' && Object.values(pins).some(v => typeof v !== 'string')) throw new Error(`pins: a parent's own pins need npm, not ${t}`);
   if (t === 'npm' || t === 'bun') return { overrides: pins };
   if (t === 'yarn1' || t === 'yarn-berry') return { resolutions: pins };
   if (t === 'pnpm') return Number(fx.installer.version.split('.')[0]) >= 10 ? {} : { pnpm: { overrides: pins } };
@@ -120,7 +122,7 @@ function pinWorkspace(dir, fx) {
   const file = path.join(dir, 'pnpm-workspace.yaml');
   const own = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   if (/^overrides:/m.test(own)) throw new Error(`${file}: has overrides of its own, and the fixture pins`);
-  const lines = Object.entries(fx.pins).map(([n, v]) => `  ${JSON.stringify(n)}: ${JSON.stringify(v)}`);
+  const lines = Object.entries(fx.pins).map(([n, v]) => `  ${JSON.stringify(n)}: ${JSON.stringify(v)}`); // (strings: see pinFields)
   fs.writeFileSync(file, `${own}${own && !own.endsWith('\n') ? '\n' : ''}overrides:\n${lines.join('\n')}\n`);
 }
 // The versions of package `name` the installer's lockfile resolves (package-lock.json, pnpm-lock.yaml, yarn.lock of
@@ -143,10 +145,25 @@ function resolved(dir, name) {
   return null;
 }
 // After the install: each pin is what the lockfile resolves, and only that (an installer that ignored it would test
-// another version than the case says)
+// another version than the case says); a parent's own pin: its copy (npm's package-lock.json)
 function checkPins(dir, fx) {
   if (LATEST || !fx.pins) return;
   for (const [n, v] of Object.entries(fx.pins)) {
+    if (typeof v !== 'string') {
+      const lock = JSON.parse(fs.readFileSync(path.join(dir, 'package-lock.json'), 'utf8')).packages || {};
+      for (const [dep, want] of Object.entries(v)) {
+        // the copy the parent resolves: below it, else the nearest one above it (node_modules/<parent>/node_modules/<dep>)
+        const parent = Object.keys(lock).find(k => k === `node_modules/${n}` || k.endsWith(`/node_modules/${n}`));
+        if (!parent) throw new Error(`${dir}: pinned ${dep}@${want} below ${n}, which is not installed`);
+        let at = null;
+        for (let base = parent; base !== null && !at; base = base.includes('/node_modules/') ? base.slice(0, base.lastIndexOf('/node_modules/')) : base === '' ? null : '') {
+          const k = `${base ? `${base}/` : ''}node_modules/${dep}`;
+          if (lock[k]) at = lock[k];
+        }
+        if (!at || at.version !== want) throw new Error(`${dir}: pinned ${dep}@${want} below ${n}, the install resolved ${at ? at.version : 'none'}`);
+      }
+      continue;
+    }
     const got = resolved(dir, n);
     if (got === null) throw new Error(`${dir}: no lockfile to check the pin ${n}@${v} in`);
     if (!got.length || got.some(g => g !== v)) throw new Error(`${dir}: pinned ${n}@${v}, the install resolved ${[...new Set(got)].join(', ') || 'none'}`);
