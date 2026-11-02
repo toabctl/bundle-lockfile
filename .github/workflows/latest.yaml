@@ -37,8 +37,9 @@ jobs:
       # version they are about)
       FIXTURES: '^(wp5-npm|edge-(copy|css|style|worker|federation|workbox)|vite8-(npm|features)|sveltekit3|nuxt4-pnpm10|rollup-(api|cli)|rspack2\.2-npm|rspack-features2\.2|rsbuild2\.2-npm|esbuild|esbuild-features|parcel|angular22|next16|next16-app|canary-(wp5|rspack2\.2|vite8|rollup|tsdown|esbuild|parcel))$'
     steps:
+      # (apk add: tried 3 times - a download from apk.cgr.dev fails now and then, which is no test failure)
       - name: Install tools
-        run: apk add --no-cache nodejs-26 npm yarn bun syft trivy
+        run: for i in 1 2 3; do apk add --no-cache nodejs-26 npm yarn bun syft trivy && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
