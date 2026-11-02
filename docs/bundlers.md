@@ -7,7 +7,7 @@ What is supported and tested, which processes are hooked, and what is particular
 
 | Bundler | Versions | Tested (matrix) | Hooked through | Notes |
 |---|---|---|---|---|
-| webpack | 4, 5 | 4.0, 4.47, 5.0, 5.60, 5.111 | CommonJS: webpack's `Compiler` | also copies vendored into other packages (umi's `@umijs/bundler-webpack`); webpack < 4 fails the build |
+| webpack | 4, 5 | 4.0, 4.47, 5.0, 5.60, 5.112 | CommonJS: webpack's `Compiler` | also copies vendored into other packages (umi's `@umijs/bundler-webpack`); webpack < 4 fails the build |
 | Next.js | 12 – 16 | 12.1 (standalone), 12.3, 13.5, 14.2, 15.5, 16.4 (App Router: 15.5, 16.4) | CommonJS: its vendored webpack | not with Turbopack (Next 16's default, `--turbopack` before): `next build --webpack`; [details](#nextjs) |
 | Next.js with next-rspack | 15, 16 | 15.5 (rspack 1.4), 16.4 (rspack 2.0) | as rspack | the same lockfiles as with webpack |
 | rspack | 1.1 – 1.7, 2 | 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 2.0, 2.1, 2.2 (1.0: the failure) | rspack 1: CommonJS; rspack 2: ESM hook | rspack 1.0 and 0.x fail the build; [details](#rspack-rsbuild) |

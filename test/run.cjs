@@ -38,6 +38,14 @@ if (process.env.BLTEST_REQUIRE_SBOM === '1' && !(hasSyft && hasTrivy)) {
 const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
 // per command: a hanging build (e.g. an installer retrying the registry offline) fails its case (BLTEST_TIMEOUT_S: shorter)
 const TIMEOUT = (Number(process.env.BLTEST_TIMEOUT_S) || 15 * 60) * 1000;
+// BLTEST_LATEST=1: fixtures that gen.cjs installed with the newest releases (BLTEST_LATEST=1 there too, the weekly run,
+// .github/workflows/latest.yaml). The cases' hand-written lists name the pinned versions: they compare by name
+// (name@*, each name once); what each run computes - the oracle, the canaries, syft and Trivy - stays exact
+const LATEST = process.env.BLTEST_LATEST === '1';
+/** @type {(id: string) => string} */
+const vf = (id) => (LATEST ? id.replace(/^(@?[^@]+)@.*$/, '$1@*') : id);
+/** @type {(ids: string[]) => string[]} */
+const vl = (ids) => (LATEST ? [...new Set(ids.map(vf))].sort(cmp) : ids);
 
 // A command that hangs is killed at TIMEOUT: by then nothing shows where it hung. A watchdog started with it (a process of
 // its own: spawnSync blocks this one) writes, 30 s before the timeout, every process with its state and the kernel
@@ -306,9 +314,9 @@ function runCase(c) {
     if (strange.length) throw new Error(`${k || '.'}: listed as the bundler, installed nowhere in the fixture: ${strange.join(' ')}`);
   }
   if (Object.values(got).some(l => l.some(bundlers.isBundler))) notes.push('bundlers installed');
-  const plain = Object.fromEntries(Object.entries(got).map(([k, l]) => [k, bundlers.without(l)]));
-  const strip = (m) => Object.fromEntries(Object.entries(m).map(([k, l]) => [k, bundlers.without(l)]));
-  if (c.expect && !sameMap(plain, { '': bundlers.without(c.expect) })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
+  const plain = Object.fromEntries(Object.entries(got).map(([k, l]) => [k, vl(bundlers.without(l))]));
+  const strip = (m) => Object.fromEntries(Object.entries(m).map(([k, l]) => [k, vl(bundlers.without(l))]));
+  if (c.expect && !sameMap(plain, { '': vl(bundlers.without(c.expect)) })) throw new Error(`lockfile mismatch\n  got:${show(got)}\n  want: ${c.expect.join(' ')}`);
   if (c.expectIn) {
     // "oracle": the output must be there; what it lists is the oracle's (compared below)
     if (Object.values(c.expectIn).includes('oracle') && c.oracle === false) throw new Error('expectIn: "oracle" needs the oracle');
@@ -317,8 +325,8 @@ function runCase(c) {
   }
   if (c.expectKeys) {
     const lock = JSON.parse(fs.readFileSync(path.join(lockDir, c.lockfile || LOCKFILE), 'utf8'));
-    const keys = Object.entries(lock.packages).filter(([k, p]) => k && !bundlers.isBundler(`${p.name}@${p.version}`)).map(([k, p]) => `${k} = ${p.name}@${p.version}`).sort(cmp);
-    const want = Object.entries(c.expectKeys).filter(([, v]) => !bundlers.isBundler(v)).map(([k, v]) => `${k} = ${v}`).sort(cmp);
+    const keys = Object.entries(lock.packages).filter(([k, p]) => k && !bundlers.isBundler(`${p.name}@${p.version}`)).map(([k, p]) => `${k} = ${vf(`${p.name}@${p.version}`)}`).sort(cmp);
+    const want = Object.entries(c.expectKeys).filter(([, v]) => !bundlers.isBundler(v)).map(([k, v]) => `${k} = ${vf(v)}`).sort(cmp);
     if (JSON.stringify(keys) !== JSON.stringify(want)) throw new Error(`lockfile keys\n    got:  ${keys.join(', ')}\n    want: ${want.join(', ')}`);
     notes.push('keys as expected');
   }
@@ -331,26 +339,27 @@ function runCase(c) {
       // (the bundlers, whose versions the fixtures do not pin - workbox-build's Rollup -, only where the case names them:
       // the runtime class; the check above and the oracle cover them)
       const ofCls = cls === 'runtime' ? (v[cls] || []) : bundlers.without(v[cls] || []);
-      if (!same(ofCls, cls === 'runtime' ? want : bundlers.without(want))) throw new Error(`via ${cls}: ${(v[cls] || []).join(' ') || '(none)'}, want ${want.join(' ') || '(none)'}`);
+      if (!same(vl(ofCls), vl(cls === 'runtime' ? want : bundlers.without(want)))) throw new Error(`via ${cls}: ${(v[cls] || []).join(' ') || '(none)'}, want ${want.join(' ') || '(none)'}`);
     }
     notes.push(`via ${Object.keys(c.expectVia).join(', ')} as expected`);
   }
   if (c.watchBuilds) {
-    const builds = JSON.parse(build.stdout.trim().split('\n').pop()).map(b => (Array.isArray(b) ? bundlers.without(b) : b));
-    const want = c.watchBuilds.map(b => (Array.isArray(b) ? bundlers.without(b) : b));
+    const builds = JSON.parse(build.stdout.trim().split('\n').pop()).map(b => (Array.isArray(b) ? vl(bundlers.without(b)) : b));
+    const want = c.watchBuilds.map(b => (Array.isArray(b) ? vl(bundlers.without(b)) : b));
     if (builds.length !== want.length || !builds.every((b, i) => same(b, want[i]))) throw new Error(`watch builds: ${JSON.stringify(builds)}, want ${JSON.stringify(c.watchBuilds)}`);
     notes.push(`${builds.length} watch builds`);
   }
-  const missing = (c.expectIncludes || []).filter(p => !all.includes(p));
+  const allV = vl(all);
+  const missing = (c.expectIncludes || []).filter(p => !allV.includes(vf(p)));
   if (missing.length) throw new Error(`missing ${missing.join(' ')} in${show(got)}`);
-  const unwanted = (c.expectExcludes || []).filter(p => all.includes(p));
+  const unwanted = (c.expectExcludes || []).filter(p => allV.includes(vf(p)));
   if (unwanted.length) throw new Error(`unexpected ${unwanted.join(' ')} in${show(got)}`);
   for (const [k, list] of Object.entries(c.expectIncludesIn || {})) {
-    const miss = list.filter(p => !(got[k] || []).includes(p));
+    const miss = list.filter(p => !vl(got[k] || []).includes(vf(p)));
     if (miss.length) throw new Error(`missing ${miss.join(' ')} in output ${k || '.'}:${show(got)}`);
   }
   for (const [k, list] of Object.entries(c.expectExcludesIn || {})) {
-    const extra = list.filter(p => (got[k] || []).includes(p));
+    const extra = list.filter(p => vl(got[k] || []).includes(vf(p)));
     if (extra.length) throw new Error(`unexpected ${extra.join(' ')} in output ${k || '.'}:${show(got)}`);
   }
 
@@ -384,12 +393,14 @@ function runCase(c) {
       notes.push('syft agrees, also as an image');
     } else notes.push('syft agrees');
 
-    for (const sc of c.sbom || []) notes.push(sbomScenario(c, sc, dir, base));
+    // (the staged SBOMs name every package's version and license: not with the newest releases)
+    for (const sc of c.sbom || []) notes.push(LATEST ? `SBOM "${sc.name}" not checked (BLTEST_LATEST)` : sbomScenario(c, sc, dir, base));
 
     if (c.projectLockfile) {
       const proj = syftIds(JSON.parse(sh('syft scan file:package-lock.json -q -o json', dir, base)));
-      const miss = c.projectLockfile.includes.filter(x => !proj.includes(x));
-      const extra = c.projectLockfile.excludes.filter(x => proj.includes(x));
+      const projV = vl(proj);
+      const miss = c.projectLockfile.includes.filter(x => !projV.includes(vf(x)));
+      const extra = c.projectLockfile.excludes.filter(x => projV.includes(vf(x)));
       if (miss.length || extra.length) throw new Error(`syft on the project lockfile: missing ${miss.join(' ') || '-'}, unexpected ${extra.join(' ') || '-'}\n  read: ${proj.join(' ')}`);
       notes.push(`syft on the project's own lockfile instead: ${proj.join(' ')}`);
     }
@@ -432,9 +443,12 @@ function runCase(c) {
       notes.push(`${c.expectSources.length} source path(s) bundled, by the oracle`);
     }
     // packages the oracle cannot see (e.g. Vite: CSS-only packages have no source map), each also expected
-    for (const k of Object.keys(truth)) truth[k] = [...new Set([...truth[k], ...(c.oracleMissing || [])])].sort();
+    // (BLTEST_LATEST: at the version the output lists of that name, if it lists one)
+    /** @type {(k: string, list: string[]) => string[]} */
+    const atLatest = (k, list) => (!LATEST ? list : list.flatMap(p => { const of = (got[k] || []).filter(g => vf(g) === vf(p)); return of.length ? of : [p]; }));
+    for (const k of Object.keys(truth)) truth[k] = [...new Set([...truth[k], ...atLatest(k, c.oracleMissing || [])])].sort();
     // ... or only in some outputs ({ "<output dir>": [...] })
-    for (const [k, list] of Object.entries(c.oracleMissingIn || {})) truth[k] = [...new Set([...(truth[k] || []), ...list])].sort();
+    for (const [k, list] of Object.entries(c.oracleMissingIn || {})) truth[k] = [...new Set([...(truth[k] || []), ...atLatest(k, list)])].sort();
     if (!sameMap(got, truth)) throw new Error(`plugin and oracle disagree\n  plugin:${show(got)}\n  oracle:${show(truth)}`);
     notes.push(`oracle agrees on ${Object.keys(got).length} output(s)`);
   }

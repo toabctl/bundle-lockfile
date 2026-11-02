@@ -10,6 +10,9 @@ const { fixtures } = require('./matrix.cjs');
 const { parseArgs, fixturesOf } = require('./lib/shard.cjs');
 
 const { shard, fixtures: only, rest: [out, filter] } = parseArgs(process.argv.slice(2));
+// BLTEST_LATEST=1: the newest releases instead of the pinned ones (the weekly run, .github/workflows/latest.yaml): every
+// exact version of a fixture's dependencies a caret range, no pins
+const LATEST = process.env.BLTEST_LATEST === '1';
 if (!out) { console.error('usage: node test/gen.cjs <fixtures-dir> [fixture-name-regex] [--shard=<i>/<n>]'); process.exit(2); }
 const inShard = fixturesOf(shard, only);
 const OUT = path.resolve(out);
@@ -94,6 +97,62 @@ const installers = {
   },
 };
 
+// LATEST: an exact version (1.2.3) as the newest of its major (^1.2.3; 0.x: of its minor); anything else as it is
+/** @type {(deps: Record<string, string> | undefined) => Record<string, string> | undefined} */
+const widen = (deps) => (!LATEST || !deps ? deps : Object.fromEntries(Object.entries(deps).map(([n, v]) => [n, /^\d+\.\d+\.\d+$/.test(v) ? `^${v}` : v])));
+
+// pins: { name: version } - exact versions of packages a fixture does not depend on itself (those its dependencies
+// bring, whose versions a case names or whose newer releases break the build), as the installer's overrides: npm and
+// bun `overrides`, yarn `resolutions`, pnpm 8 / 9 `pnpm.overrides` in package.json, pnpm 10 and later `overrides` in
+// pnpm-workspace.yaml (pnpm 11 no longer reads package.json's pnpm field).
+function pinFields(fx) {
+  const pins = fx.pins;
+  if (LATEST || !pins) return {};
+  const t = fx.installer.type;
+  if (t === 'npm' || t === 'bun') return { overrides: pins };
+  if (t === 'yarn1' || t === 'yarn-berry') return { resolutions: pins };
+  if (t === 'pnpm') return Number(fx.installer.version.split('.')[0]) >= 10 ? {} : { pnpm: { overrides: pins } };
+  throw new Error(`pins: installer ${t} not known`);
+}
+// pnpm 10 and later: the pins in pnpm-workspace.yaml (with the fixture's own, if its app has one)
+function pinWorkspace(dir, fx) {
+  if (LATEST || !fx.pins || fx.installer.type !== 'pnpm' || Number(fx.installer.version.split('.')[0]) < 10) return;
+  const file = path.join(dir, 'pnpm-workspace.yaml');
+  const own = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  if (/^overrides:/m.test(own)) throw new Error(`${file}: has overrides of its own, and the fixture pins`);
+  const lines = Object.entries(fx.pins).map(([n, v]) => `  ${JSON.stringify(n)}: ${JSON.stringify(v)}`);
+  fs.writeFileSync(file, `${own}${own && !own.endsWith('\n') ? '\n' : ''}overrides:\n${lines.join('\n')}\n`);
+}
+// The versions of package `name` the installer's lockfile resolves (package-lock.json, pnpm-lock.yaml, yarn.lock of
+// yarn 1 and berry, bun.lock); null: no lockfile it knows
+function resolved(dir, name) {
+  const at = (f) => path.join(dir, f);
+  const esc = name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  if (fs.existsSync(at('package-lock.json'))) {
+    const lock = JSON.parse(fs.readFileSync(at('package-lock.json'), 'utf8'));
+    return Object.entries(lock.packages || {}).filter(([k]) => k === `node_modules/${name}` || k.endsWith(`/node_modules/${name}`)).map(([, p]) => p.version);
+  }
+  if (fs.existsSync(at('pnpm-lock.yaml'))) { // ('  name@1.2.3:', '  /name@1.2.3:' in pnpm 8's, with a peer suffix (...))
+    return [...fs.readFileSync(at('pnpm-lock.yaml'), 'utf8').matchAll(new RegExp(`^\\s+'?/?${esc}@(\\d[^:'(\\s]*)`, 'gm'))].map(m => m[1]);
+  }
+  if (fs.existsSync(at('yarn.lock'))) { // entries: a line of specs (name@range, "name@npm:range"), then `version "x"` / `version: x`
+    return fs.readFileSync(at('yarn.lock'), 'utf8').split(/\n(?=\S)/).filter(e => e.split('\n')[0].split(/,\s*/).some(spec => spec.replace(/^"/, '').startsWith(`${name}@`)))
+      .map(e => (e.match(/^\s+version:?\s+"?([^"\s]+)"?$/m) || [])[1]).filter(Boolean);
+  }
+  if (fs.existsSync(at('bun.lock'))) return [...fs.readFileSync(at('bun.lock'), 'utf8').matchAll(new RegExp(`"${esc}": \\["${esc}@([^"]+)"`, 'g'))].map(m => m[1]);
+  return null;
+}
+// After the install: each pin is what the lockfile resolves, and only that (an installer that ignored it would test
+// another version than the case says)
+function checkPins(dir, fx) {
+  if (LATEST || !fx.pins) return;
+  for (const [n, v] of Object.entries(fx.pins)) {
+    const got = resolved(dir, n);
+    if (got === null) throw new Error(`${dir}: no lockfile to check the pin ${n}@${v} in`);
+    if (!got.length || got.some(g => g !== v)) throw new Error(`${dir}: pinned ${n}@${v}, the install resolved ${[...new Set(got)].join(', ') || 'none'}`);
+  }
+}
+
 for (const [name, fx] of Object.entries(fixtures)) {
   if (!inShard.has(name) || (filter && !new RegExp(filter).test(name))) continue;
   const dir = path.join(OUT, name);
@@ -109,11 +168,14 @@ for (const [name, fx] of Object.entries(fixtures)) {
       // overwrites NODE_OPTIONS (drops the --require), as e.g. argo-cd's recipe does: needs the node shim
       'build-reset': 'NODE_OPTIONS=--max-old-space-size=3072 webpack --config webpack.config.js',
     },
-    dependencies: fx.deps,
-    ...(fx.devDeps && { devDependencies: fx.devDeps }),
+    dependencies: widen(fx.deps),
+    ...(fx.devDeps && { devDependencies: widen(fx.devDeps) }),
+    ...pinFields(fx),
     ...fx.packageJson, // extra fields, e.g. workspaces
   }, null, 2) + '\n');
+  pinWorkspace(dir, fx);
   installers[fx.installer.type](dir, fx.installer);
+  checkPins(dir, fx);
   if (fx.postInstall) sh(fx.postInstall, dir);
   if (fx.installer.type === 'pnpm') fs.writeFileSync(path.join(dir, '.pnpm-bin'), path.relative(dir, pnpmBin(fx.installer.version)) + '\n');
   if (fx.installer.type === 'npm' && fx.installer.version) fs.writeFileSync(path.join(dir, '.npm-bin'), path.relative(dir, npmBin(fx.installer.version)) + '\n');

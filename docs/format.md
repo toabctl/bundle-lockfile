@@ -45,7 +45,7 @@ in the bundle:
     "node_modules/debug": { "name": "debug", "version": "2.6.9", "license": "MIT" },
     "node_modules/debug/node_modules/ms": { "name": "ms", "version": "2.0.0", "license": "MIT" },
     "node_modules/ms": { "name": "ms", "version": "2.1.3", "license": "MIT" },
-    "node_modules/webpack": { "name": "webpack", "version": "5.111.1", "license": "MIT" }
+    "node_modules/webpack": { "name": "webpack", "version": "5.112.2", "license": "MIT" }
   },
   "bundle-lockfile": {
     "v": 2,
@@ -54,7 +54,7 @@ in the bundle:
     "writers": [
       { "id": "4c1d0e7a9b2f3c55", "count": 1, "files": ["../main.js"],
         "packages": ["node_modules/debug", "node_modules/debug/node_modules/ms", "node_modules/ms", "node_modules/webpack"],
-        "bundler": { "name": "webpack", "version": "5.111.1" }, "via": { "chunk": [0, 1, 2], "runtime": [3] } }
+        "bundler": { "name": "webpack", "version": "5.112.2" }, "via": { "chunk": [0, 1, 2], "runtime": [3] } }
     ]
   }
 }

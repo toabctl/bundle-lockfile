@@ -12,7 +12,7 @@ const APM = { '@opentelemetry/instrumentation': '0.223.0', 'dd-trace': '6.20.1' 
 
 const wp5 = (webpack, cli, extra = {}) => ({ app: 'webpack5', deps: { webpack, 'webpack-cli': cli, ...APP_DEPS, ...extra } });
 const wp4 = (webpack, cli, extra = {}) => ({ app: 'webpack4', deps: { webpack, 'webpack-cli': cli, ...APP4_DEPS, ...extra } });
-const latest = wp5('5.111.1', '7.2.3', HTML);
+const latest = wp5('5.112.2', '7.2.3', HTML);
 // Next.js vendors its own webpack; pages router so one app works for every version
 const next = (version, react) => ({
   app: 'next', bundler: 'next', installer: { type: 'npm' },
@@ -37,11 +37,11 @@ const nextRuntime = (version, react, installer = { type: 'npm' }) => ({
 const devdeps = (installer) => ({
   app: 'webpack5-devdeps', installer,
   deps: { 'lodash-es': '4.18.1', 'is-number': '7.0.0' },                                        // is-number: never imported
-  devDeps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', classnames: '2.5.1', 'left-pad': '1.3.0' }, // classnames: imported
+  devDeps: { webpack: '5.112.2', 'webpack-cli': '7.2.3', classnames: '2.5.1', 'left-pad': '1.3.0' }, // classnames: imported
 });
 
 // edge cases, all webpack 5 + npm
-const WEBPACK = { webpack: '5.111.1', 'webpack-cli': '7.2.3' };
+const WEBPACK = { webpack: '5.112.2', 'webpack-cli': '7.2.3' };
 const edge = (app, deps, extra = {}) => ({ app, installer: { type: 'npm' }, deps: { ...WEBPACK, ...deps }, ...extra });
 const WEBPACK4 = { webpack: '4.47.0', 'webpack-cli': '4.10.0' };
 // edge-copy: a package file (normalize.css) and a package directory (left-pad) copied into the output
@@ -127,7 +127,7 @@ const nested = (webpackDeps) => ({ app: 'nested-island', bundler: 'nested', inst
 // the island as the workspace package @acme/island (island/package.json), imported by its name: npm links it into
 // node_modules; bundled by webpack 5 or Vite 8 (NESTED_ENTRY=workspace, see the app's configs)
 const nestedWorkspace = { app: 'nested-island', bundler: 'nested', installer: { type: 'npm' },
-  deps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', ...ISLAND, '@acme/island': '1.0.0' },
+  deps: { webpack: '5.112.2', 'webpack-cli': '7.2.3', ...ISLAND, '@acme/island': '1.0.0' },
   packageJson: { workspaces: ['island'], scripts: { build: 'vite build --config island/vite.config.mjs && webpack --config webpack.config.js' } } };
 const nestedVite = (island, viteVersion, deps = {}) => ({ app: 'nested-island', bundler: 'nested-vite', installer: { type: 'npm' },
   deps: { ...ISLAND, vite: viteVersion, ...deps }, packageJson: { type: 'module', scripts: { build: `${island} && vite build` } } });
@@ -172,7 +172,9 @@ const canary = (bundler, deps, packageJson = {}) => ({ app: 'canary', bundler, i
 
 // fixture fields: app (test/apps/<app>), bundler (the oracle, test/oracles/<bundler>.cjs; default webpack), installer,
 // deps, devDeps, packageJson (more package.json fields), postInstall (a command run in the fixture after the install,
-// with network)
+// with network), pins ({ name: version }: packages the fixture's dependencies bring, at exactly that version - those a
+// case names, which a newer release in their range would change; gen.cjs writes them as the installer's overrides and
+// checks the install resolved them. Only for a package installed at one version: an override replaces every copy)
 const fixtures = {
   'vite8-npm': vite('8.3.3'),
   'vite7-npm': vite('7.3.7'),
@@ -251,11 +253,11 @@ const fixtures = {
   'rollup-api-c#': rollupApi('4.64.2', '1.2.13'),
   // rolldown-vite, Vite on Rolldown before Vite 8, installed as vite (npm alias): its package is named rolldown-vite
   'vite-rolldown7-npm': { ...vite('npm:rolldown-vite@7.3.1') },
-  'nested-island-wp5': nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }),
+  'nested-island-wp5': nested({ webpack: '5.112.2', 'webpack-cli': '7.2.3' }),
   'nested-island-wp4': nested({ webpack: '4.47.0', 'webpack-cli': '4.10.0' }),
   // the island built by Vite 7 (Rollup), and by Rolldown's API, each bundled by webpack 5
-  'nested-island-vite7-wp5': { ...nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3' }), deps: { webpack: '5.111.1', 'webpack-cli': '7.2.3', ...ISLAND, vite: '7.3.7' } },
-  'nested-island-rolldown-wp5': { ...nested({ webpack: '5.111.1', 'webpack-cli': '7.2.3', rolldown: '1.2.13' }),
+  'nested-island-vite7-wp5': { ...nested({ webpack: '5.112.2', 'webpack-cli': '7.2.3' }), deps: { webpack: '5.112.2', 'webpack-cli': '7.2.3', ...ISLAND, vite: '7.3.7' } },
+  'nested-island-rolldown-wp5': { ...nested({ webpack: '5.112.2', 'webpack-cli': '7.2.3', rolldown: '1.2.13' }),
     packageJson: { scripts: { build: 'node island/rolldown.mjs && webpack --config webpack.config.js' } } },
   'nested-island-workspace': nestedWorkspace,
   'nested-island-vite': nestedVite('vite build --config island/vite.config.mjs', '8.3.3'),
@@ -265,8 +267,9 @@ const fixtures = {
   // (nuxt depends on it, the project does not); Nitro copies the client output's _nuxt/ files into .output/public/
   'nuxt4-pnpm10': { app: 'nuxt', bundler: 'nuxt', installer: { type: 'pnpm', version: '10.34.6' },
     deps: { nuxt: '4.6.1', nuxi: '4.0.1', vue: '3.5.44', 'lodash-es': '4.18.1' }, packageJson: { type: 'module', scripts: { build: 'nuxt build' } } },
-  'sveltekit2': sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7',
-    '@sveltejs/adapter-netlify': '5.2.4' }),
+  // (pins: the server's packages the adapter-node case names; not set-cookie-parser, at 2.x for adapter-node and 3.x for kit)
+  'sveltekit2': { ...sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7',
+    '@sveltejs/adapter-netlify': '5.2.4' }), pins: { devalue: '5.9.4', clsx: '2.1.1' } },
   'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0',
     '@sveltejs/adapter-netlify': '7.0.1' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
@@ -386,7 +389,7 @@ const fixtures = {
   // directories; built by Vite (build) and webpack (build-webpack)
   ...Object.fromEntries([['peer-deps-yarn4-pnp', { type: 'yarn-berry', version: '4.18.1', linker: 'pnp' }], ['peer-deps-pnpm10', { type: 'pnpm', version: '10.34.6' }]]
     .map(([name, installer]) => [name, { app: 'peer-deps', bundler: 'vite', installer,
-      deps: { ...WEBPACK, vite: '8.3.3', react: '19.3.0', 'react-dom': '19.3.0', 'use-sync-external-store': '1.6.0' },
+      deps: { ...WEBPACK, vite: '8.3.3', react: '19.3.0', 'react-dom': '19.3.0', 'use-sync-external-store': '1.6.0' }, pins: { scheduler: '0.28.0' },
       packageJson: { scripts: { build: 'vite build', 'build-webpack': 'webpack --config webpack.config.js' } } }])),
   // a webpack build (ms) and a Vite build (nanoid) into one dist/, as separate processes
   'mixed-output': { app: 'mixed-output', bundler: 'mixed', installer: { type: 'npm' },
@@ -754,7 +757,7 @@ const cases = [
   { name: 'BUNDLE_LOCKFILE_DISABLE=webpack', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_DISABLE: 'webpack' }, expect: null },
   { name: 'existing NODE_OPTIONS are preserved', fixture: 'wp5-npm', cmd: 'npm run -s build', nodeOptions: '--max-old-space-size=3072', heapMB: 3072, expect: W5 },
   // html-webpack-plugin 5 reads its favicon and emits it while webpack processes the assets: the package is listed
-  { name: 'webpack 5.111.1: html-webpack-plugin 5 favicon from a package', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_FAVICON: FAVICON },
+  { name: 'webpack 5.112.2: html-webpack-plugin 5 favicon from a package', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_FAVICON: FAVICON },
     expect: [...W5, 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
   { name: 'webpack 4.47.0: html-webpack-plugin 4 favicon from a package (emitted in the emit hook)', fixture: 'wp4.47-npm', cmd: 'npm run -s build',
     nodeOptions: LEGACY_SSL, env: { EDGE_FAVICON: FAVICON }, expect: [...W4('4.47.0'), 'uuid@9.0.1'].sort(), oracleMissing: ['uuid@9.0.1'] },
@@ -780,10 +783,10 @@ const cases = [
   { name: 'webpack 4.47.0, default-if-unset NODE_OPTIONS script via yarn 1', fixture: 'wp4.47-npm', cmd: 'yarn -s webpack-prod', nodeOptions: `${LEGACY_SSL} --max_old_space_size=4096`, expect: W4('4.47.0') },
   { name: 'webpack 5.0.0', fixture: 'wp5.0-npm', cmd: 'npm run -s build', expect: W5 },
   // a development build: no unused-export analysis or scope hoisting (what it bundles, the oracle says from the stats)
-  { name: 'webpack 5.111.1, development mode', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_MODE: 'development' }, expect: W5 },
+  { name: 'webpack 5.112.2, development mode', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { EDGE_MODE: 'development' }, expect: W5 },
   { name: 'webpack 4.47.0, pnpm 10.34.6', fixture: 'wp4-pnpm10', cmd: '$PNPM run build', nodeOptions: LEGACY_SSL, expect: W4('4.47.0') },
   { name: 'webpack 5.60.0 (child compiler)', fixture: 'wp5.60-npm', cmd: 'npm run -s build', expect: W5 },
-  { name: 'webpack 5.111.1 (child compiler)', fixture: 'wp5-npm', cmd: 'npm run -s build', expect: W5 },
+  { name: 'webpack 5.112.2 (child compiler)', fixture: 'wp5-npm', cmd: 'npm run -s build', expect: W5 },
   // runners / installers
   { name: 'npx webpack', fixture: 'wp5-npm', cmd: 'npx webpack', expect: W5 },
   { name: 'direct node_modules/.bin/webpack', fixture: 'wp5-npm', cmd: './node_modules/.bin/webpack', expect: W5 },
@@ -843,7 +846,7 @@ const cases = [
     ['Vite 8.3.3, yarn 4.18.1 node-modules linker', 'pkgmap-vite8-yarn4-node-modules', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }]].map(([what, fixture, expect, extra]) => (
     { name: `${what}, package maps (nodeExperimentalPackageMap)`, fixture, cmd: 'yarn build', expect, ...extra, minNode: { 24: 20, 26: 4 },
       expectOutput: /Package maps is an experimental feature/, allowWarnings: [/^ExperimentalWarning: Package maps is an experimental feature and might change at any time$/] })),
-  { name: 'webpack 5.111.1 in a directory with "#" in its name', fixture: 'wp5-c#', cmd: 'npm run -s build', expect: W5 },
+  { name: 'webpack 5.112.2 in a directory with "#" in its name', fixture: 'wp5-c#', cmd: 'npm run -s build', expect: W5 },
   // older npm releases (installed and run with that npm); the default fixtures use the npm on PATH
   { name: 'npm 8.19.4', fixture: 'wp5-npm8', cmd: '$NPM run -s build', expect: W5 },
   { name: 'npm 9.9.4', fixture: 'wp5-npm9', cmd: '$NPM run -s build', expect: W5 },
@@ -864,15 +867,15 @@ const cases = [
   { name: 'devDependencies: npm', fixture: 'wp5-devdeps-npm', cmd: 'npm run -s build', expect: DEVDEPS, installed: DEVDEPS_INSTALLED,
     // syft on the project's own package-lock.json goes by section, not by what is shipped: it reports the
     // unused dependency is-number and skips all devDependencies (dev: true) - including the shipped classnames
-    projectLockfile: { includes: ['is-number@7.0.0', 'lodash-es@4.18.1'], excludes: ['classnames@2.5.1', 'left-pad@1.3.0', 'webpack@5.111.1'] },
+    projectLockfile: { includes: ['is-number@7.0.0', 'lodash-es@4.18.1'], excludes: ['classnames@2.5.1', 'left-pad@1.3.0', 'webpack@5.112.2'] },
     sbom: [
       // the package ships only the build output: the SBOM lists exactly what is in the bundle
       { name: 'build output', stage: { 'usr/share/app/dist': 'dist' },
-        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK), npmPkg('webpack', '5.111.1', 'MIT', DIST_LOCK)] },
+        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK), npmPkg('webpack', '5.112.2', 'MIT', DIST_LOCK)] },
       // the package also ships the project's own lockfile: the SBOM gets the union, incl. the never-bundled
       // is-number and the project itself (see README)
       { name: 'build output + project lockfile', stage: { 'usr/share/app/dist': 'dist', 'usr/share/app/package-lock.json': 'package-lock.json' },
-        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK), npmPkg('webpack', '5.111.1', 'MIT', DIST_LOCK),
+        expect: [npmPkg('classnames', '2.5.1', 'MIT', DIST_LOCK), npmPkg('lodash-es', '4.18.1', 'MIT', DIST_LOCK), npmPkg('webpack', '5.112.2', 'MIT', DIST_LOCK),
           npmPkg('lodash-es', '4.18.1', 'MIT', PROJECT_LOCK), npmPkg('is-number', '7.0.0', 'MIT', PROJECT_LOCK),
           npmPkg('fixture-wp5-devdeps-npm', '1.0.0', 'NOASSERTION', PROJECT_LOCK)] },
     ] },
@@ -992,7 +995,7 @@ const cases = [
     oracleMissing: ['normalize.css@8.0.1'] },
   // only left-pad's index.js copied, which the minimizer changes: matched before the optimize stages, also on webpack
   // 5.0.0 (no compiler.webpack); the oracle, which compares the output's bytes, does not see it
-  ...[['edge-copy62', '5.111.1'], ['edge-copy62-wp5.0', '5.0.0']].map(([fixture, v]) => (
+  ...[['edge-copy62', '5.112.2'], ['edge-copy62-wp5.0', '5.0.0']].map(([fixture, v]) => (
     { name: `edge: a package's JavaScript file copied by copy-webpack-plugin 6.2 and minimized, webpack ${v}`, fixture, cmd: 'npm run -s build',
       env: { EDGE_COPY: 'one-js' }, expect: ['left-pad@1.3.0', 'lodash-es@4.18.1'], oracleMissing: ['left-pad@1.3.0'], expectVia: { 'copy-bytes': ['left-pad@1.3.0'] } })),
   // two compilers write to dist/ in parallel: one lockfile with the packages of both
@@ -1074,7 +1077,7 @@ const cases = [
   { name: 'export: BUNDLE_LOCKFILE_EXPORT_DIR only (BUNDLE_LOCKFILE_INLINE=0)', fixture: 'wp5-npm', cmd: 'npm run -s build', exportOnly: true, expect: W5 },
   // BUNDLE_LOCKFILE_TREE (src/core/tree.cjs): a package.json per entry next to each lockfile, which image scans read
   // (syft's image catalogers, trivy rootfs) - the same packages, each once; the runner checks the tree and both scans
-  ...[['webpack 5.111.1', 'wp5-npm', 'npm run -s build', W5, {}], ['rspack 2.2.8', 'rspack2.2-npm', 'npm run -s build', W5, {}],
+  ...[['webpack 5.112.2', 'wp5-npm', 'npm run -s build', W5, {}], ['rspack 2.2.8', 'rspack2.2-npm', 'npm run -s build', W5, {}],
     ['Vite 8.3.3', 'vite8-npm', 'npm run -s build', VITE_EXPECT, { oracleMissing: ['normalize.css@8.0.1'] }],
     ['Rollup 4 command line', 'rollup-cli', 'npm run -s build', ['lodash-es@4.18.1', 'nanoid@3.3.20'], {}]].map(([what, fixture, cmd, expect, more]) => (
     { name: `tree: BUNDLE_LOCKFILE_TREE=on, ${what}`, fixture, cmd, env: { BUNDLE_LOCKFILE_TREE: 'on' }, expect, ...more })),
@@ -1085,7 +1088,7 @@ const cases = [
   { name: 'tree: BUNDLE_LOCKFILE_TREE=on with BUNDLE_LOCKFILE_EXPORT_DIR: the tree in the export directory too', fixture: 'wp5-npm', cmd: 'npm run -s build',
     env: { BUNDLE_LOCKFILE_TREE: 'on' }, exportDir: true, expect: W5 },
   // only: no package-lock.json (directory scans read nothing), the record in record.json; image scans read the tree
-  { name: 'tree: BUNDLE_LOCKFILE_TREE=only, webpack 5.111.1', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_TREE: 'only' },
+  { name: 'tree: BUNDLE_LOCKFILE_TREE=only, webpack 5.112.2', fixture: 'wp5-npm', cmd: 'npm run -s build', env: { BUNDLE_LOCKFILE_TREE: 'only' },
     lockfile: 'bundle-lockfile/record.json', expect: W5 },
   // NODE_OPTIONS overwritten by the build script: no lockfile, unless the node shim is first in PATH
   { name: 'shim: a script overwriting NODE_OPTIONS drops the --require (no shim)', fixture: 'wp5-npm', cmd: 'npm run -s build-reset', expect: null },
@@ -1803,10 +1806,10 @@ const cases = [
   // peer dependencies: every virtual path / peer-suffixed directory of a package is that one package (check.cjs: no
   // virtual paths in keys)
   { name: "Vite 8.3.3, packages with peer dependencies, yarn 4.18.1 Plug'n'Play", fixture: 'peer-deps-yarn4-pnp', cmd: 'yarn build', expect: PEER_DEPS },
-  { name: "webpack 5.111.1, packages with peer dependencies, yarn 4.18.1 Plug'n'Play", fixture: 'peer-deps-yarn4-pnp', cmd: 'yarn build-webpack',
+  { name: "webpack 5.112.2, packages with peer dependencies, yarn 4.18.1 Plug'n'Play", fixture: 'peer-deps-yarn4-pnp', cmd: 'yarn build-webpack',
     oracleScript: 'webpack', expect: PEER_DEPS },
   { name: 'Vite 8.3.3, packages with peer dependencies, pnpm 10.34.6', fixture: 'peer-deps-pnpm10', cmd: '$PNPM run build', expect: PEER_DEPS },
-  { name: 'webpack 5.111.1, packages with peer dependencies, pnpm 10.34.6', fixture: 'peer-deps-pnpm10', cmd: '$PNPM run build-webpack', oracleScript: 'webpack',
+  { name: 'webpack 5.112.2, packages with peer dependencies, pnpm 10.34.6', fixture: 'peer-deps-pnpm10', cmd: '$PNPM run build-webpack', oracleScript: 'webpack',
     expect: PEER_DEPS },
   // a Vite and a webpack process writing one output dir: one lockfile with both (writers of different bundlers, with
   // different contexts); each one run again keeps the other's packages
@@ -2052,7 +2055,7 @@ const cases = [
   // duet-loader or an engine.io-client without a version could not be listed at all (every key must lead to a
   // package.json with its name and version). The packages' own dependencies (debug, socket.io-parser, ...) drift: the
   // oracle gives the exact list
-  ...[['webpack 5.111.1', 'edge-manifests-wp5'], ['Vite 8.3.3', 'edge-manifests-vite8'], ['rollup 4.64.2', 'edge-manifests-rollup']].map(([what, fixture]) => (
+  ...[['webpack 5.112.2', 'edge-manifests-wp5'], ['Vite 8.3.3', 'edge-manifests-vite8'], ['rollup 4.64.2', 'edge-manifests-rollup']].map(([what, fixture]) => (
     { name: `edge: package.json files inside packages, ${what}`, fixture, cmd: 'npm run -s build',
       expectIncludes: Object.entries(MANIFESTS).map(([n, v]) => `${n}@${v}`), expectExcludes: ['preact-hooks@0.1.0', 'preact-compat@4.0.0'],
       expectSources: ['node_modules/preact/hooks/', 'node_modules/preact/compat/', 'node_modules/@duetds/date-picker/dist/loader/',
@@ -2062,7 +2065,7 @@ const cases = [
   // canaries in files inlined into a module, no modules themselves: bl-canary-glsl's shader include (a loader's file
   // dependency, a plugin's watch file), and in style sheets bl-canary-import (@imported) and bl-canary-icon (an image
   // inlined as a data: URL) - modules of their own in webpack's and rspack's CSS, inlined by Vite's
-  ...[['webpack 5.111.1', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['Vite 7.3.7', 'canary-vite7.3.7'],
+  ...[['webpack 5.112.2', 'canary-wp5'], ['rspack 2.2.8', 'canary-rspack2.2'], ['Vite 8.3.3', 'canary-vite8'], ['Vite 7.3.7', 'canary-vite7.3.7'],
     ['rollup 4.64.2', 'canary-rollup']].map(([what, fixture]) => (
     { name: `canaries: ${what}`, fixture, cmd: 'npm run -s build',
       expect: [...CANARY_JS, ...CANARY_INLINED[fixture === 'canary-rollup' ? 'js' : 'all'], ...(fixture === 'canary-rollup' ? [] : [CANARY_URL])].sort(),

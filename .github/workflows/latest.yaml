@@ -1,0 +1,54 @@
+name: latest
+
+# The newest releases (BLTEST_LATEST=1, see test/README.md): the fixtures of each bundler's newest line installed with
+# every exact version of their dependencies widened to a caret range and without their pins, so a new release of a
+# bundler, a plugin or anything they bring shows here, not first in a pull request's matrix. The cases' hand-written
+# lists compare by name; the oracle, the canaries, syft and Trivy stay exact. The pull request matrix keeps the pinned
+# versions: bump them once this is green on the new ones.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '47 4 * * 1'
+  pull_request:
+    paths: ['test/gen.cjs', 'test/run.cjs', '.github/workflows/latest.yaml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: cgr.dev/chainguard/wolfi-base:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    name: latest (Node 26, ${{ matrix.shard }}/3)
+    env:
+      BLTEST_REQUIRE_SBOM: '1'
+      BLTEST_LATEST: '1'
+      # the newest line of each bundler, npm (others where the bundler needs them: Nuxt on pnpm), and the canary apps of
+      # those lines; not the floors, the failures and the rows of older minors (a caret range would move them off the
+      # version they are about)
+      FIXTURES: '^(wp5-npm|edge-(copy|css|style|worker|federation|workbox)|vite8-(npm|features)|sveltekit3|nuxt4-pnpm10|rollup-(api|cli)|rspack2\.2-npm|rspack-features2\.2|rsbuild2\.2-npm|esbuild|esbuild-features|parcel|angular22|next16|next16-app|canary-(wp5|rspack2\.2|vite8|rollup|tsdown|esbuild|parcel))$'
+    steps:
+      - name: Install tools
+        run: apk add --no-cache nodejs-26 npm yarn bun syft trivy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
+      - name: Generate fixtures (newest releases)
+        run: node test/gen.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
+      - name: What was installed
+        run: |
+          for d in "$RUNNER_TEMP"/fixtures/*/; do
+            [ -f "$d/package-lock.json" ] || continue
+            echo "== $(basename "$d")"; (cd "$d" && npm ls --depth=0 2>/dev/null | tail -n +2)
+          done
+      - name: Run matrix
+        run: node test/run.cjs "$RUNNER_TEMP/fixtures" --fixtures="$FIXTURES" --shard=${{ matrix.shard }}/3
