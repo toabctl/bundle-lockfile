@@ -21,8 +21,9 @@ jobs:
     container: cgr.dev/chainguard/wolfi-base:latest
     name: check (types, lint)
     steps:
+      # (apk add: tried 3 times - a download from apk.cgr.dev fails now and then, which is no test failure)
       - name: Install tools
-        run: apk add --no-cache nodejs-24 npm
+        run: for i in 1 2 3; do apk add --no-cache nodejs-24 npm && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -46,7 +47,7 @@ jobs:
     name: unit (Node ${{ matrix.node }})
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-${{ matrix.node }}
+        run: for i in 1 2 3; do apk add --no-cache nodejs-${{ matrix.node }} && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
@@ -63,7 +64,7 @@ jobs:
       BLTEST_REQUIRE_SBOM: '1' # a missing syft or trivy fails the job instead of skipping their checks
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-24 syft trivy
+        run: for i in 1 2 3; do apk add --no-cache nodejs-24 syft trivy && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
@@ -89,7 +90,7 @@ jobs:
       BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy
+        run: for i in 1 2 3; do apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
@@ -121,7 +122,7 @@ jobs:
       BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy && node -v
+        run: for i in 1 2 3; do apk add --no-cache nodejs-${{ matrix.node }} npm yarn bun syft trivy && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done && node -v
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs
@@ -143,7 +144,7 @@ jobs:
       BLTEST_REQUIRE_SBOM: '1'
     steps:
       - name: Install tools
-        run: apk add --no-cache nodejs-20 npm yarn bun syft trivy
+        run: for i in 1 2 3; do apk add --no-cache nodejs-20 npm yarn bun syft trivy && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no token in .git/config for the packages' install scripts the matrix runs

@@ -59,9 +59,10 @@ jobs:
     env:
       BLTEST_REQUIRE_SBOM: '1'
     steps:
+      # (apk add: tried 3 times - a download from apk.cgr.dev fails now and then, which is no test failure)
       - name: Install tools
         run: |
-          apk add --no-cache "nodejs-${{ matrix.node.major }}~${{ matrix.node.version }}" "${{ matrix.node.npm }}" yarn bun syft trivy
+          for i in 1 2 3; do apk add --no-cache "nodejs-${{ matrix.node.major }}~${{ matrix.node.version }}" "${{ matrix.node.npm }}" yarn bun syft trivy && break; [ "$i" = 3 ] && exit 1; echo "apk add failed, attempt $((i + 1)) of 3"; sleep 15; done
           # apk's ~ matches a version prefix: the run is for exactly this version
           test "$(node -v)" = "v${{ matrix.node.version }}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
