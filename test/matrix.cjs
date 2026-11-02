@@ -267,9 +267,11 @@ const fixtures = {
   // (nuxt depends on it, the project does not); Nitro copies the client output's _nuxt/ files into .output/public/
   'nuxt4-pnpm10': { app: 'nuxt', bundler: 'nuxt', installer: { type: 'pnpm', version: '10.34.6' },
     deps: { nuxt: '4.6.1', nuxi: '4.0.1', vue: '3.5.44', 'lodash-es': '4.18.1' }, packageJson: { type: 'module', scripts: { build: 'nuxt build' } } },
-  // (pins: the server's packages the adapter-node case names; not set-cookie-parser, at 2.x for adapter-node and 3.x for kit)
+  // (pins: the server's packages the adapter-node case names. Not set-cookie-parser, which adapter-netlify takes at ^2.6.0
+  // and kit at ^3.0.0 - an override would replace kit's copy too: a dependency of the fixture's own at 2.7.2 instead, which
+  // npm installs at the top, where adapter-netlify's range finds it; kit keeps its 3.x)
   'sveltekit2': { ...sveltekit('sveltekit2', '2.70.3', { vite: '7.3.7', '@sveltejs/vite-plugin-svelte': '6.2.4', '@sveltejs/adapter-static': '3.0.10', '@sveltejs/adapter-node': '5.5.7',
-    '@sveltejs/adapter-netlify': '5.2.4' }), pins: { devalue: '5.9.4', clsx: '2.1.1' } },
+    '@sveltejs/adapter-netlify': '5.2.4', 'set-cookie-parser': '2.7.2' }), pins: { devalue: '5.9.4', clsx: '2.1.1' } },
   'sveltekit3': sveltekit('sveltekit3', '3.0.1', { vite: '8.3.3', '@sveltejs/vite-plugin-svelte': '7.3.1', '@sveltejs/adapter-static': '4.0.0', '@sveltejs/adapter-node': '6.0.0',
     '@sveltejs/adapter-netlify': '7.0.1' }),
   'wp4.0-npm': { ...wp4('4.0.0', '3.3.12'), installer: { type: 'npm' } },
@@ -631,7 +633,9 @@ const PARALLEL_RSPACK = `${RSPACK_BIN} build --config-name app & a=$!; ${RSPACK_
 const SHARED = ['debug@2.6.9', 'ms@2.0.0', 'ms@2.1.3'];
 // the rspack app's two compilers into dist/[fullhash] (RSPACK_SHARED=fullhash): exactly two directories, app.js next
 // to a lockfile with app's packages, sw.js next to one with sw's
-const RSPACK_FULLHASH = `npm run -s build && test "$(for d in dist/*/; do echo "$(cd "$d" && ls app.js sw.js 2>/dev/null) $(node ${path.join(__dirname, 'lib/locks.cjs')} "$d")"; done | sort)" = "$(printf 'app.js .: @rspack/core@2.2.8 ms@2.1.3\\nsw.js .: @rspack/core@2.2.8 debug@2.6.9 ms@2.0.0')"`;
+// (BLTEST_LATEST=1: lib/locks.cjs prints names only, name@*; so does the expectation)
+const latestIds = (ids) => (process.env.BLTEST_LATEST === '1' ? ids.replace(/(@?[^@\s]+)@\d[\w.+-]*/g, '$1@*') : ids);
+const RSPACK_FULLHASH = `npm run -s build && test "$(for d in dist/*/; do echo "$(cd "$d" && ls app.js sw.js 2>/dev/null) $(node ${path.join(__dirname, 'lib/locks.cjs')} "$d")"; done | sort)" = "$(printf '${latestIds('app.js .: @rspack/core@2.2.8 ms@2.1.3\\nsw.js .: @rspack/core@2.2.8 debug@2.6.9 ms@2.0.0')}')"`;
 // consts-only and consts-default as installed packages (npm links a file: directory)
 const RSPACK_CONSTS = 'rm -rf node_modules/consts-only node_modules/consts-default && cp -r pkgs/consts-only pkgs/consts-default node_modules/';
 // (and the copy of modern-normalize.css was minimized: not the package file's bytes)
