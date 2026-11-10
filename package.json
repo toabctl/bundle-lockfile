@@ -14,9 +14,9 @@
     "@types/node": "26.6.6",
     "esbuild": "0.28.2",
     "eslint": "10.14.0",
-    "globals": "17.13.0",
-    "oxlint": "1.90.0",
-    "oxlint-tsgolint": "7.0.2005",
+    "globals": "17.14.0",
+    "oxlint": "1.92.0",
+    "oxlint-tsgolint": "7.0.2006",
     "typescript": "7.0.2"
   }
 }
